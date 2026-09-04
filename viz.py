@@ -563,8 +563,9 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <div id="toggles">
     <button id="bCalls" class="on">calls</button>
     <button id="bInst">contains</button>
-    <button id="bDead">dead</button>
-    <button id="bReset">reset</button>
+ <button id="bDead">dead</button>
+ <button id="bSpin">spin</button>
+ <button id="bReset">reset</button>
   </div>
 </div>
 <div id="crumb"></div>
@@ -634,8 +635,8 @@ const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 1, 20000)
 camera.position.set(0, 0, 1400);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
-// gentle idle rotation keeps the overview alive without user input
-controls.autoRotate = true;
+// gentle idle rotation: OFF by default, opt-in via the spin toggle
+controls.autoRotate = false;
 controls.autoRotateSpeed = 0.35;
 
 // cluster hue: golden angle spread; dead files tinted toward red
@@ -680,13 +681,16 @@ const pMat = new THREE.ShaderMaterial({
     varying vec3 vColor; varying float vA;
     void main(){ vColor = color; vA = aalpha;
       vec4 mv = modelViewMatrix * vec4(position,1.0);
-      gl_PointSize = max(psize * (900.0 / -mv.z), 5.0);
+      // hidden nodes (vA==0) get zero size: GL discards them entirely
+      gl_PointSize = vA < 0.01 ? 0.0 : max(psize * (900.0 / -mv.z), 5.0);
       gl_Position = projectionMatrix * mv; }`,
   fragmentShader: `
     varying vec3 vColor; varying float vA;
     void main(){ float d = length(gl_PointCoord - 0.5);
-      float a = smoothstep(0.5, 0.18, d) * vA;
-      gl_FragColor = vec4(vColor * (0.85 + 0.15 * a), a); }`,
+      // crisp disc: solid center, tight 2px anti-aliased rim — no fuzzy glow
+      float a = (1.0 - smoothstep(0.36, 0.47, d)) * vA;
+      if (a < 0.01) discard;
+      gl_FragColor = vec4(vColor, a); }`,
 });
 scene.add(new THREE.Points(pGeo, pMat));
 
@@ -763,6 +767,14 @@ function syncEdgePos() {
   links.forEach((l, i) => {
     if (hwSlot[i] >= 0) return;   // highway arcs are baked, never resynced
     const s = l.s * 3, t = l.t * 3;
+    // hidden endpoints (tests/tools, dir filter): collapse to a degenerate
+    // zero-length segment — true render disable, no stray pixels at all
+    if (alphaArr[l.s] < 0.01 || alphaArr[l.t] < 0.01) {
+      const a0 = bucketPosIB[bucketOf[i]].array, o0 = slotOf[i] * 6;
+      a0[o0] = pos[s]; a0[o0+1] = pos[s+1]; a0[o0+2] = pos[s+2];
+      a0[o0+3] = pos[s]; a0[o0+4] = pos[s+1]; a0[o0+5] = pos[s+2];
+      return;
+    }
     let ox = 0, oy = 0;
     const g = pairLinks.get(pairKey(l.s, l.t));
     if (g.length > 1) {
@@ -889,7 +901,7 @@ function step() {
   }
 }
 let running = !frozenPos;
-window.__dbg = { pos, nodes, links, syncEdgePos, renderer: null, camera: null, THREE, alpha: alphaArr, bucketMat, bucketOf, hwSlot, bucketPosIB };
+window.__dbg = { pos, nodes, links, syncEdgePos, renderer: null, camera: null, THREE, alpha: alphaArr, bucketMat, bucketOf, hwSlot, bucketPosIB, bucketColIB, slotOf };
 function tick() {
   if (window.__dbg) { window.__dbg.renderer = renderer; window.__dbg.camera = camera; }
   if (running) {
@@ -1033,7 +1045,7 @@ let activeCluster = null, deadOnly = false, query = "";
 let showInst = false, showCalls = true, focusSeed = -1, depth = 2, fnMode = false;
 // tests/tools hidden by default (chip toggles them in); dir filter row works
 // like the cluster chips — both only ever filter, never re-layout
-let showTests = false, activeDir = null;
+let showTests = false; const activeDirs = new Set();   // multi-select dir filter
 const isTestNode = n => n.path.startsWith("tests/") || n.path.startsWith("tools/") ||
   n.path.slice(n.path.lastIndexOf("/") + 1).startsWith("test_");
 // overview LOD: intra-cluster edges stay hidden until the camera closes in
@@ -1061,7 +1073,7 @@ function nodeVisible(n) {
   if (deadOnly && n.dead <= 0) return false;
   if (activeCluster !== null && n.cluster !== activeCluster) return false;
   if (!showTests && isTestNode(n)) return false;
-  if (activeDir !== null && n.dir !== activeDir) return false;
+  if (activeDirs.size && !activeDirs.has(n.dir)) return false;
   return true;
 }
 function typeVisible(ty) {
@@ -1076,7 +1088,7 @@ function applyVisibility() {
   bucketMat.forEach((mat, bi) => { mat.opacity = focusing ? 0.75 : BUCKETS[bi].op; });
   for (let i = 0; i < N; i++) {
     let a;
-    if (!nodeVisible(nodes[i])) a = 0.02;
+    if (!nodeVisible(nodes[i])) a = 0.0;   // size-0 gate in shader = true disable
     else if (focusing) a = level[i] < 0 ? 0.02 : (level[i] === 0 ? 1 : Math.max(0.16, 0.7 - level[i] * 0.18));
     else a = 1;
     alphaArr[i] = a;
@@ -1099,9 +1111,9 @@ function applyVisibility() {
     // edges are killed outright, not dimmed — additive blending makes even
     // 1% gray visible when dozens of test edges converge on a hub
     const sFiltered = (!showTests && isTestNode(nodes[l.s])) ||
-      (activeDir !== null && nodes[l.s].dir !== activeDir);
+      (activeDirs.size && !activeDirs.has(nodes[l.s].dir));
     const tFiltered = (!showTests && isTestNode(nodes[l.t])) ||
-      (activeDir !== null && nodes[l.t].dir !== activeDir);
+      (activeDirs.size && !activeDirs.has(nodes[l.t].dir));
     if (sFiltered || tFiltered) k = 0.0;
     else if (!typeVisible(l.ty) || alphaArr[l.s] <= 0.5 || alphaArr[l.t] <= 0.5) k = 0.012;
     else if (focusing) k = Math.max(0.34, 1 - 0.18 * Math.max(level[l.s], level[l.t]));
@@ -1121,6 +1133,16 @@ function applyVisibility() {
     }
     const b = bucketOf[i], o6 = i * 6;
     const tgt = bucketColIB[b].array;
+    if (k === 0) {
+      // filtered-out edge (tests/tools hidden, dir filter): pure black.
+      // The gray-mix formula below would otherwise leak (1-grayMix)=8% of
+      // the base color, visible under additive blending when many killed
+      // edges converge on a hub.
+      if (hwSlot[i] >= 0) tgt.fill(0, hwSlot[i], hwSlot[i] + 192);
+      else tgt.fill(0, slotOf[i] * 6, slotOf[i] * 6 + 6);
+      touched[b] = true;
+      return;
+    }
     if (hwSlot[i] >= 0) {
       // highway: replicate the (possibly grayed/dimmed) color across all
       // 16 segments
@@ -1308,7 +1330,7 @@ function updateHubs() {
 rebuildHubs();
 
 // ---- function-level layer (files inside the current focus) -------------------
-let fnPoints = null, fnLines = null, fnMeta = [];
+let fnPoints = null, fnLines = null, fnSpokes = null, fnMeta = [];
 const fnOffset = name => {
   let h = 2166136261;
   for (let c = 0; c < name.length; c++) { h ^= name.charCodeAt(c); h = Math.imul(h, 16777619); }
@@ -1320,6 +1342,7 @@ const fnOffset = name => {
 function rebuildFnLayer(focusing) {
   if (fnPoints) { scene.remove(fnPoints); fnPoints.geometry.dispose(); fnPoints = null; }
   if (fnLines) { scene.remove(fnLines); fnLines.geometry.dispose(); fnLines = null; }
+  if (fnSpokes) { scene.remove(fnSpokes); fnSpokes.geometry.dispose(); fnSpokes = null; }
   fnMeta = [];
   if (!fnMode || !focusing) return;
   const fIdx = new Map(), fpos = [], fcol = [], foffs = [], eidx = [];
@@ -1339,6 +1362,9 @@ function rebuildFnLayer(focusing) {
   fedges.forEach(e => {
     const sf = e[0], df = e[2];
     if (level[sf] < 0 || level[df] < 0) return;
+    // hidden files (tests/tools filter, dir filter): their function nodes
+    // and edges must not render in the fn layer either
+    if (alphaArr[sf] <= 0.5 || alphaArr[df] <= 0.5) return;
     const a = nodeOf(sf, e[1]), b = nodeOf(df, e[3]);
     eidx.push(a, b);
   });
@@ -1350,6 +1376,18 @@ function rebuildFnLayer(focusing) {
   g1.setAttribute("aalpha", new THREE.BufferAttribute(new Float32Array(fnMeta.length).fill(1), 1));
   fnPoints = new THREE.Points(g1, pMat);
   scene.add(fnPoints);
+  // spokes: faint tie from each function satellite to its file node —
+  // without them the satellites read as unconnected noise
+  const sp = [];
+  for (let i = 0; i < fnMeta.length; i++) {
+    const fi = fnMeta[i].file * 3, j = i * 3;
+    sp.push(pos[fi], pos[fi+1], pos[fi+2], fpos[j], fpos[j+1], fpos[j+2]);
+  }
+  const g3 = new THREE.BufferGeometry();
+  g3.setAttribute("position", new THREE.BufferAttribute(new Float32Array(sp), 3));
+  fnSpokes = new THREE.LineSegments(g3, new THREE.LineBasicMaterial({
+    color: 0x445566, transparent: true, opacity: 0.22, depthWrite: false }));
+  scene.add(fnSpokes);
   const ep = [];
   for (let i = 0; i < eidx.length; i += 2) {
     const a = eidx[i] * 3, b = eidx[i+1] * 3;
@@ -1365,11 +1403,14 @@ function rebuildFnLayer(focusing) {
 function syncFnPos() {
   if (!fnPoints) return;
   const p = fnPoints.geometry.attributes.position.array;
+  const s = fnSpokes ? fnSpokes.geometry.attributes.position.array : null;
   for (let i = 0; i < fnMeta.length; i++) {
     const fi = fnMeta[i].file * 3, o = fnMeta[i].off, j = i * 3;
     p[j] = pos[fi] + o[0]; p[j+1] = pos[fi+1] + o[1]; p[j+2] = pos[fi+2] + o[2];
+    if (s) { s[j] = pos[fi]; s[j+1] = pos[fi+1]; s[j+2] = pos[fi+2]; s[j+3] = p[j]; s[j+4] = p[j+1]; s[j+5] = p[j+2]; }
   }
   fnPoints.geometry.attributes.position.needsUpdate = true;
+  if (s) fnSpokes.geometry.attributes.position.needsUpdate = true;
 }
 
 const legend = document.getElementById("legend");
@@ -1404,9 +1445,9 @@ const dirsEl = document.getElementById("dirs");
     chip.style.color = "#b0bec5";
     chip.textContent = dir + " · " + count;
     chip.onclick = () => {
-      activeDir = activeDir === dir ? null : dir;
-      document.querySelectorAll("#dirs .chip").forEach(x => x.classList.remove("on"));
-      if (activeDir !== null) chip.classList.add("on");
+      // multi-select: chips stack, each toggles its dir independently
+      if (activeDirs.has(dir)) { activeDirs.delete(dir); chip.classList.remove("on"); }
+      else { activeDirs.add(dir); chip.classList.add("on"); }
       buildContainment(); applyVisibility();
     };
     dirsEl.appendChild(chip);
@@ -1418,7 +1459,7 @@ const dirsEl = document.getElementById("dirs");
   tchip.onclick = () => {
     showTests = !showTests;
     tchip.classList.toggle("on", showTests);
-    activeDir = null;
+    activeDirs.clear();
     document.querySelectorAll("#dirs .chip").forEach(x => { if (x !== tchip) x.classList.remove("on"); });
     buildContainment(); applyVisibility();
   };
@@ -1453,10 +1494,20 @@ function clearFocus() {
 addEventListener("keydown", e => {
   if (e.key === "Escape" && (focusSeed >= 0 || query)) clearFocus();
 });
+document.getElementById("bSpin").onclick = e => {
+  controls.autoRotate = !controls.autoRotate;
+  e.currentTarget.classList.toggle("on", controls.autoRotate);
+};
+// right-click (not a drag) exits node focus
+renderer.domElement.addEventListener("contextmenu", e => {
+  e.preventDefault();
+  if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
+  if (focusSeed >= 0) clearFocus();
+});
 document.getElementById("bReset").onclick = () => {
   camera.position.set(0, 0, 1400); controls.target.set(0,0,0); frameGraph();
   activeCluster = null; deadOnly = false; query = ""; focusSeed = -1;
-  activeDir = null; showTests = false;
+  activeDirs.clear(); showTests = false;
   document.getElementById("search").value = "";
   document.querySelectorAll(".chip, button").forEach(x => x.classList.remove("on"));
   document.getElementById("bCalls").classList.add("on");
@@ -1548,9 +1599,13 @@ renderer.domElement.addEventListener("pointermove", e => {
   const targets = fnPoints ? [scene.children[0], fnPoints] : [scene.children[0]];
   const hits = raycaster.intersectObjects(targets);
   hovered = -1; hoveredFn = -1;
-  if (hits.length) {
-    if (hits[0].object === fnPoints) hoveredFn = hits[0].index;
-    else hovered = hits[0].index;
+  // skip invisible nodes: filtered-out tests/tools keep raycast geometry,
+  // but hovering a ghost must not pop a tooltip (walk to first visible hit)
+  for (const h of hits) {
+    if (h.object === fnPoints) {
+      const fm = fnMeta[h.index];
+      if (fm && alphaArr[fm.file] > 0.5) { hoveredFn = h.index; break; }
+    } else if (alphaArr[h.index] > 0.5) { hovered = h.index; break; }
   }
   let txt = null;
   if (hoveredFn >= 0) {
@@ -1568,7 +1623,12 @@ renderer.domElement.addEventListener("pointermove", e => {
     renderer.domElement.style.cursor = "pointer";
   } else { tip.style.display = "none"; renderer.domElement.style.cursor = "default"; }
 });
-renderer.domElement.addEventListener("click", () => {
+// drag-vs-click: OrbitControls uses pointer drags; a release over a node
+// after rotating the camera must not select it
+let downX = 0, downY = 0;
+renderer.domElement.addEventListener("pointerdown", e => { downX = e.clientX; downY = e.clientY; });
+renderer.domElement.addEventListener("click", e => {
+  if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
   if (hoveredFn >= 0) { showFnInfo(hoveredFn); return; }
   if (hovered >= 0) {
     showInfo(hovered);
