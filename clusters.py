@@ -6,6 +6,8 @@ language's files label the same way.
 
 Label cascade (first confident hit wins):
   1. AUTOLOAD   member is an autoload backing file       conf 1.0
+ 1b. STEM-PREFIX scene-dominant + >=60% of scene files share a Pfx_Seg*
+               stem prefix (flat asset-pack folders) -> Seg  conf 0.7
   2. DIR        >=55% share the deepest dir chain; label = last
                non-generic segment of that chain           conf 0.85
   3. SCENE STEM scene-dominant + >=50% share a stem      conf 0.8
@@ -278,6 +280,34 @@ def _stem(path: str) -> str:
     return base.rsplit(".", 1)[0]
 
 
+def _stem_prefix_seg(members: list[tuple[str, str]]) -> str | None:
+    """Varying segment of a shared stem prefix, for flat asset-pack folders
+    (VFX/Scenes): >=60% of the cluster's scene files must match Pfx_Seg*
+    where Seg is the first camel hump of the second underscore token
+    (VFX_FireArea_A -> "Fire"); the winning segment must hold >=55% of the
+    prefix-matching files. Returns the lowercase segment, or None."""
+    stems = [_stem(p) for p, _ in members if p.endswith(".tscn")]
+    if not stems:
+        return None
+    cand: list[tuple[str, str]] = []
+    for s in stems:
+        toks = s.split("_")
+        if len(toks) < 2 or not toks[1]:
+            continue
+        humps = re.findall(r"[A-Z][a-z]*", toks[1])
+        seg = humps[0] if humps else toks[1]
+        cand.append((toks[0].lower(), seg.lower()))
+    if not cand:
+        return None
+    pfx, pn = sorted(Counter(p for p, _ in cand).items(), key=lambda kv: (-kv[1], kv[0]))[0]
+    if pn / len(stems) < 0.6:
+        return None
+    seg, sn = sorted(Counter(g for p, g in cand if p == pfx).items(), key=lambda kv: (-kv[1], kv[0]))[0]
+    if sn / pn < 0.55 or pfx == seg:
+        return None
+    return seg
+
+
 def _autoload_map() -> dict[str, str]:
     """rel path -> autoload singleton name (inverse of project.godot)."""
     pg = nav.ROOT / "project.godot"
@@ -340,6 +370,15 @@ def label_cluster(
         if p in ctx.autoloads:
             return ctx.autoloads[p], 1.0, "autoload"
     n = len(members) or 1
+    # 1b. stem-prefix pack (scene-dominant): flat asset-pack folders hold
+    # every pack in one dir; pack identity is the stem prefix VFX_Fire*.
+    # The dir cascade would bottom out at the shared "VFX" segment, so the
+    # varying segment is extracted BEFORE the dir rule can flatten it.
+    scene_all = [p for p, _ in members if p.endswith(".tscn")]
+    if len(scene_all) * 2 > len(members):
+        seg = _stem_prefix_seg(members)
+        if seg:
+            return titleize(seg), 0.7, "stem"
     # 2. deepest majority dir chain: walk prefix-constrained while the
     # majority (>=55%) still shares the chain; label = last NON-GENERIC
     # segment of that chain. A cluster spread over VFX/Scenes bottoms out
@@ -365,7 +404,7 @@ def label_cluster(
         if good:
             return titleize(good[-1]), 0.85, "dir"
     # 3. scene stem
-    scene = [p for p, _ in members if p.endswith(".tscn")]
+    scene = scene_all
     if len(scene) * 2 > len(members):
         stems = Counter(_stem(p) for p in scene)
         stem, cnt = sorted(stems.items(), key=lambda kv: (-kv[1], kv[0]))[0]
@@ -389,7 +428,10 @@ def label_cluster(
 def _dedupe_label(label: str, used: set[str], paths: list[tuple[str, str]], ctx: LabelContext) -> str:
     if label not in used:
         return label
+    low = label.lower()
     for extra in tfidf_terms(paths, ctx, n=8):
+        if extra in low:
+            continue  # never append a term already contained in the label
         cand = f"{label} {extra}"
         if cand not in used:
             return cand
@@ -397,8 +439,11 @@ def _dedupe_label(label: str, used: set[str], paths: list[tuple[str, str]], ctx:
     chain = [s for s in seed_chain(paths[0][0]) if s.lower() not in GENERIC_DIRS]
     for j in range(len(chain) - 1, -1, -1):
         cand = " ".join(titleize(s) for s in chain[max(0, j - 1) : j + 1])
-        if cand and cand not in used:
-            return cand
+        if not cand or cand in used:
+            continue
+        if all(w.lower() in low for w in cand.split()):
+            continue  # "Vfx Vfx" guard: every word already in the label
+        return cand
     i = 2
     while f"{label} {i}" in used:
         i += 1
