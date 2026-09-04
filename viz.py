@@ -180,6 +180,46 @@ def _build_data() -> dict:
     except Exception:
         sims = []
 
+    # cluster-level semantic sims for the layout: cosine between cluster
+    # embedding centroids (mean of member embeddings). Drives cluster
+    # springs + repulsion caps so semantically related clusters (VFX
+    # family) sit as neighbors in the galaxy. Degrades to None.
+    ckeys: list = []
+    cmat = None
+    try:
+        import numpy as cnp
+
+        col = nav._collection()
+        if col.count():
+            got = col.get(include=["embeddings"])
+            emb_idx = {rid: i for i, rid in enumerate(got["ids"])}
+            rows = [emb_idx[p] for p in paths if p in emb_idx]
+            embs = cnp.array(
+                [got["embeddings"][r] for r in rows], dtype=cnp.float32
+            )
+            norms = cnp.linalg.norm(embs, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            embs /= norms
+            p2c = {nd["path"]: nd["cluster"] for nd in nodes}
+            groups: dict = {}
+            for r_i, p in enumerate([p for p in paths if p in emb_idx]):
+                ci = p2c.get(p, -1)
+                if ci >= 0:
+                    groups.setdefault(ci, []).append(embs[r_i])
+            ckeys = sorted(groups)
+            cent = cnp.stack([
+                cnp.mean(cnp.stack(groups[c]), axis=0) for c in ckeys
+            ])
+            cn = cnp.linalg.norm(cent, axis=1, keepdims=True)
+            cn[cn == 0] = 1.0
+            cent /= cn
+            cmat = (cent @ cent.T).astype(cnp.float32)
+            cnp.fill_diagonal(cmat, 0.0)
+            cmat = cmat.tolist()
+    except Exception:
+        ckeys = []
+        cmat = None
+
     # frozen layout: deterministic offline sim bakes positions into DATA so
     # the browser loads a settled picture (no live global sim, no 900-tick
     # settle, identical output across regenerations). Falls back to the old
@@ -187,7 +227,8 @@ def _build_data() -> dict:
     pos_baked = None
     try:
         pos_baked = _layout(
-            len(nodes), links, sims, [nd["cluster"] for nd in nodes]
+            len(nodes), links, sims, [nd["cluster"] for nd in nodes],
+            ckeys=ckeys, cmat=cmat,
         )
     except Exception:
         pos_baked = None
@@ -260,7 +301,11 @@ def _build_data() -> dict:
     }
 
 
-def _layout(n: int, links: list, sims: list, cluster_ids: list) -> list:
+_TRACE: list = []   # debug: (step, cluster centroids snapshot) every 50 steps
+
+
+def _layout(n: int, links: list, sims: list, cluster_ids: list,
+            ckeys: list = None, cmat: list = None) -> list:
     """Deterministic offline force layout; positions are frozen into DATA.
 
     Mirrors the constants the in-browser sim was QA'd against, plus the
@@ -290,21 +335,29 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list) -> list:
         deg[l["s"]] += l["w"]
         deg[l["t"]] += l["w"]
 
-    kept = [
-        (a, b,
-         # rest lengths scaled 1.7x: the offline run reaches the springs'
-         # true (tight) equilibrium, while the old browser sim froze
-         # mid-expansion — scaling keeps the QA'd visual density.
-         # cross-cluster call springs rest 2.2x longer still: heavy hub-to-hub
-         # call chains otherwise fuse the core clusters into one blob
-         (230.0 if rec["compo"] else max(65.0, 165.0 / (1 + rec["w"] * 0.5)))
-         * (1.7 if (rec["compo"] or cluster_ids[a] == cluster_ids[b]) else 3.7),
-         0.02 * min(3.0, 1 + rec["w"] * 0.3))
-        for (a, b), rec in pairs.items()
-        # edge-cut: single weak non-structural springs are excluded from the
-        # layout only so periphery does not chain the clusters inward
-        if rec["w"] > 1 or rec["compo"]
-    ]
+    kept = []
+    for (a, b), rec in pairs.items():
+        # edge-cut: weak single non-structural springs are excluded from
+        # the layout only so periphery does not chain the clusters inward —
+        # EXCEPT weak inter-cluster springs, which keep 25% physics weight
+        # (edge-cut stays a render-only declutter between clusters)
+        if rec["w"] > 1 or rec["compo"]:
+            fc = 0.02 * min(3.0, 1 + rec["w"] * 0.3)
+        elif cluster_ids[a] != cluster_ids[b]:
+            fc = 0.02 * min(3.0, 1 + rec["w"] * 0.3) * 0.25
+        else:
+            continue
+        kept.append((
+            a, b,
+            # rest lengths scaled 1.7x: the offline run reaches the springs'
+            # true (tight) equilibrium, while the old browser sim froze
+            # mid-expansion — scaling keeps the QA'd visual density.
+            # cross-cluster call springs rest 2.2x longer still: heavy hub-to-hub
+            # call chains otherwise fuse the core clusters into one blob
+            (230.0 if rec["compo"] else max(65.0, 165.0 / (1 + rec["w"] * 0.5)))
+            * (1.7 if (rec["compo"] or cluster_ids[a] == cluster_ids[b]) else 3.7),
+            fc,
+        ))
     sa = np.array([k[0] for k in kept], dtype=np.int64)
     sb = np.array([k[1] for k in kept], dtype=np.int64)
     srest = np.array([k[2] for k in kept], dtype=np.float32)
@@ -329,6 +382,21 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list) -> list:
     cids, cinv = np.unique(carr, return_inverse=True)
     nc = len(cids)
     ccount = np.maximum(np.bincount(cinv, minlength=nc), 1).astype(np.float32)
+
+    # cluster semantic sims aligned to cids (0 where unclustered / unknown)
+    CP = np.zeros((nc, nc), dtype=np.float32)
+    if ckeys and cmat:
+        ckidx = {int(c): i for i, c in enumerate(ckeys)}
+        cmapi = np.array([ckidx.get(int(c), -1) for c in cids])
+        ok = cmapi >= 0
+        if ok.any():
+            sub = np.asarray(cmat, dtype=np.float32)[np.ix_(cmapi[ok], cmapi[ok])]
+            CP[np.ix_(ok, ok)] = sub
+    # similarity factor: cluster pairs with sim >= 0.6 halve both the node
+    # repulsion between them and the centroid blob repulsion — related
+    # clusters are allowed to sit close
+    hh = np.where(CP >= 0.6, 0.5, 1.0).astype(np.float32)
+    kcoef = (kcoef * hh[np.ix_(cinv, cinv)]).astype(np.float32)
 
     alpha = 1.0
     for step in range(700):
@@ -358,9 +426,27 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list) -> list:
         csum = np.zeros((nc, 3), dtype=np.float32)
         np.add.at(csum, cinv, pos)
         cen = csum / ccount[:, None]
+        if step % 50 == 0:
+            _TRACE.append((step, cen.copy()))
         vel += (cen[cinv] - pos) * 0.006
+        # cluster-centroid semantic springs: similar clusters (by embedding
+        # centroid cosine) attract toward the same rest law as node springs;
+        # members inherit the pull through cluster gravity. Only pairs with
+        # sim > 0.45 act (same gate as node semantic springs).
+        if step >= 160 and CP.any():
+            cDn = np.linalg.norm(cen[:, None, :] - cen[None, :, :], axis=2) + 0.01
+            crest = 480.0 * (1.0 - CP)
+            cfc = ((cDn - crest) / cDn) * np.maximum(CP - 0.35, 0.0) * 0.09
+            np.fill_diagonal(cfc, 0.0)
+            cS = np.einsum(
+                "ij,ijk->ik", cfc,
+                cen[None, :, :] - cen[:, None, :],   # [i,j] = cen_j - cen_i
+                dtype=np.float32,
+            )
+            vel += cS[cinv] * 0.5
         # cluster-blob repulsion: charged centroids push apart so the
         # overview reads as separated islands instead of one stacked core
+        # (halved for similar cluster pairs)
         D = cen[:, None, :] - cen[None, :, :]      # D[i,j] = cen_i - cen_j
         cd2 = (D * D).sum(2) + 1.0
         np.fill_diagonal(cd2, 1e9)
@@ -368,7 +454,7 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list) -> list:
         # radius, a stronger near-range term splits overlapping islands
         big = np.minimum(110.0 * (ccount[:, None] + ccount[None, :]) / cd2, 10.0)
         near = np.minimum(1500.0 * (ccount[:, None] + ccount[None, :]) / cd2, 14.0)
-        cw = big + np.where(cd2 < 48400.0, near, 0.0)   # < 220 units apart
+        cw = (big + np.where(cd2 < 48400.0, near, 0.0)) * hh   # < 220 units apart
         cF = np.einsum("ij,ijk->ik", cw, D)
         vel += cF[cinv] * 0.004
         # center gravity + clamped integrate
@@ -1009,7 +1095,15 @@ function applyVisibility() {
   const touched = [false, false, false];
   links.forEach((l, i) => {
     let k;
-    if (!typeVisible(l.ty) || alphaArr[l.s] <= 0.5 || alphaArr[l.t] <= 0.5) k = 0.012;
+    // dir-filtered endpoints (tests/tools hidden, active dir isolation):
+    // edges are killed outright, not dimmed — additive blending makes even
+    // 1% gray visible when dozens of test edges converge on a hub
+    const sFiltered = (!showTests && isTestNode(nodes[l.s])) ||
+      (activeDir !== null && nodes[l.s].dir !== activeDir);
+    const tFiltered = (!showTests && isTestNode(nodes[l.t])) ||
+      (activeDir !== null && nodes[l.t].dir !== activeDir);
+    if (sFiltered || tFiltered) k = 0.0;
+    else if (!typeVisible(l.ty) || alphaArr[l.s] <= 0.5 || alphaArr[l.t] <= 0.5) k = 0.012;
     else if (focusing) k = Math.max(0.34, 1 - 0.18 * Math.max(level[l.s], level[l.t]));
     else k = 1;
     if (!focusing && !lodClose && k > 0.04) {
