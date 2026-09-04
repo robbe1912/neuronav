@@ -192,11 +192,60 @@ def _build_data() -> dict:
     except Exception:
         pos_baked = None
 
+    # highways: long inter-cluster links render as bundled quadratic bezier
+    # arcs (16 segments) instead of straight chords — straight ring-diameter
+    # edges visually re-fused the galaxy core. Control point sits on the
+    # endpoint midpoint pulled 0.45 toward the cluster-centroid midpoint so
+    # same-corridor edges share an arc. Layout-only sibling of links[]: the
+    # browser renders these curved, hover/BFS/degree keep using links[].
+    hw = []
+    if pos_baked is not None:
+        try:
+            import numpy as _np
+            P = _np.asarray(pos_baked, dtype=_np.float32)
+            cl = [nd["cluster"] for nd in nodes]
+            cen = {}
+            for ci in set(cl):
+                if ci >= 0:
+                    m = P[[k for k, c in enumerate(cl) if c == ci]]
+                    cen[ci] = m.mean(axis=0)
+            for li, l in enumerate(links):
+                a, b = cl[l["s"]], cl[l["t"]]
+                if a < 0 or b < 0 or a == b:
+                    continue
+                if _np.linalg.norm(P[l["t"]] - P[l["s"]]) <= 140.0:
+                    continue
+                mid = (P[l["s"]] + P[l["t"]]) * 0.5
+                ctrl = mid + (cen[a] + cen[b]) * 0.5 * 0.45 - mid * 0.45
+                # ring-distributed clusters put both the edge midpoint and
+                # the centroid-corridor midpoint near the galaxy center, so
+                # the pull alone leaves long arcs nearly straight — add a
+                # deterministic perpendicular bow (12% of chord length) so
+                # every highway reads as a curve
+                ch = P[l["t"]] - P[l["s"]]
+                chl = float(_np.linalg.norm(ch))
+                perp = _np.cross(ch, [0.0, 0.0, 1.0])
+                pl = float(_np.linalg.norm(perp))
+                if pl < 0.001:
+                    perp = _np.array([1.0, 0.0, 0.0])
+                else:
+                    perp = perp / pl
+                ctrl = ctrl + perp * (chl * 0.2)
+                pts = []
+                for k in range(17):
+                    u = k / 16.0
+                    p = (1-u)*(1-u)*P[l["s"]] + 2*(1-u)*u*ctrl + u*u*P[l["t"]]
+                    pts.append([round(float(x), 1) for x in p])
+                hw.append([li, pts])
+        except Exception:
+            hw = []
+
     return {
         "nodes": nodes,
         "links": links,
         "fedges": fedges,
         "sims": sims,
+        "hw": hw,
         "pos": pos_baked,
         "meta": {
             "files": len(nodes),
@@ -424,6 +473,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <label class="cb"><input type="checkbox" id="cbFn"> functions</label>
   </div>
   <div id="legend"></div>
+ <div id="dirs"></div>
   <div id="toggles">
     <button id="bCalls" class="on">calls</button>
     <button id="bInst">contains</button>
@@ -458,7 +508,7 @@ import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 
 const DATA = __DATA__;
-const nodes = DATA.nodes, links = DATA.links, fedges = DATA.fedges || [], sims = DATA.sims || [];
+const nodes = DATA.nodes, links = DATA.links, fedges = DATA.fedges || [], sims = DATA.sims || [], hw = DATA.hw || [];
 const N = nodes.length;
 // physics: one spring per file pair (typed duplicates would triple forces);
 // render/filter iterate all typed links
@@ -569,12 +619,13 @@ const TYPE_COLORS = {
   var:    new THREE.Color(0.45, 0.90, 0.55),
 };
 const BUCKETS = [
-  { max: 1, width: 1.3 },          // w <= 1
-  { max: 4, width: 2.2 },          // 2..4
-  { max: Infinity, width: 3.5 },   // >= 5
+  { max: 1, width: 1.3, op: 0.42 },          // w <= 1
+  { max: 4, width: 2.2, op: 0.34 },          // 2..4
+  { max: Infinity, width: 3.5, op: 0.26 },   // >= 5
 ];
 const bucketOf = new Int8Array(MAXL);
 const slotOf = new Int32Array(MAXL);
+const hwSlot = new Int32Array(MAXL).fill(-1);
 const bucketPosIB = [], bucketColIB = [], bucketMat = [];
 {
   const counts = [0, 0, 0];
@@ -582,15 +633,26 @@ const bucketPosIB = [], bucketColIB = [], bucketMat = [];
     const b = BUCKETS.findIndex(x => l.w <= x.max);
     bucketOf[i] = b; slotOf[i] = counts[b]++;
   });
+  // highways: each bezier arc is 16 static segments (32 vertices, 96 floats)
+  // appended after the straight links inside its bucket. hwSlot[i] is the
+  // vertex-float base of link i's arc, or -1 for straight links.
+  const hwCounts = [0, 0, 0];
+  hw.forEach(([li, pts]) => {
+    const b = bucketOf[li];
+    hwSlot[li] = (counts[b] * 2 + hwCounts[b] * 32) * 3;
+    hwCounts[b] += 32;
+  });
   BUCKETS.forEach(b => {
+    const bi = BUCKETS.indexOf(b);
     const geo = new LineSegmentsGeometry();
-    geo.setPositions(new Float32Array(counts[BUCKETS.indexOf(b)] * 6));
-    geo.setColors(new Float32Array(counts[BUCKETS.indexOf(b)] * 6));
+    geo.setPositions(new Float32Array((counts[bi] * 2 + hwCounts[bi] * 32) * 3));
+    geo.setColors(new Float32Array((counts[bi] * 2 + hwCounts[bi] * 32) * 3));
     const mat = new LineMaterial({
       vertexColors: true, linewidth: b.width, worldUnits: false,
       // normal blending: additive stacking blew out hub fans into white glare
-      // (hundreds of strands converge on 200+-degree hubs)
-      transparent: true, opacity: 0.55, alphaToCoverage: false,
+      // (hundreds of strands converge on 200+-degree hubs); overview opacity
+      // capped per bucket so edges stay a quiet layer under the cluster hues
+      transparent: true, opacity: b.op, alphaToCoverage: false,
       blending: THREE.NormalBlending, depthWrite: false,
     });
     mat.resolution.set(innerWidth, innerHeight);
@@ -613,6 +675,7 @@ links.forEach((l, i) => {
 });
 function syncEdgePos() {
   links.forEach((l, i) => {
+    if (hwSlot[i] >= 0) return;   // highway arcs are baked, never resynced
     const s = l.s * 3, t = l.t * 3;
     let ox = 0, oy = 0;
     const g = pairLinks.get(pairKey(l.s, l.t));
@@ -633,6 +696,18 @@ function syncEdgePos() {
   bucketPosIB.forEach(ib => { ib.needsUpdate = true; });
 }
 syncEdgePos();
+// write the baked bezier highway arcs into their buckets (static — frozen
+// layout means these never move, so this happens once at module scope,
+// NOT inside tick()'s running block which frozen layouts never execute)
+hw.forEach(([li, pts]) => {
+  const arr = bucketPosIB[bucketOf[li]].array, base = hwSlot[li];
+  for (let k = 0; k < 16; k++) {
+    const o = base + k * 6, p = pts[k], q = pts[k + 1];
+    arr[o] = p[0]; arr[o+1] = p[1]; arr[o+2] = p[2];
+    arr[o+3] = q[0]; arr[o+4] = q[1]; arr[o+5] = q[2];
+  }
+});
+bucketPosIB.forEach(ib => { ib.needsUpdate = true; });
 // base colors: pure type hue (no endpoint blend) scaled by weight-as-
 // brightness; width granularity stops at the bucket boundaries
 const eColBase = new Float32Array(MAXL * 6);
@@ -646,7 +721,14 @@ links.forEach((l, i) => {
 // initial fill at full brightness (mirrors the pre-toggle startup state
 // where no applyVisibility pass has run yet)
 links.forEach((l, i) => {
-  bucketColIB[bucketOf[i]].array.set(eColBase.subarray(i*6, i*6+6), slotOf[i]*6);
+  const dst = bucketColIB[bucketOf[i]].array;
+  const src = eColBase.subarray(i*6, i*6+6);
+  if (hwSlot[i] >= 0) {
+    // highway: same color across all 16 segments
+    for (let v = 0; v < 32; v++) dst.set(src, hwSlot[i] + v * 6);
+  } else {
+    dst.set(src, slotOf[i] * 6);
+  }
 });
 bucketColIB.forEach(ib => { ib.needsUpdate = true; });
 
@@ -721,7 +803,7 @@ function step() {
   }
 }
 let running = !frozenPos;
-window.__dbg = { pos, nodes, links, syncEdgePos, renderer: null, camera: null, THREE, alpha: alphaArr, bucketMat, bucketOf };
+window.__dbg = { pos, nodes, links, syncEdgePos, renderer: null, camera: null, THREE, alpha: alphaArr, bucketMat, bucketOf, hwSlot, bucketPosIB };
 function tick() {
   if (window.__dbg) { window.__dbg.renderer = renderer; window.__dbg.camera = camera; }
   if (running) {
@@ -785,10 +867,16 @@ const edgeLegend = document.getElementById("edgeLegend");
 // the slot later); until then labels fall back to the cN chip id
 const cNames = (m.clusterNames || {});
 const clabsEl = document.getElementById("clabs");
-let cLabs = [];
-{
+let cLabs = [], cRings = [];
+// rebuilt when the tests/dir filters change: hidden files leave their
+// cluster, so centroids + halo extents must be recomputed (positions frozen)
+function buildContainment() {
+  cRings.forEach(r => { scene.remove(r); r.geometry.dispose(); r.material.dispose(); });
+  cRings = []; cLabs.forEach(c => c.el.remove()); cLabs = [];
   const byC = {};
-  nodes.forEach((n, i) => { if (n.cluster >= 0) (byC[n.cluster] = byC[n.cluster] || []).push(i); });
+  nodes.forEach((n, i) => {
+    if (n.cluster >= 0 && nodeVisible(n)) (byC[n.cluster] = byC[n.cluster] || []).push(i);
+  });
   Object.entries(byC).sort((a, b) => b[1].length - a[1].length).slice(0, 14)
     .forEach(([cid, members]) => {
       let cx = 0, cy = 0, cz = 0;
@@ -805,9 +893,10 @@ let cLabs = [];
         pts.push(new THREE.Vector3(cx + Math.cos(a)*r, cy, cz + Math.sin(a)*r));
       }
       const col = new THREE.Color().setHSL(hue(+cid), 0.72, 0.58);
-      scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+      const ring = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
         new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.14,
-          blending: THREE.AdditiveBlending, depthWrite: false })));
+          blending: THREE.AdditiveBlending, depthWrite: false }));
+      scene.add(ring); cRings.push(ring);
       const el = document.createElement("div");
       el.className = "clab";
       el.style.color = "#" + col.getHexString();
@@ -856,6 +945,11 @@ const mouse = new THREE.Vector2();
 let hovered = -1, hoveredFn = -1, selected = -1;
 let activeCluster = null, deadOnly = false, query = "";
 let showInst = false, showCalls = true, focusSeed = -1, depth = 2, fnMode = false;
+// tests/tools hidden by default (chip toggles them in); dir filter row works
+// like the cluster chips — both only ever filter, never re-layout
+let showTests = false, activeDir = null;
+const isTestNode = n => n.path.startsWith("tests/") || n.path.startsWith("tools/") ||
+  n.path.slice(n.path.lastIndexOf("/") + 1).startsWith("test_");
 // overview LOD: intra-cluster edges stay hidden until the camera closes in
 // (zoom threshold maintained by the controls 'change' listener below)
 let lodClose = false, lodDist = 1e9;
@@ -880,6 +974,8 @@ function computeLevels() {
 function nodeVisible(n) {
   if (deadOnly && n.dead <= 0) return false;
   if (activeCluster !== null && n.cluster !== activeCluster) return false;
+  if (!showTests && isTestNode(n)) return false;
+  if (activeDir !== null && n.dir !== activeDir) return false;
   return true;
 }
 function typeVisible(ty) {
@@ -889,6 +985,9 @@ function typeVisible(ty) {
 }
 function applyVisibility() {
   const focusing = computeLevels();
+  // edges are a quiet layer at overview (per-bucket caps) and open up when
+  // a focus set is lit
+  bucketMat.forEach((mat, bi) => { mat.opacity = focusing ? 0.75 : BUCKETS[bi].op; });
   for (let i = 0; i < N; i++) {
     let a;
     if (!nodeVisible(nodes[i])) a = 0.02;
@@ -911,7 +1010,7 @@ function applyVisibility() {
   links.forEach((l, i) => {
     let k;
     if (!typeVisible(l.ty) || alphaArr[l.s] <= 0.5 || alphaArr[l.t] <= 0.5) k = 0.012;
-    else if (focusing) k = Math.max(0.22, 1 - 0.26 * Math.max(level[l.s], level[l.t]));
+    else if (focusing) k = Math.max(0.34, 1 - 0.18 * Math.max(level[l.s], level[l.t]));
     else k = 1;
     if (!focusing && !lodClose && k > 0.04) {
       const dx = pos[l.s*3] - pos[l.t*3], dy = pos[l.s*3+1] - pos[l.t*3+1],
@@ -920,12 +1019,34 @@ function applyVisibility() {
       const sameC = nodes[l.s].cluster >= 0 && nodes[l.s].cluster === nodes[l.t].cluster;
       // overview edge-cut: intra-cluster edges hide entirely and long
       // ring-diameter chords dim out — otherwise they cross the whole
-      // galaxy and re-form the hairball the layout just removed
+      // galaxy and re-form the hairball the layout just removed.
+      // highway arcs are exempt from the chord cut: bundled beziers ARE
+      // the intended inter-cluster carriers
       if (sameC) { if (k > 0.045) k = 0.045; }
-      else if (el3 > 200) k = 0.02;
+      else if (el3 > 200 && hwSlot[i] < 0) k = 0.02;
     }
-    const b = bucketOf[i], o6 = i * 6, s6 = slotOf[i] * 6;
+    const b = bucketOf[i], o6 = i * 6;
     const tgt = bucketColIB[b].array;
+    if (hwSlot[i] >= 0) {
+      // highway: replicate the (possibly grayed/dimmed) color across all
+      // 16 segments
+      const base = hwSlot[i];
+      if (grayMix > 0) {
+        const g = (0.10 + 0.18 * Math.min(1, l.w / 8)) * k;
+        for (let v = 0; v < 32; v++) {
+          const s6 = base + v * 6;
+          for (let c = 0; c < 6; c++) tgt[s6+c] = eColBase[o6+c] * (1 - grayMix) + g * grayMix;
+        }
+      } else {
+        for (let v = 0; v < 32; v++) {
+          const s6 = base + v * 6;
+          for (let c = 0; c < 6; c++) tgt[s6+c] = eColBase[o6+c] * k;
+        }
+      }
+      touched[b] = true;
+      return;
+    }
+    const s6 = slotOf[i] * 6;
     if (grayMix > 0) {
       // dim weight-tinted gray: edges stay legible structure hints without
       // outshining the cluster-colored nodes under additive blending
@@ -1177,6 +1298,39 @@ topClusters.forEach(([cid, count]) => {
   legend.appendChild(chip);
 });
 
+// dir filter row: top-8 directories as chips + a tests chip (tests/tools
+// files are hidden by default; toggling them in rebuilds containment)
+const dirsEl = document.getElementById("dirs");
+{
+  const byDir = {};
+  nodes.forEach(n => { if (!isTestNode(n)) byDir[n.dir] = (byDir[n.dir] || 0) + 1; });
+  Object.entries(byDir).sort((a, b) => b[1] - a[1]).slice(0, 8).forEach(([dir, count]) => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.style.color = "#b0bec5";
+    chip.textContent = dir + " · " + count;
+    chip.onclick = () => {
+      activeDir = activeDir === dir ? null : dir;
+      document.querySelectorAll("#dirs .chip").forEach(x => x.classList.remove("on"));
+      if (activeDir !== null) chip.classList.add("on");
+      buildContainment(); applyVisibility();
+    };
+    dirsEl.appendChild(chip);
+  });
+  const tchip = document.createElement("span");
+  tchip.className = "chip";
+  tchip.style.color = "#ffb74d";
+  tchip.textContent = "tests";
+  tchip.onclick = () => {
+    showTests = !showTests;
+    tchip.classList.toggle("on", showTests);
+    activeDir = null;
+    document.querySelectorAll("#dirs .chip").forEach(x => { if (x !== tchip) x.classList.remove("on"); });
+    buildContainment(); applyVisibility();
+  };
+  dirsEl.appendChild(tchip);
+}
+
 document.getElementById("bDead").onclick = e => {
   deadOnly = !deadOnly;
   e.target.classList.toggle("on", deadOnly);
@@ -1208,11 +1362,12 @@ addEventListener("keydown", e => {
 document.getElementById("bReset").onclick = () => {
   camera.position.set(0, 0, 1400); controls.target.set(0,0,0); frameGraph();
   activeCluster = null; deadOnly = false; query = ""; focusSeed = -1;
+  activeDir = null; showTests = false;
   document.getElementById("search").value = "";
   document.querySelectorAll(".chip, button").forEach(x => x.classList.remove("on"));
   document.getElementById("bCalls").classList.add("on");
   showCalls = true;
-  applyVisibility();
+  buildContainment(); applyVisibility();
 };
 
 const info = document.getElementById("info");
@@ -1345,6 +1500,7 @@ controls.addEventListener("change", () => {
 // apply the overview palette + LOD once at boot (initial buffer fill is
 // full-color; this demotes it to the overview state without waiting for
 // user interaction)
+buildContainment();
 applyVisibility();
 if (!running) frameGraph();
 tick();
