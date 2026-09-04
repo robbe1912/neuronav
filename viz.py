@@ -1423,7 +1423,7 @@ topClusters.forEach(([cid, count]) => {
   chip.className = "chip";
   chip.style.background = `#${c.getHexString()}22`;
   chip.style.color = `#${c.getHexString()}`;
-  chip.textContent = `c${cid} · ${count}`;
+  chip.textContent = `${cNames[cid] || "c" + cid} · ${count}`;
   chip.onclick = () => {
     activeCluster = activeCluster === +cid ? null : +cid;
     document.querySelectorAll(".chip").forEach(x => x.classList.remove("on"));
