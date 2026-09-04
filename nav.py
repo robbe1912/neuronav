@@ -10,6 +10,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import shutil
 import sys
 import time
 from collections.abc import Iterator
@@ -18,6 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import chromadb
+from filelock import FileLock
 import httpx
 
 TOOL_DIR = Path(__file__).resolve().parent
@@ -114,16 +116,53 @@ def _extends(text: str) -> str:
     return ""
 
 
+def _db_lock() -> "FileLock":
+    """Advisory cross-process writer lock (server, CLI, viz all write via
+    nav functions). Readers skip it; sqlite handles the rest."""
+    global _LOCK
+    if _LOCK is None:
+        DB_DIR.mkdir(parents=True, exist_ok=True)
+        _LOCK = FileLock(str(DB_DIR / ".write.lock"))
+    return _LOCK
+
+
+_LOCK: FileLock | None = None
+
+
+def _check_model(col: chromadb.Collection) -> None:
+    """Embedding-model fingerprint on the live collection: a same-dim
+    different-model swap silently mixes vector spaces otherwise."""
+    meta = col.metadata or {}
+    stored = meta.get("embed_model")
+    if stored is None:
+        try:
+            col.modify(metadata={"embed_model": EMBED_MODEL})
+        except Exception:
+            pass  # chroma refusing metadata modify is non-fatal
+    elif stored != EMBED_MODEL:
+        raise RuntimeError(
+            f"index was built with embed model '{stored}' but config says "
+            f"'{EMBED_MODEL}' — run `python nav.py drop` then rescan"
+        )
+
+
 def _collection() -> chromadb.Collection:
     client = chromadb.PersistentClient(path=str(DB_DIR))
-    return client.get_or_create_collection(
+    col = client.get_or_create_collection(
         name=COLLECTION,
         metadata={"hnsw:space": "cosine"},
     )
+    _check_model(col)
+    return col
 
 
 def rescan() -> dict[str, int]:
     """Incremental index: add/update changed files, purge deleted ones."""
+    with _db_lock():
+        return _rescan_locked()
+
+
+def _rescan_locked() -> dict[str, int]:
     col = _collection()
     existing: dict[str, str] = {}
     if col.count():
@@ -289,90 +328,102 @@ def clusters(k: int = 6, min_sim: float = 0.6) -> list[dict[str, object]]:
 
 def export_base() -> dict[str, object]:
     """Dump ids+embeddings+metadata to tracked gz shards. No doc text
-    (git has the file contents; import re-attaches from the checkout)."""
-    col = _collection()
-    if col.count() == 0:
-        raise RuntimeError("nothing indexed — run rescan first")
-    got = col.get(include=["metadatas", "embeddings"])
-    embeddings = got.get("embeddings")
-    embeddings = [] if embeddings is None else list(embeddings)
-    metadatas = got.get("metadatas")
-    metadatas = [] if metadatas is None else list(metadatas)
-    rows = sorted(
-        (
+    (git has the file contents; import re-attaches from the checkout).
+    Atomic: new shards + manifest land in a tmp dir and are swapped in
+    only after every write succeeded, so an interrupted export never
+    destroys the previous base."""
+    with _db_lock():
+        col = _collection()
+        if col.count() == 0:
+            raise RuntimeError("nothing indexed — run rescan first")
+        got = col.get(include=["metadatas", "embeddings"])
+        embeddings = got.get("embeddings")
+        embeddings = [] if embeddings is None else list(embeddings)
+        metadatas = got.get("metadatas")
+        metadatas = [] if metadatas is None else list(metadatas)
+        rows = sorted(
             (
-                rid,
-                emb.tolist() if hasattr(emb, "tolist") else list(emb),
-                meta,
-            )
-            for rid, emb, meta in zip(got["ids"], embeddings, metadatas)
-        ),
-        key=lambda r: r[0],
-    )
-    BASE_DIR.mkdir(parents=True, exist_ok=True)
-    for old in BASE_DIR.glob("shard-*.jsonl.gz"):
-        old.unlink()
-    shards = 0
-    for i in range(0, len(rows), SHARD_SIZE):
-        chunk = rows[i : i + SHARD_SIZE]
-        shard = BASE_DIR / f"shard-{shards:04d}.jsonl.gz"
-        with gzip.open(shard, "wt", encoding="utf-8", compresslevel=9) as f:
-            for rid, emb, meta in chunk:
-                f.write(
-                    json.dumps(
-                        {"id": rid, "emb": emb, "meta": meta},
-                        ensure_ascii=False,
-                    )
-                    + "\n"
+                (
+                    rid,
+                    emb.tolist() if hasattr(emb, "tolist") else list(emb),
+                    meta,
                 )
-        shards += 1
-    manifest = {
-        "model": EMBED_MODEL,
-        "dim": EMBED_DIM,
-        "count": len(rows),
-        "shards": shards,
-        "exported_at": datetime.now(UTC).isoformat(timespec="seconds"),
-    }
-    (BASE_DIR / MANIFEST_NAME).write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
-    )
-    return manifest
+                for rid, emb, meta in zip(got["ids"], embeddings, metadatas)
+            ),
+            key=lambda r: r[0],
+        )
+        BASE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = BASE_DIR / "tmp"
+        if tmp.exists():
+            shutil.rmtree(tmp)
+        tmp.mkdir()
+        shards = 0
+        for i in range(0, len(rows), SHARD_SIZE):
+            chunk = rows[i : i + SHARD_SIZE]
+            shard = tmp / f"shard-{shards:04d}.jsonl.gz"
+            with gzip.open(shard, "wt", encoding="utf-8", compresslevel=9) as f:
+                for rid, emb, meta in chunk:
+                    f.write(
+                        json.dumps(
+                            {"id": rid, "emb": emb, "meta": meta},
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+            shards += 1
+        manifest = {
+            "model": EMBED_MODEL,
+            "dim": EMBED_DIM,
+            "count": len(rows),
+            "shards": shards,
+            "exported_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        }
+        (tmp / MANIFEST_NAME).write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
+        for old in BASE_DIR.glob("shard-*.jsonl.gz"):
+            old.unlink()
+        for f in tmp.iterdir():
+            f.rename(BASE_DIR / f.name)
+        tmp.rmdir()
+        return manifest
 
 
 def import_base() -> dict[str, int | str]:
     """Seed local chroma from tracked shards. Skips ids whose files no
     longer exist (deleted/renamed since export) — rescan heals the rest."""
-    col = _collection()
-    if col.count():
-        return {"skipped": col.count()}
-    manifest_path = BASE_DIR / MANIFEST_NAME
-    if not manifest_path.is_file():
-        return {"skipped": 0}
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("model") != EMBED_MODEL or manifest.get("dim") != EMBED_DIM:
-        raise RuntimeError(
-            f"base index model mismatch: {manifest.get('model')}/{manifest.get('dim')}"
-        )
-    ids: list[str] = []
-    embs: list[list[float]] = []
-    metas: list[dict[str, str]] = []
-    for shard in sorted(BASE_DIR.glob("shard-*.jsonl.gz")):
-        with gzip.open(shard, "rt", encoding="utf-8") as f:
-            for line in f:
-                row = json.loads(line)
-                if not (ROOT / row["id"]).is_file():
-                    continue
-                ids.append(row["id"])
-                embs.append(row["emb"])
-                metas.append(row["meta"])
-    for i in range(0, len(ids), UPSERT_BATCH):
-        col.upsert(
-            ids=ids[i : i + UPSERT_BATCH],
-            embeddings=embs[i : i + UPSERT_BATCH],
-            metadatas=metas[i : i + UPSERT_BATCH],
-        )
-    return {"imported": len(ids), "manifest_count": int(manifest.get("count", 0)),
-            "exported_at": str(manifest.get("exported_at", ""))}
+    with _db_lock():
+        col = _collection()
+        if col.count():
+            return {"skipped": col.count()}
+        manifest_path = BASE_DIR / MANIFEST_NAME
+        if not manifest_path.is_file():
+            return {"skipped": 0}
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("model") != EMBED_MODEL or manifest.get("dim") != EMBED_DIM:
+            raise RuntimeError(
+                f"base index model mismatch: {manifest.get('model')}/{manifest.get('dim')}"
+            )
+        ids: list[str] = []
+        embs: list[list[float]] = []
+        metas: list[dict[str, str]] = []
+        for shard in sorted(BASE_DIR.glob("shard-*.jsonl.gz")):
+            with gzip.open(shard, "rt", encoding="utf-8") as f:
+                for line in f:
+                    row = json.loads(line)
+                    if not (ROOT / row["id"]).is_file():
+                        continue
+                    ids.append(row["id"])
+                    embs.append(row["emb"])
+                    metas.append(row["meta"])
+        for i in range(0, len(ids), UPSERT_BATCH):
+            col.upsert(
+                ids=ids[i : i + UPSERT_BATCH],
+                embeddings=embs[i : i + UPSERT_BATCH],
+                metadatas=metas[i : i + UPSERT_BATCH],
+            )
+        return {"imported": len(ids), "manifest_count": int(manifest.get("count", 0)),
+                "exported_at": str(manifest.get("exported_at", ""))}
 
 
 if __name__ == "__main__":
@@ -391,6 +442,15 @@ if __name__ == "__main__":
         print(json.dumps(export_base(), indent=2))
     elif cmd == "import-base":
         print(json.dumps(import_base(), indent=2))
+    elif cmd == "drop":
+        import chromadb as _c
+        client = _c.PersistentClient(path=str(DB_DIR))
+        for name in (COLLECTION, "swmg-fns"):
+            try:
+                client.delete_collection(name)
+                print(f"dropped {name}")
+            except Exception:
+                print(f"{name}: not present")
     else:
         print(f"unknown command: {cmd}", file=sys.stderr)
         sys.exit(2)

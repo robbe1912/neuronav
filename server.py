@@ -167,6 +167,22 @@ def visualize() -> str:
     return f"3D graph written to {out} — open in a browser (double-click or `start {out}`)"
 
 
+def _sync_chain(stats: dict) -> tuple[object, object, str]:
+    """nav.rescan -> graph rebuild -> fns sync. fns failures degrade
+    gracefully (dirty marker self-heals next run) instead of killing the
+    server or blocking file search."""
+    g = graph.get_graph(rebuild=True)
+    note = ""
+    try:
+        fns = graph.sync_functions(
+            stats.get("changed", []), stats.get("deleted_paths", [])
+        )
+    except Exception as e:  # fns stale-but-healing; file search unaffected
+        fns = {"fns_upserted": 0}
+        note = f" [fns sync FAILED, will self-heal next rescan: {e}]"
+    return g, fns, note
+
+
 @mcp.tool()
 def rescan() -> str:
     """Re-index changed/new/deleted files: vectors, function index, graph.
@@ -175,26 +191,20 @@ def rescan() -> str:
     """
     t0 = time.perf_counter()
     stats = nav.rescan()
-    g = graph.get_graph(rebuild=True)
-    fns = graph.sync_functions(
-        stats.get("changed", []), stats.get("deleted_paths", [])
-    )
+    g, fns, note = _sync_chain(stats)
     dt = time.perf_counter() - t0
     return (
         f"rescan: files {stats['added']}/{stats['updated']}/"
         f"{stats['unchanged']}/{stats['deleted']} (a/u/u/d), "
         f"fns {fns['fns_upserted']} upserted, graph {len(g.files)} files, "
-        f"in {dt:.1f}s"
+        f"in {dt:.1f}s{note}"
     )
 
 
 if __name__ == "__main__":
     t0 = time.perf_counter()
     stats = nav.rescan()
-    graph.get_graph(rebuild=True)
-    fns = graph.sync_functions(
-        stats.get("changed", []), stats.get("deleted_paths", [])
-    )
+    g, fns, _ = _sync_chain(stats)
     print(
         f"swmg-nav: startup files {stats['added']}/{stats['updated']}/"
         f"{stats['unchanged']}/{stats['deleted']}, "

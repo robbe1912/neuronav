@@ -1,11 +1,16 @@
 """swmg-nav structural layer: function/signal graph, dead code, duplicates.
 
-Parses GDScript + .tscn from the checkout into an in-memory graph:
+Parses GDScript + .tscn from the checkout into an in-memory graph (language
+parsers live in extractors/, dispatched via the suffix registry):
 - functions with bodies (indentation-delimited)
 - call edges: ClassName.func (via class_name map), bare same-file calls
+- var edges: receiver.member where the destination file declares the member
 - signal edges: emit sites -> connect() handlers, plus .tscn [connection] blocks
-- entry roots: autoloads, virtuals (_ready/_process/...), connected handlers,
-  GUT test_*, string-callable references (call("x"), Callable(self, "x"))
+- entry roots: per-language entry-point rules ship with each extractor
+  (extractors/*/ENTRY_RULES) — GDScript: autoloads, virtuals
+  (_ready/_process/...), connected handlers, GUT test_*, string-callable
+  references (call("x"), Callable(self, "x")), scripts referenced by
+  load()/preload() string literals in bodies
 - dead code = functions unreachable from roots (two confidence tiers)
 - duplicates = normalized-body hashes + cosine-similar function vectors
 
@@ -17,49 +22,86 @@ from __future__ import annotations
 import hashlib
 import re
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
 
 import nav
+from extractors import registry_for
+from extractors.model import FileSym, Func  # noqa: F401  (re-export)
+# language fact needed by the dead-code tier heuristic (native dispatch names)
+from extractors.gdscript import VIRTUALS, GUT_ROOTS, ADDON_VIRTUALS, MANUAL_BASES, parse_gd, parse_tscn
 
 # ---- constants ---------------------------------------------------------------
+# Language-owned constants and entry-point rules (VIRTUALS, GUT_ROOTS,
+# ADDON_VIRTUALS, MANUAL_BASES, ENTRY_RULES) live in extractors/gdscript.py;
+# VIRTUALS is imported for the dead-code tier heuristic only.
 
-VIRTUALS = {
-    "_init", "_enter_tree", "_ready", "_exit_tree", "_process",
-    "_physics_process", "_input", "_shortcut_input", "_unhandled_input",
-    "_unhandled_key_input", "_draw", "_notification", "_get", "_set",
-    "_get_property_list", "_to_string", "_integrate_forces",
-    "_get_configuration_warnings",
-}
-GUT_ROOTS = {"before_all", "after_all", "before_each", "after_each"}
-
-# C++-side addon base classes dispatch these methods; unresolvable in a pure
-# source graph (bases live in addons/*.gdext). Treated as entry roots.
-ADDON_VIRTUALS: dict[str, set[str]] = {
-    base: {"_enter", "_exit", "_tick", "_setup", "_generate_name"}
-    for base in ("btaction", "btcondition", "btdecorator", "btcomposite", "bttask")
-}
-
-FUNC_RE = re.compile(r"^([ \t]*)(?:static\s+)?func\s+([A-Za-z_]\w*)\s*\(")
-SIGNAL_RE = re.compile(r"^[ \t]*signal\s+([A-Za-z_]\w*)")
-CLASSNAME_RE = re.compile(r"^[ \t]*class_name\s+([A-Za-z_]\w*)")
-EXTENDS_RE = re.compile(r"^[ \t]*extends\s+([A-Za-z_]\w*)")
 QUALIFIED_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*\(")
+# receiver.member access that is NOT a call: member name lowercase-initial
+# (vars), negative lookahead rejects optional-whitespace-then-paren
+MEMBER_ACCESS_RE = re.compile(
+    r"(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([a-z_]\w*)\b(?!\s*\()"
+)
+# "res://...something.gd" string literals in bodies: dynamically loaded
+# scripts whose funcs must count as alive
+RES_LOAD_RE = re.compile(r"res://([\w/.-]+\.gd)")
 BARE_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\s*\(")
 EMIT_RE = re.compile(r"emit_signal\(\s*[\"'](\w+)[\"']|([A-Za-z_]\w*)\.emit\(")
-# member-var type declarations at file top level: `var x: Type` / `var x := Type.new()`
-MEMBER_TYPED_RE = re.compile(r"^var\s+(\w+)\s*:\s*([A-Z]\w*)\s*(?:=|$)")
-MEMBER_NEW_RE = re.compile(r"^var\s+(\w+)\s*(?::=|=)\s*([A-Z]\w*)\.new\(")
+# .tres/.res ext_resource lines: type="Script" path="res://..."
+TRES_SCRIPT_RE = re.compile(r'ext_resource\s+type="Script"[^>]*path="([^"]+)"')
+# signal wiring via direct method references: sig.connect(_handler)
+CONNECT_METHOD_RE = re.compile(r"\.(?:connect|disconnect|is_connected)\(\s*([A-Za-z_]\w*)")
 # typed locals + params anywhere in a body: `name: Type`
 PARAM_TYPED_RE = re.compile(r"(?<![\w.])(\w+)\s*:\s*([A-Z]\w*)")
-# animation method call tracks inside .tscn: "method": &"on_x" / "method": "on_x"
-ANIM_METHOD_RE = re.compile(r'"method":\s*&?"(\w+)"')
 # cast-then-call: (node as CameraShake).shake(  ->  Type.method(
 AS_CAST_CALL_RE = re.compile(r"as\s+([A-Z]\w*)\)\s*\.\s*([A-Za-z_]\w*)\s*\(")
 CONNECT_RE = re.compile(r"\.connect\(|Callable\(")
 STRING_NAME_RE = re.compile(r"[\"']([A-Za-z_]\w*)[\"']")
-TOOL_RE = re.compile(r"^[ \t]*(@tool|\btool\b)")
+# dynamic-dispatch string harvest: method names in .call()/.rpc()/
+# has_method() string args and Callable(obj, "m") constructions have
+# runtime-typed receivers — keep same-named funcs alive, no static edge
+DISPATCH_STR_RE = re.compile(
+    r'\.(?:call|call_deferred|callv|rpc|rpc_id|rpc_config|has_method)'
+    r'\(\s*&?"([a-z_]\w*)"'
+)
+# receiver-less dispatch on implicit self: bare call_deferred("x") / rpc("x")
+BARE_DISPATCH_STR_RE = re.compile(
+    r'(?<![\w.])(?:call|call_deferred|callv|rpc|rpc_id|has_method)'
+    r'\(\s*&?"([a-z_]\w*)"'
+)
+STRINGNAME_LIT_RE = re.compile(r'&"([a-z_]\w{3,})"')
+CALLABLE_TWO_RE = re.compile(
+    r'Callable\s*\(\s*[\w.]+\s*,\s*&?"([a-z_]\w*)"\s*\)'
+    r'|Callable\s*\(\s*[\w.]+\s*,\s*([A-Za-z_]\w*)\s*\)'
+)
+# quoted identifier-shaped strings in bodies of files that use dynamic
+# dispatch (file-level gate) — callback-name conventions leak into plain
+# string args, e.g. handle_animation_callback(slot, "on_cast_hold_end")
+QUOTED_IDENT_RE = re.compile(r"""["']([a-z_]\w{3,})["']""")
+# bare callback-convention identifiers (_on_*) in argument/array positions:
+# method references without call parens, e.g. ["QUIT", color, _on_quit]
+BARE_HANDLER_RE = re.compile(r'(?<![\w."&])_on_[a-z_]\w*')
+# tween binders reference methods without parens: tween_method(_set_reveal)
+TWEEN_ARG_RE = re.compile(
+    r'\.(?:tween_method|tween_callback|tween_property)\(\s*&?"?([A-Za-z_]\w{3,})"?'
+)
+# two-level receiver chains: ctx.teams.team_ids(...) — resolve head, hop
+# through a declared member to the second class, then emit
+CHAIN_CALL_RE = re.compile(
+    r'(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([a-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\('
+)
+CHAIN_VAR_RE = re.compile(
+    r'(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([a-z_]\w*)\s*\.\s*([a-z_]\w*)\b(?!\s*\()'
+)
+# StringName values inside .tres (BT task routing): start_method_name = &"x"
+TRES_STRINGNAME_RE = re.compile(r'&"([a-z_]\w{3,})"')
+# file-level dynamic-dispatch hints enabling the quoted-ident harvest
+DYNAMIC_HINT_RE = re.compile(
+    r'\.call\(|\.call_deferred|Callable\(|has_method\(|\.connect\(|\.rpc\(|\.emit\('
+)
+# path-form extends (incl. inner classes): extends "res://....gd"
+PATH_EXTENDS_RE = re.compile(r'^\s*extends\s+"(res://[^"]+\.gd)"', re.M)
 
 # bare identifiers that are engine globals/keywords, never local calls
+DYNAMIC_METHODS = {"rpc", "rpc_id", "call", "call_deferred", "callv", "bind", "emit", "emit_signal", "notify_property_list_changed"}
 NON_CALLS = {
     "if", "elif", "while", "for", "match", "return", "await", "func", "super",
     "and", "or", "not", "in", "is", "break", "continue", "pass", "class",
@@ -83,44 +125,32 @@ NON_CALLS = {
     "wrapf", "nearest_po2", "det", "_error", "dedent",
 }
 
-TAB_WIDTH = 4
-
-
-def _indent(line: str) -> int:
-    expanded = line.expandtabs(TAB_WIDTH)
-    return len(expanded) - len(expanded.lstrip(" "))
-
 
 # ---- data model ----------------------------------------------------------------
+# Func / FileSym live in extractors/model.py (language-neutral); re-exported
+# here so graph.Func / graph.FileSym keep working for importers.
 
 
-@dataclass
-class Func:
-    path: str
-    name: str
-    line: int  # 1-based def line
-    body: str
-
-    @property
-    def key(self) -> str:
-        return f"{self.path}::{self.name}"
-
-
-@dataclass
-class FileSym:
-    path: str
-    ext: str
-    class_name: str = ""
-    extends: str = ""
-    is_tool: bool = False
-    funcs: dict[str, Func] = field(default_factory=dict)
-    signals: set[str] = field(default_factory=set)
-    # .tscn only
-    attached_script: str = ""  # res:// path of ext_resource Script
-    instances: list[str] = field(default_factory=list)  # instanced scene paths
-    connections: list[tuple[str, str]] = field(default_factory=list)  # (signal, method)
-    # member `var x: Type` / `var x := Type.new()` at file level (gd only)
-    member_types: dict[str, str] = field(default_factory=dict)
+def _fold_continuations(body: str) -> str:
+    """Join physical lines whose parens/brackets are still open so a call
+    split across lines becomes one logical line for regex scanning."""
+    out: list[str] = []
+    buf = ""
+    depth = 0
+    for line in body.splitlines():
+        buf = line if not buf else f"{buf} {line.strip()}"
+        depth += (
+            line.count("(") - line.count(")")
+            + line.count("[") - line.count("]")
+            + line.count("{") - line.count("}")
+        )
+        if depth <= 0:
+            out.append(buf)
+            buf = ""
+            depth = 0
+    if buf:
+        out.append(buf)
+    return "\n".join(out)
 
 
 class Graph:
@@ -135,140 +165,107 @@ class Graph:
         self.roots: set[str] = set()
         self.referenced: set[str] = set()  # string-referenced (alive, not root)
         self.referenced_names: set[str] = set()  # func names called via unresolvable receivers
+        self.edge_types: dict[tuple[str, str], set[str]] = defaultdict(set)
         self.built_at_lines: int = 0
 
     # -- parsing ---------------------------------------------------------------
+    # language parsing is delegated to extractors/ via the suffix registry;
+    # these wrappers keep the historical method names for internal callers
 
     def _parse_gd(self, path: Path, rel: str) -> FileSym:
-        text = nav._read_text(path)
-        fs = FileSym(path=rel, ext=".gd")
-        lines = text.splitlines()
-        i = 0
-        while i < len(lines):
-            line = lines[i]
-            m = CLASSNAME_RE.match(line)
-            if m:
-                fs.class_name = m.group(1)
-                i += 1
-                continue
-            m = EXTENDS_RE.match(line)
-            if m:
-                fs.extends = m.group(1)
-                i += 1
-                continue
-            if TOOL_RE.match(line) and i < 4:
-                fs.is_tool = True
-                i += 1
-                continue
-            m = SIGNAL_RE.match(line)
-            if m:
-                fs.signals.add(m.group(1))
-                i += 1
-                continue
-            m = MEMBER_TYPED_RE.match(line)
-            if m:
-                fs.member_types[m.group(1)] = m.group(2)
-                i += 1
-                continue
-            m = MEMBER_NEW_RE.match(line)
-            if m:
-                fs.member_types[m.group(1)] = m.group(2)
-                i += 1
-                continue
-            m = FUNC_RE.match(line)
-            if m:
-                name = m.group(2)
-                base = _indent(line)
-                # consume multi-line signatures: keep joining until parens
-                # balance and the header terminates with ':'
-                header = line
-                j = i + 1
-                while header.count("(") > header.count(")") and j < len(lines):
-                    header += "\n" + lines[j]
-                    j += 1
-                if "\n" in header and not header.rstrip().endswith(":") and j < len(lines):
-                    header += "\n" + lines[j]
-                    j += 1
-                body_lines: list[str] = []
-                while j < len(lines):
-                    nxt = lines[j]
-                    if nxt.strip() == "":
-                        body_lines.append(nxt)
-                        j += 1
-                        continue
-                    if _indent(nxt) > base:
-                        body_lines.append(nxt)
-                        j += 1
-                        continue
-                    break
-                fs.funcs[name] = Func(
-                    path=rel, name=name, line=i + 1,
-                    body="\n".join(body_lines),
-                )
-                i = j
-                continue
-            i += 1
-        return fs
+        return parse_gd(path, rel)
 
     def _parse_tscn(self, path: Path, rel: str) -> FileSym:
-        text = nav._read_text(path)
-        fs = FileSym(path=rel, ext=".tscn")
-        ext_ids: dict[str, str] = {}
-        for line in text.splitlines():
-            m = re.search(
-                r'\[ext_resource type="Script"[^]]*path="([^"]+)"[^]]*id="([^"]+)"',
-                line,
-            )
-            if not m:
-                m = re.search(
-                    r'\[ext_resource type="Script"[^]]*id="([^"]+)"[^]]*path="([^"]+)"',
-                    line,
-                )
-                if m:
-                    ext_ids[m.group(1)] = m.group(2)
-                    fs.attached_script = fs.attached_script or m.group(2)
-                    continue
-            else:
-                ext_ids[m.group(2)] = m.group(1)
-                fs.attached_script = fs.attached_script or m.group(1)
-            m = re.search(r'\[ext_resource type="PackedScene"[^]]*path="([^"]+)"[^]]*id="([^"]+)"', line)
-            if m:
-                ext_ids[m.group(2)] = m.group(1)
-                continue
-            m = re.search(r'instance=ExtResource\("([^"]+)"\)', line)
-            if m and m.group(1) in ext_ids:
-                fs.instances.append(ext_ids[m.group(1)])
-            m = re.search(
-                r'\[connection signal="(\w+)"[^\]]*to="[^"]*"[^\]]*method="(\w+)"',
-                line,
-            )
-            if m:
-                fs.connections.append((m.group(1), m.group(2)))
-        # animation method call tracks fire funcs exactly like signal handlers
-        for m in ANIM_METHOD_RE.finditer(text):
-            fs.connections.append(("anim", m.group(1)))
-        return fs
+        return parse_tscn(path, rel)
 
     # -- build -------------------------------------------------------------------
 
     def build(self) -> "Graph":
         for path in nav.iter_files():
             rel = nav.file_id(path)
-            fs = (
-                self._parse_gd(path, rel)
-                if path.suffix == ".gd"
-                else self._parse_tscn(path, rel)
-            )
+            extractor = registry_for(path.suffix)
+            if extractor is None:
+                continue
+            fs = extractor.parse(path, rel)
             self.files[rel] = fs
             if fs.class_name:
                 self.class_map[fs.class_name] = rel
+
+        # autoload singletons are addressable by their project.godot name
+        self.autoloads = self._parse_autoloads()
+        for name, rel in self.autoloads.items():
+            self.class_map.setdefault(name, rel)
 
         # asset scenes sit outside the search index but carry animation method
         # tracks + connections that fire script funcs — parse for wiring only
         for path in (nav.ROOT / "assets").rglob("*.tscn") if (nav.ROOT / "assets").is_dir() else ():
             rel = nav.file_id(path)
             if rel not in self.files:
-                self.files[rel] = self._parse_tscn(path, rel)
+                self.files[rel] = registry_for(path.suffix).parse(path, rel)
+
+        # .tres/.res reference scripts via ext_resource — data-constructed
+        # classes (custom resources) whose funcs never appear in .gd callers
+        self.tres_scripts: set[str] = set()
+        for path in nav.ROOT.rglob("*.tres"):
+            if any(part in {".git", ".godot"} for part in path.parts):
+                continue
+            try:
+                text = nav._read_text(path)
+            except OSError:
+                continue
+            for m in TRES_SCRIPT_RE.finditer(text):
+                rel2 = m.group(1).removeprefix("res://")
+                if rel2 in self.files:
+                    self.tres_scripts.add(rel2)
+            # StringName values route dynamic dispatch (LimboAI BT tasks
+            # export method names): keep matching funcs alive repo-wide
+            for m in TRES_STRINGNAME_RE.finditer(text):
+                self.referenced_names.add(m.group(1))
+
+        # transitive subclass map: base class_name -> files below it — a
+        # call resolved to a base may dispatch to any override
+        self._subclasses: dict[str, set[str]] = defaultdict(set)
+        for rel, fs in self.files.items():
+            if fs.ext != ".gd":
+                continue
+            base = fs.extends
+            seen: set[str] = set()
+            while base and base not in seen and base in self.class_map:
+                seen.add(base)
+                self._subclasses[base].add(rel)
+                base = self.files[self.class_map[base]].extends
+            # path-form extends (often inner helper classes): register the
+            # whole file under the base file's class_name so override
+            # completion can reach it
+            try:
+                raw = nav._read_text(nav.ROOT / rel)
+            except OSError:
+                raw = ""
+            for m in PATH_EXTENDS_RE.finditer(raw):
+                base_rel = m.group(1).removeprefix("res://")
+                base_cls = self.files.get(base_rel, None)
+                if base_cls is not None:
+                    # register under the rel path always, class_name when
+                    # the base declares one — _emit_call looks up both
+                    self._subclasses[base_rel].add(rel)
+                    if base_cls.class_name:
+                        self._subclasses[base_cls.class_name].add(rel)
+
+        # files using dynamic dispatch: quoted identifier strings in their
+        # bodies are candidate method names; parse-time StringName defaults
+        # (BT exports) join the same referenced-name pool
+        self._dyn_files: set[str] = set()
+        for rel, fs in self.files.items():
+            if fs.ext != ".gd":
+                continue
+            for nm in fs.name_literals:
+                if len(nm) > 3:
+                    self.referenced_names.add(nm)
+            if not fs.funcs:
+                continue
+            joined = "\n".join(f.body for f in fs.funcs.values())
+            if DYNAMIC_HINT_RE.search(joined):
+                self._dyn_files.add(rel)
 
         for rel, fs in self.files.items():
             if fs.ext != ".gd":
@@ -283,111 +280,278 @@ class Graph:
 
     def _scan_body(self, fs: FileSym, fn: Func) -> None:
         src_key = fn.key
+        # multi-line call arguments defeat line-based regex passes: fold
+        # continuation lines (unbalanced parens/brackets) into single
+        # logical lines before scanning; fn.body stays raw for display
+        scan_text = _fold_continuations(fn.body)
         # first-order type inference: member vars + typed params/locals in this body
-        var_types = dict(fs.member_types)
-        for pm in PARAM_TYPED_RE.finditer(fn.body):
+        var_types = dict(fs.members)
+        for pm in PARAM_TYPED_RE.finditer(scan_text):
             var_types[pm.group(1)] = pm.group(2)
-        for m in QUALIFIED_CALL_RE.finditer(fn.body):
+        for m in QUALIFIED_CALL_RE.finditer(scan_text):
             head, fname = m.group(1), m.group(2)
             cls = head if head in self.class_map else var_types.get(head)
             if cls and cls in self.class_map:
                 dst = self.class_map[cls]
                 if fname in self.files[dst].funcs:
-                    self._edge(src_key, f"{dst}::{fname}")
+                    self._emit_call(src_key, dst, fname)
+            elif head in fs.consts and fs.consts[head] in self.files:
+                dst = fs.consts[head]
+                if fname in self.files[dst].funcs:
+                    self._emit_call(src_key, dst, fname)
             else:
                 # receiver type unknown (factory returns, variants) — the call may
-                # dispatch to any same-named func; mark name alive, no edge
+                # dispatch to any same-named func; mark name alive, no edge.
+                # dispatch intermediaries (.rpc()/.call_deferred()/.bind()) point
+                # at the RECEIVER, not at rpc/call_deferred themselves
+                if fname in DYNAMIC_METHODS:
+                    # builtin-shadowing user funcs (e.g. a user `bind`) are
+                    # valid targets of the same dispatch — keep the name
+                    # alive alongside the receiver head
+                    self.referenced_names.add(head)
                 self.referenced_names.add(fname)
-        for m in AS_CAST_CALL_RE.finditer(fn.body):
+        # member-var cross-references: receiver.member where the receiver
+        # resolves to a known class (same chain as calls above) and that
+        # file actually declares the member — edges land on VAR: pseudo-nodes
+        for m in MEMBER_ACCESS_RE.finditer(scan_text):
+            head, member = m.group(1), m.group(2)
+            cls = head if head in self.class_map else var_types.get(head)
+            if cls and cls in self.class_map:
+                dst = self.class_map[cls]
+            elif head in fs.consts and fs.consts[head] in self.files:
+                dst = fs.consts[head]
+            else:
+                continue
+            if member in self.files[dst].members:
+                self._edge(src_key, f"{dst}::VAR:{member}", ty="var")
+            elif member in self.files[dst].funcs:
+                # property-assignment form: obj.method = x targets the
+                # func (setter-style) without a call paren
+                self._emit_call(src_key, dst, member)
+        # dynamically loaded scripts: any "res://....gd" string literal in
+        # the body keeps every func of that file alive
+        for m in RES_LOAD_RE.finditer(scan_text):
+            loaded = m.group(1)
+            if loaded in self.files:
+                for other in self.files[loaded].funcs.values():
+                    self.referenced.add(other.key)
+        # dynamic-dispatch harvest: method names passed to .call()/.rpc()/
+        # has_method(), StringName literals, Callable(obj, "m") — receivers
+        # are runtime-typed, so mark the names alive instead of an edge
+        for m in DISPATCH_STR_RE.finditer(scan_text):
+            nm = m.group(1)
+            if len(nm) > 3:
+                self.referenced_names.add(nm)
+        for m in BARE_DISPATCH_STR_RE.finditer(scan_text):
+            nm = m.group(1)
+            if len(nm) > 3:
+                self.referenced_names.add(nm)
+        for m in STRINGNAME_LIT_RE.finditer(scan_text):
+            self.referenced_names.add(m.group(1))
+        if fs.path in self._dyn_files:
+            for m in QUOTED_IDENT_RE.finditer(scan_text):
+                self.referenced_names.add(m.group(1))
+        for m in CALLABLE_TWO_RE.finditer(scan_text):
+            nm = m.group(1) or m.group(2)
+            if nm and len(nm) > 3:
+                self.referenced_names.add(nm)
+        # tween binders + bare callback-convention identifiers (array
+        # elements, deferred refs): method refs without call parens
+        for m in TWEEN_ARG_RE.finditer(scan_text):
+            self.referenced_names.add(m.group(1))
+        for m in BARE_HANDLER_RE.finditer(scan_text):
+            self.referenced_names.add(m.group(0))
+        # two-level typed chains: ctx.teams.team_ids(...) — resolve head to
+        # its class, hop through a declared member, then emit
+        for m in CHAIN_CALL_RE.finditer(scan_text):
+            head, mid, tail = m.group(1), m.group(2), m.group(3)
+            dst = self._chain_dst(var_types, head, mid)
+            if dst and tail in self.files[dst].funcs:
+                self._emit_call(src_key, dst, tail)
+            else:
+                # unresolvable receiver chain (duck-typed containers):
+                # same name-alive fallback as single-hop unknown receivers
+                self.referenced_names.add(tail)
+        for m in CHAIN_VAR_RE.finditer(scan_text):
+            head, mid, tail = m.groups()
+            dst = self._chain_dst(var_types, head, mid)
+            if dst and tail in self.files[dst].members:
+                self._edge(src_key, f"{dst}::VAR:{tail}", ty="var")
+            elif dst and tail in self.files[dst].funcs:
+                self._emit_call(src_key, dst, tail)
+        for m in AS_CAST_CALL_RE.finditer(scan_text):
             cls, fname = m.group(1), m.group(2)
             if cls in self.class_map:
                 dst = self.class_map[cls]
                 if fname in self.files[dst].funcs:
-                    self._edge(src_key, f"{dst}::{fname}")
+                    self._emit_call(src_key, dst, fname)
             else:
                 self.referenced_names.add(fname)
-        for m in BARE_CALL_RE.finditer(fn.body):
+        for m in BARE_CALL_RE.finditer(scan_text):
             name = m.group(1)
             if name in NON_CALLS:
                 continue
             if name in fs.funcs:
-                self._edge(src_key, f"{fs.path}::{name}")
+                # _emit_call mirrors the same-file edge onto subclass
+                # overrides (incl. path-form extends files below)
+                self._emit_call(src_key, fs.path, name)
+            else:
+                # inherited method call: resolve up the extends chain
+                # (_emit_call mirrors onto sibling overrides); base calls
+                # a func it does not define -> every subclass override
+                anc = self._ancestor_def(fs, name)
+                if anc:
+                    self._emit_call(src_key, anc, name)
+                if fs.class_name and fs.class_name in self._subclasses:
+                    for sub in self._subclasses[fs.class_name]:
+                        if name in self.files[sub].funcs:
+                            self._edge(src_key, f"{sub}::{name}")
         # signal emits -> signal nodes; connect/Callable string refs -> handlers
-        for m in EMIT_RE.finditer(fn.body):
+        for m in EMIT_RE.finditer(scan_text):
             sig = m.group(1) or m.group(2)
             if sig in fs.signals:
-                self._edge(src_key, f"{fs.path}::SIGNAL:{sig}")
-        if CONNECT_RE.search(fn.body):
-            for m in STRING_NAME_RE.finditer(fn.body):
+                self._edge(src_key, f"{fs.path}::SIGNAL:{sig}", ty="signal")
+        if CONNECT_RE.search(scan_text):
+            for m in STRING_NAME_RE.finditer(scan_text):
                 ref = m.group(1)
                 if ref in fs.funcs:
-                    self._edge(src_key, f"{fs.path}::{ref}")
-                    self.referenced.add(f"{fs.path}::{ref}")
+                    self._edge(src_key, f"{fs.path}::{ref}", ty="signal")
+                    # handlers fire on signal emit — entry points, traverse
+                    self.roots.add(f"{fs.path}::{ref}")
                 # cross-file: _on_* handlers commonly target other scripts
                 elif ref.startswith("_on_"):
                     self.referenced.add(f"*::{ref}")
+            # direct method references (no quotes):
+            #   sig.connect(_handler) / is_connected(_handler) / disconnect(...)
+            for m in CONNECT_METHOD_RE.finditer(scan_text):
+                ref = m.group(1)
+                if ref in fs.funcs:
+                    self._edge(src_key, f"{fs.path}::{ref}", ty="signal")
+                    self.roots.add(f"{fs.path}::{ref}")
+                else:
+                    # inherited handler: resolve up the extends chain
+                    anc = self._ancestor_def(fs, ref)
+                    if anc and ref in self.files[anc].funcs:
+                        key = f"{anc}::{ref}"
+                        self._edge(src_key, key, ty="signal")
+                        self.roots.add(key)
 
-    def _edge(self, src: str, dst: str) -> None:
+    def _ancestor_def(self, fs: FileSym, name: str) -> str:
+        """Rel path of the nearest ancestor class declaring `name`, or ''."""
+        base = fs.extends
+        seen: set[str] = set()
+        while base and base not in seen and base in self.class_map:
+            seen.add(base)
+            rel = self.class_map[base]
+            if name in self.files[rel].funcs:
+                return rel
+            base = self.files[rel].extends
+        return ""
+
+    def _emit_call(self, src: str, dst: str, fname: str) -> None:
+        """Call edge + virtual-dispatch completion: a call resolved to a
+        base class may land on any subclass override — mirror the edge."""
+        self._edge(src, f"{dst}::{fname}")
+        base = self.files[dst].class_name or dst
+        for sub in self._subclasses.get(base, ()):
+            if fname in self.files[sub].funcs:
+                self._edge(src, f"{sub}::{fname}")
+
+    def _chain_dst(self, var_types: dict, head: str, mid: str) -> str:
+        """Resolve head.mid to the class declaring that member, or ''."""
+        cls = head if head in self.class_map else var_types.get(head)
+        if not (cls and cls in self.class_map):
+            return ""
+        fs1 = self.files[self.class_map[cls]]
+        cls2 = fs1.members.get(mid, "")
+        if cls2 and cls2 in self.class_map:
+            return self.class_map[cls2]
+        return ""
+
+    def _edge(self, src: str, dst: str, ty: str = "call") -> None:
         if src == dst:
             return
         self.edges[src].add(dst)
         self.reverse[dst].add(src)
+        self.edge_types[(src, dst)].add(ty)
 
     def _wire_tscn(self) -> None:
         for rel, fs in self.files.items():
             if fs.ext != ".tscn":
                 continue
-            script_rel = self._res_to_rel(fs.attached_script)
-            if not script_rel or script_rel not in self.files:
-                continue
-            for _, handler in fs.connections:
-                if handler in self.files[script_rel].funcs:
-                    key = f"{script_rel}::{handler}"
-                    self.roots.add(key)
-                    self._edge(f"{rel}::tscn", key)
+            # multi-script scenes: a handler may live on ANY of the scene's
+            # script ext_resources, not just the first attached one
+            script_rels = [
+                s_rel
+                for s in fs.scripts
+                if (s_rel := self._res_to_rel(s)) and s_rel in self.files
+            ]
+            if not script_rels and fs.attached_script:
+                s_rel = self._res_to_rel(fs.attached_script)
+                if s_rel and s_rel in self.files:
+                    script_rels.append(s_rel)
+            for script_rel in script_rels:
+                for _, handler in fs.connections:
+                    if handler in self.files[script_rel].funcs:
+                        key = f"{script_rel}::{handler}"
+                        self.roots.add(key)
+                        self._edge(f"{rel}::tscn", key, ty="signal")
+                self._edge(f"{rel}::tscn", f"{script_rel}::tscn", ty="attach")
             for inst in fs.instances:
                 inst_rel = self._res_to_rel(inst)
                 if inst_rel and inst_rel in self.files:
-                    self._edge(f"{rel}::tscn", f"{inst_rel}::tscn")
+                    self._edge(f"{rel}::tscn", f"{inst_rel}::tscn", ty="inst")
 
     def _res_to_rel(self, res_path: str) -> str:
         if not res_path:
             return ""
         return res_path.removeprefix("res://")
 
-    def _find_roots(self) -> None:
-        for rel, fs in self.files.items():
-            if fs.ext != ".gd":
-                continue
-            in_tests = rel.startswith("tests/")
-            for name, fn in fs.funcs.items():
-                key = fn.key
-                if name in VIRTUALS or name in GUT_ROOTS:
-                    self.roots.add(key)
-                elif name in ADDON_VIRTUALS.get(fs.extends.lower(), ()):
-                    self.roots.add(key)
-                elif in_tests and name.startswith("test_"):
-                    self.roots.add(key)
-        # autoloads
+    def _parse_autoloads(self) -> dict[str, str]:
+        """project.godot [autoload] section: singleton name -> rel path."""
+        out: dict[str, str] = {}
         pg = nav.ROOT / "project.godot"
-        if pg.is_file():
-            text = nav._read_text(pg)
-            in_auto = False
-            for line in text.splitlines():
-                if line.strip().startswith("[autoload]"):
-                    in_auto = True
-                    continue
-                if line.strip().startswith("["):
-                    in_auto = False
-                if in_auto:
-                    m = re.search(r'res://([\w/.-]+\.gd)', line)
-                    if m and m.group(1) in self.files:
-                        for fn in self.files[m.group(1)].funcs.values():
-                            self.roots.add(fn.key)
+        if not pg.is_file():
+            return out
+        in_auto = False
+        for line in nav._read_text(pg).splitlines():
+            if line.strip().startswith("[autoload]"):
+                in_auto = True
+                continue
+            if line.strip().startswith("["):
+                in_auto = False
+            if in_auto:
+                m = re.match(
+                    r'^(\w+)\s*=\s*"\*?res://([\w/.-]+\.gd)"', line.strip()
+                )
+                if m and m.group(2) in self.files:
+                    out[m.group(1)] = m.group(2)
+        return out
+
+    def _find_roots(self) -> None:
+        # entry-point rules are language-owned: each extractor module ships
+        # ENTRY_RULES callables (fs, ctx) -> iterable of entry func keys
+        for rel, fs in self.files.items():
+            extractor = registry_for(fs.ext)
+            if extractor is None:
+                continue
+            for rule in getattr(extractor, "ENTRY_RULES", ()):
+                self.roots.update(rule(fs, ctx=self))
 
     def _reachable(self) -> None:
+        # dynamically-invoked names (unresolvable receivers, strings) are
+        # alive but have no static edge — root them so their callees survive
+        if self.referenced_names:
+            for rel, fs in self.files.items():
+                if fs.ext != ".gd":
+                    continue
+                for name, fn in fs.funcs.items():
+                    if name in self.referenced_names:
+                        self.roots.add(fn.key)
         seen: set[str] = set(self.roots) | self.referenced
-        queue = deque(self.roots)
+        # referenced keys carry real out-edges (preloaded/dynamically
+        # loaded files) — they must be traversed, not just marked alive
+        queue = deque(self.roots | self.referenced)
         while queue:
             cur = queue.popleft()
             for nxt in self.edges.get(cur, ()):  # forward edges
@@ -400,11 +564,10 @@ class Graph:
 
     def dead_code(self, limit: int = 60) -> dict[str, object]:
         dead = []
-        dynamic_hint = re.compile(r"\.call\(|Callable\(|has_method\(|\.connect\(")
         for rel, fs in self.files.items():
             if fs.ext != ".gd":
                 continue
-            file_is_dynamic = bool(dynamic_hint.search("\n".join(fs.funcs[f].body for f in fs.funcs))) if fs.funcs else False
+            file_is_dynamic = bool(DYNAMIC_HINT_RE.search("\n".join(fs.funcs[f].body for f in fs.funcs))) if fs.funcs else False
             for name, fn in fs.funcs.items():
                 if fn.key in self.reachable:
                     continue
@@ -523,10 +686,12 @@ def _fn_collection() -> "chromadb.Collection":
     import chromadb
 
     client = chromadb.PersistentClient(path=str(nav.DB_DIR))
-    return client.get_or_create_collection(
+    col = client.get_or_create_collection(
         name="swmg-fns",
         metadata={"hnsw:space": "cosine"},
     )
+    nav._check_model(col)
+    return col
 
 
 def _all_filesyms() -> dict[str, FileSym]:
@@ -534,8 +699,14 @@ def _all_filesyms() -> dict[str, FileSym]:
 
 
 def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
-    """Re-embed functions of changed files, purge deleted files' functions."""
+    """Re-embed functions of changed files, purge deleted files' functions.
+    Self-healing: an interrupted sync (embed failure, process kill) leaves a
+    dirty marker; the next call with no changes does a full rebuild so the
+    index never stays silently stale."""
     col = _fn_collection()
+    dirty = nav.DB_DIR / "fns.dirty"
+    if dirty.is_file() and not changed:
+        changed = sorted(rel for rel, fs in _all_filesyms().items() if fs.ext == ".gd")
     stale = sorted(set(changed) | set(deleted))
     if stale and col.count():
         for p in stale:
@@ -561,16 +732,22 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
                 {"path": rel, "name": name, "class_name": fs.class_name,
                  "line": fn.line}
             )
-    added = 0
-    for i in range(0, len(ids), nav.EMBED_BATCH):
-        vecs = nav.embed(docs[i : i + nav.EMBED_BATCH])
-        col.upsert(
-            ids=ids[i : i + nav.EMBED_BATCH],
-            embeddings=vecs,
-            documents=docs[i : i + nav.EMBED_BATCH],
-            metadatas=metas[i : i + nav.EMBED_BATCH],
-        )
-        added += len(vecs)
+    try:
+        with nav._db_lock():
+            added = 0
+            for i in range(0, len(ids), nav.EMBED_BATCH):
+                vecs = nav.embed(docs[i : i + nav.EMBED_BATCH])
+                col.upsert(
+                    ids=ids[i : i + nav.EMBED_BATCH],
+                    embeddings=vecs,
+                    documents=docs[i : i + nav.EMBED_BATCH],
+                    metadatas=metas[i : i + nav.EMBED_BATCH],
+                )
+                added += len(vecs)
+    except Exception:
+        dirty.write_text("sync failed", encoding="utf-8")
+        raise
+    dirty.unlink(missing_ok=True)
     return {"fns_upserted": added, "purged_paths": len(stale)}
 
 
