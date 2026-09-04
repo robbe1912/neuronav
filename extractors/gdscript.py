@@ -34,6 +34,37 @@ CONST_PRELOAD_RE = re.compile(
 SN_DEFAULT_RE = re.compile(
     r'^\s*(?:@export\S*\s+)?var\s+\w+\s*(?::=|:\s*StringName\s*=|=)\s*&"([a-z_]\w*)"'
 )
+# exported method-name defaults (var name carries 'method'): BT/agent routing
+# like `@export var start_method_name = "attack_start"` — plain quotes too,
+# harvested unconditionally, not gated on dynamic-dispatch hints
+METHOD_DEFAULT_RE = re.compile(
+    r'^\s*(?:@export\S*\s+)?var\s+\w*method\w*\s*(?::=|:\s*StringName\s*=|=)\s*&?"([a-z_]\w*)"'
+)
+# inline property accessors: `@export var x: int = 0: set(v):` — the engine
+# invokes the indented block below on export changes (set) / reads (get)
+PROPERTY_ACCESSOR_RE = re.compile(
+    r"^[ \t]*(?:@(?:onready|export)\S*\s+)*var\s+(\w+).+:\s*(set|get)"
+    r"\s*\(\s*\w*\s*\)\s*:\s*$"
+)
+# next-line accessor form (equally valid Godot):
+#   @export var x: T = v:
+#       set(value):
+#           body...
+VAR_ACCESSOR_COLON_RE = re.compile(
+    r"^[ \t]*(?:@(?:onready|export)\S*\s+)*var\s+(\w+).+:\s*$"
+)
+ACCESSOR_LINE_RE = re.compile(r"^[ \t]+(set|get)\s*\(\s*\w*\s*\)\s*:\s*$")
+# class-level var initializers run at instantiation: bare calls inside the
+# RHS expression (`var rise_curve: Curve = _make_overshoot_curve()`) keep
+# their targets alive
+VAR_INIT_RE = re.compile(
+    r"^[ \t]*(?:@(?:onready|export)\S*\s+)*var\s+\w+[^=]*=(?!=)\s*(.+)$"
+)
+INIT_CALL_RE = re.compile(r"(?<![\w.$])([a-z_]\w*)\s*\(")
+INIT_CALL_SKIP = {
+    "if", "for", "while", "match", "return", "await", "super", "func",
+    "preload", "load", "set", "get",
+}
 # animation method call tracks inside .tscn: "method": &"on_x" / "method": "on_x"
 ANIM_METHOD_RE = re.compile(r'"method":\s*&?"(\w+)"')
 TOOL_RE = re.compile(r"^[ \t]*(@tool|\btool\b)")
@@ -73,6 +104,18 @@ ADDON_VIRTUALS: dict[str, set[str]] = {
 # entry bases that run from the editor/tooling, outside the game's call graph
 # (compared against fs.extends.lower(), so store the lowercased spelling)
 MANUAL_BASES = {"editorscript", "editorplugin", "scenetree"}
+
+# native virtuals dispatched by unresolvable engine bases, beyond the
+# _get_/_set_ property convention (C++ multiplayer extension surface)
+ENGINE_VIRTUALS: dict[str, set[str]] = {
+    base: {
+        "_close", "_is_refusing_new_connections",
+        "_set_refusing_new_connections", "_get_packet", "_put_packet",
+        "_get_available_packet_count", "_get_max_packet_size",
+        "_get_packet_peer",
+    }
+    for base in ("multiplayerpeer", "multiplayerpeerextension")
+}
 
 
 def _entry_dispatch(fs: FileSym, ctx) -> Iterator[str]:
@@ -123,12 +166,14 @@ def _entry_rpc(fs: FileSym, ctx) -> Iterator[str]:
 
 
 def _entry_engine_props(fs: FileSym, ctx) -> Iterator[str]:
-    """_get_*/_set_* property accessors on scripts extending engine or
-    addon bases (not resolvable in class_map) are dispatched natively."""
+    """_get_*/_set_* property accessors (and per-base native virtuals) on
+    scripts extending engine or addon bases (not resolvable in class_map)
+    are dispatched natively."""
     if fs.ext != ".gd" or not fs.extends or fs.extends in ctx.class_map:
         return
+    native = ENGINE_VIRTUALS.get(fs.extends.lower(), ())
     for name, fn in fs.funcs.items():
-        if ENGINE_PROP_RE.match(name):
+        if ENGINE_PROP_RE.match(name) or name in native:
             yield fn.key
 
 
@@ -170,11 +215,71 @@ def parse_gd(path: Path, rel: str) -> FileSym:
             fs.signals.add(m.group(1))
             i += 1
             continue
+        m = PROPERTY_ACCESSOR_RE.match(line)
+        varname = kind = None
+        body_start = i + 1
+        if m:
+            varname, kind = m.group(1), m.group(2)
+        else:
+            mv = VAR_ACCESSOR_COLON_RE.match(line)
+            if mv:
+                k = i + 1
+                while k < len(lines) and lines[k].strip() == "":
+                    k += 1
+                am = ACCESSOR_LINE_RE.match(lines[k]) if k < len(lines) else None
+                if am:
+                    varname, kind = mv.group(1), am.group(1)
+                    body_start = k + 1
+        if varname:
+            # `set(v):` / `get():` accessor block under a class-level var —
+            # parse as a rooted pseudo-func so its body's calls stay alive
+            base = _indent(line)
+            j = body_start
+            body_lines: list[str] = []
+            while j < len(lines):
+                nxt = lines[j]
+                if nxt.strip() == "":
+                    j += 1
+                    continue
+                if _indent(nxt) > base:
+                    body_lines.append(nxt)
+                    j += 1
+                    continue
+                break
+            pname = f"_{kind}_{varname}"
+            body = "\n".join(body_lines)
+            if pname in fs.funcs:
+                prev = fs.funcs[pname]
+                fs.funcs[pname] = Func(
+                    path=rel, name=pname, line=prev.line,
+                    body=prev.body + "\n" + body,
+                )
+            else:
+                fs.funcs[pname] = Func(
+                    path=rel, name=pname, line=i + 1, body=body,
+                )
+            fs.entry_hints.add(pname)
+            i = j
+            continue
+        m = METHOD_DEFAULT_RE.match(line)
+        if m:
+            fs.name_literals.add(m.group(1))
+            i += 1
+            continue
         m = SN_DEFAULT_RE.match(line)
         if m:
             fs.name_literals.add(m.group(1))
             i += 1
             continue
+        m = VAR_INIT_RE.match(line)
+        if m:
+            # bare calls in the initializer RHS run at instantiation —
+            # harvest names, then fall through so typed/new/const branches
+            # can still claim this line
+            for cm in INIT_CALL_RE.finditer(m.group(1)):
+                nm = cm.group(1)
+                if nm not in INIT_CALL_SKIP:
+                    fs.init_calls.add(nm)
         m = MEMBER_TYPED_RE.match(line)
         if m:
             fs.members[m.group(1)] = m.group(2)
