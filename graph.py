@@ -79,6 +79,10 @@ QUOTED_IDENT_RE = re.compile(r"""["']([a-z_]\w{3,})["']""")
 # bare callback-convention identifiers (_on_*) in argument/array positions:
 # method references without call parens, e.g. ["QUIT", color, _on_quit]
 BARE_HANDLER_RE = re.compile(r'(?<![\w."&])_on_[a-z_]\w*')
+# bare method-ref as the FULL right-hand side of an assignment (raw, not
+# folded: the $ anchor needs real line ends): `obj.prop = _handler`
+ASSIGN_RHS_RE = re.compile(r"(?<![=!<>+\-*/%&|^])=\s*([a-z_]\w*)\s*$", re.M)
+ASSIGN_RHS_SKIP = {"true", "false", "null", "self"}
 # tween binders reference methods without parens: tween_method(_set_reveal)
 TWEEN_ARG_RE = re.compile(
     r'\.(?:tween_method|tween_callback|tween_property)\(\s*&?"?([A-Za-z_]\w{3,})"?'
@@ -261,6 +265,9 @@ class Graph:
             for nm in fs.name_literals:
                 if len(nm) > 3:
                     self.referenced_names.add(nm)
+            # class-level initializer calls run at instantiation — alive
+            for nm in fs.init_calls:
+                self.referenced_names.add(nm)
             if not fs.funcs:
                 continue
             joined = "\n".join(f.body for f in fs.funcs.values())
@@ -361,6 +368,13 @@ class Graph:
             self.referenced_names.add(m.group(1))
         for m in BARE_HANDLER_RE.finditer(scan_text):
             self.referenced_names.add(m.group(0))
+        # bare method-ref as full assignment RHS (property-assignment
+        # wiring): `magic_system.cb = _connect_equipped_signal` — scanned
+        # on the RAW body because the $ anchor needs real line ends
+        for m in ASSIGN_RHS_RE.finditer(fn.body):
+            nm = m.group(1)
+            if nm not in ASSIGN_RHS_SKIP:
+                self.referenced_names.add(nm)
         # two-level typed chains: ctx.teams.team_ids(...) — resolve head to
         # its class, hop through a declared member, then emit
         for m in CHAIN_CALL_RE.finditer(scan_text):

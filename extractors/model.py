@@ -46,6 +46,9 @@ class FileSym:
     # like `@export var x: StringName = &"method"`) that may dispatch
     # dynamically — harvested into the graph's referenced-name set
     name_literals: set[str] = field(default_factory=set)
+    # bare calls inside class-level var initializer expressions — they run
+    # at instantiation, so their targets must stay alive
+    init_calls: set[str] = field(default_factory=set)
     # parse-declared entry funcs: decorators like @rpc mark network entry
     # points — extractor fills names, an entry rule yields them as roots
     entry_hints: set[str] = field(default_factory=set)

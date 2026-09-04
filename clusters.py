@@ -52,6 +52,8 @@ STOPWORDS = {
 }
 
 BLOB_MIN = 60          # clusters larger than this get split
+PACK_SPLIT_SHARE = 0.35  # each of the top-2 stem packs must cover >= this
+                         # for the surgical asset-pack split to fire
 BIG_SEED_MAX = 60      # seed groups at/above this size need cross_sim even
                        # for same-seed unions (blob-scale flat folders like
                        # VFX/Scenes chain unrelated asset packs at min_sim)
@@ -553,6 +555,87 @@ def _merge_small(subs: list[dict], rows: dict[str, int], mat) -> list[dict]:
     return big
 
 
+def _pack_key(stem: str) -> str | None:
+    """Stem pack id Pfx_Seg (VFX_WindBlow_B -> "vfx_wind"): prefix token +
+    first camel hump of the second token. None when the stem has no
+    Pfx_Seg shape."""
+    toks = stem.split("_")
+    if len(toks) < 2 or not toks[1]:
+        return None
+    humps = re.findall(r"[A-Z][a-z]*", toks[1])
+    seg = (humps[0] if humps else toks[1]).lower()
+    if len(seg) < 3:
+        return None
+    return f"{toks[0].lower()}_{seg}"
+
+
+def _split_pack_cluster(cluster: dict, rows: dict[str, int], mat) -> list[dict]:
+    """Surgical asset-pack split (lead-approved): subdivide ONLY
+    scene-dominant clusters whose member stems map to >=2 distinct Pfx_Seg
+    packs each holding >= PACK_SPLIT_SHARE of the cluster (the wind+earth
+    mixed community in the flat VFX/Scenes folder). Global resolution is
+    untouched. Named pack groups smaller than SMALL_MIN merge into the
+    nearest surviving pack centroid (>= MERGE_SIM) else join the no-pack
+    leftover bucket."""
+    import numpy as np
+
+    paths = cluster["paths"]
+    n = len(paths)
+    scene = [p for p, _ in paths if p.endswith(".tscn")]
+    if len(scene) * 2 <= n or n < 2 * SMALL_MIN:
+        return [cluster]
+    packs: Counter = Counter()
+    for p, _ in paths:
+        k = _pack_key(_stem(p))
+        if k:
+            packs[k] += 1
+    top2 = sorted(packs.items(), key=lambda kv: (-kv[1], kv[0]))[:2]
+    if (
+        len(top2) < 2
+        or top2[0][1] / n < PACK_SPLIT_SHARE
+        or top2[1][1] / n < PACK_SPLIT_SHARE
+    ):
+        return [cluster]
+    groups: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for m in paths:
+        k = _pack_key(_stem(m[0]))
+        groups[k or "_"].append(m)
+
+    def centroid(mem: list[tuple[str, str]]):
+        vecs = [mat[rows[p]] for p, _ in mem if p in rows]
+        return None if not vecs else np.mean(vecs, axis=0)
+
+    named = {k: mem for k, mem in groups.items() if k != "_"}
+    leftovers = list(groups.get("_", []))
+    for k in sorted(named):
+        mem = named[k]
+        if len(mem) >= SMALL_MIN:
+            continue
+        best, best_sim = None, -2.0
+        c = centroid(mem)
+        for k2 in sorted(named):
+            if k2 == k or not named[k2]:
+                continue
+            c2 = centroid(named[k2])
+            if c is None or c2 is None:
+                continue
+            cos = float(np.dot(c, c2) / (np.linalg.norm(c) * np.linalg.norm(c2) + 1e-12))
+            if cos > best_sim:
+                best, best_sim = k2, cos
+        if best is not None and best_sim >= MERGE_SIM:
+            named[best] = sorted(named[best] + mem)
+            named[k] = []
+    out = [
+        {"paths": sorted(mem), "size": len(mem)}
+        for k, mem in sorted(named.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+        if mem
+    ]
+    if leftovers:
+        out.append({"paths": sorted(leftovers), "size": len(leftovers)})
+    out.sort(key=lambda c: (-c["size"], c["paths"][0][0]))
+    return out
+
+
 def finalize(
     raw: list[dict], ids: list[str], mat, split_sim: float = SPLIT_SIM, blob_min: int = BLOB_MIN
 ) -> list[dict]:
@@ -568,6 +651,8 @@ def finalize(
             parts.extend(_split_cluster(c, rows, mat, split_sim, depth=1))
         else:
             parts.append({"paths": list(c["paths"]), "size": c["size"]})
+    # surgical asset-pack split for genuinely mixed pack communities
+    parts = [p for c in parts for p in _split_pack_cluster(c, rows, mat)]
     parts = _merge_small(parts, rows, mat)
     parts.sort(key=lambda c: (-c["size"], c["paths"][0][0] if c["paths"] else ""))
     for i, c in enumerate(parts):

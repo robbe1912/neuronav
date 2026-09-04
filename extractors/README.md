@@ -39,8 +39,9 @@ An extractor module must expose:
   | `signals: set[str]` | declared signal/event names |
   | `members: dict[name -> TypeName]` | typed member vars — gates `'var'` edges |
   | `consts: dict[name -> relpath]` | `const X = preload(...)` style receivers |
-   | `name_literals: set[name]` | file-level StringName defaults (`&"m"`) that may dispatch dynamically |
-   | `entry_hints: set[name]` | parse-declared entry funcs (`@rpc` decorators) — yielded as roots by an entry rule |
+   | `name_literals: set[name]` | file-level StringName defaults (`&"m"`) and exported `*method*` var defaults (`"m"`) that may dispatch dynamically |
+   | `init_calls: set[name]` | bare calls inside class-level var initializer expressions (run at instantiation) |
+   | `entry_hints: set[name]` | parse-declared entry funcs (`@rpc` decorators, inline `set(v):`/`get():` property-accessor blocks) — yielded as roots by an entry rule |
 
   Scene-like formats additionally fill `attached_script` (first script,
   kept for viz.py), `scripts` (ALL script ext_resources — handlers may live
@@ -52,8 +53,9 @@ An extractor module must expose:
   `ctx` is the `Graph` under construction (exposes `.autoloads`,
   `.tres_scripts`, `.class_map`, ...). GDScript's rules: engine/test/addon
   virtuals, autoload singletons, tool/editor bases, `.tres`-referenced
-  scripts, `@rpc` network entries, `_get_*`/`_set_*` accessors on
-  engine-base scripts. `graph._find_roots()` iterates `registry_for(fs.ext).ENTRY_RULES`
+   scripts, `@rpc` network entries, `_get_*`/`_set_*` accessors plus
+   per-base native virtuals (`ENGINE_VIRTUALS`, e.g. the MultiplayerPeer
+   extension surface) on engine-base scripts. `graph._find_roots()` iterates `registry_for(fs.ext).ENTRY_RULES`
   and unions the yielded keys into the root set.
 
 ## Adding a language (checklist)
