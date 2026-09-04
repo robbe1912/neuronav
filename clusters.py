@@ -78,6 +78,14 @@ def dir_segments(path: str) -> list[str]:
     return [p for p in parts if p.lower() not in GENERIC_DIRS]
 
 
+def dir_seed(path: str) -> str | None:
+    """First non-generic dir segment — the union-permission key for
+    dir-seeded clustering (nav.clusters). None means the file sits under
+    generic-only dirs (e.g. scripts/foo.gd): unconstrained, plain kNN."""
+    segs = dir_segments(path)
+    return segs[0] if segs else None
+
+
 def _stem(path: str) -> str:
     base = path.rsplit("/", 1)[-1]
     return base.rsplit(".", 1)[0]

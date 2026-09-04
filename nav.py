@@ -258,12 +258,19 @@ def count() -> int:
 
 
 def clusters(
-    k: int = 6, min_sim: float = 0.6, split_sim: float = 0.65, blob_min: int = 60
+    k: int = 6,
+    min_sim: float = 0.6,
+    split_sim: float = 0.65,
+    blob_min: int = 60,
+    cross_sim: float = 0.75,
 ) -> list[dict[str, object]]:
     """Subsystem clusters: union-find over MUTUAL kNN embedding neighbours
     (i and j are neighbours of each other, cosine >= min_sim). Mutual links
     resist transitive chaining, so components stay subsystem-sized.
-    Mega-blobs are then split + every cluster labeled (see clusters.py).
+    Unions are dir-seeded: i and j merge only when they share their first
+    non-generic dir segment (files under generic-only dirs are unconstrained,
+    plain kNN); cross-dir merges need cosine >= cross_sim. Mega-blobs are
+    then split + every cluster labeled (see clusters.py).
     Returns [{id, size, paths: [(path, class_name)], label, confidence,
     method}]."""
     import numpy as np
@@ -296,6 +303,10 @@ def clusters(
         if ra != rb:
             parent[max(ra, rb)] = min(ra, rb)
 
+    import clusters as _clusters
+
+    seed = [_clusters.dir_seed(p) for p in ids]
+
     # cluster scripts and scenes separately: tscn headers dominate embeddings,
     # mixing them chains unrelated files; scene↔script affinity is structural
     gd_idx = [i for i, m in enumerate(metas) if (m or {}).get("ext") == ".gd"]
@@ -306,7 +317,14 @@ def clusters(
             for j in knn[i]:
                 j = int(j)
                 if j in sset and i in knn[j] and sim[i, j] >= min_sim:
-                    union(i, j)
+                    si, sj = seed[i], seed[j]
+                    if (
+                        si is None
+                        or sj is None
+                        or si == sj
+                        or sim[i, j] >= cross_sim
+                    ):
+                        union(i, j)
 
     groups: dict[int, list[int]] = {}
     for i in range(len(ids)):
@@ -324,7 +342,6 @@ def clusters(
     out.sort(key=lambda c: -int(c["size"]))
     for idx, c in enumerate(out):
         c["id"] = idx
-    import clusters as _clusters
 
     return _clusters.finalize(out, ids, mat, split_sim=split_sim, blob_min=blob_min)
 
