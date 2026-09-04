@@ -30,6 +30,11 @@ def _build_data() -> dict:
         for path, _cls in c["paths"]:
             file_cluster[path] = int(c["id"])
 
+    # cid -> human label (labeler cascade: autoload > dir > scene > tfidf)
+    cluster_names: dict[str, str] = {
+        str(int(c["id"])): c.get("label") or f"c{c['id']}" for c in clusters
+    }
+
     # dead-code candidates per file (tier-aware: likely=1, review=0.5);
     # dl marks any-likely for the "likely dead" tag (weight sums can hit
     # 1.0 from two review-tier hits alone, which is not "likely")
@@ -189,9 +194,8 @@ def _build_data() -> dict:
             "deadFiles": sum(1 for v in dead_weight.values() if v >= 1.0),
             "deadLikely": dead["by_tier"].get("likely", 0),
             "deadReview": dead["by_tier"].get("review", 0),
-            # containment-name slot: extractor's cluster labeler fills this
-            # later (cid -> human name); JS falls back to "cN" when empty
-            "clusterNames": {},
+            # cid -> human name from nav.clusters() labeler cascade
+            "clusterNames": cluster_names,
         },
     }
 
@@ -228,7 +232,10 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list) -> list:
 
     kept = [
         (a, b,
-         230.0 if rec["compo"] else max(65.0, 165.0 / (1 + rec["w"] * 0.5)),
+         # rest lengths scaled 1.7x: the offline run reaches the springs'
+         # true (tight) equilibrium, while the old browser sim froze
+         # mid-expansion — scaling keeps the QA'd visual density
+         (230.0 if rec["compo"] else max(65.0, 165.0 / (1 + rec["w"] * 0.5))) * 1.7,
          0.02 * min(3.0, 1 + rec["w"] * 0.3))
         for (a, b), rec in pairs.items()
         # edge-cut: single weak non-structural springs are excluded from the
@@ -244,14 +251,16 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list) -> list:
         np.zeros((0, 3), dtype=np.float32)
     ma = sem[:, 0].astype(np.int64)
     mb = sem[:, 1].astype(np.int64)
-    mrest = 620.0 * (1.0 - sem[:, 2])
+    mrest = 950.0 * (1.0 - sem[:, 2])
 
     # hub-weighted repulsion coefficients: sqrt-degree product normalised by
     # the mean, so an average pair repels like the old uniform 52000 while
     # hub-hub pairs push much harder (hubs stop drowning in the core)
     dbar = float(deg.mean()) + 1.0
     ds = np.sqrt(deg + 1.0).astype(np.float32)
-    kcoef = (52000.0 * np.outer(ds, ds) / (dbar * dbar)).astype(np.float32)
+    # spread constant ~2x the old browser value: the frozen layout has fewer
+    # integration steps, so repulsion needs more authority to open the graph
+    kcoef = (110000.0 * np.outer(ds, ds) / (dbar * dbar)).astype(np.float32)
 
     carr = np.asarray(cluster_ids, dtype=np.int64)
     cids, cinv = np.unique(carr, return_inverse=True)
@@ -287,8 +296,20 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list) -> list:
         np.add.at(csum, cinv, pos)
         cen = csum / ccount[:, None]
         vel += (cen[cinv] - pos) * 0.006
+        # cluster-blob repulsion: charged centroids push apart so the
+        # overview reads as separated islands instead of one stacked core
+        D = cen[:, None, :] - cen[None, :, :]      # D[i,j] = cen_i - cen_j
+        cd2 = (D * D).sum(2) + 1.0
+        np.fill_diagonal(cd2, 1e9)
+        # two-scale blob repulsion: a gentle global term sets the galaxy
+        # radius, a stronger near-range term splits overlapping islands
+        big = np.minimum(70.0 * (ccount[:, None] + ccount[None, :]) / cd2, 8.0)
+        near = np.minimum(1500.0 * (ccount[:, None] + ccount[None, :]) / cd2, 12.0)
+        cw = big + np.where(cd2 < 48400.0, near, 0.0)   # < 220 units apart
+        cF = np.einsum("ij,ijk->ik", cw, D)
+        vel += cF[cinv] * 0.004
         # center gravity + clamped integrate
-        vel -= pos * 0.0012
+        vel -= pos * 0.0011
         v2 = (vel * vel).sum(1)
         fast = v2 > 2500.0
         if fast.any():
@@ -369,6 +390,11 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .elab { position:absolute; left:0; top:0; display:none; white-space:nowrap;
     font-size:9.5px; padding:0 5px; border-radius:5px;
     background:rgba(8,12,16,.75); pointer-events:none; }
+  #clabs { position:fixed; inset:0; z-index:3; pointer-events:none;
+    overflow:hidden; }
+  .clab { position:absolute; left:0; top:0; display:none; white-space:nowrap;
+    font-size:12px; font-weight:700; letter-spacing:1.5px; opacity:.95;
+    text-shadow:0 0 6px #000, 0 1px 3px #000, 0 0 12px #000; }
 </style>
 </head>
 <body>
@@ -402,6 +428,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <div id="tip"></div>
 <div id="hubs"></div>
 <div id="elabs"></div>
+<div id="clabs"></div>
 
 <script type="importmap">
 { "imports": {
@@ -457,6 +484,9 @@ const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 1, 20000)
 camera.position.set(0, 0, 1400);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
+// gentle idle rotation keeps the overview alive without user input
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.35;
 
 // cluster hue: golden angle spread; dead files tinted toward red
 const hue = c => c < 0 ? 0.08 : (c * 0.61803398875 + 0.55) % 1;
@@ -544,8 +574,10 @@ const bucketPosIB = [], bucketColIB = [], bucketMat = [];
     geo.setColors(new Float32Array(counts[BUCKETS.indexOf(b)] * 6));
     const mat = new LineMaterial({
       vertexColors: true, linewidth: b.width, worldUnits: false,
-      transparent: true, opacity: 0.7, alphaToCoverage: false,
-      blending: THREE.AdditiveBlending, depthWrite: false,
+      // normal blending: additive stacking blew out hub fans into white glare
+      // (hundreds of strands converge on 200+-degree hubs)
+      transparent: true, opacity: 0.55, alphaToCoverage: false,
+      blending: THREE.NormalBlending, depthWrite: false,
     });
     mat.resolution.set(innerWidth, innerHeight);
     const mesh = new LineSegments2(geo, mat);
@@ -688,6 +720,7 @@ function tick() {
   }
   controls.update();
   updateHubs();
+  updateClusterLabs();
   updateEdgeLabels();
   renderer.render(scene, camera);
   requestAnimationFrame(tick);
@@ -712,6 +745,9 @@ function frameGraph() {
   dir.normalize();
   camera.position.copy(b.center).addScaledVector(dir, Math.max(420, b.radius * 1.45));
   controls.target.copy(b.center);
+  // LOD threshold tracks the framing distance so overview stays overview
+  // regardless of graph size
+  lodDist = Math.max(420, b.radius * 1.45) * 0.72;
 }
 
 // ---- UI ---------------------------------------------------------------------
@@ -730,6 +766,56 @@ const edgeLegend = document.getElementById("edgeLegend");
   edgeLegend.appendChild(k);
 });
 
+// ---- containment: per-cluster halo ring + name at centroid (overview) -----
+// names come from DATA.meta.clusterNames (extractor's cluster labeler fills
+// the slot later); until then labels fall back to the cN chip id
+const cNames = (m.clusterNames || {});
+const clabsEl = document.getElementById("clabs");
+let cLabs = [];
+{
+  const byC = {};
+  nodes.forEach((n, i) => { if (n.cluster >= 0) (byC[n.cluster] = byC[n.cluster] || []).push(i); });
+  Object.entries(byC).sort((a, b) => b[1].length - a[1].length).slice(0, 14)
+    .forEach(([cid, members]) => {
+      let cx = 0, cy = 0, cz = 0;
+      members.forEach(i => { cx += pos[i*3]; cy += pos[i*3+1]; cz += pos[i*3+2]; });
+      cx /= members.length; cy /= members.length; cz /= members.length;
+      let r = 60;
+      members.forEach(i => {
+        r = Math.max(r, Math.hypot(pos[i*3]-cx, pos[i*3+1]-cy, pos[i*3+2]-cz));
+      });
+      r *= 1.12;
+      const segs = 72, pts = [];
+      for (let s = 0; s <= segs; s++) {
+        const a = s / segs * Math.PI * 2;
+        pts.push(new THREE.Vector3(cx + Math.cos(a)*r, cy, cz + Math.sin(a)*r));
+      }
+      const col = new THREE.Color().setHSL(hue(+cid), 0.72, 0.58);
+      scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+        new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.08,
+          blending: THREE.AdditiveBlending, depthWrite: false })));
+      const el = document.createElement("div");
+      el.className = "clab";
+      el.style.color = "#" + col.getHexString();
+      el.textContent = (cNames[cid] || "c" + cid) + " · " + members.length;
+      clabsEl.appendChild(el);
+      cLabs.push({ cx, cy, cz, el });
+    });
+}
+function updateClusterLabs() {
+  const w = innerWidth, h = innerHeight;
+  for (const c of cLabs) {
+    if (clabsEl.style.display === "none") { c.el.style.display = "none"; continue; }
+    hubV.set(c.cx, c.cy, c.cz).project(camera);
+    if (hubV.z > 1 || Math.abs(hubV.x) > 1.05 || Math.abs(hubV.y) > 1.05) {
+      c.el.style.display = "none"; continue;
+    }
+    c.el.style.display = "block";
+    c.el.style.transform = "translate(" + ((hubV.x*0.5+0.5)*w).toFixed(1) + "px," +
+      ((-hubV.y*0.5+0.5)*h).toFixed(1) + "px) translate(-50%,-50%)";
+  }
+}
+
 const tip = document.getElementById("tip");
 const crumb = document.getElementById("crumb");
 const esc = s => String(s).replace(/[&<>"]/g,
@@ -740,6 +826,9 @@ const mouse = new THREE.Vector2();
 let hovered = -1, hoveredFn = -1, selected = -1;
 let activeCluster = null, deadOnly = false, query = "";
 let showInst = false, showCalls = true, focusSeed = -1, depth = 2, fnMode = false;
+// overview LOD: intra-cluster edges stay hidden until the camera closes in
+// (zoom threshold maintained by the controls 'change' listener below)
+let lodClose = false, lodDist = 1e9;
 const level = new Int16Array(N).fill(-1);
 
 // BFS from search seeds (path/class matches + clicked seed) up to `depth`
@@ -784,15 +873,37 @@ function applyVisibility() {
   pGeo.attributes.color.needsUpdate = true;
   pGeo.attributes.aalpha.needsUpdate = true;
   // dim edges: hidden endpoints, filtered types, or focus distance
-  // (dimmed eColBase written straight into each bucket's instanced colors)
+  // (dimmed eColBase written straight into each bucket's instanced colors).
+  // Overview palette: edge-type hues are demoted to weight-tinted gray so
+  // cluster colors carry the overview; full type colors return on focus.
+    const grayMix = focusing ? 0 : 0.92;
   const touched = [false, false, false];
   links.forEach((l, i) => {
     let k;
     if (!typeVisible(l.ty) || alphaArr[l.s] <= 0.5 || alphaArr[l.t] <= 0.5) k = 0.012;
     else if (focusing) k = Math.max(0.22, 1 - 0.26 * Math.max(level[l.s], level[l.t]));
     else k = 1;
-    const b = bucketOf[i];
-    bucketColIB[b].array.set(eColBase.subarray(i*6, i*6+6).map(v => v * k), slotOf[i]*6);
+    if (!focusing && !lodClose && k > 0.04) {
+      const dx = pos[l.s*3] - pos[l.t*3], dy = pos[l.s*3+1] - pos[l.t*3+1],
+            dz = pos[l.s*3+2] - pos[l.t*3+2];
+      const el3 = Math.sqrt(dx*dx + dy*dy + dz*dz);
+      const sameC = nodes[l.s].cluster >= 0 && nodes[l.s].cluster === nodes[l.t].cluster;
+      // overview edge-cut: intra-cluster edges hide entirely and long
+      // ring-diameter chords dim out — otherwise they cross the whole
+      // galaxy and re-form the hairball the layout just removed
+      if (sameC) { if (k > 0.045) k = 0.045; }
+      else if (el3 > 200) k = 0.02;
+    }
+    const b = bucketOf[i], o6 = i * 6, s6 = slotOf[i] * 6;
+    const tgt = bucketColIB[b].array;
+    if (grayMix > 0) {
+      // dim weight-tinted gray: edges stay legible structure hints without
+      // outshining the cluster-colored nodes under additive blending
+      const g = (0.10 + 0.18 * Math.min(1, l.w / 8)) * k;
+      for (let c = 0; c < 6; c++) tgt[s6+c] = eColBase[o6+c] * (1 - grayMix) + g * grayMix;
+    } else {
+      for (let c = 0; c < 6; c++) tgt[s6+c] = eColBase[o6+c] * k;
+    }
     touched[b] = true;
   });
   touched.forEach((t, b) => { if (t) bucketColIB[b].needsUpdate = true; });
@@ -805,6 +916,8 @@ function applyVisibility() {
     crumb.style.display = "flex";
     crumb.querySelector(".x").onclick = clearFocus;
   } else crumb.style.display = "none";
+  // cluster identity is an overview cue — hide the name labels on focus
+  clabsEl.style.display = focusing ? "none" : "block";
   rebuildFnLayer(focusing);
   rebuildHubs();
   rebuildEdgeLabels(focusing);
@@ -1189,7 +1302,21 @@ addEventListener("resize", () => {
   renderer.setSize(innerWidth, innerHeight);
   bucketMat.forEach(m => m.resolution.set(innerWidth, innerHeight));
 });
+// LOD zoom threshold: crossing it reveals/hides intra-cluster edges at
+// overview (filters never re-layout — this only recomputes edge colors)
+controls.addEventListener("change", () => {
+  const c = camera.position.distanceTo(controls.target) < lodDist;
+  if (c !== lodClose) {
+    lodClose = c;
+    if (focusSeed < 0 && !query) applyVisibility();
+  }
+});
 
+// apply the overview palette + LOD once at boot (initial buffer fill is
+// full-color; this demotes it to the overview state without waiting for
+// user interaction)
+applyVisibility();
+if (!running) frameGraph();
 tick();
 </script>
 </body>
