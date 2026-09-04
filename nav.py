@@ -263,14 +263,19 @@ def clusters(
     split_sim: float = 0.65,
     blob_min: int = 60,
     cross_sim: float = 0.75,
+    resolution: float = 1.5,
 ) -> list[dict[str, object]]:
-    """Subsystem clusters: union-find over MUTUAL kNN embedding neighbours
-    (i and j are neighbours of each other, cosine >= min_sim). Mutual links
-    resist transitive chaining, so components stay subsystem-sized.
-    Unions are dir-seeded: i and j merge only when they share their first
-    non-generic dir segment (files under generic-only dirs are unconstrained,
-    plain kNN); cross-dir merges need cosine >= cross_sim. Mega-blobs are
-    then split + every cluster labeled (see clusters.py).
+    """Subsystem clusters. Default engine (resolution not None): Louvain
+    community detection over a hybrid weighted graph — mutual-kNN
+    embedding sims (weight = sim * 0.7) + structural edges from graph.py
+    (call/signal capped 5 per file pair, attach/inst 1.5); tests/ files
+    get their own community, loose files join the community dominating
+    their dir seed (see clusters.communities_graph). Resolution 1.5
+    chosen by sweep ({1.0: 49 clusters/largest 131, 1.2: 35/74, 1.5:
+    29/69, 1.8: 30/70}). Legacy engine (resolution=None): dir-seeded
+    mutual-kNN union-find (full-dir-chain seeds, blob-scale seed groups
+    need cross_sim). Either way mega-blobs are then split + every cluster
+    labeled (see clusters.finalize).
     Returns [{id, size, paths: [(path, class_name)], label, confidence,
     method}]."""
     import numpy as np
@@ -290,55 +295,68 @@ def clusters(
     np.fill_diagonal(sim, -1.0)
     knn = np.argsort(-sim, axis=1)[:, :k]
 
-    parent = list(range(len(ids)))
-
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(a: int, b: int) -> None:
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[max(ra, rb)] = min(ra, rb)
-
     import clusters as _clusters
 
-    seed = [_clusters.dir_seed(p) for p in ids]
-
-    # cluster scripts and scenes separately: tscn headers dominate embeddings,
-    # mixing them chains unrelated files; scene↔script affinity is structural
-    gd_idx = [i for i, m in enumerate(metas) if (m or {}).get("ext") == ".gd"]
-    tscn_idx = [i for i, m in enumerate(metas) if (m or {}).get("ext") == ".tscn"]
-    for subset in (gd_idx, tscn_idx):
-        sset = set(subset)
-        for i in subset:
-            for j in knn[i]:
-                j = int(j)
-                if j in sset and i in knn[j] and sim[i, j] >= min_sim:
-                    si, sj = seed[i], seed[j]
-                    if (
-                        si is None
-                        or sj is None
-                        or si == sj
-                        or sim[i, j] >= cross_sim
-                    ):
-                        union(i, j)
-
-    groups: dict[int, list[int]] = {}
-    for i in range(len(ids)):
-        groups.setdefault(find(i), []).append(i)
     out: list[dict[str, object]] = []
-    for members in groups.values():
-        items = sorted(
-            (
-                ids[m],
-                str((metas[m] or {}).get("class_name", "")),
+    if resolution is None:
+        # legacy engine: dir-seeded mutual-kNN union-find
+        parent = list(range(len(ids)))
+
+        def find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a: int, b: int) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[max(ra, rb)] = min(ra, rb)
+
+        from collections import Counter
+
+        seed = [_clusters.dir_seed(p) for p in ids]
+        seed_n = Counter(s for s in seed if s)
+
+        # cluster scripts and scenes separately: tscn headers dominate
+        # embeddings, mixing them chains unrelated files
+        gd_idx = [i for i, m in enumerate(metas) if (m or {}).get("ext") == ".gd"]
+        tscn_idx = [i for i, m in enumerate(metas) if (m or {}).get("ext") == ".tscn"]
+        for subset in (gd_idx, tscn_idx):
+            sset = set(subset)
+            for i in subset:
+                for j in knn[i]:
+                    j = int(j)
+                    if j in sset and i in knn[j] and sim[i, j] >= min_sim:
+                        si, sj = seed[i], seed[j]
+                        # same-seed unions at min_sim only while the seed
+                        # group is small; blob-scale flat folders need the
+                        # high bar (Qwen3-0.6B over-merge chaining)
+                        if si is None or sj is None:
+                            union(i, j)
+                        elif si == sj:
+                            if sim[i, j] >= cross_sim or seed_n[si] < _clusters.BIG_SEED_MAX:
+                                union(i, j)
+                        elif sim[i, j] >= cross_sim:
+                            union(i, j)
+
+        groups: dict[int, list[int]] = {}
+        for i in range(len(ids)):
+            groups.setdefault(find(i), []).append(i)
+        for members in groups.values():
+            items = sorted(
+                (
+                    ids[m],
+                    str((metas[m] or {}).get("class_name", "")),
+                )
+                for m in members
             )
-            for m in members
+            out.append({"id": len(out), "size": len(items), "paths": items})
+    else:
+        # louvain hybrid: structural edges + embedding sims
+        out = _clusters.communities_graph(
+            ids, metas, mat, sim, knn, min_sim=min_sim, resolution=resolution
         )
-        out.append({"id": len(out), "size": len(items), "paths": items})
     out.sort(key=lambda c: -int(c["size"]))
     for idx, c in enumerate(out):
         c["id"] = idx

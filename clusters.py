@@ -6,7 +6,8 @@ language's files label the same way.
 
 Label cascade (first confident hit wins):
   1. AUTOLOAD   member is an autoload backing file       conf 1.0
-  2. DIR        >=55% share a non-generic dir segment    conf 0.85
+  2. DIR        >=55% share the deepest dir chain; label = last
+               non-generic segment of that chain           conf 0.85
   3. SCENE STEM scene-dominant + >=50% share a stem      conf 0.8
   4. c-TF-IDF   top discriminative identifier tokens     conf 0.6
   5. FALLBACK   centroid member's class_name / Mixed(N)  conf 0.4/0.2
@@ -49,6 +50,9 @@ STOPWORDS = {
 }
 
 BLOB_MIN = 60          # clusters larger than this get split
+BIG_SEED_MAX = 60      # seed groups at/above this size need cross_sim even
+                       # for same-seed unions (blob-scale flat folders like
+                       # VFX/Scenes chain unrelated asset packs at min_sim)
 SMALL_MIN = 3          # subclusters smaller than this merge / go Misc
 MERGE_SIM = 0.55       # centroid cosine needed to merge a small subcluster
 SPLIT_SIM = 0.65       # default agglomerative similarity floor (dist 0.35)
@@ -78,12 +82,195 @@ def dir_segments(path: str) -> list[str]:
     return [p for p in parts if p.lower() not in GENERIC_DIRS]
 
 
+def seed_chain(path: str) -> list[str]:
+    """Dir segments with only the TOP-LEVEL generic walk dir stripped
+    (scripts/, scenes/, ...). Nested segments stay even when generic-named,
+    so VFX/Scenes and VFX/Fire are distinct depths, while scripts/inventory
+    -> ["inventory"] and scripts/inventory/services -> ["inventory",
+    "services"]."""
+    parts = path.split("/")[:-1]
+    if parts and parts[0].lower() in GENERIC_DIRS:
+        parts = parts[1:]
+    return parts
+
+
 def dir_seed(path: str) -> str | None:
-    """First non-generic dir segment — the union-permission key for
-    dir-seeded clustering (nav.clusters). None means the file sits under
-    generic-only dirs (e.g. scripts/foo.gd): unconstrained, plain kNN."""
-    segs = dir_segments(path)
-    return segs[0] if segs else None
+    """Full dir chain (top-generic stripped) — the union-permission key for
+    dir-seeded clustering (nav.clusters). Files at different depths under
+    the same tree only share a seed when they share the WHOLE dir chain;
+    None means no dir at all (repo root): unconstrained, plain kNN."""
+    chain = seed_chain(path)
+    return "/".join(chain) if chain else None
+
+
+def communities_graph(
+    ids: list[str],
+    metas: list[dict],
+    mat,
+    sim,
+    knn,
+    min_sim: float = 0.6,
+    resolution: float = 1.0,
+) -> list[dict]:
+    """Louvain hybrid engine for nav.clusters(). Weighted graph over files:
+    - semantic edges: mutual-kNN embedding pairs (weight = sim * 0.7)
+    - structural edges from graph.py: call/signal func-pair counts capped
+      at 5 per file pair; attach/inst 1.5 each
+    tests/ files are excluded from the graph and returned as their own
+    community (finalize's blob split sub-divides by subdirectory).
+    Loose files (<2 structural edges AND max sim < 0.55) join the
+    community dominating their dir seed. Deterministic (louvain seed=42).
+    Returns raw [{id, size, paths: [(path, class_name)]}]."""
+    import networkx as nx
+
+    n = len(ids)
+    idset = set(ids)
+    tests = {i for i, p in enumerate(ids) if p.startswith("tests/")}
+    id_of = {p: i for i, p in enumerate(ids)}
+
+    # structural pairs from the code graph, aggregated to file level
+    import graph as _graph
+
+    g = _graph.get_graph()
+    call_pairs: Counter = Counter()
+    scene_pairs: Counter = Counter()
+    for src_key, dsts in g.edges.items():
+        sf = src_key.split("::")[0]
+        if sf not in idset or id_of[sf] in tests:
+            continue
+        for dk in dsts:
+            df = dk.split("::")[0]
+            if df == sf or df not in idset or id_of[df] in tests:
+                continue
+            tys = g.edge_types.get((src_key, dk), set())
+            if tys & {"call", "signal"}:
+                call_pairs[(sf, df)] += 1
+            if tys & {"attach", "inst"}:
+                # tested attach at 0.8 to split scene<->script blobs: worse —
+                # weaker binding lets scene-sim communities absorb the logic
+                # core (19 logic/scene clashes vs 8 at 1.5)
+                scene_pairs[(sf, df)] += 1.5
+
+    G = nx.Graph()
+    G.add_nodes_from(i for i in range(n) if i not in tests)
+
+    def add(i: int, j: int, w: float) -> None:
+        if G.has_edge(i, j):
+            G[i][j]["weight"] += w
+        else:
+            G.add_edge(i, j, weight=w)
+
+    max_sim = {i: 0.0 for i in G.nodes}
+    for i in list(G.nodes):
+        for j in knn[i]:
+            j = int(j)
+            if j in tests or j not in G:
+                continue
+            s = float(sim[i, j])
+            if s < min_sim or i not in knn[j]:
+                continue
+            add(i, j, s * 0.7)
+            if s > max_sim[i]:
+                max_sim[i] = s
+            if s > max_sim[j]:
+                max_sim[j] = s
+
+    for (sf, df), c in call_pairs.items():
+        add(id_of[sf], id_of[df], min(c, 5))
+    for (sf, df), w in scene_pairs.items():
+        add(id_of[sf], id_of[df], w)
+
+    comms = list(
+        nx.community.louvain_communities(
+            G, weight="weight", resolution=resolution, seed=42
+        )
+    )
+
+    # loose-file overlay: weakly connected files join the community that
+    # dominates their dir seed
+    struct_deg: Counter = Counter()
+    for sf, df in list(call_pairs) + list(scene_pairs):
+        struct_deg[sf] += 1
+        struct_deg[df] += 1
+    loose = [
+        i
+        for i in G.nodes
+        if struct_deg.get(ids[i], 0) < 2 and max_sim.get(i, 0.0) < 0.55
+    ]
+    if loose:
+        comm_of: dict[int, int] = {}
+        for ci, comm in enumerate(comms):
+            for i in comm:
+                comm_of[i] = ci
+        seed_counts: dict[str, Counter] = {}
+        for ci, comm in enumerate(comms):
+            for i in comm:
+                sd = dir_seed(ids[i])
+                if sd:
+                    seed_counts.setdefault(sd, Counter())[ci] += 1
+        for i in loose:
+            sd = dir_seed(ids[i])
+            if sd and sd in seed_counts:
+                ci, _cnt = sorted(
+                    seed_counts[sd].items(), key=lambda kv: (-kv[1], kv[0])
+                )[0]
+                comms[comm_of[i]].discard(i)
+                comms[ci].add(i)
+                comm_of[i] = ci
+
+    # dir-majority overlay: a .gd file whose dir chain is a minority (<3)
+    # in its community joins the community where that chain (or its parent
+    # chain, one level up) dominates — keeps inventory logic out of
+    # UI-scene communities without breaking scene+script togetherness
+    for _round in range(2):
+        seed_comm: dict[tuple, Counter] = {}
+        for ci, comm in enumerate(comms):
+            for i in comm:
+                if ids[i].endswith(".gd"):
+                    chain = tuple(seed_chain(ids[i]))
+                    if chain:
+                        seed_comm.setdefault(chain, Counter())[ci] += 1
+        moves = []
+        for ci, comm in enumerate(comms):
+            for i in comm:
+                if not ids[i].endswith(".gd"):
+                    continue
+                chain = tuple(seed_chain(ids[i]))
+                for key in (chain, chain[:-1]):
+                    if not key:
+                        break
+                    dom = seed_comm.get(key)
+                    if not dom:
+                        continue
+                    best_ci, best_n = sorted(
+                        dom.items(), key=lambda kv: (-kv[1], kv[0])
+                    )[0]
+                    here_n = dom.get(ci, 0)
+                    if best_ci != ci and best_n >= 3 and (
+                        here_n < 3 or best_n >= here_n + 3
+                    ):
+                        moves.append((i, ci, best_ci))
+                        break
+        if not moves:
+            break
+        for i, ci, best_ci in moves:
+            comms[ci].discard(i)
+            comms[best_ci].add(i)
+
+    out: list[dict] = []
+    for comm in comms:
+        if not comm:
+            continue
+        items = sorted(
+            (ids[m], str((metas[m] or {}).get("class_name", ""))) for m in comm
+        )
+        out.append({"id": len(out), "size": len(items), "paths": items})
+    if tests:
+        items = sorted(
+            (ids[m], str((metas[m] or {}).get("class_name", ""))) for m in tests
+        )
+        out.append({"id": len(out), "size": len(items), "paths": items})
+    return out
 
 
 def _stem(path: str) -> str:
@@ -153,15 +340,30 @@ def label_cluster(
         if p in ctx.autoloads:
             return ctx.autoloads[p], 1.0, "autoload"
     n = len(members) or 1
-    # 2. dominant non-generic dir segment
-    seg_counts: Counter = Counter()
-    for p, _ in members:
-        for seg in set(dir_segments(p)):
-            seg_counts[seg] += 1
-    if seg_counts:
-        seg, cnt = sorted(seg_counts.items(), key=lambda kv: (-kv[1], kv[0]))[0]
-        if cnt / n >= 0.55:
-            return titleize(seg), 0.85, "dir"
+    # 2. deepest majority dir chain: walk prefix-constrained while the
+    # majority (>=55%) still shares the chain; label = last NON-GENERIC
+    # segment of that chain. A cluster spread over VFX/Scenes bottoms out
+    # at "Vfx" (mixed symptom); VFX/Fire labels "Fire".
+    chains = [seed_chain(p) for p, _ in members]
+    nonempty = [c for c in chains if c]
+    cur: list[str] = []
+    if nonempty:
+        while True:
+            depth = len(cur) + 1
+            cnt: Counter = Counter()
+            for c in nonempty:
+                if len(c) >= depth and c[: depth - 1] == cur:
+                    cnt[tuple(c[:depth])] += 1
+            if not cnt:
+                break
+            top, ntop = sorted(cnt.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+            if ntop / n < 0.55:
+                break
+            cur = list(top)
+    if cur:
+        good = [s for s in cur if s.lower() not in GENERIC_DIRS]
+        if good:
+            return titleize(good[-1]), 0.85, "dir"
     # 3. scene stem
     scene = [p for p, _ in members if p.endswith(".tscn")]
     if len(scene) * 2 > len(members):
@@ -191,9 +393,11 @@ def _dedupe_label(label: str, used: set[str], paths: list[tuple[str, str]], ctx:
         cand = f"{label} {extra}"
         if cand not in used:
             return cand
-    for seg in dir_segments(paths[0][0]):
-        cand = f"{label} {titleize(seg)}"
-        if cand not in used:
+    # last-two-segment join from a member's dir chain ("Vfx Fire")
+    chain = [s for s in seed_chain(paths[0][0]) if s.lower() not in GENERIC_DIRS]
+    for j in range(len(chain) - 1, -1, -1):
+        cand = " ".join(titleize(s) for s in chain[max(0, j - 1) : j + 1])
+        if cand and cand not in used:
             return cand
     i = 2
     while f"{label} {i}" in used:
@@ -240,8 +444,10 @@ def _split_cluster(
         if cnt / len(paths) >= 0.60:
             for i, p in enumerate(paths):
                 groups["/".join(p.split("/")[:-1])].append(i)
-        else:
-            groups = defaultdict(list)
+            if len(groups) < 2:
+                # flat folder: subdir grouping returns the blob itself —
+                # fall through to the embedding split instead
+                groups = defaultdict(list)
     if not groups:
         # 2. agglomerative over the blob's embeddings only
         from sklearn.cluster import AgglomerativeClustering
