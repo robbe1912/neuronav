@@ -257,11 +257,15 @@ def count() -> int:
     return _collection().count()
 
 
-def clusters(k: int = 6, min_sim: float = 0.6) -> list[dict[str, object]]:
+def clusters(
+    k: int = 6, min_sim: float = 0.6, split_sim: float = 0.65, blob_min: int = 60
+) -> list[dict[str, object]]:
     """Subsystem clusters: union-find over MUTUAL kNN embedding neighbours
     (i and j are neighbours of each other, cosine >= min_sim). Mutual links
     resist transitive chaining, so components stay subsystem-sized.
-    Returns [{id, size, paths: [(path, class_name)]}]."""
+    Mega-blobs are then split + every cluster labeled (see clusters.py).
+    Returns [{id, size, paths: [(path, class_name)], label, confidence,
+    method}]."""
     import numpy as np
 
     col = _collection()
@@ -320,7 +324,9 @@ def clusters(k: int = 6, min_sim: float = 0.6) -> list[dict[str, object]]:
     out.sort(key=lambda c: -int(c["size"]))
     for idx, c in enumerate(out):
         c["id"] = idx
-    return out
+    import clusters as _clusters
+
+    return _clusters.finalize(out, ids, mat, split_sim=split_sim, blob_min=blob_min)
 
 
 # ---- base index (tracked shards) -------------------------------------------
