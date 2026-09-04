@@ -35,18 +35,29 @@ def _build_data() -> dict:
         str(int(c["id"])): c.get("label") or f"c{c['id']}" for c in clusters
     }
 
-    # dead-code candidates per file (tier-aware: likely=1, review=0.5);
-    # dl marks any-likely for the "likely dead" tag (weight sums can hit
-    # 1.0 from two review-tier hits alone, which is not "likely")
+    # dead-code candidates per file, normalized by func count: a file with
+    # 2 dead helpers out of 65 is NOT a "dead file" — only flag when a
+    # meaningful share of its funcs is dead. likely counts 1, review 0.5,
+    # so share is "fraction of funcs with any dead candidate".
     dead = g.dead_code(limit=10**9)
     dead_weight: dict[str, float] = defaultdict(float)
     dead_likely: set[str] = set()
+    func_counts: dict[str, int] = {}
+    for rel, fs in g.files.items():
+        if fs.ext == ".gd":
+            func_counts[rel] = len(fs.funcs)
     for cand in dead["candidates"]:
         if cand["tier"] == "likely":
             dead_weight[cand["path"]] += 1.0
             dead_likely.add(cand["path"])
         else:
             dead_weight[cand["path"]] += 0.5
+    DEAD_SHARE_THRESHOLD = 0.4
+    dead_flag: dict[str, float] = {}
+    for pth, w in dead_weight.items():
+        n = func_counts.get(pth, 0)
+        if n and w / n >= DEAD_SHARE_THRESHOLD:
+            dead_flag[pth] = w
 
     # nodes: files known to nav's index (searchable corpus) ∪ graph files
     paths = sorted(
@@ -68,8 +79,8 @@ def _build_data() -> dict:
                 "ext": fs.ext if fs else Path(p).suffix,
                 "cls": fs.class_name if fs else "",
                 "cluster": file_cluster.get(p, -1),
-                "dead": dead_weight.get(p, 0.0),
-                "dl": p in dead_likely,
+                "dead": dead_flag.get(p, 0.0),
+                "dl": p in dead_likely and p in dead_flag,
             }
         )
 
@@ -191,7 +202,7 @@ def _build_data() -> dict:
             "files": len(nodes),
             "edges": len(links),
             "clusters": n_clusters,
-            "deadFiles": sum(1 for v in dead_weight.values() if v >= 1.0),
+            "deadFiles": len(dead_flag),
             "deadLikely": dead["by_tier"].get("likely", 0),
             "deadReview": dead["by_tier"].get("review", 0),
             # cid -> human name from nav.clusters() labeler cascade
@@ -234,8 +245,11 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list) -> list:
         (a, b,
          # rest lengths scaled 1.7x: the offline run reaches the springs'
          # true (tight) equilibrium, while the old browser sim froze
-         # mid-expansion — scaling keeps the QA'd visual density
-         (230.0 if rec["compo"] else max(65.0, 165.0 / (1 + rec["w"] * 0.5))) * 1.7,
+         # mid-expansion — scaling keeps the QA'd visual density.
+         # cross-cluster call springs rest 2.2x longer still: heavy hub-to-hub
+         # call chains otherwise fuse the core clusters into one blob
+         (230.0 if rec["compo"] else max(65.0, 165.0 / (1 + rec["w"] * 0.5)))
+         * (1.7 if (rec["compo"] or cluster_ids[a] == cluster_ids[b]) else 3.7),
          0.02 * min(3.0, 1 + rec["w"] * 0.3))
         for (a, b), rec in pairs.items()
         # edge-cut: single weak non-structural springs are excluded from the
@@ -303,8 +317,8 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list) -> list:
         np.fill_diagonal(cd2, 1e9)
         # two-scale blob repulsion: a gentle global term sets the galaxy
         # radius, a stronger near-range term splits overlapping islands
-        big = np.minimum(70.0 * (ccount[:, None] + ccount[None, :]) / cd2, 8.0)
-        near = np.minimum(1500.0 * (ccount[:, None] + ccount[None, :]) / cd2, 12.0)
+        big = np.minimum(110.0 * (ccount[:, None] + ccount[None, :]) / cd2, 10.0)
+        near = np.minimum(1500.0 * (ccount[:, None] + ccount[None, :]) / cd2, 14.0)
         cw = big + np.where(cd2 < 48400.0, near, 0.0)   # < 220 units apart
         cF = np.einsum("ij,ijk->ik", cw, D)
         vel += cF[cinv] * 0.004
@@ -479,7 +493,7 @@ renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 document.body.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0x000000, 0.0006);
+scene.fog = new THREE.FogExp2(0x000000, 0.00022); // heavier fog washed out cluster hues at overview distance
 const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 1, 20000);
 camera.position.set(0, 0, 1400);
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -514,7 +528,7 @@ nodes.forEach((n, i) => {
   }
   const c = colorOf(n);
   colArr[i*3] = c.r; colArr[i*3+1] = c.g; colArr[i*3+2] = c.b;
-  sizes[i] = Math.min(15, 4.5 + Math.sqrt(degree[i]) * 1.4);
+  sizes[i] = Math.min(18, 6 + Math.sqrt(degree[i]) * 1.8);
 });
 
 const pGeo = new THREE.BufferGeometry();
@@ -530,13 +544,13 @@ const pMat = new THREE.ShaderMaterial({
     varying vec3 vColor; varying float vA;
     void main(){ vColor = color; vA = aalpha;
       vec4 mv = modelViewMatrix * vec4(position,1.0);
-      gl_PointSize = psize * (900.0 / -mv.z);
+      gl_PointSize = max(psize * (900.0 / -mv.z), 5.0);
       gl_Position = projectionMatrix * mv; }`,
   fragmentShader: `
     varying vec3 vColor; varying float vA;
     void main(){ float d = length(gl_PointCoord - 0.5);
       float a = smoothstep(0.5, 0.18, d) * vA;
-      gl_FragColor = vec4((vColor + vec3(0.25)) * a, a); }`,
+      gl_FragColor = vec4(vColor * (0.85 + 0.15 * a), a); }`,
 });
 scene.add(new THREE.Points(pGeo, pMat));
 
@@ -741,13 +755,13 @@ function frameGraph() {
   const dir = new THREE.Vector3(camera.position.x - controls.target.x,
     camera.position.y - controls.target.y,
     camera.position.z - controls.target.z);
-  if (dir.lengthSq() < 1) dir.set(0, 0, 1);
+  if (dir.lengthSq() < 1) dir.set(0.42, 0.5, 0.76).normalize(); // elevated 3/4 view
   dir.normalize();
-  camera.position.copy(b.center).addScaledVector(dir, Math.max(420, b.radius * 1.45));
+  camera.position.copy(b.center).addScaledVector(dir, Math.max(420, b.radius * 1.8));
   controls.target.copy(b.center);
   // LOD threshold tracks the framing distance so overview stays overview
   // regardless of graph size
-  lodDist = Math.max(420, b.radius * 1.45) * 0.72;
+  lodDist = Math.max(420, b.radius * 1.8) * 0.66;
 }
 
 // ---- UI ---------------------------------------------------------------------
@@ -792,7 +806,7 @@ let cLabs = [];
       }
       const col = new THREE.Color().setHSL(hue(+cid), 0.72, 0.58);
       scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
-        new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.08,
+        new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.14,
           blending: THREE.AdditiveBlending, depthWrite: false })));
       const el = document.createElement("div");
       el.className = "clab";
@@ -804,6 +818,14 @@ let cLabs = [];
 }
 function updateClusterLabs() {
   const w = innerWidth, h = innerHeight;
+  // hub pills win collisions; cluster names try rows around the centroid
+  const hubRects = [...document.querySelectorAll("#hubs .hub")]
+    .filter(el => el.style.display !== "none")
+    .map(el => el.getBoundingClientRect());
+  const sep = (a, b) =>
+    a.right < b.left - 4 || b.right < a.left - 4 ||
+    a.bottom < b.top - 4 || b.bottom < a.top - 4;
+  const taken = [];
   for (const c of cLabs) {
     if (clabsEl.style.display === "none") { c.el.style.display = "none"; continue; }
     hubV.set(c.cx, c.cy, c.cz).project(camera);
@@ -811,8 +833,16 @@ function updateClusterLabs() {
       c.el.style.display = "none"; continue;
     }
     c.el.style.display = "block";
-    c.el.style.transform = "translate(" + ((hubV.x*0.5+0.5)*w).toFixed(1) + "px," +
-      ((-hubV.y*0.5+0.5)*h).toFixed(1) + "px) translate(-50%,-50%)";
+    const px = (hubV.x*0.5+0.5)*w, py = (-hubV.y*0.5+0.5)*h;
+    let placed = false;
+    for (const dy of [0, -34, 34, -64, 64]) {
+      c.el.style.transform = "translate(" + px.toFixed(1) + "px," + (py+dy).toFixed(1) + "px) translate(-50%,-50%)";
+      const r = c.el.getBoundingClientRect();
+      if (hubRects.every(hr => sep(r, hr)) && taken.every(t => sep(r, t))) {
+        taken.push(r); placed = true; break;
+      }
+    }
+    if (!placed) c.el.style.display = "none";
   }
 }
 
@@ -1045,12 +1075,12 @@ function updateHubs() {
     }
     // clamp inside the viewport but clear of the left info panel
     const x = Math.max(310, Math.min(w - 30,
-      (hubV.x * 0.5 + 0.5) * w)), y = (-hubV.y * 0.5 + 0.5) * h;
+      (hubV.x * 0.5 + 0.5) * w)), y = Math.max(16, Math.min(h - 26, (-hubV.y * 0.5 + 0.5) * h));
     el.style.display = "block";
     let r = null;
     outer:
-    for (const dy of [-19, 17, -42, 41, -65, 65]) {
-      for (const dx of [0, 100, -100, 200, -200]) {
+    for (const dy of [-19, 17, -42, 41, -65, 65, -88, 88]) {
+      for (const dx of [0, 100, -100, 200, -200, 320, -320]) {
         el.style.transform = "translate(" + (x + dx).toFixed(1) + "px," +
           (y + dy).toFixed(1) + "px) translate(-50%,0)";
         r = el.getBoundingClientRect();
