@@ -263,7 +263,7 @@ def clusters(
     split_sim: float = 0.65,
     blob_min: int = 60,
     cross_sim: float = 0.75,
-    resolution: float = 1.5,
+    resolution: float = 1.0,
 ) -> list[dict[str, object]]:
     """Subsystem clusters. Default engine (resolution not None): Louvain
     community detection over a hybrid weighted graph — mutual-kNN
@@ -298,6 +298,8 @@ def clusters(
     import clusters as _clusters
 
     out: list[dict[str, object]] = []
+    adj = None  # structural adjacency from the louvain engine (hub gating)
+    units = None  # welded scene+script units (survive finalize splits)
     if resolution is None:
         # legacy engine: dir-seeded mutual-kNN union-find
         parent = list(range(len(ids)))
@@ -353,15 +355,19 @@ def clusters(
             )
             out.append({"id": len(out), "size": len(items), "paths": items})
     else:
-        # louvain hybrid: structural edges + embedding sims
-        out = _clusters.communities_graph(
+        # louvain hybrid: structural edges + embedding sims; adj feeds the
+        # labeler's autoload hub gating, units keep scene+script welds
+        # intact through finalize's embedding split passes
+        out, adj, units = _clusters.communities_graph(
             ids, metas, mat, sim, knn, min_sim=min_sim, resolution=resolution
         )
     out.sort(key=lambda c: -int(c["size"]))
     for idx, c in enumerate(out):
         c["id"] = idx
 
-    return _clusters.finalize(out, ids, mat, split_sim=split_sim, blob_min=blob_min)
+    return _clusters.finalize(
+        out, ids, mat, split_sim=split_sim, blob_min=blob_min, adj=adj, units=units
+    )
 
 
 # ---- base index (tracked shards) -------------------------------------------

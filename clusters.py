@@ -52,7 +52,7 @@ STOPWORDS = {
 }
 
 BLOB_MIN = 60          # clusters larger than this get split
-PACK_SPLIT_SHARE = 0.35  # each of the top-2 stem packs must cover >= this
+PACK_SPLIT_SHARE = 0.25  # each of the top-2 stem packs must cover >= this
                          # for the surgical asset-pack split to fire
 BIG_SEED_MAX = 60      # seed groups at/above this size need cross_sim even
                        # for same-seed unions (blob-scale flat folders like
@@ -115,16 +115,20 @@ def communities_graph(
     knn,
     min_sim: float = 0.6,
     resolution: float = 1.0,
-) -> list[dict]:
+) -> tuple[list[dict], dict]:
     """Louvain hybrid engine for nav.clusters(). Weighted graph over files:
     - semantic edges: mutual-kNN embedding pairs (weight = sim * 0.7)
     - structural edges from graph.py: call/signal func-pair counts capped
       at 5 per file pair; attach/inst 1.5 each
+    - ATOMIC PRE-MERGE: every .tscn and the scripts it attaches are
+      contracted into one clustering unit (hard union) — kills the
+      scene/script split-brain the audit flagged everywhere
     tests/ files are excluded from the graph and returned as their own
     community (finalize's blob split sub-divides by subdirectory).
     Loose files (<2 structural edges AND max sim < 0.55) join the
     community dominating their dir seed. Deterministic (louvain seed=42).
-    Returns raw [{id, size, paths: [(path, class_name)]}]."""
+    Returns (raw [{id, size, paths: [(path, class_name)]}], file-level
+    weighted structural adjacency for labeler hub gating)."""
     import networkx as nx
 
     n = len(ids)
@@ -155,29 +159,111 @@ def communities_graph(
                 # core (19 logic/scene clashes vs 8 at 1.5)
                 scene_pairs[(sf, df)] += 1.5
 
+    # file-level weighted adjacency (labeler hub gating + infra routing)
+    adj: dict[str, dict[str, float]] = defaultdict(dict)
+    for (sf, df), c in call_pairs.items():
+        adj[sf][df] = adj[sf].get(df, 0.0) + min(c, 5)
+    for (sf, df), w in scene_pairs.items():
+        adj[sf][df] = adj[sf].get(df, 0.0) + w
+    adj = {s: dict(d) for s, d in adj.items()}
+
+    # atomic scene+script pre-merge: a .tscn and each script it attaches
+    # form ONE louvain unit
+    upar = list(range(n))
+
+    def ufind(x: int) -> int:
+        while upar[x] != x:
+            upar[x] = upar[upar[x]]
+            x = upar[x]
+        return x
+
+    mcnt = [1] * n
+
+    def _union(i: int, j: int, cap: int | None) -> None:
+        a, b = ufind(i), ufind(j)
+        if a == b:
+            return
+        if cap is not None and mcnt[a] + mcnt[b] > cap:
+            return
+        lo, hi = min(a, b), max(a, b)
+        upar[hi] = lo
+        mcnt[lo] += mcnt[hi]
+        mcnt[hi] = 0
+
+    def _scripts(rel: str) -> list[str]:
+        out: list[str] = []
+        for s in getattr(g.files[rel], "scripts", ()) or ():
+            srel = s[len("res://"):] if s.startswith("res://") else s
+            j = id_of.get(srel)
+            if j is not None and j not in tests:
+                out.append(srel)
+        return out
+
+    # pass 1: each scene welds to its PRIMARY attached script unconditionally
+    for rel, i in sorted(id_of.items()):
+        if not rel.endswith(".tscn") or i in tests or rel not in g.files:
+            continue
+        att = getattr(g.files[rel], "attached_script", None) or ""
+        if not att:
+            continue
+        aj = att[len("res://"):] if att.startswith("res://") else att
+        j = id_of.get(aj)
+        if j is not None and j not in tests:
+            _union(i, j, None)
+    # pass 2: remaining script welds capped — a heavily-shared script
+    # (equipment.gd sits on half the HUD scenes) must not transitively
+    # glue dozens of scenes into one mega-unit
+    for rel, i in sorted(id_of.items()):
+        if not rel.endswith(".tscn") or i in tests or rel not in g.files:
+            continue
+        for srel in _scripts(rel):
+            _union(i, id_of[srel], 12)
+    members_of: dict[int, list[int]] = defaultdict(list)
+    for i in range(n):
+        if i not in tests:
+            members_of[ufind(i)].append(i)
+
+    def unit_paths(r: int) -> list[str]:
+        return sorted(ids[m] for m in members_of[r])
+
+    def unit_seed(r: int) -> str | None:
+        for p in unit_paths(r):
+            if p.endswith(".gd"):
+                return dir_seed(p)
+        ps = unit_paths(r)
+        return dir_seed(ps[0]) if ps else None
+
+    def is_pure_gd(r: int) -> bool:
+        mem = members_of[r]
+        return bool(mem) and all(ids[m].endswith(".gd") for m in mem)
+
     G = nx.Graph()
-    G.add_nodes_from(i for i in range(n) if i not in tests)
+    G.add_nodes_from(sorted(members_of))
 
     def add(i: int, j: int, w: float) -> None:
-        if G.has_edge(i, j):
-            G[i][j]["weight"] += w
+        ri, rj = ufind(i), ufind(j)
+        if ri == rj:
+            return  # intra-unit edge: the unit IS the hard union
+        if G.has_edge(ri, rj):
+            G[ri][rj]["weight"] += w
         else:
-            G.add_edge(i, j, weight=w)
+            G.add_edge(ri, rj, weight=w)
 
-    max_sim = {i: 0.0 for i in G.nodes}
-    for i in list(G.nodes):
+    max_sim = {r: 0.0 for r in G.nodes}
+    for i in range(n):
+        if i in tests:
+            continue
         for j in knn[i]:
             j = int(j)
-            if j in tests or j not in G:
+            if j in tests:
                 continue
             s = float(sim[i, j])
             if s < min_sim or i not in knn[j]:
                 continue
             add(i, j, s * 0.7)
-            if s > max_sim[i]:
-                max_sim[i] = s
-            if s > max_sim[j]:
-                max_sim[j] = s
+            for r in (ufind(i), ufind(j)):
+                if s > max_sim[r]:
+                    max_sim[r] = s
 
     for (sf, df), c in call_pairs.items():
         add(id_of[sf], id_of[df], min(c, 5))
@@ -190,56 +276,56 @@ def communities_graph(
         )
     )
 
-    # loose-file overlay: weakly connected files join the community that
-    # dominates their dir seed
+    # loose-unit overlay: weakly connected units join the community that
+    # dominates their dir seed (moves whole scene+script units)
     struct_deg: Counter = Counter()
     for sf, df in list(call_pairs) + list(scene_pairs):
-        struct_deg[sf] += 1
-        struct_deg[df] += 1
+        struct_deg[ufind(id_of[sf])] += 1
+        struct_deg[ufind(id_of[df])] += 1
     loose = [
-        i
-        for i in G.nodes
-        if struct_deg.get(ids[i], 0) < 2 and max_sim.get(i, 0.0) < 0.55
+        r
+        for r in G.nodes
+        if struct_deg.get(r, 0) < 2 and max_sim.get(r, 0.0) < 0.55
     ]
     if loose:
         comm_of: dict[int, int] = {}
         for ci, comm in enumerate(comms):
-            for i in comm:
-                comm_of[i] = ci
+            for r in comm:
+                comm_of[r] = ci
         seed_counts: dict[str, Counter] = {}
         for ci, comm in enumerate(comms):
-            for i in comm:
-                sd = dir_seed(ids[i])
+            for r in comm:
+                sd = unit_seed(r)
                 if sd:
                     seed_counts.setdefault(sd, Counter())[ci] += 1
-        for i in loose:
-            sd = dir_seed(ids[i])
+        for r in loose:
+            sd = unit_seed(r)
             if sd and sd in seed_counts:
                 ci, _cnt = sorted(
                     seed_counts[sd].items(), key=lambda kv: (-kv[1], kv[0])
                 )[0]
-                comms[comm_of[i]].discard(i)
-                comms[ci].add(i)
-                comm_of[i] = ci
+                comms[comm_of[r]].discard(r)
+                comms[ci].add(r)
+                comm_of[r] = ci
 
-    # dir-majority overlay: a .gd file whose dir chain is a minority (<3)
-    # in its community joins the community where that chain (or its parent
-    # chain, one level up) dominates — keeps inventory logic out of
-    # UI-scene communities without breaking scene+script togetherness
+    # dir-majority overlay: a pure-script unit whose dir chain is a
+    # minority (<3) in its community joins the community where that chain
+    # (or its parent chain, one level up) dominates — scene+script units
+    # are atomic and never moved by this rule
     for _round in range(2):
         seed_comm: dict[tuple, Counter] = {}
         for ci, comm in enumerate(comms):
-            for i in comm:
-                if ids[i].endswith(".gd"):
-                    chain = tuple(seed_chain(ids[i]))
+            for r in comm:
+                if is_pure_gd(r):
+                    chain = tuple(seed_chain(ids[members_of[r][0]]))
                     if chain:
                         seed_comm.setdefault(chain, Counter())[ci] += 1
         moves = []
         for ci, comm in enumerate(comms):
-            for i in comm:
-                if not ids[i].endswith(".gd"):
+            for r in comm:
+                if not is_pure_gd(r):
                     continue
-                chain = tuple(seed_chain(ids[i]))
+                chain = tuple(seed_chain(ids[members_of[r][0]]))
                 for key in (chain, chain[:-1]):
                     if not key:
                         break
@@ -253,20 +339,174 @@ def communities_graph(
                     if best_ci != ci and best_n >= 3 and (
                         here_n < 3 or best_n >= here_n + 3
                     ):
-                        moves.append((i, ci, best_ci))
+                        moves.append((r, ci, best_ci))
                         break
         if not moves:
             break
-        for i, ci, best_ci in moves:
-            comms[ci].discard(i)
-            comms[best_ci].add(i)
+        for r, ci, best_ci in moves:
+            comms[ci].discard(r)
+            comms[best_ci].add(r)
+
+    # pack routing: a unit whose scenes all belong to one Pfx_Seg pack
+    # whose plurality home is a DIFFERENT community joins that home —
+    # pack identity beats embedding ties (audit: VFX_Fire_*SUBemitter*
+    # in Blood, Wind_VFX_showcase in Earth)
+    pack_comm: dict[str, Counter] = {}
+    for ci, comm in enumerate(comms):
+        for r in comm:
+            for p in unit_paths(r):
+                if p.endswith(".tscn"):
+                    k = _pack_key(_stem(p))
+                    if k:
+                        pack_comm.setdefault(k, Counter())[ci] += 1
+    pack_home: dict[str, int] = {}
+    for k, cnt in pack_comm.items():
+        ci, cn = sorted(cnt.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+        if cn >= 3:
+            pack_home[k] = ci
+    pack_moves = []
+    for ci, comm in enumerate(comms):
+        for r in comm:
+            ks = {
+                k
+                for p in unit_paths(r)
+                if p.endswith(".tscn") and (k := _pack_key(_stem(p)))
+            }
+            if not ks:
+                continue
+            targets = {pack_home[k] for k in ks if k in pack_home}
+            if len(targets) != 1:
+                continue
+            t = targets.pop()
+            if t == ci:
+                continue
+            if all(
+                pack_comm[k].get(t, 0) > pack_comm[k].get(ci, 0) for k in ks
+            ):
+                pack_moves.append((r, ci, t))
+    for r, ci, t in pack_moves:
+        comms[ci].discard(r)
+        comms[t].add(r)
+
+    # infra routing: generic scripts referenced by >=2 pack scenes join
+    # the community holding the plurality of those scenes' packs (audit:
+    # one_shot_particles_3d / gpu_particles_3d_fix /
+    # particle_distance_emitter used only by Fire/Earth, parked in Wind)
+    pack_of_scene: dict[str, str] = {}
+    for p in idset:
+        if p.endswith(".tscn"):
+            k = _pack_key(_stem(p))
+            if k:
+                pack_of_scene[p] = k
+    rev_adj: dict[str, set[str]] = defaultdict(set)
+    for s, d in adj.items():
+        for t in d:
+            rev_adj[t].add(s)
+
+    def comm_size(ci: int) -> int:
+        return sum(len(members_of[r]) for r in comms[ci])
+
+    infra_moves = []
+    for ci, comm in enumerate(comms):
+        for r in comm:
+            if not is_pure_gd(r):
+                continue
+            p = ids[members_of[r][0]]
+            votes: Counter = Counter()
+            for nb in list(adj.get(p, {})) + list(rev_adj.get(p, ())):
+                k = pack_of_scene.get(nb)
+                if k and k in pack_home:
+                    votes[pack_home[k]] += 1
+            tot = sum(votes.values())
+            if tot < 2:
+                continue
+            ranked = sorted(votes.items(), key=lambda kv: (-kv[1], kv[0]))
+            (t, tv) = ranked[0]
+            if len(ranked) > 1 and ranked[1][1] == tv:
+                t2 = ranked[1][0]
+                t = t2 if comm_size(t2) > comm_size(t) else t
+            if tv * 2 < tot or t == ci:
+                continue
+            infra_moves.append((r, ci, t))
+    for r, ci, t in infra_moves:
+        comms[ci].discard(r)
+        comms[t].add(r)
+
+    # usage routing: a pure-script unit whose structural neighbours
+    # (either direction) vote overwhelmingly for ONE other community
+    # joins it — generalizes infra routing from packs to any hub the
+    # script is actually called by / calls (audit: camera_input_utils
+    # stranded with math utils while its callers cluster elsewhere)
+    comm_of2: dict[int, int] = {}
+    for ci, comm in enumerate(comms):
+        for r in comm:
+            comm_of2[r] = ci
+    comm_size2 = [sum(len(members_of[r]) for r in comm) for comm in comms]
+    usage_moves = []
+    for ci, comm in enumerate(comms):
+        for r in comm:
+            if not is_pure_gd(r):
+                continue
+            if any(dir_segments(q) for q in unit_paths(r)):
+                continue  # real dir identity: dir-majority overlay owns it
+            p = ids[members_of[r][0]]
+            votes: Counter = Counter()
+            for nb in adj.get(p, {}):
+                nr = id_of.get(nb)
+                if nr is not None and nr not in tests:
+                    votes[comm_of2[ufind(nr)]] += 1
+            for nb in rev_adj.get(p, ()):
+                nr = id_of.get(nb)
+                if nr is not None and nr not in tests:
+                    votes[comm_of2[ufind(nr)]] += 1
+            votes.pop(ci, None)
+            tot = sum(votes.values())
+            if tot < 2:
+                continue
+            (t, tv) = sorted(votes.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+            if tv != tot or comm_size2[t] > 66:
+                continue
+            usage_moves.append((r, ci, t))
+    for r, ci, t in usage_moves:
+        comms[ci].discard(r)
+        comms[t].add(r)
+
+    # structural merge-down: acceptance band wants 15-40 communities, but
+    # the contracted graph fragments louvain output. Greedily merge the
+    # community pair with the highest inter-community weight (ties: smaller
+    # combined size, then lower index) while the result stays under the
+    # mega-blob cap — structure decides who merges, never embeddings alone.
+    TARGET_COMMS = 38
+    MAX_COMM = 58
+
+    def _comm_weight(a: int, b: int) -> float:
+        small = comms[a] if len(comms[a]) <= len(comms[b]) else comms[b]
+        other = comms[b] if small is comms[a] else comms[a]
+        return sum(G[ra][rb]["weight"] for ra in small for rb in other if G.has_edge(ra, rb))
+
+    while len(comms) > TARGET_COMMS:
+        best = None
+        for a in range(len(comms)):
+            for b in range(a + 1, len(comms)):
+                sz = sum(len(members_of[r]) for r in comms[a] | comms[b])
+                if sz > MAX_COMM:
+                    continue
+                key = (-_comm_weight(a, b), sz, a, b)
+                if best is None or key < best[0]:
+                    best = (key, a, b)
+        if best is None:
+            break
+        _, a, b = best
+        comms[a] |= comms[b]
+        del comms[b]
 
     out: list[dict] = []
     for comm in comms:
-        if not comm:
+        files = sorted(m for r in comm for m in members_of[r])
+        if not files:
             continue
         items = sorted(
-            (ids[m], str((metas[m] or {}).get("class_name", ""))) for m in comm
+            (ids[m], str((metas[m] or {}).get("class_name", ""))) for m in files
         )
         out.append({"id": len(out), "size": len(items), "paths": items})
     if tests:
@@ -274,7 +514,12 @@ def communities_graph(
             (ids[m], str((metas[m] or {}).get("class_name", ""))) for m in tests
         )
         out.append({"id": len(out), "size": len(items), "paths": items})
-    return out
+    units = [
+        sorted(ids[m] for m in mem)
+        for _, mem in sorted(members_of.items())
+        if len(mem) > 1
+    ]
+    return out, dict(adj), units
 
 
 def _stem(path: str) -> str:
@@ -337,6 +582,7 @@ class LabelContext:
     df: Counter                    # token -> number of clusters containing it
     k: int                         # cluster count
     centroid_path: dict[int, str] = field(default_factory=dict)
+    struct_adj: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 def _doc_tokens(paths: list[tuple[str, str]]) -> list[str]:
@@ -367,10 +613,20 @@ def label_cluster(
     members: list[tuple[str, str]], ctx: LabelContext, cid: int = -1
 ) -> tuple[str, float, str]:
     ordered = sorted(members)
-    # 1. autoload backing file
-    for p, _ in ordered:
-        if p in ctx.autoloads:
-            return ctx.autoloads[p], 1.0, "autoload"
+    # 1. autoload backing file — ONLY when it is the cluster's in-cluster
+    # hub (highest weighted structural in-degree). A non-hub autoload
+    # would brand a grab-bag with conf 1.0 (audit: AudioPlayer on 61
+    # mostly-unrelated files, E2EMatchProbe on 7 asset tools).
+    mem_paths = [p for p, _ in ordered]
+
+    def _indeg(p: str) -> float:
+        return sum(ctx.struct_adj.get(s, {}).get(p, 0.0) for s in mem_paths)
+
+    autos = [p for p in mem_paths if p in ctx.autoloads]
+    if autos:
+        hub = sorted(mem_paths, key=lambda p: (-_indeg(p), p))[0]
+        if hub in autos and _indeg(hub) > 0:
+            return ctx.autoloads[hub], 1.0, "autoload"
     n = len(members) or 1
     # 1b. stem-prefix pack (scene-dominant): flat asset-pack folders hold
     # every pack in one dir; pack identity is the stem prefix VFX_Fire*.
@@ -636,24 +892,377 @@ def _split_pack_cluster(cluster: dict, rows: dict[str, int], mat) -> list[dict]:
     return out
 
 
+def _family_unit(path: str, k: str | None, unit_of: dict) -> list[str]:
+    """Pack-routing move set: the scene itself, its non-scene unit members
+    (scripts), and only SAME-pack scenes. VFX scenes often weld into one
+    unit via a shared script — moving the whole unit would drag other
+    packs' scenes back and forth between sweeps."""
+    return [
+        q
+        for q in unit_of.get(path, [path])
+        if q == path or not q.endswith(".tscn") or (_pack_key(_stem(q)) or "") == (k or "")
+    ]
+
+
+def _split_units(
+    cluster: dict, rows: dict, mat, unit_of: dict, sim: float, depth: int
+) -> list[dict]:
+    """Unit-aware blob split: welded scene+script units are NEVER divided —
+    clustering runs on unit centroids (mean of member embeddings)."""
+    import numpy as np
+    from sklearn.cluster import AgglomerativeClustering
+
+    paths = [p for p, _ in cluster["paths"]]
+    cls_of = {p: c for p, c in cluster["paths"]}
+    groups: list[list[str]] = []
+    seen: set[str] = set()
+    for p in paths:
+        if p in seen:
+            continue
+        u = [q for q in unit_of.get(p, [p]) if q in rows]
+        groups.append(sorted(u))
+        seen.update(u)
+    if len(groups) < 2:
+        return [cluster]
+
+    def _dir_of(grp: list[str]) -> str:
+        gd = [q for q in grp if q.endswith(".gd")]
+        head = (gd or grp)[0]
+        d = head.rsplit("/", 1)[0] if "/" in head else ""
+        return d
+
+    dirs = Counter(_dir_of(g) for g in groups)
+    top_dir, top_n = sorted(dirs.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+    if top_n / len(groups) >= 0.6:
+        by_dir: dict[str, list[str]] = defaultdict(list)
+        for g in groups:
+            by_dir[_dir_of(g)].extend(g)
+        if len(by_dir) >= 2:
+            return [
+                {"paths": sorted((q, cls_of.get(q, "")) for q in files), "size": len(files)}
+                for d, files in sorted(by_dir.items())
+                if files
+            ]
+
+    cents = []
+    for g in groups:
+        vecs = [mat[rows[q]] for q in g if q in rows]
+        v = np.mean(vecs, axis=0) if vecs else np.zeros(mat.shape[1])
+        nrm = float(np.linalg.norm(v))
+        cents.append(v / nrm if nrm > 1e-9 else v)
+    cl = AgglomerativeClustering(
+        n_clusters=None, distance_threshold=1 - sim, metric="cosine", linkage="average"
+    ).fit(np.array(cents))
+    out: dict[int, list[str]] = defaultdict(list)
+    for g, lab in zip(groups, cl.labels_):
+        out[int(lab)].extend(g)
+    parts = [
+        {"paths": sorted((q, cls_of.get(q, "")) for q in files), "size": len(files)}
+        for _, files in sorted(out.items())
+    ]
+    # still-mega parts recurse once at a stricter bar (depth-capped)
+    if depth < MAX_DEPTH:
+        parts = [
+            q
+            for p in parts
+            for q in (
+                _split_units(p, rows, mat, unit_of, RECURSE_SIM, depth + 1)
+                if p["size"] > BLOB_MIN
+                else [p]
+            )
+        ]
+    return parts
+
+
 def finalize(
-    raw: list[dict], ids: list[str], mat, split_sim: float = SPLIT_SIM, blob_min: int = BLOB_MIN
+    raw: list[dict], ids: list[str], mat, split_sim: float = SPLIT_SIM, blob_min: int = BLOB_MIN,
+    adj: dict[str, dict[str, float]] | None = None,
+    units: list[list[str]] | None = None,
 ) -> list[dict]:
     """Split mega-blobs, merge tiny subclusters, label everything.
 
-    raw: [{id, size, paths: [(path, class_name)]}] from nav's union-find.
+    raw: [{id, size, paths: [(path, class_name)]}] from the engine.
+    adj: file-level weighted structural adjacency (hub gating + infra
+    routing context); optional for the legacy kNN engine.
+    units: welded scene+script groups from the engine; blob splitting
+    runs on unit centroids so a weld is never divided.
     Returns same dicts plus label / confidence / method per cluster.
     """
     rows = {p: i for i, p in enumerate(ids)}
+    unit_of: dict[str, list[str]] = {p: list(u) for u in (units or []) for p in u}
     parts: list[dict] = []
     for c in raw:
         if c["size"] > blob_min:
-            parts.extend(_split_cluster(c, rows, mat, split_sim, depth=1))
+            parts.extend(_split_units(c, rows, mat, unit_of, split_sim, depth=1))
         else:
             parts.append({"paths": list(c["paths"]), "size": c["size"]})
     # surgical asset-pack split for genuinely mixed pack communities
     parts = [p for c in parts for p in _split_pack_cluster(c, rows, mat)]
+
     parts = _merge_small(parts, rows, mat)
+
+    # pack consolidation: the split/merge passes above can leave pack
+    # scenes strayed into other parts (audit: 5 VFX_Fire_* in Earth,
+    # earth files in the world blob). Each pack joins the part holding
+    # its plurality (>=3 files, >=50% of the pack) whenever the strayed
+    # part is not itself pack-dominated (<20% pack share); scenes move
+    # with their welded units.
+    if units:
+        unit_of = {p: u for u in units for p in u}
+
+        def _part_share(part: dict, pk: str) -> tuple[int, int]:
+            tot = share = 0
+            for path, _cls in part["paths"]:
+                if path.endswith(".tscn") and _pack_key(_stem(path)) is not None:
+                    tot += 1
+                    if _pack_key(_stem(path)) == pk:
+                        share += 1
+            return share, tot
+
+        for _round in range(2):
+            part_of2: dict[str, int] = {}
+            for pi, p in enumerate(parts):
+                for path, _cls in p["paths"]:
+                    part_of2[path] = pi
+            pack_parts: dict[str, Counter] = {}
+            pack_total: Counter = Counter()
+            for pi, p in enumerate(parts):
+                for path, _cls in p["paths"]:
+                    k = _pack_key(_stem(path)) if path.endswith(".tscn") else None
+                    if k:
+                        pack_parts.setdefault(k, Counter())[pi] += 1
+                        pack_total[k] += 1
+            moved = False
+            for k in sorted(pack_total):
+                if pack_total[k] < 3:
+                    continue
+                cnt = pack_parts[k]
+                home, hn = sorted(cnt.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+                if hn * 5 < pack_total[k] * 2:  # home must hold >=40% of pack
+                    continue
+                if len(parts[home]["paths"]) > 66:
+                    # plurality part oversized: next-best eligible part
+                    home = next(
+                        (
+                            pi
+                            for pi, _n in sorted(cnt.items(), key=lambda kv: (-kv[1], kv[0]))
+                            if pi != home and len(parts[pi]["paths"]) <= 66
+                        ),
+                        -1,
+                    )
+                    if home < 0:
+                        continue
+                for pi in sorted(cnt):
+                    if pi == home:
+                        continue
+                    share, tot = _part_share(parts[pi], k)
+                    if tot and share * 5 >= tot:
+                        continue  # strayed part is itself pack-dominated
+                    budget = 70 - len(parts[home]["paths"])
+                    if budget <= 0:
+                        continue
+                    moved_n = 0
+                    for path, _cls in list(parts[pi]["paths"]):
+                        if moved_n >= budget:
+                            break
+                        if path.endswith(".tscn") and _pack_key(_stem(path)) == k:
+                            u = _family_unit(path, k, unit_of)
+                            for up in u:
+                                for pj in list(range(len(parts))):
+                                    if pj == home:
+                                        continue
+                                    ent = next(
+                                        (e for e in parts[pj]["paths"] if e[0] == up), None
+                                    )
+                                    if ent is not None:
+                                        parts[pj]["paths"].remove(ent)
+                                        parts[home]["paths"].append(ent)
+                                        moved = True
+                            moved_n += len(u)
+            if not moved:
+                break
+            for p in parts:
+                p["size"] = len(p["paths"])
+            parts = [p for p in parts if p["size"] > 0]
+
+    # post-split usage pass: the blob split reassigns whole units, so a
+    # pure-script file whose every structural tie (either direction,
+    # weighted) now lives in exactly one other part follows it there
+    # (audit: camera_input_utils stranded with math utils while its only
+    # callers sit in the Magic part)
+    if adj:
+        rev: dict[str, dict[str, float]] = defaultdict(dict)
+        for s, d in adj.items():
+            for t2, w2 in d.items():
+                rev[t2][s] = w2
+        for _round in range(2):
+            part_of3: dict[str, int] = {}
+            for pi, p in enumerate(parts):
+                for path, _cls in p["paths"]:
+                    part_of3[path] = pi
+            moves = []
+            for pi, p in enumerate(parts):
+                for path, _cls in p["paths"]:
+                    if not path.endswith(".gd") or path in unit_of:
+                        continue
+                    if dir_segments(path):
+                        continue  # real dir identity handled by overlays
+                    w: Counter = Counter()
+                    for nb, wt in adj.get(path, {}).items():
+                        pj = part_of3.get(nb)
+                        if pj is not None:
+                            w[pj] += wt
+                    for nb, wt in rev.get(path, {}).items():
+                        pj = part_of3.get(nb)
+                        if pj is not None:
+                            w[pj] += wt
+                    w.pop(pi, None)
+                    if not w:
+                        continue
+                    (t, tw) = sorted(w.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+                    if tw >= 1.0 and len(w) == 1 and len(parts[t]["paths"]) <= 66:
+                        moves.append((path, pi, t))
+            if not moves:
+                break
+            for path, pi, t in moves:
+                ent = next(e for e in parts[pi]["paths"] if e[0] == path)
+                parts[pi]["paths"].remove(ent)
+                parts[t]["paths"].append(ent)
+            for p in parts:
+                p["size"] = len(p["paths"])
+            parts = [p for p in parts if p["size"] > 0]
+
+    # final cap enforcement: the routing passes above can pile files into
+    # one part faster than their individual caps account for. Any part
+    # over the mega-blob cap gets unit-split at progressively stricter
+    # similarity until it actually divides; a pathological part that
+    # refuses every cut is chunked deterministically by sorted path.
+    for _guard in range(8):
+        bigs = [p for p in parts if p["size"] > 70]
+        if not bigs:
+            break
+        parts = [p for p in parts if p["size"] <= 70]
+        for b in sorted(bigs, key=lambda p: -p["size"]):
+            done = False
+            for s in (0.65, 0.60, 0.55, 0.50, 0.45, 0.40):
+                got = _split_units(b, rows, mat, unit_of, s, depth=MAX_DEPTH)
+                if len(got) > 1 and max(g["size"] for g in got) <= 70:
+                    parts.extend(got)
+                    done = True
+                    break
+            if done:
+                continue
+            # unit-aware deterministic chunking: never divide a weld
+            seen2: set[str] = set()
+            ugroups: list[list[str]] = []
+            for path, _cls in sorted(b["paths"]):
+                if path in seen2:
+                    continue
+                u = [q for q in unit_of.get(path, [path])]
+                ugroups.append(sorted(u))
+                seen2.update(u)
+            ugroups.sort(key=lambda g: g[0])
+            chunk: list = []
+            for g in ugroups:
+                ents = [(q, dict(b["paths"]).get(q, "")) for q in g]
+                chunk.extend(ents)
+                if len(chunk) >= 55:
+                    parts.append({"paths": sorted(chunk), "size": len(chunk)})
+                    chunk = []
+            if chunk:
+                parts.append({"paths": sorted(chunk), "size": len(chunk)})
+
+    # final stray sweep: post-enforce composition can leave 1-2 pack files
+    # in wrong parts — pull them to the pack's plurality home
+    for _sweep in range(2):
+        moved = False
+        pack_parts2: dict[str, Counter] = defaultdict(Counter)
+        pack_tot2: Counter = Counter()
+        for pi, p in enumerate(parts):
+            for path, _cls in p["paths"]:
+                k = _pack_key(_stem(path)) if path.endswith(".tscn") else None
+                if k:
+                    pack_parts2[k][pi] += 1
+                    pack_tot2[k] += 1
+        for k in sorted(pack_tot2):
+            if pack_tot2[k] < 3:
+                continue
+            home, hn = sorted(pack_parts2[k].items(), key=lambda kv: (-kv[1], kv[0]))[0]
+            if hn * 5 < pack_tot2[k] * 2 or len(parts[home]["paths"]) >= 70:
+                continue
+            for pi in sorted(pack_parts2[k]):
+                if pi == home or len(parts[home]["paths"]) >= 70:
+                    continue
+                share = pack_parts2[k].get(pi, 0)
+                n_scenes = sum(1 for q, _ in parts[pi]["paths"] if q.endswith(".tscn"))
+                if n_scenes and share * 2 >= n_scenes:
+                    continue  # strayed part is itself pack-dominated
+                for path, _cls in list(parts[pi]["paths"]):
+                    if path.endswith(".tscn") and _pack_key(_stem(path)) == k:
+                        u = _family_unit(path, k, unit_of)
+                        for up in u:
+                            for pj in range(len(parts)):
+                                if pj == home:
+                                    continue
+                                ent = next(
+                                    (e for e in parts[pj]["paths"] if e[0] == up), None
+                                )
+                                if ent is not None:
+                                    parts[pj]["paths"].remove(ent)
+                                    parts[home]["paths"].append(ent)
+                                    moved = True
+                        break
+        if not moved:
+            break
+        for p in parts:
+            p["size"] = len(p["paths"])
+        parts = [p for p in parts if p["size"] > 0]
+
+    # tiny-part merge: fold dir-labeled parts of <=4 files into the larger
+    # part sharing their dir identity (keeps the cluster count in band)
+    # part sharing their dir identity (keeps the cluster count in band)
+    for _merge_round in range(2):
+        changed = False
+        seg_count: Counter = Counter()
+        for pi, p in enumerate(parts):
+            for path, _cls in p["paths"]:
+                for seg in seed_chain(path)[:1]:
+                    seg_count[(pi, seg)] += 1
+        for pi in sorted(range(len(parts)), key=lambda i: (parts[i]["size"], i)):
+            p = parts[pi]
+            if p["size"] > 4 or not p["paths"]:
+                continue
+            my_seg = None
+            for path, _cls in p["paths"]:
+                ch = seed_chain(path)
+                if ch:
+                    my_seg = ch[0]
+                    break
+            if my_seg is None:
+                continue
+            best, bn = -1, 0
+            for pj, q in enumerate(parts):
+                if pj == pi or not (5 <= len(q["paths"]) <= 66):
+                    continue
+                n_shared = seg_count.get((pj, my_seg), 0)
+                if n_shared > bn or (n_shared == bn and n_shared > 0 and best >= 0 and len(q["paths"]) > len(parts[best]["paths"])):
+                    best, bn = pj, n_shared
+            if best < 0 or bn < 1:
+                continue
+            parts[best]["paths"].extend(p["paths"])
+            parts[best]["size"] = len(parts[best]["paths"])
+            for path, _cls in p["paths"]:
+                for seg in seed_chain(path)[:1]:
+                    seg_count[(best, seg)] += 1
+                    seg_count[(pi, seg)] -= 1
+            p["paths"] = []
+            changed = True
+        parts = [p for p in parts if p["paths"]]
+        if changed:
+            for p in parts:
+                p["size"] = len(p["paths"])
+        if not changed:
+            break
     parts.sort(key=lambda c: (-c["size"], c["paths"][0][0] if c["paths"] else ""))
     for i, c in enumerate(parts):
         c["id"] = i
@@ -667,11 +1276,19 @@ def finalize(
         df=df,
         k=len(parts),
         centroid_path={c["id"]: _centroid_path(c["paths"], rows, mat) for c in parts},
+        struct_adj=adj or {},
     )
     used: set[str] = set()
     for c in parts:  # size-desc: bigger clusters win the clean label
         label, conf, method = label_cluster(c["paths"], ctx, c["id"])
         label = _dedupe_label(label, used, c["paths"], ctx)
+        # tests-majority clusters get an explicit Tests prefix (audit:
+        # "World" labeling tests/world while real world code sat elsewhere)
+        if (
+            sum(1 for p, _ in c["paths"] if p.startswith("tests/")) * 20 >= 11 * len(c["paths"])
+            and "test" not in label.lower()
+        ):
+            label = f"Tests · {label}"
         used.add(label)
         c["label"], c["confidence"], c["method"] = label, conf, method
     return parts
