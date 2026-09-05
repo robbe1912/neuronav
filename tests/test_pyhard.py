@@ -62,5 +62,28 @@ alive("decor: static/class methods alive", "decor.py", ["describe", "with_start"
 alive("decor: attribute-dispatch caller alive", "decor.py", ["use_all"])
 stays_dead("decor: control stays dead", "decor.py", "unused_helper")
 
+# --- fixture: vec2.py + dataclass_fields.py ----------------------------
+_v2 = g.files["vec2.py"].members
+check(
+    "dataclass: lowercase-typed fields captured",
+    _v2.get("x") == "float" and _v2.get("y") == "float",
+    f"vec2 members={_v2}",
+)
+_mv = g.files["dataclass_fields.py"].members
+check(
+    "dataclass: consumer field members captured",
+    _mv.get("delta") == "Vec2" and _mv.get("label") == "str",
+    f"move members={_mv}",
+)
+alive("dataclass: typed-field chain caller alive", "dataclass_fields.py", ["use_move"])
+alive("dataclass: typed-field chain target alive", "dataclass_fields.py", ["length"])
+alive(
+    "dataclass: cross-file chain reaches provider",
+    "vec2.py",
+    ["norm"],
+)
+stays_dead("dataclass: control stays dead", "vec2.py", "unused_vec")
+stays_dead("dataclass: consumer control stays dead", "dataclass_fields.py", "unused_move")
+
 print(f"{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)
