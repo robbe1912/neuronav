@@ -710,7 +710,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   #elabs { position:fixed; inset:0; z-index:4; pointer-events:none;
     overflow:hidden; }
   .elab { position:absolute; left:0; top:0; display:none; white-space:nowrap;
-    font-size:9.5px; padding:0 5px; border-radius:5px;
+    font-size:11px; padding:0 5px; border-radius:5px;
     background:rgba(8,12,16,.75); pointer-events:none; }
   #clabs { position:fixed; inset:0; z-index:3; pointer-events:none;
     overflow:hidden; }
@@ -743,6 +743,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <input id="spread" type="range" min="60" max="260" value="100" title="stretch the whole layout apart (scales from the centroid)">
 <span id="spreadVal">1.0</span>
     <label class="cb"><input type="checkbox" id="cbFn"> functions</label>
+    <label class="cb"><input type="checkbox" id="cbSpin" checked> spin</label>
   </div>
   <div id="dirRow">
     <span>dir</span>
@@ -873,6 +874,11 @@ const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 1, 20000)
 camera.position.set(0, 0, 1400);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
+// idle auto-spin (the cbSpin checkbox toggles it); tick() pauses it
+// while the user drags or inspects a fn box
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.35;
+let spinEnabled = true;
 
 // cluster hue: golden angle spread; dead files tinted toward red.
 // lightness bands break golden-angle hue collisions across long cid runs
@@ -881,8 +887,10 @@ const lightOf = c => 0.52 + 0.09 * (Math.floor(c / 13) % 3);
 const colorOf = n => {
   // groups mode colors by supergroup id (few ids, well-spread hues)
   const cc = (groupsMode && n.gid >= 0) ? n.gid : n.cluster;
-  const col = new THREE.Color().setHSL(hue(cc), 0.72, lightOf(cc));
-  if (n.dead > 0) col.lerp(new THREE.Color(0.95, 0.12, 0.12), n.dead >= 1 ? 0.85 : 0.68);
+  // unclustered: neutral desaturated gray (old hue 0.08 read orange-red)
+  const col = cc < 0 ? new THREE.Color().setHSL(0.55, 0.08, 0.62)
+                     : new THREE.Color().setHSL(hue(cc), 0.72, lightOf(cc));
+  if (n.dead > 0) col.lerp(new THREE.Color(1.0, 0.3, 0.2), n.dead >= 1 ? 0.85 : 0.68);
   return col;
 };
 
@@ -943,6 +951,8 @@ function applySpread(s) {
   // NO frameGraph here: spread must keep the user's zoom (reframing halved
   // apparent node size and made the graph unrecognizable); spheres grow by
   // sqrt(spread) in syncFileMesh so they stay readable as gaps open.
+  // fog must weaken as the galaxy expands or far clusters sink into black
+  scene.fog.density = 0.00022 / spread;
   syncFileMesh();
   applyVisibility();
   buildContainment();
@@ -1015,7 +1025,9 @@ function syncFileMesh() {
       // sqrt(spread) size compensation: gaps scale ~spread, nodes scale
       // ~sqrt(spread) so pulling apart leaves them readable without a
       // camera reframe (reframing was the "systems completely change" bug)
-      _dummy.scale.setScalar(sizes[i] * 1.1 * Math.sqrt(spread) * (deadOnly && nodes[i].dead > 0 ? 1.7 : 1) * hoverScale[i]);
+      // focus-context nodes shrink with their alpha instead of staying
+      // full-size black occluders
+      _dummy.scale.setScalar(sizes[i] * 1.1 * Math.sqrt(spread) * (deadOnly && nodes[i].dead > 0 ? 1.7 : 1) * hoverScale[i] * (0.45 + 0.55 * a));
     }
     _dummy.updateMatrix();
     fileMesh.setMatrixAt(i, _dummy.matrix);
@@ -1043,10 +1055,12 @@ const TYPE_COLORS = {
   attach: new THREE.Color(0.24, 0.80, 0.95),
   var:    new THREE.Color(0.45, 0.90, 0.55),
 };
+// overview opacity is flat 0.35 across buckets: width already encodes
+// weight — the old descending ops made heavy edges DIMMER than trivial ones
 const BUCKETS = [
-  { max: 1, width: 1.3, op: 0.42 },          // w <= 1
-  { max: 4, width: 2.2, op: 0.34 },          // 2..4
-  { max: Infinity, width: 3.5, op: 0.26 },   // >= 5
+  { max: 1, width: 1.3, op: 0.35 },          // w <= 1
+  { max: 4, width: 2.2, op: 0.35 },          // 2..4
+  { max: Infinity, width: 3.5, op: 0.35 },   // >= 5
 ];
 const bucketOf = new Int8Array(MAXL);
 const slotOf = new Int32Array(MAXL);
@@ -1200,15 +1214,18 @@ hw.forEach(([li, pts]) => {
   }
 });
 bucketPosIB.forEach(ib => { ib.needsUpdate = true; });
-// base colors: pure type hue (no endpoint blend) scaled by weight-as-
-// brightness; width granularity stops at the bucket boundaries
+// base colors: pure type hue scaled by weight-as-brightness; the TARGET-end
+// vertex is tinted 55% toward the target node's cluster color so edges
+// show direction (start vertex keeps the pure type hue)
 const eColBase = new Float32Array(MAXL * 6);
 links.forEach((l, i) => {
   const tc = TYPE_COLORS[l.ty] || TYPE_COLORS.var;
   const wb = 0.45 + Math.min(1, l.w / 6) * 0.55;
-  const o = i * 6;
+  const o = i * 6, t3 = l.t * 3;
   eColBase[o]   = tc.r * wb; eColBase[o+1] = tc.g * wb; eColBase[o+2] = tc.b * wb;
-  eColBase[o+3] = tc.r * wb; eColBase[o+4] = tc.g * wb; eColBase[o+5] = tc.b * wb;
+  eColBase[o+3] = tc.r * wb + (colArr[t3]   - tc.r * wb) * 0.55;
+  eColBase[o+4] = tc.g * wb + (colArr[t3+1] - tc.g * wb) * 0.55;
+  eColBase[o+5] = tc.b * wb + (colArr[t3+2] - tc.b * wb) * 0.55;
 });
 // initial fill at full brightness (mirrors the pre-toggle startup state
 // where no applyVisibility pass has run yet)
@@ -1269,6 +1286,9 @@ function tick() {
     hoverScale[i] = Math.abs(dh) < 0.004 ? hsT : hoverScale[i] + dh * 0.18;
   }
   syncFileMesh();
+  // idle spin pauses while the pointer is down over the canvas or a fn box
+  // is hovered; the cbSpin checkbox turns it off entirely
+  controls.autoRotate = !(pointerDown && overCanvas) && hoveredFn < 0 && spinEnabled;
   controls.update();
   updateHubs();
   updateClusterLabs();
@@ -1295,11 +1315,11 @@ function frameGraph() {
     camera.position.z - controls.target.z);
   if (dir.lengthSq() < 1) dir.set(0.42, 0.5, 0.76).normalize(); // elevated 3/4 view
   dir.normalize();
-  camera.position.copy(b.center).addScaledVector(dir, Math.max(420, b.radius * 1.8));
+  camera.position.copy(b.center).addScaledVector(dir, Math.max(420, b.radius * 2.2));
   controls.target.copy(b.center);
   // LOD threshold tracks the framing distance so overview stays overview
   // regardless of graph size
-  lodDist = Math.max(420, b.radius * 1.8) * 0.66;
+  lodDist = Math.max(420, b.radius * 1.8) * 0.9;
 }
 
 // frame only the nodes the filters still show (cluster/dir isolates) — the
@@ -1531,7 +1551,7 @@ function applyVisibility() {
   // (dimmed eColBase written straight into each bucket's instanced colors).
   // Overview palette: edge-type hues are demoted to weight-tinted gray so
   // cluster colors carry the overview; full type colors return on focus.
-    const grayMix = focusing ? 0 : 0.92;
+    const grayMix = focusing ? 0 : 0.82;
   const touched = [false, false, false];
   links.forEach((l, i) => {
     let k;
@@ -1547,7 +1567,7 @@ function applyVisibility() {
     const ghost = alphaTgt[l.s] < 0.05 && alphaTgt[l.t] < 0.05;
     if (sFiltered || tFiltered || ghost) k = 0.0;
     else if (!typeVisible(l.ty) || alphaTgt[l.s] <= 0.5 || alphaTgt[l.t] <= 0.5) k = 0.012;
-    else if (fnMode && focusing && l.ty === "call" && level[l.s] >= 0 && level[l.t] >= 0) k = 0.04; // wire mode: fn wires replace the aggregate call line
+    else if (fnMode && focusing && l.ty === "call" && level[l.s] >= 0 && level[l.t] >= 0) k = 0; // wire mode: fn wires replace the aggregate call line; geometry collapse (k===0 branch) handles invisibility — a ghost 0.04 double-draws under the additive fn wires
     else if (focusing) k = Math.max(0.34, 1 - 0.18 * Math.max(level[l.s], level[l.t]));
     else k = 1;
     if (!focusing && !lodClose && k > 0.04) {
@@ -1560,8 +1580,8 @@ function applyVisibility() {
       // galaxy and re-form the hairball the layout just removed.
       // highway arcs are exempt from the chord cut: bundled beziers ARE
       // the intended inter-cluster carriers
-      if (sameC) { if (k > 0.045) k = 0.045; }
-      else if (el3 > 200 && hwSlot[i] < 0) k = 0.02;
+      if (sameC) { if (k > 0.15) k = 0.15; }
+      else if (el3 > 200 && hwSlot[i] < 0) k = 0.08;
     }
     const b = bucketOf[i], o6 = i * 6;
     const tgt = bucketColIB[b].array;
@@ -2046,8 +2066,7 @@ function rebuildFnLayer(focusing) {
   }
   sphereClear(false);
   if (!fnMeta.length) return;
-  // fn boxes: true 3D cubes on the wires, colored by owning cluster hue,
-  // each with a deterministic varied roll so adjacent boxes stay readable
+  // fn boxes: true 3D cubes on the wires, colored by owning cluster hue
   const fdummy = new THREE.Object3D();
   fnMesh = new THREE.InstancedMesh(
     new THREE.BoxGeometry(1, 1, 1),
@@ -2057,7 +2076,6 @@ function rebuildFnLayer(focusing) {
   fnMesh.frustumCulled = false;   // positions rebuilt on every focus change
   for (let i = 0; i < fnMeta.length; i++) {
     fdummy.position.set(fpos[i*3], fpos[i*3+1], fpos[i*3+2]);
-    fdummy.rotation.set(((i * 37) % 90) * Math.PI / 180, ((i * 53) % 90) * Math.PI / 180, 0);
     fdummy.scale.setScalar(4);
     fdummy.updateMatrix();
     fnMesh.setMatrixAt(i, fdummy.matrix);
@@ -2228,6 +2246,8 @@ document.getElementById("bGround").onclick = e => {
 const searchEl = document.getElementById("search");
 const depthEl = document.getElementById("depth");
 const cbFnEl = document.getElementById("cbFn");
+const cbSpinEl = document.getElementById("cbSpin");
+cbSpinEl.addEventListener("change", () => { spinEnabled = cbSpinEl.checked; });
 const bDeadEl = document.getElementById("bDead");
 searchEl.oninput = e => {
   query = e.target.value.toLowerCase();
@@ -2544,14 +2564,20 @@ renderer.domElement.addEventListener("pointermove", e => {
 // drag-vs-click: OrbitControls uses pointer drags; a release over a node
 // after rotating the camera must not select it
 let downX = 0, downY = 0;
+// auto-spin interaction gating (read by tick)
+let pointerDown = false, overCanvas = false;
 renderer.domElement.addEventListener("pointerdown", e => {
   downX = e.clientX; downY = e.clientY;
+  pointerDown = true;
   camTween = null;   // user grab beats the tween
   if (hovered < 0 && hoveredFn < 0) renderer.domElement.style.cursor = "grabbing";
 });
 renderer.domElement.addEventListener("pointerup", () => {
+  pointerDown = false;
   renderer.domElement.style.cursor = "grab";   // pointermove corrects to pointer over a node
 });
+renderer.domElement.addEventListener("pointerenter", () => { overCanvas = true; });
+renderer.domElement.addEventListener("pointerleave", () => { overCanvas = false; pointerDown = false; });
 // multi-root camera: frame the centroid of all focus seeds at a distance
 // set by their spread (single seed falls back to the tight focus)
 function focusSeedsCamera() {
