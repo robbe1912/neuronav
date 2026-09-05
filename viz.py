@@ -276,8 +276,9 @@ def _build_data() -> dict:
                 # ring-distributed clusters put both the edge midpoint and
                 # the centroid-corridor midpoint near the galaxy center, so
                 # the pull alone leaves long arcs nearly straight — add a
-                # deterministic perpendicular bow (12% of chord length) so
-                # every highway reads as a curve
+                # deterministic perpendicular bow so every highway reads as
+                # a curve; capped so long chords don't sweep far past their
+                # chord offscreen at close zoom (bow apex = half this value)
                 ch = P[l["t"]] - P[l["s"]]
                 chl = float(_np.linalg.norm(ch))
                 perp = _np.cross(ch, [0.0, 0.0, 1.0])
@@ -286,7 +287,7 @@ def _build_data() -> dict:
                     perp = _np.array([1.0, 0.0, 0.0])
                 else:
                     perp = perp / pl
-                ctrl = ctrl + perp * (chl * 0.2)
+                ctrl = ctrl + perp * min(chl * 0.2, 80.0)
                 pts = []
                 for k in range(17):
                     u = k / 16.0
@@ -853,9 +854,13 @@ const hwSlot = new Int32Array(MAXL).fill(-1);
 const bucketPosIB = [], bucketColIB = [], bucketMat = [];
 {
   const counts = [0, 0, 0];
+  // arcs get no straight slot (their slots would stay zero-filled at the
+  // galaxy origin — NaN streak quads); they live entirely in the hw span
+  const hwSet = new Set(hw.map(e => e[0]));
   links.forEach((l, i) => {
     const b = BUCKETS.findIndex(x => l.w <= x.max);
-    bucketOf[i] = b; slotOf[i] = counts[b]++;
+    bucketOf[i] = b;
+    if (!hwSet.has(i)) slotOf[i] = counts[b]++;
   });
   // highways: each bezier arc is 16 static segments (32 vertices, 96 floats)
   // appended after the straight links inside its bucket. hwSlot[i] is the
@@ -863,8 +868,13 @@ const bucketPosIB = [], bucketColIB = [], bucketMat = [];
   const hwCounts = [0, 0, 0];
   hw.forEach(([li, pts]) => {
     const b = bucketOf[li];
+    // hwCounts counts ARCS: the slot math multiplies by 32 vertices/arc.
+    // (A previous `+= 32` here double-multiplied, spacing arcs 1024
+    // vertices apart and leaving ~500 zero-filled segments at the galaxy
+    // origin per arc — NaN quads in LineMaterial's normalize(0) rendered
+    // as the close-zoom streak artifact.)
     hwSlot[li] = (counts[b] * 2 + hwCounts[b] * 32) * 3;
-    hwCounts[b] += 32;
+    hwCounts[b] += 1;
   });
   BUCKETS.forEach(b => {
     const bi = BUCKETS.indexOf(b);
@@ -905,6 +915,9 @@ links.forEach((l, i) => {
   if (!pairLinks.has(k)) pairLinks.set(k, []);
   pairLinks.get(k).push(i);
 });
+// baked highway arc points by link index — applyVisibility restores arc
+// geometry from here after a filter pass collapsed it
+const hwPts = new Map(hw);
 function syncEdgePos() {
   links.forEach((l, i) => {
     if (hwSlot[i] >= 0) return;   // highway arcs are baked, never resynced
@@ -915,7 +928,9 @@ function syncEdgePos() {
     if (linkFiltered(l)) {
       const a0 = bucketPosIB[bucketOf[i]].array, o0 = slotOf[i] * 6;
       a0[o0] = pos[s]; a0[o0+1] = pos[s+1]; a0[o0+2] = pos[s+2];
-      a0[o0+3] = pos[s]; a0[o0+4] = pos[s+1]; a0[o0+5] = pos[s+2];
+      // tiny offset: an exactly-zero-length segment gives LineMaterial's
+      // normalize(0) NaN screen quads (driver-dependent streaks)
+      a0[o0+3] = pos[s]; a0[o0+4] = pos[s+1] + 0.05; a0[o0+5] = pos[s+2];
       bucketPosIB[bucketOf[i]].needsUpdate = true;
       return;
     }
@@ -966,8 +981,8 @@ links.forEach((l, i) => {
   const dst = bucketColIB[bucketOf[i]].array;
   const src = eColBase.subarray(i*6, i*6+6);
   if (hwSlot[i] >= 0) {
-    // highway: same color across all 16 segments
-    for (let v = 0; v < 32; v++) dst.set(src, hwSlot[i] + v * 6);
+    // highway: same color across all 16 segments (96 floats)
+    for (let v = 0; v < 16; v++) dst.set(src, hwSlot[i] + v * 6);
   } else {
     dst.set(src, slotOf[i] * 6);
   }
@@ -1309,13 +1324,15 @@ function applyVisibility() {
       // geometry collapses (straight edges via syncEdgePos below, baked
       // highway arcs here — normal blending would paint a black line).
       if (hwSlot[i] >= 0) {
-        tgt.fill(0, hwSlot[i], hwSlot[i] + 192);
+        tgt.fill(0, hwSlot[i], hwSlot[i] + 96);
         const parr = bucketPosIB[b].array;
         const sx = pos[l.s*3], sy = pos[l.s*3+1], sz = pos[l.s*3+2];
-        for (let v = 0; v < 32; v++) {
+        for (let v = 0; v < 16; v++) {
           const q = hwSlot[i] + v * 6;
           parr[q] = sx; parr[q+1] = sy; parr[q+2] = sz;
-          parr[q+3] = sx; parr[q+4] = sy; parr[q+5] = sz;
+          // tiny y offset: exactly-equal endpoints NaN LineMaterial's
+          // normalize(0) (streak quads)
+          parr[q+3] = sx; parr[q+4] = sy + 0.05; parr[q+5] = sz;
         }
         touchedPos[b] = true;
       } else {
@@ -1326,16 +1343,28 @@ function applyVisibility() {
     }
     if (hwSlot[i] >= 0) {
       // highway: replicate the (possibly grayed/dimmed) color across all
-      // 16 segments
+      // 16 segments; geometry also restores from the baked arc in case a
+      // previous filter pass collapsed it (k===0 collapse is not undone
+      // anywhere else)
       const base = hwSlot[i];
+      const arc = hwPts.get(i);
+      if (arc) {
+        const parr = bucketPosIB[b].array;
+        for (let s2 = 0; s2 < 16; s2++) {
+          const q = base + s2 * 6, p = arc[s2], r = arc[s2 + 1];
+          parr[q] = p[0]; parr[q+1] = p[1]; parr[q+2] = p[2];
+          parr[q+3] = r[0]; parr[q+4] = r[1]; parr[q+5] = r[2];
+        }
+        touchedPos[b] = true;
+      }
       if (grayMix > 0) {
         const g = (0.10 + 0.18 * Math.min(1, l.w / 8)) * k;
-        for (let v = 0; v < 32; v++) {
+        for (let v = 0; v < 16; v++) {
           const s6 = base + v * 6;
           for (let c = 0; c < 6; c++) tgt[s6+c] = eColBase[o6+c] * (1 - grayMix) + g * grayMix;
         }
       } else {
-        for (let v = 0; v < 32; v++) {
+        for (let v = 0; v < 16; v++) {
           const s6 = base + v * 6;
           for (let c = 0; c < 6; c++) tgt[s6+c] = eColBase[o6+c] * k;
         }
