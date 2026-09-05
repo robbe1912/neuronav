@@ -12,12 +12,27 @@ Usage:  python viz.py            # writes graph.html next to this file
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 import nav
 import graph
+
+
+def _git_head() -> str:
+    """Short HEAD hash of the gdnav repo for the freshness stamp."""
+    try:
+        got = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(Path(__file__).resolve().parent),
+            capture_output=True, text=True, timeout=5,
+        )
+        return got.stdout.strip()
+    except Exception:
+        return ""
 
 
 def _build_data() -> dict:
@@ -222,16 +237,16 @@ def _build_data() -> dict:
 
     # frozen layout: deterministic offline sim bakes positions into DATA so
     # the browser loads a settled picture (no live global sim, no 900-tick
-    # settle, identical output across regenerations). Falls back to the old
-    # in-browser sim only if the offline pass somehow fails.
+    # settle, identical output across regenerations). No in-browser fallback:
+    # a failed offline pass aborts the build loudly.
     pos_baked = None
     try:
         pos_baked = _layout(
             len(nodes), links, sims, [nd["cluster"] for nd in nodes],
             ckeys=ckeys, cmat=cmat,
         )
-    except Exception:
-        pos_baked = None
+    except Exception as e:
+        raise RuntimeError(f"offline layout failed: {e}") from e
 
     # highways: long inter-cluster links render as bundled quadratic bezier
     # arcs (16 segments) instead of straight chords — straight ring-diameter
@@ -297,6 +312,10 @@ def _build_data() -> dict:
             "deadReview": dead["by_tier"].get("review", 0),
             # cid -> human name from nav.clusters() labeler cascade
             "clusterNames": cluster_names,
+            # freshness stamp: when this DATA was generated and from which
+            # gdnav commit (rendered in #stats so stale pages are obvious)
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "git": _git_head(),
         },
     }
 
@@ -482,6 +501,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     padding:12px; backdrop-filter: blur(4px); }
   #panel h1 { font-size:14px; margin:0 0 8px; color:#1de9b6; letter-spacing:1px; }
   #stats { font-size:11px; color:#78909c; margin-bottom:8px; }
+  #caption { font-size:10.5px; color:#546e7a; margin:-2px 0 8px; }
   #search { width:100%; box-sizing:border-box; background:#0b1116; color:#cfd8dc;
     border:1px solid #263238; border-radius:6px; padding:6px 8px; outline:none; }
   #search:focus { border-color:#1de9b688; }
@@ -506,12 +526,21 @@ _TEMPLATE = r"""<!DOCTYPE html>
   #info .sub { font-size:11px; color:#78909c; margin-bottom:8px; }
   #info .tag { display:inline-block; font-size:10px; padding:1px 7px;
     border-radius:8px; margin:0 4px 6px 0; }
-  #info ul { list-style:none; margin:6px 0 0; padding:0; max-height:34vh;
+  #info ul { list-style:none; margin:6px 0 0; padding:0; max-height:24vh;
     overflow-y:auto; }
   #info li { padding:3px 6px; border-radius:5px; cursor:pointer; font-size:11.5px; }
   #info li:hover { background:#1de9b61a; color:#1de9b6; }
   .kind { color:#546e7a; font-size:10px; text-transform:uppercase;
     letter-spacing:1px; margin-top:8px; }
+  #dirRow { display:flex; align-items:center; gap:5px; margin-top:6px;
+    font-size:11px; color:#78909c; }
+  #dirRow .seg { flex:1; padding:3px 0; font-size:10.5px; }
+  #iCopy { position:absolute; top:9px; right:9px; width:26px; height:22px;
+    padding:0; flex:none; background:#0b1116; color:#78909c;
+    border:1px solid #263238; border-radius:5px; cursor:pointer; font-size:11px; }
+  #iCopy:hover { color:#1de9b6; border-color:#1de9b688; }
+  #info li.more { color:#78909c; cursor:default; font-size:10.5px; }
+  #info li.more:hover { background:none; color:#78909c; }
   #tip { position:fixed; z-index:20; pointer-events:none; display:none;
     background:#000d; border:1px solid #1de9b644; color:#eee; font-size:11px;
     padding:4px 8px; border-radius:6px; white-space:pre-line; }
@@ -519,6 +548,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     font-size:10px; color:#78909c; }
   .eKey { display:flex; align-items:center; gap:4px; }
   .eKey i { width:14px; border-top:2px solid #ffffff55; display:inline-block; }
+  .eHint { color:#546e7a; }
   #crumb { position:fixed; top:12px; left:50%; transform:translateX(-50%);
     z-index:10; display:none; align-items:center; gap:6px;
     background:rgba(10,14,18,.82); border:1px solid #1de9b633;
@@ -527,6 +557,13 @@ _TEMPLATE = r"""<!DOCTYPE html>
   #crumb .x { cursor:pointer; color:#78909c; padding:0 6px; border-radius:50%;
     line-height:1.3; }
   #crumb .x:hover { color:#fff; background:#ffffff14; }
+  #crumb .back { cursor:pointer; color:#1de9b6; padding:0 6px; border-radius:50%;
+    line-height:1.3; }
+  #crumb .back:hover { color:#fff; background:#ffffff14; }
+  #crumb .hint { color:#546e7a; }
+  #crumb .f { cursor:pointer; color:#ffcc80; padding:0 7px; border-radius:9px;
+    border:1px solid #ffcc8044; }
+  #crumb .f:hover { background:#ffcc8022; }
   #hubs { position:fixed; inset:0; z-index:5; pointer-events:none;
     overflow:hidden; }
   .hub { position:absolute; left:0; top:0; display:none; white-space:nowrap;
@@ -549,6 +586,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <body>
 <div id="panel">
   <h1>neuronav</h1>
+  <div id="caption">color = subsystem · size = connectivity · click a node to explore</div>
   <div id="stats"></div>
   <div id="edgeLegend"></div>
   <input id="search" placeholder="search file / class…">
@@ -558,23 +596,34 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <span id="depthVal">2</span>
     <label class="cb"><input type="checkbox" id="cbFn"> functions</label>
   </div>
+  <div id="dirRow">
+    <span>dir</span>
+    <button class="seg on" data-d="0">both</button>
+    <button class="seg" data-d="1">out</button>
+    <button class="seg" data-d="2">in</button>
+  </div>
+  <div class="kind">subsystems</div>
   <div id="legend"></div>
- <div id="dirs"></div>
+  <div class="kind">folders</div>
+  <div id="dirs"></div>
   <div id="toggles">
-    <button id="bCalls" class="on">calls</button>
+  <button id="bCalls" class="on">calls</button>
+  <button id="bSignals" class="on">signals</button>
     <button id="bInst">contains</button>
- <button id="bDead">dead</button>
- <button id="bSpin">spin</button>
- <button id="bReset">reset</button>
+    <button id="bDead" title="show only dead-code candidate files">dead only</button>
+    <button id="bReset">reset</button>
   </div>
 </div>
 <div id="crumb"></div>
 <div id="info">
   <h2 id="iTitle"></h2>
   <div class="sub" id="iSub"></div>
+  <button id="iCopy" title="copy res:// path">⧉</button>
   <div id="iTags"></div>
-  <div class="kind">connections</div>
-  <ul id="iLinks"></ul>
+  <div class="kind" id="kUses">USES (0)</div>
+  <ul id="iUses"></ul>
+  <div class="kind" id="kUsedBy">USED BY (0)</div>
+  <ul id="iUsedBy"></ul>
 </div>
 <div id="tip"></div>
 <div id="hubs"></div>
@@ -595,20 +644,27 @@ import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 
 const DATA = __DATA__;
-const nodes = DATA.nodes, links = DATA.links, fedges = DATA.fedges || [], sims = DATA.sims || [], hw = DATA.hw || [];
+const nodes = DATA.nodes, links = DATA.links, fedges = DATA.fedges || [], hw = DATA.hw || [];
 const N = nodes.length;
-// physics: one spring per file pair (typed duplicates would triple forces);
-// render/filter iterate all typed links
-const seenPair = new Set();
-const physLinks = links.filter(l => {
-  const k = l.s < l.t ? l.s + "_" + l.t : l.t + "_" + l.s;
-  if (seenPair.has(k)) return false;
-  seenPair.add(k);
-  return true;
-});
-// undirected adjacency for focus BFS
+// undirected adjacency for focus BFS + directed halves for the in/out
+// direction modes ("what breaks if I change X" needs OUT = who I affect
+// downstream, IN = who feeds me)
 const adj = Array.from({ length: N }, () => []);
-links.forEach(l => { adj[l.s].push(l.t); adj[l.t].push(l.s); });
+const adjOut = Array.from({ length: N }, () => []);
+const adjIn = Array.from({ length: N }, () => []);
+links.forEach(l => {
+  adj[l.s].push(l.t); adj[l.t].push(l.s);
+  adjOut[l.s].push(l.t); adjIn[l.t].push(l.s);
+});
+const outDeg = adjOut.map(a => new Set(a).size);
+const inDeg = adjIn.map(a => new Set(a).size);
+// fn-name index for search seeding: fn name -> Set(owning/calling files)
+const fnOf = {};
+fedges.forEach(e => {
+  (fnOf[e[1]] = fnOf[e[1]] || new Set()).add(e[0]);
+  (fnOf[e[3]] = fnOf[e[3]] || new Set()).add(e[2]);
+});
+const fnNames = Object.keys(fnOf);
 // per-file typed edge weight (for the hover summary line)
 const typedCount = Array.from({ length: N }, () => ({}));
 links.forEach(l => {
@@ -635,14 +691,13 @@ const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 1, 20000)
 camera.position.set(0, 0, 1400);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
-// gentle idle rotation: OFF by default, opt-in via the spin toggle
-controls.autoRotate = false;
-controls.autoRotateSpeed = 0.35;
 
-// cluster hue: golden angle spread; dead files tinted toward red
+// cluster hue: golden angle spread; dead files tinted toward red.
+// lightness bands break golden-angle hue collisions across long cid runs
 const hue = c => c < 0 ? 0.08 : (c * 0.61803398875 + 0.55) % 1;
+const lightOf = c => 0.52 + 0.09 * (Math.floor(c / 13) % 3);
 const colorOf = n => {
-  const col = new THREE.Color().setHSL(hue(n.cluster), 0.72, 0.58);
+  const col = new THREE.Color().setHSL(hue(n.cluster), 0.72, lightOf(n.cluster));
   if (n.dead > 0) col.lerp(new THREE.Color(0.95, 0.12, 0.12), n.dead >= 1 ? 0.85 : 0.68);
   return col;
 };
@@ -652,17 +707,14 @@ const colArr = new Float32Array(N * 3);
 const sizes = new Float32Array(N);
 const degree = new Float32Array(N);
 // frozen baked layout: positions were settled offline in Python (seeded,
-// deterministic) — the browser only renders; no live global sim
-const frozenPos = Array.isArray(DATA.pos) ? DATA.pos : null;
+// deterministic) — the browser only renders. A missing DATA.pos means the
+// offline pass failed and the build aborted halfway: fail loudly here
+// rather than silently fall back to a live sim.
+const frozenPos = DATA.pos;
+if (!Array.isArray(frozenPos)) throw new Error("DATA.pos missing — offline layout failed");
 links.forEach(l => { degree[l.s] += l.w; degree[l.t] += l.w; });
 nodes.forEach((n, i) => {
-  if (frozenPos) {
-    pos[i*3] = frozenPos[i][0]; pos[i*3+1] = frozenPos[i][1]; pos[i*3+2] = frozenPos[i][2];
-  } else {
-    pos[i*3] = (Math.random()-0.5) * 1600;
-    pos[i*3+1] = (Math.random()-0.5) * 900;
-    pos[i*3+2] = (Math.random()-0.5) * 1600;
-  }
+  pos[i*3] = frozenPos[i][0]; pos[i*3+1] = frozenPos[i][1]; pos[i*3+2] = frozenPos[i][2];
   const c = colorOf(n);
   colArr[i*3] = c.r; colArr[i*3+1] = c.g; colArr[i*3+2] = c.b;
   sizes[i] = Math.min(18, 6 + Math.sqrt(degree[i]) * 1.8);
@@ -670,6 +722,9 @@ nodes.forEach((n, i) => {
 
 const pGeo = new THREE.BufferGeometry();
 const alphaArr = new Float32Array(N).fill(1);
+// per-node alpha TARGETS: alphaArr eases toward these each tick (fade);
+// visibility checks (raycast, edge kill, labels) read the targets
+const alphaTgt = new Float32Array(N).fill(1);
 pGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
 pGeo.setAttribute("color", new THREE.BufferAttribute(colArr, 3));
 pGeo.setAttribute("psize", new THREE.BufferAttribute(sizes, 1));
@@ -806,7 +861,7 @@ function syncEdgePos() {
 syncEdgePos();
 // write the baked bezier highway arcs into their buckets (static — frozen
 // layout means these never move, so this happens once at module scope,
-// NOT inside tick()'s running block which frozen layouts never execute)
+// (static data, written once at module scope)
 hw.forEach(([li, pts]) => {
   const arr = bucketPosIB[bucketOf[li]].array, base = hwSlot[li];
   for (let k = 0; k < 16; k++) {
@@ -840,88 +895,48 @@ links.forEach((l, i) => {
 });
 bucketColIB.forEach(ib => { ib.needsUpdate = true; });
 
-// ---- force layout ------------------------------------------------------------
-const vel = new Float32Array(N * 3);
-let alpha = 1.0, settled = 0, frameNo = 0;
-function step() {
-  alpha *= 0.995;
-  // pairwise repulsion (grid-bucketed would be faster; N is small)
-  for (let i = 0; i < N; i++) for (let j = i+1; j < N; j++) {
-    let dx = pos[j*3]-pos[i*3], dy = pos[j*3+1]-pos[i*3+1], dz = pos[j*3+2]-pos[i*3+2];
-    let d2 = dx*dx + dy*dy + dz*dz + 1.0;
-    if (d2 > 2500000) continue;
-    // clamp: a near-coincident pair would otherwise fire a 1/d^3 spike that
-    // catapults nodes far outside the graph (stochastic layout explosion)
-    let f = Math.min(52000 / d2, 400);
-    dx *= f/d2; dy *= f/d2; dz *= f/d2;
-    vel[i*3] -= dx; vel[i*3+1] -= dy; vel[i*3+2] -= dz;
-    vel[j*3] += dx; vel[j*3+1] += dy; vel[j*3+2] += dz;
-  }
-  // springs — connected systems must actually sit close together
-  physLinks.forEach(l => {
-    let dx = pos[l.t*3]-pos[l.s*3], dy = pos[l.t*3+1]-pos[l.s*3+1], dz = pos[l.t*3+2]-pos[l.s*3+2];
-    let d = Math.sqrt(dx*dx+dy*dy+dz*dz) + 0.01;
-    // heavy/multiple-typed connections pull tight; composition looser
-    const compo = l.ty === "inst" || l.ty === "attach";
-    const rest = compo ? 230 : Math.max(65, 165 / (1 + l.w * 0.5));
-    const f = (d - rest) / d * 0.02 * Math.min(3, 1 + l.w * 0.3);
-    dx *= f; dy *= f; dz *= f;
-    vel[l.s*3] += dx; vel[l.s*3+1] += dy; vel[l.s*3+2] += dz;
-    vel[l.t*3] -= dx; vel[l.t*3+1] -= dy; vel[l.t*3+2] -= dz;
-  });
-  // semantic springs — pull embedding-similar files together once the
-  // structural layout has rough shape (frame >= 120). Layout-only: sims
-  // are not part of links/adj/degree, so search, hubs, panel are unaffected.
-  if (frameNo >= 120) sims.forEach(p => {
-    let dx = pos[p[0]*3]-pos[p[1]*3], dy = pos[p[0]*3+1]-pos[p[1]*3+1], dz = pos[p[0]*3+2]-pos[p[1]*3+2];
-    let d = Math.sqrt(dx*dx+dy*dy+dz*dz) + 0.01;
-    const rest = 620 * (1 - p[2]);
-    const f = (d - rest) / d * 0.006;
-    dx *= f; dy *= f; dz *= f;
-    vel[p[0]*3] -= dx; vel[p[0]*3+1] -= dy; vel[p[0]*3+2] -= dz;
-    vel[p[1]*3] += dx; vel[p[1]*3+1] += dy; vel[p[1]*3+2] += dz;
-  });
-  // cluster gravity: pull members toward their cluster centroid (keeps
-  // subsystems visibly separated even when weak inter-cluster links chain)
-  const ccx = {}, ccy = {}, ccz = {}, ccn = {};
-  for (let i = 0; i < N; i++) {
-    const c = nodes[i].cluster;
-    ccx[c] = (ccx[c]||0) + pos[i*3]; ccy[c] = (ccy[c]||0) + pos[i*3+1]; ccz[c] = (ccz[c]||0) + pos[i*3+2]; ccn[c] = (ccn[c]||0) + 1;
-  }
-  for (const c in ccx) { ccx[c] /= ccn[c]; ccy[c] /= ccn[c]; ccz[c] /= ccn[c]; }
-  for (let i = 0; i < N; i++) {
-    const c = nodes[i].cluster;
-    vel[i*3]   += (ccx[c] - pos[i*3])   * 0.006;
-    vel[i*3+1] += (ccy[c] - pos[i*3+1]) * 0.006;
-    vel[i*3+2] += (ccz[c] - pos[i*3+2]) * 0.006;
-  }
-  // integrate + center gravity + damping
-  for (let i = 0; i < N; i++) {
-    vel[i*3] -= pos[i*3] * 0.0012; vel[i*3+1] -= pos[i*3+1] * 0.0012; vel[i*3+2] -= pos[i*3+2] * 0.0012;
-    // clamp transient velocity: cluster gravity bunches members into dense
-    // clumps whose combined repulsion would otherwise slingshot nodes far
-    // outside the graph before the 900-tick settle freezes the layout
-    const v2 = vel[i*3]*vel[i*3] + vel[i*3+1]*vel[i*3+1] + vel[i*3+2]*vel[i*3+2];
-    if (v2 > 2500) {
-      const s = 50 / Math.sqrt(v2);
-      vel[i*3] *= s; vel[i*3+1] *= s; vel[i*3+2] *= s;
-    }
-    pos[i*3] += vel[i*3] * alpha; pos[i*3+1] += vel[i*3+1] * alpha; pos[i*3+2] += vel[i*3+2] * alpha;
-    vel[i*3] *= 0.86; vel[i*3+1] *= 0.86; vel[i*3+2] *= 0.86;
-  }
+// ---- camera tween + focus back-stack -----------------------------------------
+// 400ms ease-out camera transitions replace teleporting focus() jumps
+let camTween = null;
+function tweenCamTo(toTarget, toCam) {
+  camTween = { t0: performance.now(), dur: 400,
+    fromT: controls.target.clone(), toT: toTarget.clone(),
+    fromC: camera.position.clone(), toC: toCam.clone() };
 }
-let running = !frozenPos;
-window.__dbg = { pos, nodes, links, syncEdgePos, renderer: null, camera: null, THREE, alpha: alphaArr, bucketMat, bucketOf, hwSlot, bucketPosIB, bucketColIB, slotOf };
+// focus back-stack: interactions that re-root the focus push the previous
+// seeds + camera pose; Backspace / the ‹ chip pops back to them
+let focusStack = [];
+function pushFocusState() {
+  if (!focusSeeds.size) return;
+  focusStack.push({ seeds: [...focusSeeds],
+    target: controls.target.clone(), cam: camera.position.clone() });
+  if (focusStack.length > 20) focusStack.shift();
+}
+function popFocus() {
+  const f = focusStack.pop();
+  if (!f) return;
+  focusSeeds.clear();
+  f.seeds.forEach(s => focusSeeds.add(s));
+  tweenCamTo(f.target, f.cam);
+  applyVisibility();
+}
 function tick() {
   if (window.__dbg) { window.__dbg.renderer = renderer; window.__dbg.camera = camera; }
-  if (running) {
-    frameNo++;
-    for (let s = 0; s < 2; s++) step();
-    syncEdgePos();
-    syncFnPos();
-    pGeo.attributes.position.needsUpdate = true;
-    if (++settled > 900) { running = false; frameGraph(); }
+  // camera tween (focus / back-stack); a user drag cancels it
+  if (camTween) {
+    const u = Math.min(1, (performance.now() - camTween.t0) / camTween.dur);
+    const e = 1 - Math.pow(1 - u, 3);
+    controls.target.lerpVectors(camTween.fromT, camTween.toT, e);
+    camera.position.lerpVectors(camTween.fromC, camTween.toC, e);
+    if (u >= 1) camTween = null;
   }
+  // node alpha eases toward its target so filter/focus changes fade in
+  // (visibility decisions read alphaTgt, so the fade is purely visual)
+  for (let i = 0; i < N; i++) {
+    const d = alphaTgt[i] - alphaArr[i];
+    alphaArr[i] = Math.abs(d) < 0.003 ? alphaTgt[i] : alphaArr[i] + d * 0.15;
+  }
+  pGeo.attributes.aalpha.needsUpdate = true;
   controls.update();
   updateHubs();
   updateClusterLabs();
@@ -957,18 +972,36 @@ function frameGraph() {
 // ---- UI ---------------------------------------------------------------------
 const stats = document.getElementById("stats");
 const m = DATA.meta;
-stats.textContent = `${m.files} files · ${m.edges} links · ${m.clusters} clusters · dead ${m.deadLikely}+${m.deadReview}`;
+stats.innerHTML = `${m.files} files · ${m.edges} links · ${m.clusters} clusters · dead ${m.deadLikely}+${m.deadReview} · drag orbit · wheel zoom` +
+  (m.generated_at ? `<br>gen ${m.generated_at}${m.git ? " · " + m.git : ""}` : "");
 const edgeLegend = document.getElementById("edgeLegend");
-[["call", TYPE_COLORS.call], ["signal", TYPE_COLORS.signal],
- ["contains", TYPE_COLORS.inst], ["var", TYPE_COLORS.var]].forEach(([name, c]) => {
-  const k = document.createElement("span");
-  k.className = "eKey";
-  const sw = document.createElement("i");
-  sw.style.borderTopColor = "#" + c.getHexString();
-  k.appendChild(sw);
-  k.appendChild(document.createTextNode(name));
-  edgeLegend.appendChild(k);
-});
+// the legend is honest about what is on screen: the overview renders edges
+// as weight-tinted gray, so the boot legend says so; typed colors return
+// with a focus, one key per type still toggled on (var never shows — off)
+function updateEdgeLegend(focusing) {
+  edgeLegend.innerHTML = "";
+  const addKey = (name, c) => {
+    const k = document.createElement("span");
+    k.className = "eKey";
+    const sw = document.createElement("i");
+    sw.style.borderTopColor = "#" + c.getHexString();
+    k.appendChild(sw);
+    k.appendChild(document.createTextNode(name));
+    edgeLegend.appendChild(k);
+  };
+  if (!focusing) {
+    addKey("edges", new THREE.Color(0.55, 0.60, 0.66));
+    const hint = document.createElement("span");
+    hint.className = "eHint";
+    hint.textContent = "colors appear when you focus a node";
+    edgeLegend.appendChild(hint);
+  } else {
+    if (showCalls) addKey("call", TYPE_COLORS.call);
+    if (showSignals) addKey("signal", TYPE_COLORS.signal);
+    if (showInst) addKey("contains", TYPE_COLORS.inst);
+  }
+}
+updateEdgeLegend(false);
 
 // ---- containment: per-cluster halo ring + name at centroid (overview) -----
 // names come from DATA.meta.clusterNames (extractor's cluster labeler fills
@@ -1000,7 +1033,7 @@ function buildContainment() {
         const a = s / segs * Math.PI * 2;
         pts.push(new THREE.Vector3(cx + Math.cos(a)*r, cy, cz + Math.sin(a)*r));
       }
-      const col = new THREE.Color().setHSL(hue(+cid), 0.72, 0.58);
+      const col = new THREE.Color().setHSL(hue(+cid), 0.72, lightOf(+cid));
       const ring = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
         new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.14,
           blending: THREE.AdditiveBlending, depthWrite: false }));
@@ -1053,7 +1086,11 @@ const mouse = new THREE.Vector2();
 let hovered = -1, hoveredFn = -1, selected = -1;
 let deadOnly = false, query = "";
 const activeClusters = new Set();   // multi-select cluster filter (legend chips)
-let showInst = false, showCalls = true, focusSeed = -1, depth = 2, fnMode = false;
+let showInst = false, showCalls = true, showSignals = true, depth = 2, fnMode = false;
+// focus roots: single click replaces, shift-click stacks (BFS is multi-seed)
+const focusSeeds = new Set();
+// direction mode: 0 = both, 1 = out (downstream impact), 2 = in (upstream deps)
+let dirMode = 0;
 // tests/tools hidden by default (chip toggles them in); dir filter row works
 // like the cluster chips — both only ever filter, never re-layout
 // (declarations live above syncEdgePos: the boot-time geometry writer
@@ -1065,18 +1102,28 @@ const isTestNode = n => n.path.startsWith("tests/") || n.path.startsWith("tools/
 let lodClose = false, lodDist = 1e9;
 const level = new Int16Array(N).fill(-1);
 
-// BFS from search seeds (path/class matches + clicked seed) up to `depth`
+// BFS from search seeds (path/class/fn-name matches + clicked seeds) up to
+// `depth`; the direction mode picks which adjacency half the walk follows
 function computeLevels() {
   level.fill(-1);
   const seeds = [];
   if (query) nodes.forEach((n, i) => {
-    if (n.path.toLowerCase().includes(query) || n.cls.toLowerCase().includes(query)) seeds.push(i);
+    if (n.path.toLowerCase().includes(query) || n.cls.toLowerCase().includes(query)) {
+      if (level[i] < 0) { level[i] = 0; seeds.push(i); }
+    }
   });
-  if (focusSeed >= 0 && level[focusSeed] < 0) { level[focusSeed] = 0; seeds.push(focusSeed); }
+  // fn-name seeds: a function search lights the files that own or call it
+  if (query && query.length >= 2) fnNames.forEach(nm => {
+    if (nm.toLowerCase().includes(query)) {
+      for (const f of fnOf[nm]) if (level[f] < 0) { level[f] = 0; seeds.push(f); }
+    }
+  });
+  for (const s of focusSeeds) if (level[s] < 0) { level[s] = 0; seeds.push(s); }
   for (let qi = 0; qi < seeds.length; qi++) {
     const u = seeds[qi];
     if (level[u] >= depth) continue;
-    for (const v of adj[u]) if (level[v] < 0) { level[v] = level[u] + 1; seeds.push(v); }
+    const nbrs = dirMode === 1 ? adjOut[u] : dirMode === 2 ? adjIn[u] : adj[u];
+    for (const v of nbrs) if (level[v] < 0) { level[v] = level[u] + 1; seeds.push(v); }
   }
   return seeds.length > 0;
 }
@@ -1090,7 +1137,9 @@ function nodeVisible(n) {
 }
 function typeVisible(ty) {
   if (ty === "call") return showCalls;
+  if (ty === "signal") return showSignals;
   if (ty === "inst" || ty === "attach") return showInst;
+  if (ty === "var") return false;   // member-var refs: too dense to be useful on
   return true;
 }
 function applyVisibility() {
@@ -1098,12 +1147,16 @@ function applyVisibility() {
   // edges are a quiet layer at overview (per-bucket caps) and open up when
   // a focus set is lit
   bucketMat.forEach((mat, bi) => { mat.opacity = focusing ? 0.75 : BUCKETS[bi].op; });
+  updateEdgeLegend(focusing);
+  // fn layer only makes sense inside a focus — say so instead of ignoring clicks
+  cbFnEl.disabled = !focusing;
+  cbFnEl.parentElement.title = focusing ? "" : "function layer needs a focus (search or click a node)";
   for (let i = 0; i < N; i++) {
     let a;
     if (!nodeVisible(nodes[i])) a = 0.0;   // size-0 gate in shader = true disable
     else if (focusing) a = level[i] < 0 ? 0.02 : (level[i] === 0 ? 1 : Math.max(0.16, 0.7 - level[i] * 0.18));
     else a = 1;
-    alphaArr[i] = a;
+    alphaTgt[i] = a;
     if (a > 0.5) {
       const c = colorOf(nodes[i]);
       colArr[i*3] = c.r; colArr[i*3+1] = c.g; colArr[i*3+2] = c.b;
@@ -1128,7 +1181,7 @@ function applyVisibility() {
     const tFiltered = (!showTests && isTestNode(nodes[l.t])) ||
       (activeDirs.size && !activeDirs.has(nodes[l.t].dir));
     if (sFiltered || tFiltered) k = 0.0;
-    else if (!typeVisible(l.ty) || alphaArr[l.s] <= 0.5 || alphaArr[l.t] <= 0.5) k = 0.012;
+    else if (!typeVisible(l.ty) || alphaTgt[l.s] <= 0.5 || alphaTgt[l.t] <= 0.5) k = 0.012;
     else if (focusing) k = Math.max(0.34, 1 - 0.18 * Math.max(level[l.s], level[l.t]));
     else k = 1;
     if (!focusing && !lodClose && k > 0.04) {
@@ -1202,12 +1255,44 @@ function applyVisibility() {
   if (focusing) {
     let lit = 0;
     for (let i = 0; i < N; i++) if (level[i] >= 0 && nodeVisible(nodes[i])) lit++;
-    const label = focusSeed >= 0 ? esc(nodes[focusSeed].label) : "“" + esc(query) + "”";
-    crumb.innerHTML = "focus: <b>" + label + "</b> · depth " + depth + " · " + lit +
-      " files lit<span class='x' title='clear focus (Esc)'>✕</span>";
+    const first = focusSeeds.values().next().value;
+    const label = !focusSeeds.size ? "“" + esc(query) + "”"
+      : focusSeeds.size === 1 ? esc(nodes[first].label)
+      : focusSeeds.size + " files";
+    crumb.innerHTML = "focus: <b>" + label + "</b> · depth " + depth +
+      (dirMode ? " · dir " + (dirMode === 1 ? "out" : "in") : "") + " · " + lit +
+      " files lit" +
+      (focusStack.length ? "<span class='back' title='back (Backspace)'>‹</span>" : "") +
+      "<span class='x' title='clear focus (Esc)'>✕</span>" +
+      "<span class='hint'>Esc/right-click clears · ⌫ back</span>";
     crumb.style.display = "flex";
     crumb.querySelector(".x").onclick = clearFocus;
-  } else crumb.style.display = "none";
+    const back = crumb.querySelector(".back");
+    if (back) back.onclick = popFocus;
+  } else {
+    // empty state: nothing passes the filters — say so and offer one-chip undo
+    let vis = 0;
+    for (let i = 0; i < N; i++) if (nodeVisible(nodes[i])) vis++;
+    if (vis === 0) {
+      const clears = [];
+      if (deadOnly) clears.push(["dead only", () => {
+        deadOnly = false; bDeadEl.classList.remove("on");
+      }]);
+      activeClusters.forEach(c => clears.push([cNames[c] || "c" + c, () => {
+        activeClusters.delete(c);
+        const ch = legendChips.get(c); if (ch) ch.classList.remove("on");
+      }]));
+      activeDirs.forEach(d => clears.push([d, () => {
+        activeDirs.delete(d);
+        const ch = dirChips.get(d); if (ch) ch.classList.remove("on");
+      }]));
+      crumb.innerHTML = "0 files visible — " + clears.map((c, k) =>
+        "<span class='f' data-k='" + k + "'>" + esc(c[0]) + " ✕</span>").join("");
+      crumb.style.display = "flex";
+      crumb.querySelectorAll(".f").forEach((el, k) =>
+        el.onclick = () => { clears[k][1](); buildContainment(); applyVisibility(); });
+    } else crumb.style.display = "none";
+  }
   // cluster identity is an overview cue — hide the name labels on focus
   clabsEl.style.display = focusing ? "none" : "block";
   rebuildFnLayer(focusing);
@@ -1260,7 +1345,7 @@ function updateEdgeLabels() {
   const placed = [];
   for (const { i, el } of eLabs) {
     const l = links[i];
-    if (alphaArr[l.s] < 0.5 || alphaArr[l.t] < 0.5) { el.style.display = "none"; continue; }
+    if (alphaTgt[l.s] < 0.5 || alphaTgt[l.t] < 0.5) { el.style.display = "none"; continue; }
     hubV.set((pos[l.s*3] + pos[l.t*3]) / 2, (pos[l.s*3+1] + pos[l.t*3+1]) / 2,
       (pos[l.s*3+2] + pos[l.t*3+2]) / 2).project(camera);
     if (hubV.z > 1 || Math.abs(hubV.x) > 1.02 || Math.abs(hubV.y) > 1.02) {
@@ -1301,7 +1386,7 @@ function updateEdgeLabels() {
 }
 
 // ---- hub labels: top-degree visible files, projected to screen each frame ---
-const HUB_N = 20;
+const HUB_N = 12;
 const hubsEl = document.getElementById("hubs");
 let hubs = [];
 const hubV = new THREE.Vector3();
@@ -1316,7 +1401,7 @@ function rebuildHubs() {
     el.textContent = nodes[i].label + " · " + Math.round(degree[i]);
     el.title = nodes[i].path;
     el.onpointerenter = () => { tip.style.display = "none"; };
-    el.onclick = () => { showInfo(i); focusSeed = i; applyVisibility(); focus(i); };
+    el.onclick = () => { pushFocusState(); showInfo(i); focusSeeds.clear(); focusSeeds.add(i); applyVisibility(); focus(i); };
     hubsEl.appendChild(el);
     return { i, el };
   });
@@ -1330,7 +1415,7 @@ function updateHubs() {
   const free = (a, b) => a.right < b.left - 4 || b.right < a.left - 4 ||
     a.bottom < b.top - 4 || b.bottom < a.top - 4;
   for (const { i, el } of hubs) {
-    if (alphaArr[i] < 0.5) { el.style.display = "none"; continue; }
+    if (alphaTgt[i] < 0.5) { el.style.display = "none"; continue; }
     hubV.set(pos[i*3], pos[i*3+1], pos[i*3+2]).project(camera);
     if (hubV.z > 1 || Math.abs(hubV.x) > 1.02 || Math.abs(hubV.y) > 1.02) {
       el.style.display = "none"; continue;
@@ -1342,7 +1427,7 @@ function updateHubs() {
     let r = null;
     outer:
     for (const dy of [-19, 17, -42, 41, -65, 65, -88, 88]) {
-      for (const dx of [0, 100, -100, 200, -200, 320, -320]) {
+      for (const dx of [0, 100, -100]) {
         el.style.transform = "translate(" + (x + dx).toFixed(1) + "px," +
           (y + dy).toFixed(1) + "px) translate(-50%,0)";
         r = el.getBoundingClientRect();
@@ -1389,7 +1474,7 @@ function rebuildFnLayer(focusing) {
     if (level[sf] < 0 || level[df] < 0) return;
     // hidden files (tests/tools filter, dir filter): their function nodes
     // and edges must not render in the fn layer either
-    if (alphaArr[sf] <= 0.5 || alphaArr[df] <= 0.5) return;
+    if (alphaTgt[sf] <= 0.5 || alphaTgt[df] <= 0.5) return;
     const a = nodeOf(sf, e[1]), b = nodeOf(df, e[3]);
     eidx.push(a, b);
   });
@@ -1425,25 +1510,16 @@ function rebuildFnLayer(focusing) {
     blending: THREE.AdditiveBlending, depthWrite: false }));
   scene.add(fnLines);
 }
-function syncFnPos() {
-  if (!fnPoints) return;
-  const p = fnPoints.geometry.attributes.position.array;
-  const s = fnSpokes ? fnSpokes.geometry.attributes.position.array : null;
-  for (let i = 0; i < fnMeta.length; i++) {
-    const fi = fnMeta[i].file * 3, o = fnMeta[i].off, j = i * 3;
-    p[j] = pos[fi] + o[0]; p[j+1] = pos[fi+1] + o[1]; p[j+2] = pos[fi+2] + o[2];
-    if (s) { s[j] = pos[fi]; s[j+1] = pos[fi+1]; s[j+2] = pos[fi+2]; s[j+3] = p[j]; s[j+4] = p[j+1]; s[j+5] = p[j+2]; }
-  }
-  fnPoints.geometry.attributes.position.needsUpdate = true;
-  if (s) fnSpokes.geometry.attributes.position.needsUpdate = true;
-}
 
 const legend = document.getElementById("legend");
+// ALL clusters get a chip (the panel scrolls); chips double as the
+// empty-state undo handles, so keep a cid -> element map
+const legendChips = new Map();
 const topClusters = Object.entries(
   nodes.reduce((acc, n) => { if (n.cluster >= 0) acc[n.cluster] = (acc[n.cluster]||0)+1; return acc; }, {})
-).sort((a,b) => b[1]-a[1]).slice(0, 14);
+).sort((a,b) => b[1]-a[1]);
 topClusters.forEach(([cid, count]) => {
-  const c = new THREE.Color().setHSL(hue(+cid), 0.72, 0.58);
+  const c = new THREE.Color().setHSL(hue(+cid), 0.72, lightOf(+cid));
   const chip = document.createElement("span");
   chip.className = "chip";
   chip.style.background = `#${c.getHexString()}22`;
@@ -1456,11 +1532,13 @@ topClusters.forEach(([cid, count]) => {
     applyVisibility();
   };
   legend.appendChild(chip);
+  legendChips.set(+cid, chip);
 });
 
 // dir filter row: top-8 directories as chips + a tests chip (tests/tools
 // files are hidden by default; toggling them in rebuilds containment)
 const dirsEl = document.getElementById("dirs");
+const dirChips = new Map();   // dir -> chip element (empty-state undo)
 {
   const byDir = {};
   nodes.forEach(n => { if (!isTestNode(n)) byDir[n.dir] = (byDir[n.dir] || 0) + 1; });
@@ -1476,16 +1554,16 @@ const dirsEl = document.getElementById("dirs");
       buildContainment(); applyVisibility();
     };
     dirsEl.appendChild(chip);
+    dirChips.set(dir, chip);
   });
   const tchip = document.createElement("span");
   tchip.className = "chip";
   tchip.style.color = "#ffb74d";
   tchip.textContent = "tests";
   tchip.onclick = () => {
+    // toggles tests/tools visibility only — dir selections are independent
     showTests = !showTests;
     tchip.classList.toggle("on", showTests);
-    activeDirs.clear();
-    document.querySelectorAll("#dirs .chip").forEach(x => { if (x !== tchip) x.classList.remove("on"); });
     buildContainment(); applyVisibility();
   };
   dirsEl.appendChild(tchip);
@@ -1501,6 +1579,11 @@ document.getElementById("bCalls").onclick = e => {
   e.target.classList.toggle("on", showCalls);
   applyVisibility();
 };
+document.getElementById("bSignals").onclick = e => {
+  showSignals = !showSignals;
+  e.target.classList.toggle("on", showSignals);
+  applyVisibility();
+};
 document.getElementById("bInst").onclick = e => {
   showInst = !showInst;
   e.target.classList.toggle("on", showInst);
@@ -1508,42 +1591,123 @@ document.getElementById("bInst").onclick = e => {
 };
 const searchEl = document.getElementById("search");
 const depthEl = document.getElementById("depth");
-searchEl.oninput = e => { query = e.target.value.toLowerCase(); applyVisibility(); };
+const cbFnEl = document.getElementById("cbFn");
+const bDeadEl = document.getElementById("bDead");
+searchEl.oninput = e => {
+  query = e.target.value.toLowerCase();
+  // a fn-name hit implies satellite interest: auto-enable the fn layer
+  if (query.length >= 2 && !fnMode &&
+      fnNames.some(nm => nm.toLowerCase().includes(query))) {
+    fnMode = true;
+    document.getElementById("cbFn").checked = true;
+  }
+  applyVisibility();
+};
 depthEl.oninput = e => { depth = +e.target.value; document.getElementById("depthVal").textContent = depth; applyVisibility(); };
+document.querySelectorAll("#dirRow .seg").forEach(b => {
+  b.onclick = () => {
+    dirMode = +b.dataset.d;
+    document.querySelectorAll("#dirRow .seg").forEach(x =>
+      x.classList.toggle("on", x === b));
+    applyVisibility();
+  };
+});
 document.getElementById("cbFn").onchange = e => { fnMode = e.target.checked; applyVisibility(); };
 function clearFocus() {
-  focusSeed = -1; query = "";
+  // one scope for Esc / right-click / crumb ✕: drop the focus, the query,
+  // the back-stack and the info panel together
+  focusSeeds.clear(); query = "";
+  focusStack = [];
   document.getElementById("search").value = "";
+  info.style.display = "none";
   applyVisibility();
 }
 addEventListener("keydown", e => {
-  if (e.key === "Escape" && (focusSeed >= 0 || query)) clearFocus();
+  if (e.key === "Escape" && (focusSeeds.size || query)) clearFocus();
+  else if (e.key === "Backspace" && e.target !== searchEl &&
+    focusSeeds.size && focusStack.length) {
+    e.preventDefault();
+    popFocus();
+  }
 });
-document.getElementById("bSpin").onclick = e => {
-  controls.autoRotate = !controls.autoRotate;
-  e.currentTarget.classList.toggle("on", controls.autoRotate);
-};
 // right-click (not a drag) exits node focus
 renderer.domElement.addEventListener("contextmenu", e => {
   e.preventDefault();
   if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
-  if (focusSeed >= 0) clearFocus();
+  if (focusSeeds.size || query || info.style.display !== "none") clearFocus();
 });
-document.getElementById("bReset").onclick = () => {
-  camera.position.set(0, 0, 1400); controls.target.set(0,0,0); frameGraph();
-  activeClusters.clear(); deadOnly = false; query = ""; focusSeed = -1;
-  activeDirs.clear(); showTests = false;
-  document.getElementById("search").value = "";
+// reset owns EVERY piece of UI state — one click must return the app to
+// its boot state with nothing half-reset (vars and classes in lockstep)
+function resetAll() {
+  activeClusters.clear(); activeDirs.clear();
+  deadOnly = false; query = ""; focusSeeds.clear(); focusStack = [];
+  dirMode = 0; showSignals = true; fnMode = false; depth = 2;
+  showInst = false; showCalls = true; showTests = false;
+  searchEl.value = ""; depthEl.value = 2;
+  document.getElementById("depthVal").textContent = "2";
+  cbFnEl.checked = false;
+  info.style.display = "none";
+  camTween = null;
+  camera.position.set(0, 0, 1400); controls.target.set(0, 0, 0);
   document.querySelectorAll(".chip, button").forEach(x => x.classList.remove("on"));
   document.getElementById("bCalls").classList.add("on");
-  showCalls = true;
+  document.getElementById("bSignals").classList.add("on");
+  document.querySelector("#dirRow .seg").classList.add("on");
+  frameGraph();
   buildContainment(); applyVisibility();
-};
+}
+document.getElementById("bReset").onclick = resetAll;
 
 const info = document.getElementById("info");
+let panelCopyText = "";   // res:// target of whatever the info panel shows
+function copyPanelPath() {
+  const t = panelCopyText;
+  if (!t) return;
+  const done = () => {
+    const b = document.getElementById("iCopy");
+    b.textContent = "✓";
+    setTimeout(() => { b.textContent = "⧉"; }, 900);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(t).then(done, done);
+  } else {
+    // file:// pages may lack the async clipboard API
+    const ta = document.createElement("textarea");
+    ta.value = t; document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (err) {}
+    ta.remove(); done();
+  }
+}
+document.getElementById("iCopy").onclick = copyPanelPath;
+
+// render one directed section of the connections panel; entries beyond 24
+// collapse into an explicit "+N more hidden" footer (never silently)
+function renderSection(kindId, ulId, entries, degArr, degWord, onJump) {
+  const arr = [...entries.values()].sort((a, b) => b.w - a.w);
+  document.getElementById(kindId).textContent =
+    kindId === "kUses" ? `USES (${arr.length})` : `USED BY (${arr.length})`;
+  const ul = document.getElementById(ulId);
+  ul.innerHTML = "";
+  const shown = arr.slice(0, 24);
+  shown.forEach(({ j, rel, w, vis }) => {
+    const li = document.createElement("li");
+    li.textContent = `${nodes[j].label} · ${rel} ×${w} · ${degArr[j]} ${degWord}`;
+    if (!vis) li.style.opacity = 0.45;
+    li.onclick = () => onJump(j);
+    ul.appendChild(li);
+  });
+  if (arr.length > shown.length) {
+    const li = document.createElement("li");
+    li.className = "more";
+    li.textContent = `+${arr.length - shown.length} more hidden`;
+    ul.appendChild(li);
+  }
+}
 function showInfo(i) {
   const n = nodes[i];
   selected = i;
+  panelCopyText = "res://" + n.path;
   info.style.display = "block";
   document.getElementById("iTitle").textContent = n.label;
   document.getElementById("iSub").textContent = n.dir || "/";
@@ -1557,38 +1721,33 @@ function showInfo(i) {
   };
   mk(n.ext, "#80cbc4");
   if (n.cls) mk(n.cls, "#ce93d8");
-  if (n.cluster >= 0) mk("cluster c" + n.cluster, `#${new THREE.Color().setHSL(hue(n.cluster),0.72,0.58).getHexString()}`);
+  if (n.cluster >= 0) mk("cluster c" + n.cluster, `#${new THREE.Color().setHSL(hue(n.cluster),0.72,lightOf(n.cluster)).getHexString()}`);
   if (n.dl || n.dead > 0) mk(n.dl ? "likely dead" : "maybe dead", "#ef5350");
-  const ul = document.getElementById("iLinks");
-  ul.innerHTML = "";
-  const nb = new Map();
+  // directed halves: USES = edges this file sends, USED BY = edges it receives
+  const outs = new Map(), ins = new Map();
   links.forEach(l => {
     // list every relationship type regardless of the view toggles;
     // entries whose type is currently toggled off render dimmed
-    let j, rel;
-    if (l.s === i) { j = l.t; rel = l.ty === "inst" ? "contains" : l.ty === "attach" ? "attaches" : l.ty; }
-    else if (l.t === i) { j = l.s; rel = l.ty === "inst" ? "part of" : l.ty === "attach" ? "used by" : l.ty; }
+    let j, rel, tgt;
+    if (l.s === i) { j = l.t; rel = l.ty === "inst" ? "contains" : l.ty === "attach" ? "attaches" : l.ty; tgt = outs; }
+    else if (l.t === i) { j = l.s; rel = l.ty === "inst" ? "part of" : l.ty === "attach" ? "used by" : l.ty; tgt = ins; }
     else return;
     const key = j + "|" + rel;
-    const cur = nb.get(key) || { j, rel, w: 0, vis: false };
+    const cur = tgt.get(key) || { j, rel, w: 0, vis: false };
     cur.w += l.w;
     if (typeVisible(l.ty)) cur.vis = true;
-    nb.set(key, cur);
+    tgt.set(key, cur);
   });
-  [...nb.values()].sort((a,b) => b.w-a.w).slice(0, 24).forEach(({j, rel, w, vis}) => {
-    const li = document.createElement("li");
-    li.textContent = `${nodes[j].label} · ${rel} ×${w}`;
-    if (!vis) li.style.opacity = 0.45;
-    li.onclick = () => { showInfo(j); focusSeed = j; applyVisibility(); focus(j); };
-    ul.appendChild(li);
-  });
+  const jump = j => { pushFocusState(); showInfo(j); focusSeeds.clear(); focusSeeds.add(j); applyVisibility(); focus(j); };
+  renderSection("kUses", "iUses", outs, outDeg, "downstream", jump);
+  renderSection("kUsedBy", "iUsedBy", ins, inDeg, "upstream", jump);
 }
 function focus(i) {
-  controls.target.set(pos[i*3], pos[i*3+1], pos[i*3+2]);
-  const d = 320;
-  const dir = new THREE.Vector3(camera.position.x - controls.target.x,
-    camera.position.y - controls.target.y, camera.position.z - controls.target.z).normalize();
-  camera.position.copy(controls.target).addScaledVector(dir, d);
+  // tween the camera to a tight orbit around node i (400ms ease-out)
+  const to = new THREE.Vector3(pos[i*3], pos[i*3+1], pos[i*3+2]);
+  const dir = new THREE.Vector3(camera.position.x - to.x,
+    camera.position.y - to.y, camera.position.z - to.z).normalize();
+  tweenCamTo(to, to.clone().addScaledVector(dir, 320));
 }
 
 function showFnInfo(k) {
@@ -1596,26 +1755,48 @@ function showFnInfo(k) {
   info.style.display = "block";
   document.getElementById("iTitle").textContent = fm.name + "()";
   document.getElementById("iSub").textContent = nodes[fm.file].path;
+  panelCopyText = "res://" + nodes[fm.file].path + "::" + fm.name;
   const tags = document.getElementById("iTags");
   tags.innerHTML = "";
-  const ul = document.getElementById("iLinks");
-  ul.innerHTML = "";
-  const nb = new Map();
+  // jumping to a caller/callee focuses its file and keeps the fn layer on
+  const jumpFn = j => {
+    if (!fnMode) { fnMode = true; document.getElementById("cbFn").checked = true; }
+    pushFocusState();
+    focusSeeds.clear(); focusSeeds.add(j);
+    showInfo(j); applyVisibility(); focus(j);
+  };
+  const renderFn = (kindId, ulId, label, entries) => {
+    document.getElementById(kindId).textContent = `${label} (${entries.length})`;
+    const ul = document.getElementById(ulId);
+    ul.innerHTML = "";
+    const shown = entries.slice(0, 24);
+    shown.forEach(e => {
+      const li = document.createElement("li");
+      const j = kindId === "kUses" ? e[2] : e[0];
+      li.textContent = nodes[j].label + " :: " + (kindId === "kUses" ? e[3] : e[1]);
+      li.onclick = () => jumpFn(j);
+      ul.appendChild(li);
+    });
+    if (entries.length > shown.length) {
+      const li = document.createElement("li");
+      li.className = "more";
+      li.textContent = `+${entries.length - shown.length} more hidden`;
+      ul.appendChild(li);
+    }
+  };
+  const outs = [], ins = [], seen = new Set();
   fedges.forEach(e => {
     if (e[0] === fm.file && e[1] === fm.name) {
-      const key = e[2] + "::" + e[3];
-      nb.set("→ " + key, nodes[e[2]].label + " :: " + e[3]);
+      const key = "→" + e[2] + "::" + e[3];
+      if (!seen.has(key)) { seen.add(key); outs.push(e); }
     }
     if (e[2] === fm.file && e[3] === fm.name) {
-      const key = e[0] + "::" + e[1];
-      nb.set("← " + key, nodes[e[0]].label + " :: " + e[1]);
+      const key = "←" + e[0] + "::" + e[1];
+      if (!seen.has(key)) { seen.add(key); ins.push(e); }
     }
   });
-  [...nb.values()].slice(0, 24).forEach(txt => {
-    const li = document.createElement("li");
-    li.textContent = txt;
-    ul.appendChild(li);
-  });
+  renderFn("kUses", "iUses", "CALLS", outs);
+  renderFn("kUsedBy", "iUsedBy", "CALLED BY", ins);
 }
 
 renderer.domElement.addEventListener("pointermove", e => {
@@ -1629,8 +1810,8 @@ renderer.domElement.addEventListener("pointermove", e => {
   for (const h of hits) {
     if (h.object === fnPoints) {
       const fm = fnMeta[h.index];
-      if (fm && alphaArr[fm.file] > 0.5) { hoveredFn = h.index; break; }
-    } else if (alphaArr[h.index] > 0.5) { hovered = h.index; break; }
+      if (fm && alphaTgt[fm.file] > 0.5) { hoveredFn = h.index; break; }
+    } else if (alphaTgt[h.index] > 0.5) { hovered = h.index; break; }
   }
   let txt = null;
   if (hoveredFn >= 0) {
@@ -1646,19 +1827,54 @@ renderer.domElement.addEventListener("pointermove", e => {
     tip.style.left = (e.clientX+14)+"px"; tip.style.top = (e.clientY+14)+"px";
     tip.textContent = txt;
     renderer.domElement.style.cursor = "pointer";
-  } else { tip.style.display = "none"; renderer.domElement.style.cursor = "default"; }
+  } else { tip.style.display = "none"; renderer.domElement.style.cursor = "grab"; }
 });
 // drag-vs-click: OrbitControls uses pointer drags; a release over a node
 // after rotating the camera must not select it
 let downX = 0, downY = 0;
-renderer.domElement.addEventListener("pointerdown", e => { downX = e.clientX; downY = e.clientY; });
+renderer.domElement.addEventListener("pointerdown", e => {
+  downX = e.clientX; downY = e.clientY;
+  camTween = null;   // user grab beats the tween
+  if (hovered < 0 && hoveredFn < 0) renderer.domElement.style.cursor = "grabbing";
+});
+renderer.domElement.addEventListener("pointerup", () => {
+  renderer.domElement.style.cursor = "grab";   // pointermove corrects to pointer over a node
+});
+// multi-root camera: frame the centroid of all focus seeds at a distance
+// set by their spread (single seed falls back to the tight focus)
+function focusSeedsCamera() {
+  const arr = [...focusSeeds];
+  if (arr.length === 1) { focus(arr[0]); return; }
+  const c = new THREE.Vector3();
+  arr.forEach(i => c.add(new THREE.Vector3(pos[i*3], pos[i*3+1], pos[i*3+2])));
+  c.divideScalar(arr.length);
+  let r = 120;
+  arr.forEach(i => r = Math.max(r, c.distanceTo(
+    new THREE.Vector3(pos[i*3], pos[i*3+1], pos[i*3+2]))));
+  const dir = new THREE.Vector3(camera.position.x - controls.target.x,
+    camera.position.y - controls.target.y,
+    camera.position.z - controls.target.z);
+  if (dir.lengthSq() < 1) dir.set(0.42, 0.5, 0.76);
+  dir.normalize();
+  tweenCamTo(c, c.clone().addScaledVector(dir, Math.min(900, 240 + r * 2)));
+}
 renderer.domElement.addEventListener("click", e => {
   if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
   if (hoveredFn >= 0) { showFnInfo(hoveredFn); return; }
   if (hovered >= 0) {
+    if (e.shiftKey && focusSeeds.size) {
+      // shift-click stacks focus roots (click a selected root to drop it)
+      if (focusSeeds.has(hovered)) focusSeeds.delete(hovered);
+      else { pushFocusState(); focusSeeds.add(hovered); }
+      applyVisibility();
+      if (focusSeeds.size) focusSeedsCamera();
+    } else {
+      pushFocusState();
+      focusSeeds.clear(); focusSeeds.add(hovered);
+      applyVisibility();
+      focus(hovered);
+    }
     showInfo(hovered);
-    focusSeed = hovered;           // clicked file becomes the focus root
-    applyVisibility();
   }
 });
 addEventListener("resize", () => {
@@ -1672,7 +1888,7 @@ controls.addEventListener("change", () => {
   const c = camera.position.distanceTo(controls.target) < lodDist;
   if (c !== lodClose) {
     lodClose = c;
-    if (focusSeed < 0 && !query) applyVisibility();
+    if (!focusSeeds.size && !query) applyVisibility();
   }
 });
 
@@ -1681,7 +1897,13 @@ controls.addEventListener("change", () => {
 // user interaction)
 buildContainment();
 applyVisibility();
-if (!running) frameGraph();
+frameGraph();
+renderer.domElement.style.cursor = "grab";
+// debug handle last: everything it captures is initialized by here
+window.__dbg = { pos, nodes, links, fedges, fnMeta, syncEdgePos, renderer, camera, THREE,
+  alpha: alphaArr, alphaTgt, bucketMat, bucketOf, hwSlot, bucketPosIB, bucketColIB, slotOf,
+  adjOut, adjIn, outDeg, inDeg, get dirMode() { return dirMode; }, focusSeeds, level,
+  get camTween() { return camTween; }, get focusStack() { return focusStack; } };
 tick();
 </script>
 </body>
