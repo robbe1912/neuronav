@@ -939,11 +939,13 @@ function applySpread(s) {
     pos[i*3+2] = cz + (basePos[i*3+2] - cz) * s;
   }
   // fn satellites re-derive from their wires and edges re-attach — all via
-  // applyVisibility (owns the fn layer + edge geometry + labels)
+  // applyVisibility (owns the fn layer + edge geometry + labels).
+  // NO frameGraph here: spread must keep the user's zoom (reframing halved
+  // apparent node size and made the graph unrecognizable); spheres grow by
+  // sqrt(spread) in syncFileMesh so they stay readable as gaps open.
   syncFileMesh();
   applyVisibility();
   buildContainment();
-  frameGraph();
 }
 
 const alphaArr = new Float32Array(N).fill(1);
@@ -999,7 +1001,10 @@ function syncFileMesh() {
     } else {
       _dummy.position.set(pos[i*3], pos[i*3+1], pos[i*3+2]);
       // dead-only mode boosts the survivors so the red set reads at overview distance
-      _dummy.scale.setScalar(sizes[i] * 1.1 * (deadOnly && nodes[i].dead > 0 ? 1.7 : 1) * hoverScale[i]);
+      // sqrt(spread) size compensation: gaps scale ~spread, nodes scale
+      // ~sqrt(spread) so pulling apart leaves them readable without a
+      // camera reframe (reframing was the "systems completely change" bug)
+      _dummy.scale.setScalar(sizes[i] * 1.1 * Math.sqrt(spread) * (deadOnly && nodes[i].dead > 0 ? 1.7 : 1) * hoverScale[i]);
     }
     _dummy.updateMatrix();
     fileMesh.setMatrixAt(i, _dummy.matrix);
@@ -1109,13 +1114,23 @@ function syncEdgePos() {
       if (!doArcs) return;
       // ATTACHMENT: highway arcs are geometry like any other edge — rescale
       // the baked arc shape affinely around the layout centroid so endpoints
-      // track their (moved) nodes exactly
+      // track their (moved) nodes exactly. Arc data shape: 17 [x,y,z] points
+      // (nested arrays — flat indexing here once produced NaN, killing every
+      // line in the affected buckets)
       const arr = bucketPosIB[bucketOf[i]].array, b = hwSlot[i];
-      const arc = hwPts.get(i);
-      if (!arc) return;
-      for (let f = 0; f < 96; f++)
-        arr[b + f] = (f % 3 === 0 ? baseCx : f % 3 === 1 ? baseCy : baseCz) +
-          (arc[f] - (f % 3 === 0 ? baseCx : f % 3 === 1 ? baseCy : baseCz)) * spread;
+      const pts = hwPts.get(i);
+      if (!pts || !pts.length) return;
+      for (let v = 0; v < 16; v++) {
+        const A = pts[v], B = pts[v + 1];
+        if (!A || !B) return;
+        const o = b + v * 6;
+        arr[o]   = baseCx + (A[0] - baseCx) * spread;
+        arr[o+1] = baseCy + (A[1] - baseCy) * spread;
+        arr[o+2] = baseCz + (A[2] - baseCz) * spread;
+        arr[o+3] = baseCx + (B[0] - baseCx) * spread;
+        arr[o+4] = baseCy + (B[1] - baseCy) * spread;
+        arr[o+5] = baseCz + (B[2] - baseCz) * spread;
+      }
       bucketPosIB[bucketOf[i]].needsUpdate = true;
       return;
     }
