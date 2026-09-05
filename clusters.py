@@ -1344,3 +1344,89 @@ def coarse_groups(fine: list[dict], ids: list[str], mat, cut: float = 0.45) -> l
             name = " - ".join(terms) if terms else "Mixed"
         out.append({"id": len(out), "label": name, "cluster_ids": cis, "size": len(paths)})
     return out
+
+
+def crosstalk(cs: list[dict], g=None) -> dict:
+    """Coupling-hotspot report: structural (call/signal/var/inst/attach)
+    edges that cross cluster boundaries. Generic over languages — cluster
+    membership comes from `cs` (nav.clusters() output), edges from the
+    structural graph of the active config. Answers "which subsystems are
+    wired together despite clustering apart" and "which clusters are
+    internally hollow"."""
+    import graph
+
+    if g is None:
+        g = graph.get_graph()
+    file_cluster: dict[str, int] = {}
+    for c in cs:
+        for p, _cls in c["paths"]:
+            file_cluster[p] = c["id"]
+    by_id = {c["id"]: c for c in cs}
+    internal_by: Counter = Counter()
+    cluster_out: Counter = Counter()
+    cluster_in: Counter = Counter()
+    pair_edges: Counter = Counter()  # (min_id, max_id) -> cross func pairs
+    pair_files: dict[tuple[int, int], Counter] = defaultdict(Counter)
+    unclustered = 0
+    for src, dsts in g.edges.items():
+        sf = src.split("::")[0]
+        for dst in dsts:
+            df = dst.split("::")[0]
+            if sf == df:
+                continue  # same-file pairs carry no cluster signal
+            a = file_cluster.get(sf)
+            b = file_cluster.get(df)
+            if a is None or b is None:
+                unclustered += 1
+                continue
+            if a == b:
+                internal_by[a] += 1
+                continue
+            cluster_out[a] += 1
+            cluster_in[b] += 1
+            key = (min(a, b), max(a, b))
+            pair_edges[key] += 1
+            pair_files[key][f"{sf} -> {df}"] += 1
+    ext_total = int(sum(pair_edges.values()))
+    int_total = int(sum(internal_by.values()))
+    by_cluster = []
+    for c in cs:
+        cid = c["id"]
+        ext = cluster_out[cid] + cluster_in[cid]
+        tot = ext + internal_by[cid]
+        by_cluster.append(
+            {
+                "id": cid,
+                "label": c.get("label", ""),
+                "size": c["size"],
+                "internal": internal_by[cid],
+                "external_out": cluster_out[cid],
+                "external_in": cluster_in[cid],
+                "external_share": round(ext / tot, 3) if tot else 0.0,
+            }
+        )
+    by_cluster.sort(key=lambda r: (-(r["external_out"] + r["external_in"]), r["id"]))
+    worst_pairs = []
+    for (a, b), w in sorted(pair_edges.items(), key=lambda kv: (-kv[1], (kv[0][0], kv[0][1]))):
+        top = sorted(pair_files[(a, b)].items(), key=lambda kv: (-kv[1], kv[0]))[:3]
+        worst_pairs.append(
+            {
+                "a_id": a,
+                "b_id": b,
+                "a": by_id[a].get("label", str(a)),
+                "b": by_id[b].get("label", str(b)),
+                "edges": w,
+                "top_files": [{"pair": p, "w": wt} for p, wt in top],
+            }
+        )
+        if len(worst_pairs) >= 10:
+            break
+    return {
+        "clusters": len(cs),
+        "internal_edges": int_total,
+        "external_edges": ext_total,
+        "external_ratio": round(ext_total / max(ext_total + int_total, 1), 3),
+        "unclustered_endpoint_edges": unclustered,
+        "by_cluster": by_cluster,
+        "worst_pairs": worst_pairs,
+    }
