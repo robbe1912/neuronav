@@ -1776,7 +1776,8 @@ const dirChips = new Map();   // dir -> chip element (empty-state undo)
     const chip = document.createElement("span");
     chip.className = "chip";
     chip.style.color = "#b0bec5";
-    chip.textContent = dir + " · " + count;
+    // root-level files carry an empty dir string — label the chip, not a blank
+    chip.textContent = (dir === "" ? "(root)" : dir) + " · " + count;
     chip.onclick = () => {
       // multi-select: chips stack, each toggles its dir independently
       if (activeDirs.has(dir)) { activeDirs.delete(dir); chip.classList.remove("on"); }
