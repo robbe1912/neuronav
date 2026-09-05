@@ -1132,6 +1132,60 @@ def finalize(
                 p["size"] = len(p["paths"])
             parts = [p for p in parts if p["size"] > 0]
 
+    # scene structural majority: a scene whose weighted structural ties
+    # (both directions, whole welded unit) overwhelmingly point into ONE
+    # other part belongs there, embedding similarity notwithstanding
+    # (user report: showcase_earth_effects sat in the showcase blob while
+    # every instancing wire crossed the Earth cluster). Requires >=60% of
+    # edge weight into the target and >=10 total, and the scene must not
+    # already hold more of its own ties (hubs like MagicPlayer stay home).
+    # NOTE: iterate ALL .tscn paths — pure composition scenes have no
+    # attached script and therefore no welded unit.
+    if adj:
+        for _round in range(2):
+            part_of4: dict[str, int] = {}
+            for pi, p in enumerate(parts):
+                for path, _cls in p["paths"]:
+                    part_of4[path] = pi
+            moves2 = []
+            for path in sorted(part_of4):
+                if not path.endswith(".tscn"):
+                    continue
+                u = unit_of.get(path) or [path]
+                if u[0] != path:
+                    continue  # process each welded unit once, via its anchor
+                pi = part_of4[path]
+                w2: Counter = Counter()
+                for m in u:
+                    for nb, wt in adj.get(m, {}).items():
+                        pj = part_of4.get(nb)
+                        if pj is not None:
+                            w2[pj] += wt
+                    for nb, wt in rev.get(m, {}).items():
+                        pj = part_of4.get(nb)
+                        if pj is not None:
+                            w2[pj] += wt
+                own = w2.pop(pi, None) or 0.0
+                if not w2:
+                    continue
+                tot = own + sum(w2.values())
+                if tot < 10.0:
+                    continue
+                (t, tw) = sorted(w2.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+                if tw * 10 >= tot * 6 and own < tw and len(parts[t]["paths"]) <= 66:
+                    moves2.append((u, pi, t))
+            if not moves2:
+                break
+            for u, pi, t in moves2:
+                for m in u:
+                    ent = next((e for e in parts[pi]["paths"] if e[0] == m), None)
+                    if ent is not None:
+                        parts[pi]["paths"].remove(ent)
+                        parts[t]["paths"].append(ent)
+            for p in parts:
+                p["size"] = len(p["paths"])
+            parts = [p for p in parts if p["size"] > 0]
+
     # final cap enforcement: the routing passes above can pile files into
     # one part faster than their individual caps account for. Any part
     # over the mega-blob cap gets unit-split at progressively stricter
