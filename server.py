@@ -4,6 +4,9 @@ Works from any clone/worktree: paths resolve relative to the checkout the
 tool lives in. Clients: OpenCode, Claude Code, VS Code, Codex (all stdio MCP).
 
 Tools:
+- explore(query, n=4): START HERE for "how does X work" — one call returns
+  line-numbered source slices + callers/callees flow for the best hits;
+  degrades to lexical matching when the embedding backend is down
 - semantic_search(query, n=8): nearest files by embedding similarity
 - find_functions(query, n=6): semantic search over individual functions
 - symbol_graph(symbol, depth=1): callers/callees around a function or class
@@ -23,11 +26,17 @@ import sys
 import time
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
+import explore as _explore
 import graph
 import nav
 
 mcp = FastMCP("swmg-nav")
+
+# clients (Cursor Ask mode etc.) gate write tools by this hint; every tool
+# below except rescan is pure read over the local index
+READONLY = ToolAnnotations(readOnlyHint=True)
 
 
 def _fmt(hits: list[nav.Hit]) -> str:
@@ -40,7 +49,20 @@ def _fmt(hits: list[nav.Hit]) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
+def explore(query: str, n: int = 4) -> str:
+    """One-call orientation for "how does X work" questions.
+
+    Seeds on the function-level vector index (lexical fallback when the
+    embedding backend is down), returns Read-equivalent `cat -n` source
+    slices with real line numbers, plus a callers/callees flow line per
+    hit. Weak hits become pointer lines instead of noise; total output is
+    budget-capped so nothing externalizes to a file mid-answer.
+    """
+    return _explore.run(query, n)
+
+
+@mcp.tool(annotations=READONLY)
 def semantic_search(query: str, n: int = 8) -> str:
     """Find code/scene files in this Godot project by meaning, not keywords.
 
@@ -52,7 +74,7 @@ def semantic_search(query: str, n: int = 8) -> str:
     return _fmt(nav.search(query, n))
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 def find_functions(query: str, n: int = 6) -> str:
     """Semantic search over individual FUNCTIONS (not whole files).
 
@@ -70,7 +92,7 @@ def find_functions(query: str, n: int = 6) -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 def symbol_graph(symbol: str, depth: int = 1) -> str:
     """Structural map around a function or class: who calls it, what it calls.
 
@@ -83,7 +105,7 @@ def symbol_graph(symbol: str, depth: int = 1) -> str:
     return graph.get_graph().symbol_graph(symbol, depth)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 def dead_code(n: int = 40) -> str:
     """Functions unreachable from any entry point — deletion candidates.
 
@@ -108,7 +130,7 @@ def dead_code(n: int = 40) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 def duplicates(n: int = 20) -> str:
     """Duplicated function bodies (exact, whitespace/comment-normalized).
 
@@ -128,7 +150,7 @@ def duplicates(n: int = 20) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 def clusters(k: int = 6, min_sim: float = 0.6) -> str:
     """Subsystem clusters discovered from embedding geometry (mutual kNN).
 
@@ -155,7 +177,7 @@ def clusters(k: int = 6, min_sim: float = 0.6) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 def crosstalk() -> str:
     """Coupling-hotspot report: which subsystem clusters are wired together.
 
@@ -271,7 +293,7 @@ def _ctx_overview(g) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 def context(path: str = "", depth: int = 1) -> str:
     """Subsystem map for one repo file — the orientation tool for agents.
 
@@ -388,7 +410,7 @@ def context(path: str = "", depth: int = 1) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READONLY)
 def visualize() -> str:
     """Generate the interactive 3D code-graph (rotatable neuron map).
 
