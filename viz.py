@@ -484,6 +484,29 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
             vel[fast] *= (50.0 / np.sqrt(v2[fast]))[:, None]
         pos += vel * alpha
         vel *= 0.86
+    # overlap relaxation: the force sim guarantees cluster cohesion, not
+    # non-overlap — dense cores leave spheres intersecting. Push every
+    # overlapping pair apart along its axis (min center distance = 1.35x
+    # the rendered radii sum) until clean, then spread + re-center.
+    deg = np.zeros(n, dtype=np.float32)
+    for l in links:
+        s_, t_ = (l["s"], l["t"]) if isinstance(l, dict) else (l[0], l[1])
+        w_ = (l.get("w", 1) if isinstance(l, dict) else (l[2] if len(l) > 2 else 1))
+        deg[s_] += w_
+        deg[t_] += w_
+    rad = (np.minimum(10.0, 3.5 + np.sqrt(deg) * 1.0) * 1.1).astype(np.float32)
+    min_d = (rad[:, None] + rad[None, :]) * 1.35
+    for _ in range(90):
+        diff = pos[:, None, :] - pos[None, :, :]
+        dist = np.sqrt((diff * diff).sum(-1))
+        np.fill_diagonal(dist, np.inf)
+        need = min_d - dist
+        if need.max() <= 0:
+            break
+        dirs = diff / np.maximum(dist, 1e-3)[..., None]
+        corr = np.where((need > 0)[..., None], dirs * (need * 0.5)[..., None], 0.0)
+        pos += corr.sum(0) * 0.9
+    pos *= 1.10   # extra global breathing room — the frame adapts
     pos -= pos.mean(0)
     return [[round(float(x), 1) for x in p] for p in pos]
 
@@ -581,6 +604,15 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .clab { position:absolute; left:0; top:0; display:none; white-space:nowrap;
     font-size:12px; font-weight:700; letter-spacing:1.5px; opacity:.95;
     text-shadow:0 0 6px #000, 0 1px 3px #000, 0 0 12px #000; }
+  #flabs { position:fixed; inset:0; z-index:4; pointer-events:none;
+    overflow:hidden; }
+  .flab { position:absolute; left:0; top:0; display:none; white-space:nowrap;
+    font-size:11px; padding:1px 6px; border-radius:5px; cursor:pointer;
+    background:rgba(8,12,16,.78); color:#cfd8dc; pointer-events:auto;
+    text-shadow:0 1px 2px #000; }
+  .flab:hover { color:#fff; background:rgba(20,30,38,.92); }
+  .flab.fn { font-size:10px; color:#8fa3ad; background:rgba(8,12,16,.6); }
+  .flab.fn:hover { color:#d0f2ea; background:rgba(14,26,24,.9); }
 </style>
 </head>
 <body>
@@ -628,6 +660,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <div id="tip"></div>
 <div id="hubs"></div>
 <div id="elabs"></div>
+<div id="flabs"></div>
 <div id="clabs"></div>
 
 <script type="importmap">
@@ -956,6 +989,7 @@ function tick() {
   updateHubs();
   updateClusterLabs();
   updateEdgeLabels();
+  updateFocusLabels();
   renderer.render(scene, camera);
   requestAnimationFrame(tick);
 }
@@ -1312,6 +1346,7 @@ function applyVisibility() {
   rebuildFnLayer(focusing);
   rebuildHubs();
   rebuildEdgeLabels(focusing);
+  rebuildFocusLabels(focusing);
 }
 
 // ---- edge labels: focus detail mode (small lit set) ---------------------------
@@ -1455,6 +1490,85 @@ rebuildHubs();
 
 // ---- function-level layer (files inside the current focus) -------------------
 let fnMesh = null, fnLines = null, fnMeta = [];
+
+// ---- focus labels: name neighboring files + function satellites on focus ----
+const flabsEl = document.getElementById("flabs");
+let fLabs = [];
+function rebuildFocusLabels(focusing) {
+  fLabs = [];
+  flabsEl.innerHTML = "";
+  if (!focusing) return;
+  // every directly-connected file node gets its name back (hubs own theirs)
+  const hubIdx = new Set(hubs.map(h => h.i));
+  for (let i = 0; i < N; i++) {
+    if (level[i] !== 1 || hubIdx.has(i) || alphaTgt[i] <= 0.5) continue;
+    const el = document.createElement("div");
+    el.className = "flab";
+    el.textContent = nodes[i].label;
+    el.title = nodes[i].path;
+    el.onclick = () => { pushFocusState(); focusSeeds.clear(); focusSeeds.add(i); showInfo(i); buildContainment(); applyVisibility(); focus(i); };
+    flabsEl.appendChild(el);
+    fLabs.push({ kind: 0, i, ix: -1, el });
+  }
+  // function satellites: focused file's own fns first, then one hop out —
+  // capped so the layer stays readable
+  if (fnMeta.length) {
+    const own = [], near = [];
+    fnMeta.forEach((m, ix) => {
+      if (level[m.file] === 0) own.push(ix);
+      else if (level[m.file] === 1 && alphaTgt[m.file] > 0.5) near.push(ix);
+    });
+    own.concat(near).slice(0, 48).forEach(ix => {
+      const m = fnMeta[ix];
+      const el = document.createElement("div");
+      el.className = "flab fn";
+      el.textContent = "ƒ " + m.name;
+      el.title = nodes[m.file].path + " :: " + m.name;
+      el.onclick = () => showFnInfo(ix);
+      flabsEl.appendChild(el);
+      fLabs.push({ kind: 1, i: m.file, ix, el });
+    });
+  }
+}
+const _flabV = new THREE.Vector3();
+function updateFocusLabels() {
+  if (!fLabs.length) return;
+  const w = innerWidth, h = innerHeight;
+  const clearOf = (a, b) => a.right < b.left - 2 || b.right < a.left - 2 ||
+    a.bottom < b.top - 2 || b.bottom < a.top - 2;
+  const hubRects = [...document.querySelectorAll(".hub")]
+    .filter(e => e.style.display === "block").map(e => e.getBoundingClientRect());
+  const taken = [];
+  for (const f of fLabs) {
+    const p = f.kind === 1 ? fnMeta[f.ix].p : null;
+    _flabV.set(
+      f.kind === 1 ? p[0] : pos[f.i*3],
+      f.kind === 1 ? p[1] : pos[f.i*3+1],
+      f.kind === 1 ? p[2] : pos[f.i*3+2]).project(camera);
+    if (_flabV.z > 1 || Math.abs(_flabV.x) > 1.02 || Math.abs(_flabV.y) > 1.02) {
+      f.el.style.display = "none"; continue;
+    }
+    const x = (_flabV.x * 0.5 + 0.5) * w, y = (-_flabV.y * 0.5 + 0.5) * h;
+    const base = "translate(" + x.toFixed(1) + "px," + y.toFixed(1) + "px) translate(-50%,-100%)";
+    f.el.style.display = "block";
+    f.el.style.transform = base;
+    // fn satellites may overlap each other (they're small + attached to
+    // distinct wire points) — they only avoid hubs + file labels
+    if (f.kind === 1) { taken.push(f.el.getBoundingClientRect()); continue; }
+    let r = f.el.getBoundingClientRect();
+    if (hubRects.some(hr => !clearOf(r, hr)) || taken.some(t => !clearOf(r, t))) {
+      let ok = false;
+      for (const dy of [16, -14, 32, -30]) {
+        f.el.style.transform = "translate(" + x.toFixed(1) + "px," + (y + dy).toFixed(1) + "px) translate(-50%,-100%)";
+        r = f.el.getBoundingClientRect();
+        if (hubRects.every(hr => clearOf(r, hr)) && taken.every(t => clearOf(r, t))) { ok = true; break; }
+      }
+      if (!ok) { f.el.style.display = "none"; continue; }
+    }
+    taken.push(r);
+  }
+}
+rebuildFocusLabels(false);
 function rebuildFnLayer(focusing) {
   if (fnMesh) { scene.remove(fnMesh); fnMesh.geometry.dispose(); fnMesh.dispose(); fnMesh = null; }
   if (fnLines) { scene.remove(fnLines); fnLines.geometry.dispose(); fnLines = null; }
@@ -1521,8 +1635,7 @@ function rebuildFnLayer(focusing) {
       const s = keySlot.get(k);
       const px = pos[s.a*3] + (pos[s.b*3] - pos[s.a*3]) * s.t + (s.ox || 0);
       const py = pos[s.a*3+1] + (pos[s.b*3+1] - pos[s.a*3+1]) * s.t + (s.oy || 0);
-      const pz = pos[s.a*3+2] + (pos[s.b*3+2] - pos[s.a*3+2]) * s.t + (s.oz || 0);
-      fnMeta.push({ file: fi, name, p: [px, py, pz], s, dir: (name.charCodeAt(0) & 1) ? 1 : -1 });
+      const pz = pos[s.a*3+2] + (pos[s.b*3+2] - pos[s.a*3+2]) * s.t + (s.oz || 0);      fnMeta.push({ file: fi, name, p: [px, py, pz], s, dir: (name.charCodeAt(0) & 1) ? 1 : -1 });
       fpos.push(px, py, pz);
       fcol.push(colArr[fi*3], colArr[fi*3+1], colArr[fi*3+2]);
     }
