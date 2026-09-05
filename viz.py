@@ -1167,8 +1167,8 @@ function applyVisibility() {
   cbFnEl.parentElement.title = focusing ? "" : "function layer needs a focus (search or click a node)";
   for (let i = 0; i < N; i++) {
     let a;
-    if (!nodeVisible(nodes[i])) a = 0.0;   // size-0 gate in shader = true disable
-    else if (focusing) a = level[i] < 0 ? 0.02 : (level[i] === 0 ? 1 : Math.max(0.16, 0.7 - level[i] * 0.18));
+    if (!nodeVisible(nodes[i])) a = 0.0;   // size-0 gate = true disable
+    else if (focusing) a = level[i] < 0 ? 0.0 : (level[i] === 0 ? 1 : Math.max(0.16, 0.7 - level[i] * 0.18));
     else a = 1;
     alphaTgt[i] = a;
     if (a > 0.5) {
