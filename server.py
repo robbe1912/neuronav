@@ -10,6 +10,7 @@ Tools:
 - dead_code(): functions unreachable from any entry point (candidates only)
 - duplicates(): exact-clone function bodies (normalized hash groups)
 - clusters(k, min_sim): subsystem clusters over the embedding space
+- crosstalk(): cross-cluster coupling-hotspot report
 - visualize(): generate the interactive 3D graph (graph.html) and return path
 - rescan(): incremental re-index of everything above
 """
@@ -141,13 +142,50 @@ def clusters(k: int = 6, min_sim: float = 0.6) -> str:
         return "index empty — call rescan first"
     lines = [f"{len(cs)} cluster(s):", ""]
     for c in cs[:30]:
-        label = ", ".join(cls for _, cls in c["paths"][:4] if cls) or "misc"
-        lines.append(f"c{c['id']} ({c['size']} files, e.g. {label}):")
+        label = c.get("label") or "misc"
+        meta = f" [{c.get('method')}, conf {c.get('confidence', 0):.2f}]"
+        lines.append(f"c{c['id']} {label} — {c['size']} files{meta}:")
         for path, _cls in c["paths"][:12]:
             lines.append(f"  res://{path}")
         if c["size"] > 12:
             lines.append(f"  … +{c['size'] - 12} more")
         lines.append("")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def crosstalk() -> str:
+    """Coupling-hotspot report: which subsystem clusters are wired together.
+
+    Counts structural (call/signal/var/instance) edges that CROSS cluster
+    boundaries. Use before splitting/merging modules: a cluster with high
+    external share is not self-contained; heavy cluster pairs are coupling
+    hotspots. Pairs with `clusters` (what the families are) — this reports
+    how leaky the boundaries are.
+    """
+    import clusters as _clusters
+
+    g = graph.get_graph()
+    rep = _clusters.crosstalk(nav.clusters(), g)
+    lines = [
+        f"crosstalk: {rep['clusters']} clusters, "
+        f"internal {rep['internal_edges']} edges, "
+        f"cross-cluster {rep['external_edges']} "
+        f"({rep['external_ratio'] * 100:.1f}% of clustered)",
+        "",
+        "per cluster (top 10 by external):",
+    ]
+    for r in rep["by_cluster"][:10]:
+        lines.append(
+            f"  [{r['id']:>2}] {r['label'][:34]}  n={r['size']}  "
+            f"internal {r['internal']}  out {r['external_out']}  "
+            f"in {r['external_in']}  ext {r['external_share'] * 100:.0f}%"
+        )
+    if rep["worst_pairs"]:
+        lines += ["", "worst pairs:"]
+        for wp in rep["worst_pairs"]:
+            tops = ", ".join(f"{t['pair']} x{t['w']}" for t in wp["top_files"][:2])
+            lines.append(f"  {wp['a']} <-> {wp['b']}: {wp['edges']} edges (top: {tops})")
     return "\n".join(lines)
 
 
