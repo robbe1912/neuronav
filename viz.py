@@ -1182,6 +1182,7 @@ function applyVisibility() {
       (activeDirs.size && !activeDirs.has(nodes[l.t].dir));
     if (sFiltered || tFiltered) k = 0.0;
     else if (!typeVisible(l.ty) || alphaTgt[l.s] <= 0.5 || alphaTgt[l.t] <= 0.5) k = 0.012;
+    else if (fnMode && focusing && l.ty === "call" && level[l.s] >= 0 && level[l.t] >= 0) k = 0.04; // wire mode: fn wires replace the aggregate call line
     else if (focusing) k = Math.max(0.34, 1 - 0.18 * Math.max(level[l.s], level[l.t]));
     else k = 1;
     if (!focusing && !lodClose && k > 0.04) {
@@ -1496,7 +1497,7 @@ function rebuildFnLayer(focusing) {
   const g3 = new THREE.BufferGeometry();
   g3.setAttribute("position", new THREE.BufferAttribute(new Float32Array(sp), 3));
   fnSpokes = new THREE.LineSegments(g3, new THREE.LineBasicMaterial({
-    color: 0x445566, transparent: true, opacity: 0.22, depthWrite: false }));
+    color: 0x445566, transparent: true, opacity: 0.14, depthWrite: false }));
   scene.add(fnSpokes);
   const ep = [];
   for (let i = 0; i < eidx.length; i += 2) {
@@ -1506,7 +1507,7 @@ function rebuildFnLayer(focusing) {
   const g2 = new THREE.BufferGeometry();
   g2.setAttribute("position", new THREE.BufferAttribute(new Float32Array(ep), 3));
   fnLines = new THREE.LineSegments(g2, new THREE.LineBasicMaterial({
-    vertexColors: true, transparent: true, opacity: 0.45,
+    vertexColors: true, transparent: true, opacity: 0.8,
     blending: THREE.AdditiveBlending, depthWrite: false }));
   scene.add(fnLines);
 }
