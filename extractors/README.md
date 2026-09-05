@@ -21,7 +21,7 @@ virtuals, test prefixes, tool bases) lives only in the per-language module.
 | suffixes | module | exports |
 |----------|--------|---------|
 | `.gd`, `.tscn` | `gdscript.py` | `parse_gd`, `parse_tscn`, `parse`, `ENTRY_RULES` |
-| `.py` | `python.py` | `parse`, `ENTRY_RULES` (dunder virtuals, `test_*`, module-level/`__main__`/fixture entry hints; consts = repo-module imports; graph side: `_scan_body_py` + import refs) |
+| `.py` | `python.py` | `parse`, `ENTRY_RULES` (dunder virtuals, `test_*`, module-level/`__main__`/fixture entry hints, `@property`/`@name.setter` accessors; consts = repo-module imports; graph side: `_scan_body_py` + import refs) |
 
 ## Interface contract
 

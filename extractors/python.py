@@ -8,8 +8,9 @@ Parses one .py file into a FileSym:
 - consts: ``from <repo module> import X`` / ``import <repo module>`` ->
   name -> module rel path, the analog of GDScript's ``const X = preload()``
   receivers (and, via graph.py's import refs, of load-string liveness)
-- entry_hints: names called at module level (incl. the ``__main__`` guard)
-  and @pytest.fixture-decorated funcs
+- entry_hints: names called at module level (incl. the ``__main__`` guard),
+  @pytest.fixture-decorated funcs and @property/@name.setter accessors
+  (attribute-dispatched — GDScript ``set(v):``/``get():`` analog)
 
 Body scanning (call edges) lives in graph._scan_body_py, keyed on fs.ext.
 """
@@ -25,6 +26,10 @@ CLASS_RE = re.compile(r"^(\s*)class\s+([A-Za-z_]\w*)\s*(?:\(([^)]*)\))?\s*:")
 DEF_RE = re.compile(r"^(\s*)(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(")
 DECOR_RE = re.compile(r"^\s*@\S")
 FIXTURE_DECOR_RE = re.compile(r"^\s*@(?:pytest\.)?fixture\b")
+# attribute-dispatch accessors: @property/@cached_property (getter) and
+# @name.setter/@name.deleter fire on attribute access — no call site
+PROP_DECOR_RE = re.compile(r"^@(?:[A-Za-z_]\w*\.)*(?:property|cached_property)$")
+PROP_ACCESSOR_RE = re.compile(r"^@([A-Za-z_]\w*)\.(?:setter|deleter)$")
 SELF_TYPED_RE = re.compile(r"^\s*self\.([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*)")
 SELF_NEW_RE = re.compile(r"^\s*self\.([A-Za-z_]\w*)\s*=\s*([A-Z]\w*)\s*\(")
 CLASS_FIELD_RE = re.compile(r"^([ \t]+)([A-Za-z_]\w*)\s*:\s*([A-Z]\w*)\s*(?:=|$)")
@@ -125,6 +130,7 @@ def parse(path: Path, rel: str) -> FileSym:
     fixture_names: set[str] = set()
     pending_fixture = False
     pending_decor_indent = -1
+    pending_decors: list[str] = []  # decorator lines awaiting their def
     main_guard_indent = -1  # indent of the `if __name__` header
 
     i = 0
@@ -174,8 +180,10 @@ def parse(path: Path, rel: str) -> FileSym:
             if pending_decor_indent != ind:
                 pending_decor_indent = ind
                 pending_fixture = False
+                pending_decors = []
             if FIXTURE_DECOR_RE.match(stripped):
                 pending_fixture = True
+            pending_decors.append(stripped)
             i += 1
             continue
 
@@ -188,6 +196,7 @@ def parse(path: Path, rel: str) -> FileSym:
             class_indents.append(ind)
             pending_decor_indent = -1
             pending_fixture = False
+            pending_decors = []
             i += 1
             continue
 
@@ -196,8 +205,15 @@ def parse(path: Path, rel: str) -> FileSym:
             name = m.group(2)
             if pending_fixture:
                 fixture_names.add(name)
+            # @property accessors are dispatched on attribute access —
+            # entry roots, exactly like GDScript's set(v):/get(): blocks
+            for d in pending_decors:
+                if PROP_DECOR_RE.match(d) or PROP_ACCESSOR_RE.match(d):
+                    fs.entry_hints.add(name)
+                    break
             pending_decor_indent = -1
             pending_fixture = False
+            pending_decors = []
             j = i + 1
             while j < n:
                 nxt = lines[j]
