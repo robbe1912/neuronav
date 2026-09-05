@@ -9,8 +9,9 @@ Parses one .py file into a FileSym:
   name -> module rel path, the analog of GDScript's ``const X = preload()``
   receivers (and, via graph.py's import refs, of load-string liveness)
 - entry_hints: names called at module level (incl. the ``__main__`` guard),
-  @pytest.fixture-decorated funcs and @property/@name.setter accessors
-  (attribute-dispatched — GDScript ``set(v):``/``get():`` analog)
+  @pytest.fixture-decorated funcs, @property/@name.setter accessors
+  (attribute-dispatched — GDScript ``set(v):``/``get():`` analog) and
+  quoted names in ``__all__`` (the declared export surface)
 
 Body scanning (call edges) lives in graph._scan_body_py, keyed on fs.ext.
 """
@@ -276,6 +277,20 @@ def parse(path: Path, rel: str) -> FileSym:
             main_guard_indent = -1  # guard block ended
 
         _record_import(line, path, fs)
+
+        # __all__ = ["a", "b"]: the module's declared export surface —
+        # consumers import these without any in-repo call site. Buffer
+        # multi-line list literals, then harvest the quoted names.
+        if stripped.startswith("__all__") and "=" in stripped:
+            buf = stripped.split("=", 1)[1]
+            j = i + 1
+            while buf.count("[") > buf.count("]") and j < n:
+                buf += " " + lines[j].strip()
+                j += 1
+            for em in re.finditer(r"[\"']([A-Za-z_]\w*)[\"']", buf):
+                fs.entry_hints.add(em.group(1))
+            i = j
+            continue
 
         # ENTRY_RULES = [rule_a, rule_b, ...]: the documented extractor
         # contract dispatches these callables dynamically (graph._find_roots

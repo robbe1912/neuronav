@@ -85,5 +85,9 @@ alive(
 stays_dead("dataclass: control stays dead", "vec2.py", "unused_vec")
 stays_dead("dataclass: consumer control stays dead", "dataclass_fields.py", "unused_move")
 
+# --- fixture: exports.py ------------------------------------------------
+alive("__all__: exported funcs are roots", "exports.py", ["public_api", "public_two"])
+stays_dead("__all__: non-export stays dead", "exports.py", "private_helper")
+
 print(f"{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)
