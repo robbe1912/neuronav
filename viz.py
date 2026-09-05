@@ -643,7 +643,8 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <button id="bCalls" class="on">calls</button>
   <button id="bSignals" class="on">signals</button>
     <button id="bInst">contains</button>
- <button id="bVar" title="member-var references — dense, off by default">var</button>
+  <button id="bVar" title="member-var references — dense, off by default">var</button>
+    <button id="bGround" title="fixed ground grid under the graph (orientation aid)">ground</button>
     <button id="bDead" title="show only files flagged dead: at least 40% of their funcs are dead candidates">dead only</button>
     <button id="bReset">reset</button>
   </div>
@@ -801,6 +802,23 @@ scene.add(new THREE.AmbientLight(0xffffff, 0.55));
 const dirLight = new THREE.DirectionalLight(0xffffff, 1.4);
 dirLight.position.set(0.4, 0.8, 0.65);
 scene.add(dirLight);
+
+// fixed-up cue: subtle polar grid below the galaxy — when orbiting deep,
+// it is the only thing that keeps "down" readable (off by default; the
+// ground button toggles it and its state survives resetAll)
+let showGround = false;
+let _minY = 1e9, _maxR = 0;
+for (let i = 0; i < N; i++) {
+  _minY = Math.min(_minY, pos[i*3+1]);
+  _maxR = Math.max(_maxR, Math.hypot(pos[i*3], pos[i*3+2]));
+}
+const groundGrid = new THREE.PolarGridHelper(
+  Math.max(600, _maxR * 1.05), 12, 5, 64, 0x27455c, 0x1a2f42);
+groundGrid.position.y = _minY - 110;
+groundGrid.material.transparent = true;
+groundGrid.material.opacity = 0.35;
+groundGrid.visible = showGround;
+scene.add(groundGrid);
 
 const fileMesh = new THREE.InstancedMesh(
   new THREE.SphereGeometry(1, 14, 10),
@@ -1892,6 +1910,11 @@ document.getElementById("bVar").onclick = e => {
   e.target.classList.toggle("on", showVar);
   applyVisibility();
 };
+document.getElementById("bGround").onclick = e => {
+  showGround = !showGround;
+  groundGrid.visible = showGround;
+  e.target.classList.toggle("on", showGround);
+};
 const searchEl = document.getElementById("search");
 const depthEl = document.getElementById("depth");
 const cbFnEl = document.getElementById("cbFn");
@@ -1956,6 +1979,8 @@ function resetAll() {
   document.getElementById("bCalls").classList.add("on");
   document.getElementById("bSignals").classList.add("on");
   document.querySelector("#dirRow .seg").classList.add("on");
+  // ground is a viewport pref, not filter state — it survives the reset
+  if (showGround) document.getElementById("bGround").classList.add("on");
   frameGraph();
   buildContainment(); applyVisibility();
 }
@@ -2222,6 +2247,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get controls() { return controls; },
   get fnMeta() { return fnMeta; },
   get hovered() { return hovered; },
+  get groundGrid() { return groundGrid; },
   syncFileMesh };
 tick();
 </script>

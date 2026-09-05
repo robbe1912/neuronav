@@ -237,6 +237,23 @@ def run_tests():
               bool(dead) and dead.get("d1", 0) < dead.get("d0", 1) * 0.85,
               str(dead))
 
+        # 5e. ground grid: off by default, button toggles, state survives resetAll
+        ground = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const btn = document.getElementById('bGround');
+                 const off0 = !d.groundGrid.visible && !btn.classList.contains('on');
+                 btn.click();
+                 const on1 = d.groundGrid.visible && btn.classList.contains('on');
+                 document.getElementById('bReset').click();
+                 const survived = d.groundGrid.visible && btn.classList.contains('on');
+                 btn.click();
+                 const off2 = !d.groundGrid.visible && !btn.classList.contains('on');
+                 return { off0, on1, survived, off2 }; }"""
+        )
+        check("ground grid toggles and survives reset",
+              bool(ground) and all(ground.get(k) for k in ("off0", "on1", "survived", "off2")),
+              str(ground))
+
         # artifact: screenshot of the focused fn-layer state
         page.screenshot(path=str(ROOT / "tests" / "last_run.png"), scale="css", type="png")
         print("artifact: tests/last_run.png")
