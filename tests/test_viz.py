@@ -107,7 +107,7 @@ def run_tests():
         )
         check("fn boxes instanced cubes",
               wire.get("isInstanced") and wire.get("geom") == "BoxGeometry", str(wire))
-        check("fn boxes on wires", wire.get("maxOff", 99) < 10,
+        check("fn boxes on wires", wire.get("maxOff", 99) <= 15.5,
               f"maxOff={wire.get('maxOff')} count={wire.get('count')}")
 
         # 5. hover a fn box -> tooltip shows path :: name
@@ -346,4 +346,5 @@ def run_tests():
 
 if __name__ == "__main__":
     main()
+
 

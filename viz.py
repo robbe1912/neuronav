@@ -587,8 +587,8 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
         deg[s_] += w_
         deg[t_] += w_
     rad = (np.minimum(10.0, 3.5 + np.sqrt(deg) * 1.0) * 1.1).astype(np.float32)
-    min_d = (rad[:, None] + rad[None, :]) * 1.35
-    for _ in range(90):
+    min_d = (rad[:, None] + rad[None, :]) * 1.7
+    for _ in range(140):
         diff = pos[:, None, :] - pos[None, :, :]
         dist = np.sqrt((diff * diff).sum(-1))
         np.fill_diagonal(dist, np.inf)
@@ -596,9 +596,11 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
         if need.max() <= 0:
             break
         dirs = diff / np.maximum(dist, 1e-3)[..., None]
-        corr = np.where((need > 0)[..., None], dirs * (need * 0.5)[..., None], 0.0)
+        # clip need: the diagonal is inf-dist -> -inf need -> 0*-inf = NaN in
+        # the product below (picked away by where, but warns and poisons)
+        corr = np.where((need > 0)[..., None], dirs * (np.clip(need, 0.0, None) * 0.5)[..., None], 0.0)
         pos += corr.sum(0) * 0.9
-    pos *= 1.10   # extra global breathing room — the frame adapts
+    pos *= 1.45   # extra global breathing room — the frame adapts
     pos -= pos.mean(0)
     return [[round(float(x), 1) for x in p] for p in pos]
 
@@ -630,9 +632,10 @@ _TEMPLATE = r"""<!DOCTYPE html>
     font-size:10.5px; cursor:pointer; border:1px solid transparent; }
   .chip:hover { border-color:#fff5; }
   .chip.on { outline:1px solid #fff; }
-  #toggles { margin-top:10px; display:flex; gap:6px; }
-  button { flex:1; background:#0b1116; color:#b0bec5; border:1px solid #263238;
-    border-radius:6px; padding:5px 0; cursor:pointer; font-size:11px; }
+  #toggles { margin-top:10px; display:flex; flex-wrap:wrap; gap:6px 4px; }
+  button { flex:1 1 21%; background:#0b1116; color:#b0bec5; border:1px solid #263238;
+    border-radius:6px; padding:5px 2px; cursor:pointer; font-size:11px;
+    text-align:center; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   button.on { color:#1de9b6; border-color:#1de9b688; }
   #info { position:fixed; top:12px; right:12px; z-index:10; width:290px;
     background:rgba(10,14,18,.88); border:1px solid #1de9b633; border-radius:10px;
@@ -1889,6 +1892,28 @@ function rebuildFnLayer(focusing) {
     m.p[0] = bx + ox; m.p[1] = by + oy; m.p[2] = bz + oz;
     fpos[ix*3] = m.p[0]; fpos[ix*3+1] = m.p[1]; fpos[ix*3+2] = m.p[2];
   };
+  // keep fn boxes out of the file spheres: wires start at sphere CENTERS,
+  // so boxes near the wire ends sit inside big hub spheres (radius up to 11).
+  // Radial push to r + box-margin; runs after reprojection each iteration and
+  // once more at the end (sphere escape wins over the corridor clamp).
+  const sphereClear = (prev) => {
+    let moved = prev;
+    for (let i = 0; i < fnMeta.length; i++) {
+      const m = fnMeta[i];
+      for (let f = 0; f < N; f++) {
+        const r = sizes[f] * 1.1 + 3.4;   // rendered radius + box half-diagonal margin
+        const dx = m.p[0] - pos[f*3], dy = m.p[1] - pos[f*3+1], dz = m.p[2] - pos[f*3+2];
+        const d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 >= r*r) continue;
+        const d = Math.sqrt(d2) || 0.01;
+        const k = (r - d) / d;
+        m.p[0] += dx*k; m.p[1] += dy*k; m.p[2] += dz*k;
+        moved = true;
+      }
+      fpos[i*3] = m.p[0]; fpos[i*3+1] = m.p[1]; fpos[i*3+2] = m.p[2];
+    }
+    return moved;
+  };
   for (let it = 0; it < 120; it++) {
     let moved = false;
     for (let a = 1; a < fnMeta.length; a++) {
@@ -1907,8 +1932,10 @@ function rebuildFnLayer(focusing) {
       }
     }
     for (let i = 0; i < fnMeta.length; i++) reproject(fnMeta[i], i);
+    moved = sphereClear(moved) || moved;
     if (!moved) break;
   }
+  sphereClear(false);
   if (!fnMeta.length) return;
   // fn boxes: true 3D cubes on the wires, colored by owning cluster hue,
   // each with a deterministic varied roll so adjacent boxes stay readable
