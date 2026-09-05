@@ -946,6 +946,11 @@ function applySpread(s) {
   syncFileMesh();
   applyVisibility();
   buildContainment();
+  // the raycaster caches ONE bounding sphere for the whole instanced mesh on
+  // its first hit-test; after a spread rescale that sphere is stale and every
+  // node outside it silently fails to pick (frustumCulled=false does NOT
+  // affect raycasting). Recompute so picking tracks the real layout.
+  if (fileMesh) fileMesh.computeBoundingSphere();
 }
 
 const alphaArr = new Float32Array(N).fill(1);
@@ -989,6 +994,10 @@ const fileMesh = new THREE.InstancedMesh(
   N
 );
 fileMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+// the union bounding sphere is computed once from boot positions; after a
+// spread rescale it is stale and frustum-culls periphery instances from
+// BOTH rendering and raycasting (outside nodes became unpickable)
+fileMesh.frustumCulled = false;
 scene.add(fileMesh);
 const _dummy = new THREE.Object3D();
 const _col = new THREE.Color();
@@ -2043,6 +2052,7 @@ function rebuildFnLayer(focusing) {
     new THREE.MeshLambertMaterial(),
     fnMeta.length
   );
+  fnMesh.frustumCulled = false;   // positions rebuilt on every focus change
   for (let i = 0; i < fnMeta.length; i++) {
     fdummy.position.set(fpos[i*3], fpos[i*3+1], fpos[i*3+2]);
     fdummy.rotation.set(((i * 37) % 90) * Math.PI / 180, ((i * 53) % 90) * Math.PI / 180, 0);
