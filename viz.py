@@ -642,6 +642,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <button id="bCalls" class="on">calls</button>
   <button id="bSignals" class="on">signals</button>
     <button id="bInst">contains</button>
+ <button id="bVar" title="member-var references — dense, off by default">var</button>
     <button id="bDead" title="show only dead-code candidate files">dead only</button>
     <button id="bReset">reset</button>
   </div>
@@ -1077,6 +1078,7 @@ function updateEdgeLegend(focusing) {
     if (showCalls) addKey("call", TYPE_COLORS.call);
     if (showSignals) addKey("signal", TYPE_COLORS.signal);
     if (showInst) addKey("contains", TYPE_COLORS.inst);
+    if (showVar) addKey("var", TYPE_COLORS.var);
   }
 }
 updateEdgeLegend(false);
@@ -1163,7 +1165,7 @@ const mouse = new THREE.Vector2();
 let hovered = -1, hoveredFn = -1, selected = -1;
 let deadOnly = false, query = "";
 const activeClusters = new Set();   // multi-select cluster filter (legend chips)
-let showInst = false, showCalls = true, showSignals = true, depth = 2, fnMode = false;
+let showInst = false, showCalls = true, showSignals = true, showVar = false, depth = 2, fnMode = false;
 // focus roots: single click replaces, shift-click stacks (BFS is multi-seed)
 const focusSeeds = new Set();
 // direction mode: 0 = both, 1 = out (downstream impact), 2 = in (upstream deps)
@@ -1216,7 +1218,7 @@ function typeVisible(ty) {
   if (ty === "call") return showCalls;
   if (ty === "signal") return showSignals;
   if (ty === "inst" || ty === "attach") return showInst;
-  if (ty === "var") return false;   // member-var refs: too dense to be useful on
+  if (ty === "var") return showVar;   // member-var refs: dense, opt-in via the var toggle
   return true;
 }
 function applyVisibility() {
@@ -1817,6 +1819,11 @@ document.getElementById("bInst").onclick = e => {
   e.target.classList.toggle("on", showInst);
   applyVisibility();
 };
+document.getElementById("bVar").onclick = e => {
+  showVar = !showVar;
+  e.target.classList.toggle("on", showVar);
+  applyVisibility();
+};
 const searchEl = document.getElementById("search");
 const depthEl = document.getElementById("depth");
 const cbFnEl = document.getElementById("cbFn");
@@ -1869,7 +1876,7 @@ renderer.domElement.addEventListener("contextmenu", e => {
 function resetAll() {
   activeClusters.clear(); activeDirs.clear();
   deadOnly = false; query = ""; focusSeeds.clear(); focusStack = [];
-  dirMode = 0; showSignals = true; fnMode = false; depth = 2;
+  dirMode = 0; showSignals = true; showVar = false; fnMode = false; depth = 2;
   showInst = false; showCalls = true; showTests = false;
   searchEl.value = ""; depthEl.value = 2;
   document.getElementById("depthVal").textContent = "2";
