@@ -1049,6 +1049,27 @@ function frameGraph() {
   lodDist = Math.max(420, b.radius * 1.8) * 0.66;
 }
 
+// frame only the nodes the filters still show (cluster/dir isolates) — the
+// selected island(s) deserve the camera, not a whole-galaxy view with a
+// bright corner. Tweened: this is a navigation act, not a boot-time snap.
+function frameVisible() {
+  const p = new THREE.Vector3(1e9, 1e9, 1e9), q = new THREE.Vector3(-1e9, -1e9, -1e9);
+  let n = 0;
+  for (let i = 0; i < N; i++) {
+    if (alphaTgt[i] < 0.5) continue;   // targets, not the eased display values
+    p.set(Math.min(p.x, pos[i*3]), Math.min(p.y, pos[i*3+1]), Math.min(p.z, pos[i*3+2]));
+    q.set(Math.max(q.x, pos[i*3]), Math.max(q.y, pos[i*3+1]), Math.max(q.z, pos[i*3+2]));
+    n++;
+  }
+  if (!n) return;
+  const c = p.clone().add(q).multiplyScalar(0.5);
+  const r = Math.max(120, p.distanceTo(q) * 0.5);
+  const dir = new THREE.Vector3().subVectors(camera.position, controls.target);
+  if (dir.lengthSq() < 1) dir.set(0.42, 0.5, 0.76);
+  dir.normalize();
+  tweenCamTo(c, c.clone().addScaledVector(dir, Math.max(320, r * 1.8)));
+}
+
 // ---- UI ---------------------------------------------------------------------
 const stats = document.getElementById("stats");
 const m = DATA.meta;
@@ -1761,6 +1782,7 @@ topClusters.forEach(([cid, count]) => {
     if (activeClusters.has(+cid)) { activeClusters.delete(+cid); chip.classList.remove("on"); }
     else { activeClusters.add(+cid); chip.classList.add("on"); }
     applyVisibility();
+    if (activeClusters.size || activeDirs.size) frameVisible(); else frameGraph();
   };
   legend.appendChild(chip);
   legendChips.set(+cid, chip);
@@ -1784,6 +1806,7 @@ const dirChips = new Map();   // dir -> chip element (empty-state undo)
       if (activeDirs.has(dir)) { activeDirs.delete(dir); chip.classList.remove("on"); }
       else { activeDirs.add(dir); chip.classList.add("on"); }
       buildContainment(); applyVisibility();
+      if (activeDirs.size || activeClusters.size) frameVisible(); else frameGraph();
     };
     dirsEl.appendChild(chip);
     dirChips.set(dir, chip);
@@ -2153,6 +2176,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   adjOut, adjIn, adj, outDeg, inDeg, get dirMode() { return dirMode; }, focusSeeds, level,
   get camTween() { return camTween; }, get focusStack() { return focusStack; },
   get fileMesh() { return fileMesh; }, get fnMesh() { return fnMesh; },
+  get controls() { return controls; },
   get fnMeta() { return fnMeta; },
   syncFileMesh };
 tick();

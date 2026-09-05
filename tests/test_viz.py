@@ -161,6 +161,27 @@ def run_tests():
               and hop.get("nbLabel") in (hop.get("text") or ""),
               str(hop))
 
+        # 5c. cluster chip isolate -> camera tweens to frame the island
+        # (clear focus first so chips act on the overview)
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(150)
+        island = page.evaluate(
+            """() => { const chip0 = document.querySelector('#legend .chip');
+                 if (!chip0) return { fail: 'no legend chip' };
+                 const d = window.__dbg;
+                 const d0 = d.camera.position.distanceTo(d.controls.target);
+                 chip0.click();
+                 return new Promise(res => setTimeout(() => {
+                   const dd = window.__dbg;
+                   const d1 = dd.camera.position.distanceTo(dd.controls.target);
+                   res({ d0: Math.round(d0), d1: Math.round(d1) });
+                 }, 600)); }"""
+        )
+        check("cluster chip frames island",
+              bool(island) and "fail" not in island
+              and island.get("d1", 0) < island.get("d0", 1) * 0.9,
+              str(island))
+
         # artifact: screenshot of the focused fn-layer state
         page.screenshot(path=str(ROOT / "tests" / "last_run.png"), scale="css", type="png")
         print("artifact: tests/last_run.png")
