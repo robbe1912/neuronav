@@ -76,6 +76,7 @@ ENGINE_PROP_RE = re.compile(r"^_(get|set)_\w+$")
 
 
 def _indent(line: str) -> int:
+
     expanded = line.expandtabs(TAB_WIDTH)
     return len(expanded) - len(expanded.lstrip(" "))
 
@@ -186,6 +187,77 @@ ENTRY_RULES = [
     _entry_rpc,
     _entry_engine_props,
 ]
+
+
+# ---- declared IO surface (params / return type / state writes) ------------
+# powers the fn panel signature line, the "writes state" label badge and the
+# mutators-only filter in the viz. Purely syntactic: member writes = `self.x =`
+# (GDScript 2 requires self for member assignment), param mutation = a param
+# name followed by a known mutating method call.
+_SIG_PARENS_RE = re.compile(r"\((.*)\)", re.S)
+_RET_RE = re.compile(r"->\s*([A-Za-z_][\w.]*)")
+_PARAM_RE = re.compile(r"^([A-Za-z_]\w*)\s*(?::\s*([A-Za-z_][\w.]*))?")
+
+# mutators callable on Array/Dictionary/pass-by-ref objects
+_MUTATING_METHODS = {
+    "append", "append_array", "assign", "clear", "erase", "insert", "pop",
+    "pop_back", "pop_front", "push_back", "push_front", "remove", "remove_at",
+    "resize", "reverse", "sort", "sort_custom", "shuffle", "fill",
+}
+
+
+def _split_top_commas(s: str) -> list:
+    parts, depth, cur = [], 0, []
+    for ch in s:
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+            continue
+        cur.append(ch)
+    if "".join(cur).strip():
+        parts.append("".join(cur))
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _parse_signature(header: str, fname: str) -> tuple:
+    """-> ([(param, type)], ret) from a func header (multi-line OK)."""
+    m = _SIG_PARENS_RE.search(header)
+    params: list = []
+    if m:
+        for chunk in _split_top_commas(m.group(1)):
+            if chunk == "":
+                continue
+            pm = _PARAM_RE.match(chunk)
+            if pm and pm.group(1) not in ("const", "ref"):  # not a bare keyword
+                params.append((pm.group(1), pm.group(2) or ""))
+    rm = _RET_RE.search(header)
+    ret = rm.group(1) if rm else ""
+    return params, ret
+
+
+def _scan_io(body: str, params: list, member_names: set) -> tuple:
+    """-> (writes, mut_params) member/param mutation sets for a body."""
+    writes = set(re.findall(r"\bself\.([A-Za-z_]\w*)\s*=(?!=)", body))
+    # augmented member writes too: self.hp -= 1
+    writes |= set(re.findall(r"\bself\.([A-Za-z_]\w*)\s*(?:\+|-|\*|/|%)=(?!=)", body))
+    # GDScript idiom: bare member assignment without self. — only counts when
+    # the name is a declared member of this file and not shadowed by a local
+    # (var declaration) or a parameter.
+    locals_ = set(re.findall(r"\bvar\s+([A-Za-z_]\w*)", body)) | {p for p, _t in params}
+    for m in re.finditer(r"^[ \t]*([A-Za-z_]\w*)\s*(?:\+|-|\*|/)?=(?!=)", body, re.M):
+        n = m.group(1)
+        if n in member_names and n not in locals_:
+            writes.add(n)
+    pnames = {p for p, _t in params}
+    mut = set()
+    for pm in re.finditer(r"\b([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\(", body):
+        if pm.group(1) in pnames and pm.group(2) in _MUTATING_METHODS:
+            mut.add(pm.group(1))
+    return writes, mut
 
 
 def parse_gd(path: Path, rel: str) -> FileSym:
@@ -340,6 +412,7 @@ def parse_gd(path: Path, rel: str) -> FileSym:
                     continue
                 break
             body = "\n".join(body_lines)
+            io_params, io_ret = _parse_signature(header, name)
             if name in fs.funcs:
                 # inner classes may legally re-declare a func name; merge
                 # conservatively so edges from BOTH bodies survive
@@ -347,14 +420,21 @@ def parse_gd(path: Path, rel: str) -> FileSym:
                 fs.funcs[name] = Func(
                     path=rel, name=name, line=prev.line,
                     body=prev.body + "\n" + body,
+                    params=prev.params or io_params, ret=prev.ret or io_ret,
                 )
             else:
                 fs.funcs[name] = Func(
                     path=rel, name=name, line=i + 1, body=body,
+                    params=io_params, ret=io_ret,
                 )
             i = j
             continue
         i += 1
+    # IO scan runs after the whole file is parsed so member declarations that
+    # appear after a func still count (GDScript allows late member decls).
+    member_names = set(fs.members)
+    for fn in fs.funcs.values():
+        fn.writes, fn.mut_params = _scan_io(fn.body, fn.params, member_names)
     return fs
 
 

@@ -919,7 +919,15 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
             fs = registry_for(suffix).parse(path, rel)
         for name, fn in fs.funcs.items():
             ids.append(f"{rel}::{name}")
-            docs.append(f"{rel} :: func {name}\n{fn.body[:6000]}")
+            # signature line up front: better embeddings + agents see the IO
+            # surface without opening the file
+            sig = ", ".join(
+                f"{p}: {t}" if t else p for p, t in fn.params
+            )
+            ret = f" -> {fn.ret}" if fn.ret else ""
+            docs.append(
+                f"{rel} :: func {name}({sig}){ret}\n{fn.body[:6000]}"
+            )
             metas.append(
                 {"path": rel, "name": name, "class_name": fs.class_name,
                  "line": fn.line}

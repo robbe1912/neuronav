@@ -18,6 +18,13 @@ class Func:
     name: str
     line: int  # 1-based def line
     body: str
+    # declared IO surface (params/ret from the signature; writes/mut_params
+    # from a body scan). Language-dependent fill; empty for languages that
+    # don't parse them yet. powers fn-panel signature display + mutator filter
+    params: list = field(default_factory=list)      # [(name, type)]
+    ret: str = ""                                   # declared return type
+    writes: set = field(default_factory=set)        # members assigned (self.x =)
+    mut_params: set = field(default_factory=set)    # params mutated via p.mutator(
 
     @property
     def key(self) -> str:

@@ -376,12 +376,30 @@ def _build_data() -> dict:
     # absent → renderer leaves sizes untouched, no legend note)
     hot = _churn_hot([nd["path"] for nd in nodes])
 
+    # per-function IO surface (params / ret / member writes / mutated params),
+    # keyed "path::func". consumed by the fn click panel (signature line +
+    # write chips), the focus-label writes-state badge and the mutators
+    # filter. skipped entirely when a function has nothing to say.
+    fio: dict[str, dict] = {}
+    for rel, fs in g.files.items():
+        for fn in fs.funcs.values():
+            if not (fn.params or fn.ret or fn.writes or fn.mut_params):
+                continue
+            sig = ", ".join(f"{p}: {t}" if t else p for p, t in fn.params)
+            fio[f"{rel}::{fn.name}"] = {
+                "sig": f"{fn.name}({sig})",
+                "ret": fn.ret,
+                "w": sorted(fn.writes),
+                "mp": sorted(fn.mut_params),
+            }
+
     data = {
         "nodes": nodes,
         "links": links,
         "fedges": fedges,
         "sims": sims,
         "hw": hw,
+        "fio": fio,
         "pos": pos_baked,
         "meta": {
             "files": len(nodes),
@@ -736,6 +754,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <div id="toggles">
   <button id="bCalls" class="on">calls</button>
   <button id="bSignals" class="on">signals</button>
+<button id="bMut" title="fn layer: only functions that write member state (✎ badge)">mutators</button>
     <button id="bInst">contains</button>
   <button id="bVar" title="member-var references — dense, off by default">var</button>
     <button id="bGround" title="fixed ground grid under the graph (orientation aid)">ground</button>
@@ -1346,6 +1365,7 @@ const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 let hovered = -1, hoveredFn = -1, selected = -1;
 let deadOnly = false, query = "";
+let mutOnly = false;   // fn layer: show only functions that write state
 const activeClusters = new Set();   // multi-select cluster filter (legend chips)
 let showInst = false, showCalls = true, showSignals = true, showVar = false, depth = 2, fnMode = false;
 // focus roots: single click replaces, shift-click stacks (BFS is multi-seed)
@@ -1747,9 +1767,13 @@ function rebuildFocusLabels(focusing) {
     });
     own.concat(near).slice(0, 48).forEach(ix => {
       const m = fnMeta[ix];
+      const io = DATA.fio && DATA.fio[nodes[m.file].path + "::" + m.name];
       const el = document.createElement("div");
       el.className = "flab fn";
-      el.textContent = "ƒ " + m.name;
+      // writes-state badge (tier-2 metadata per the LOD ladder; single
+      // glyph channel — color stays cluster-owned)
+      el.textContent = "ƒ " + m.name + (io && io.w.length ? " ✎" + io.w.length : "");
+      if (mutOnly && (!io || !io.w.length)) return;   // mutators-only filter
       el.title = nodes[m.file].path + " :: " + m.name;
       el.onclick = () => showFnInfo(ix);
       flabsEl.appendChild(el);
@@ -1854,8 +1878,16 @@ function rebuildFnLayer(focusing) {
     }
   }
   const fIdx = new Map(), fpos = [], fcol = [], eidx = [];
+  // mutators-only filter: when on, fn satellites for functions with no
+  // member writes are not created at all (their wires collapse with them)
+  const ioOf = (fi, name) => (DATA.fio || {})[nodes[fi].path + "::" + name];
+  const isMutator = (fi, name) => {
+    const io = ioOf(fi, name);
+    return !!(io && io.w.length);
+  };
   const nodeOf = (e, isSrc) => {
     const fi = isSrc ? e[0] : e[2], name = isSrc ? e[1] : e[3];
+    if (mutOnly && !isMutator(fi, name)) return -1;
     const k = fi + "::" + name;
     let ix = fIdx.get(k);
     if (ix === undefined) {
@@ -1863,7 +1895,8 @@ function rebuildFnLayer(focusing) {
       const s = keySlot.get(k);
       const px = pos[s.a*3] + (pos[s.b*3] - pos[s.a*3]) * s.t + (s.ox || 0);
       const py = pos[s.a*3+1] + (pos[s.b*3+1] - pos[s.a*3+1]) * s.t + (s.oy || 0);
-      const pz = pos[s.a*3+2] + (pos[s.b*3+2] - pos[s.a*3+2]) * s.t + (s.oz || 0);      fnMeta.push({ file: fi, name, p: [px, py, pz], s, dir: (name.charCodeAt(0) & 1) ? 1 : -1 });
+      const pz = pos[s.a*3+2] + (pos[s.b*3+2] - pos[s.a*3+2]) * s.t + (s.oz || 0);
+      fnMeta.push({ file: fi, name, p: [px, py, pz], s, dir: (name.charCodeAt(0) & 1) ? 1 : -1 });
       fpos.push(px, py, pz);
       fcol.push(colArr[fi*3], colArr[fi*3+1], colArr[fi*3+2]);
     }
@@ -1871,6 +1904,7 @@ function rebuildFnLayer(focusing) {
   };
   visEdges.forEach(e => {
     const a = nodeOf(e, true), b = nodeOf(e, false);
+    if (a < 0 || b < 0) return;   // filtered out by mutators-only
     eidx.push(a, b);
   });
   // relaxation: push overlapping fn boxes apart, then re-project each box
@@ -2093,6 +2127,13 @@ document.getElementById("bSignals").onclick = e => {
   e.target.classList.toggle("on", showSignals);
   applyVisibility();
 };
+document.getElementById("bMut").onclick = e => {
+  // fn layer must be on for the mutators filter to mean anything
+  if (!fnMode) { fnMode = true; document.getElementById("cbFn").checked = true; }
+  mutOnly = !mutOnly;
+  e.target.classList.toggle("on", mutOnly);
+  applyVisibility();
+};
 document.getElementById("bInst").onclick = e => {
   showInst = !showInst;
   e.target.classList.toggle("on", showInst);
@@ -2161,6 +2202,7 @@ function resetAll() {
   activeClusters.clear(); activeDirs.clear();
   deadOnly = false; query = ""; focusSeeds.clear(); focusStack = [];
   dirMode = 0; showSignals = true; showVar = false; fnMode = false; depth = 2;
+  mutOnly = false;
   showInst = false; showCalls = true; showTests = false;
   groupsMode = false;   // coloring level is view state — reset to fine clusters
   searchEl.value = ""; depthEl.value = 2;
@@ -2172,6 +2214,7 @@ function resetAll() {
   document.querySelectorAll(".chip, button").forEach(x => x.classList.remove("on"));
   document.getElementById("bCalls").classList.add("on");
   document.getElementById("bSignals").classList.add("on");
+  document.getElementById("bMut").classList.remove("on");
   document.querySelector("#dirRow .seg").classList.add("on");
   // ground is a viewport pref, not filter state - it survives the reset
   if (showGround) document.getElementById("bGround").classList.add("on");
@@ -2281,6 +2324,25 @@ function showFnInfo(k) {
   panelCopyText = "res://" + nodes[fm.file].path + "::" + fm.name;
   const tags = document.getElementById("iTags");
   tags.innerHTML = "";
+  // IO surface: signature line + writes/mutates chips (fn-IO feature)
+  const io = (DATA.fio || {})[nodes[fm.file].path + "::" + fm.name];
+  if (io) {
+    if (io.sig) {
+      const sig = document.createElement("div");
+      sig.style.cssText = "font:11px/1.5 monospace;color:#cfd8dc;margin:2px 0 6px;word-break:break-all";
+      sig.textContent = io.sig + (io.ret ? " -> " + io.ret : "");
+      tags.appendChild(sig);
+    }
+    const chip = (txt, bg) => {
+      const s = document.createElement("span");
+      s.style.cssText = `display:inline-block;margin:0 4px 4px 0;padding:2px 7px;border-radius:6px;font-size:10.5px;color:#eceff1;background:${bg}`;
+      s.textContent = txt;
+      return s;
+    };
+    if (io.w.length) tags.appendChild(chip("✎ writes: " + io.w.join(", "), "rgba(0,105,92,.55)"));
+    if (io.mp.length) tags.appendChild(chip("⇄ mutates: " + io.mp.join(", "), "rgba(180,100,20,.45)"));
+    if (!io.w.length && !io.mp.length) tags.appendChild(chip("pure — no state writes", "rgba(55,71,79,.7)"));
+  }
   // jumping to a caller/callee focuses its file and keeps the fn layer on
   const jumpFn = j => {
     if (!fnMode) { fnMode = true; document.getElementById("cbFn").checked = true; }
