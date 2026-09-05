@@ -1051,7 +1051,8 @@ const raycaster = new THREE.Raycaster();
 raycaster.params.Points.threshold = 14;
 const mouse = new THREE.Vector2();
 let hovered = -1, hoveredFn = -1, selected = -1;
-let activeCluster = null, deadOnly = false, query = "";
+let deadOnly = false, query = "";
+const activeClusters = new Set();   // multi-select cluster filter (legend chips)
 let showInst = false, showCalls = true, focusSeed = -1, depth = 2, fnMode = false;
 // tests/tools hidden by default (chip toggles them in); dir filter row works
 // like the cluster chips — both only ever filter, never re-layout
@@ -1082,7 +1083,7 @@ function computeLevels() {
 
 function nodeVisible(n) {
   if (deadOnly && n.dead <= 0) return false;
-  if (activeCluster !== null && n.cluster !== activeCluster) return false;
+  if (activeClusters.size && !activeClusters.has(n.cluster)) return false;
   if (!showTests && isTestNode(n)) return false;
   if (activeDirs.size && !activeDirs.has(n.dir)) return false;
   return true;
@@ -1449,9 +1450,9 @@ topClusters.forEach(([cid, count]) => {
   chip.style.color = `#${c.getHexString()}`;
   chip.textContent = `${cNames[cid] || "c" + cid} · ${count}`;
   chip.onclick = () => {
-    activeCluster = activeCluster === +cid ? null : +cid;
-    document.querySelectorAll(".chip").forEach(x => x.classList.remove("on"));
-    if (activeCluster !== null) chip.classList.add("on");
+    // multi-select: chips stack, each toggles its cluster independently
+    if (activeClusters.has(+cid)) { activeClusters.delete(+cid); chip.classList.remove("on"); }
+    else { activeClusters.add(+cid); chip.classList.add("on"); }
     applyVisibility();
   };
   legend.appendChild(chip);
@@ -1530,7 +1531,7 @@ renderer.domElement.addEventListener("contextmenu", e => {
 });
 document.getElementById("bReset").onclick = () => {
   camera.position.set(0, 0, 1400); controls.target.set(0,0,0); frameGraph();
-  activeCluster = null; deadOnly = false; query = ""; focusSeed = -1;
+  activeClusters.clear(); deadOnly = false; query = ""; focusSeed = -1;
   activeDirs.clear(); showTests = false;
   document.getElementById("search").value = "";
   document.querySelectorAll(".chip, button").forEach(x => x.classList.remove("on"));
