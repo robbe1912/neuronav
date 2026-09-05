@@ -815,7 +815,8 @@ function syncFileMesh() {
       _dummy.scale.setScalar(0);
     } else {
       _dummy.position.set(pos[i*3], pos[i*3+1], pos[i*3+2]);
-      _dummy.scale.setScalar(sizes[i] * 1.1);
+      // dead-only mode boosts the survivors so the red set reads at overview distance
+      _dummy.scale.setScalar(sizes[i] * 1.1 * (deadOnly && nodes[i].dead > 0 ? 1.7 : 1));
     }
     _dummy.updateMatrix();
     fileMesh.setMatrixAt(i, _dummy.matrix);
