@@ -1,4 +1,4 @@
-# gdnav self-index structural gate (no embeddings/Ollama needed) — run:
+# neuronav self-index structural gate (no embeddings/Ollama needed) — run:
 #   .venv/Scripts/python.exe -X utf8 tests/test_selfindex.py
 # Pins the python-extractor invariants: the tool parses its own repo,
 # registry/ENTRY_RULES indirection keeps likely-dead at zero, and the
@@ -8,9 +8,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-os.environ["GDNAV_CONFIG"] = str(Path(__file__).resolve().parents[1] / "config" / "gdnav.json")
+os.environ["NEURONAV_CONFIG"] = str(Path(__file__).resolve().parents[1] / "config" / "neuronav.json")
 
-import graph  # noqa: E402  (binds gdnav config via GDNAV_CONFIG)
+import graph  # noqa: E402  (binds neuronav config via NEURONAV_CONFIG)
 
 FAILS = []
 

@@ -67,7 +67,7 @@ An extractor module must expose:
 2. Register suffixes in `extractors/__init__.py::EXTENSIONS`.
 3. Make sure the suffixes are indexed: `nav.EXTS` comes from the
     config's `"extensions"` list (default `[".gd", ".tscn"]`) — add them
-    there (a second config like `config/gdnav.json` can index a different
+    there (a second config like `config/neuronav.json` can index a different
     repo with different suffixes; `exclude_dirs` prunes e.g. `.venv`).
 4. Body scanning (`graph._scan_body`) is call-syntax based today; if the
    language's call/emit syntax differs, extend it behind a per-format

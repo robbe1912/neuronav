@@ -1,8 +1,8 @@
 """nav core: whole-file semantic index of a checkout (GDScript/scenes,
 Python — whatever the config's "extensions" list enables).
 
-Config resolution: $GDNAV_CONFIG env var, else ``config.json`` next to
-this file. A second config (e.g. ``config/gdnav.json`` for self-indexing)
+Config resolution: $NEURONAV_CONFIG env var, else ``config.json`` next to
+this file. A second config (e.g. ``config/neuronav.json`` for self-indexing)
 switches root/include_dirs/extensions/collection without touching the
 primary one. Per-checkout index: ``.chroma`` (gitignored). Base index
 shards (``base/``) are tracked and give fresh clones a fast start; the
@@ -32,7 +32,7 @@ TOOL_DIR = Path(__file__).resolve().parent
 
 def _apply_config(path: Path) -> None:
     """(Re)bind the config-derived module globals. Called once at import
-    and again by ``nav.py --config <path>`` (which also sets GDNAV_CONFIG
+    and again by ``nav.py --config <path>`` (which also sets NEURONAV_CONFIG
     so subprocesses and sibling modules like graph.py agree)."""
     global ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM
     cfg: dict = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
@@ -54,7 +54,7 @@ EXCLUDE_DIRS: frozenset[str]
 EMBED_URL: str
 EMBED_MODEL: str
 EMBED_DIM: int
-_apply_config(Path(os.environ.get("GDNAV_CONFIG") or TOOL_DIR / "config.json"))
+_apply_config(Path(os.environ.get("NEURONAV_CONFIG") or TOOL_DIR / "config.json"))
 
 DB_DIR = TOOL_DIR / ".chroma"
 BASE_DIR = TOOL_DIR / "base"
@@ -502,7 +502,7 @@ if __name__ == "__main__":
     argv = list(sys.argv[1:])
     if argv and argv[0] == "--config":
         # switch to a second config (self-index etc.) before running:
-        # rebind globals + set GDNAV_CONFIG so sibling modules (graph.py,
+        # rebind globals + set NEURONAV_CONFIG so sibling modules (graph.py,
         # clusters.py) and subprocesses resolve the same root/collection
         if len(argv) < 3:
             print("usage: nav.py --config <path> <command>", file=sys.stderr)
@@ -511,7 +511,7 @@ if __name__ == "__main__":
         if not cfg_file.is_file():
             print(f"config not found: {cfg_file}", file=sys.stderr)
             sys.exit(2)
-        os.environ["GDNAV_CONFIG"] = str(cfg_file)
+        os.environ["NEURONAV_CONFIG"] = str(cfg_file)
         _apply_config(cfg_file)
         argv = argv[2:]
     cmd = argv[0] if argv else "rescan"

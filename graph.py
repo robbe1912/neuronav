@@ -870,7 +870,7 @@ def _fn_collection() -> "chromadb.Collection":
 
     client = chromadb.PersistentClient(path=str(nav.DB_DIR))
     # per-config collection: two checkouts/projects sharing one .chroma dir
-    # must not mix function vectors (hardcoded name collided swmg vs gdnav)
+    # must not mix function vectors (hardcoded name collided across configs)
     col = client.get_or_create_collection(
         name=f"{nav.COLLECTION}-fns",
         metadata={"hnsw:space": "cosine"},

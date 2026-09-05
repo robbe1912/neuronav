@@ -1,13 +1,13 @@
-# cross-language verification (gdnav self-index config) — run in its own process:
+# cross-language verification (neuronav self-index config) — run in its own process:
 #   .venv/Scripts/python.exe -X utf8 tests/test_crosslang.py
 import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-os.environ["GDNAV_CONFIG"] = str(Path(__file__).resolve().parents[1] / "config" / "gdnav.json")
+os.environ["NEURONAV_CONFIG"] = str(Path(__file__).resolve().parents[1] / "config" / "neuronav.json")
 
-import graph  # noqa: E402  (binds gdnav config via GDNAV_CONFIG)
+import graph  # noqa: E402  (binds neuronav config via NEURONAV_CONFIG)
 
 FAILS = []
 

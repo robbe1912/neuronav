@@ -1,11 +1,11 @@
-# self-index sanity: semantic recall + cluster cross-talk on gdnav's own code
+# self-index sanity: semantic recall + cluster cross-talk on neuronav's own code
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import nav
 
-nav._apply_config(nav.TOOL_DIR / "config" / "gdnav.json")
+nav._apply_config(nav.TOOL_DIR / "config" / "neuronav.json")
 
 print("== search: force-directed node layout ==")
 for h in nav.search("force-directed node layout spring physics", n=4):

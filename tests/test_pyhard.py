@@ -24,7 +24,7 @@ def check(name: bool | str, cond: bool, detail: str = "") -> None:
         FAILS.append(str(name))
 
 
-cfg = Path(tempfile.gettempdir()) / "gdnav_pyhard_config.json"
+cfg = Path(tempfile.gettempdir()) / "neuronav_pyhard_config.json"
 cfg.write_text(
     json.dumps(
         {
@@ -37,7 +37,7 @@ cfg.write_text(
     ),
     encoding="utf-8",
 )
-os.environ["GDNAV_CONFIG"] = str(cfg)
+os.environ["NEURONAV_CONFIG"] = str(cfg)
 sys.path.insert(0, str(HERE))
 
 import graph  # noqa: E402

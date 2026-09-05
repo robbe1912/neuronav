@@ -35,7 +35,7 @@ def text_of(result: dict) -> str:
 
 
 def main() -> None:
-    env = {k: v for k, v in os.environ.items() if k != "GDNAV_CONFIG"}
+    env = {k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}
     proc = subprocess.Popen(
         [sys.executable, "-X", "utf8", str(HERE / "server.py")],
         stdin=subprocess.PIPE,

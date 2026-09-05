@@ -23,7 +23,7 @@ import graph
 
 
 def _git_head() -> str:
-    """Short HEAD hash of the gdnav repo for the freshness stamp."""
+    """Short HEAD hash of the neuronav repo for the freshness stamp."""
     try:
         got = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
@@ -40,7 +40,7 @@ def _churn_hot(paths: list[str]) -> list[float] | None:
 
     Counts how often each indexed file appears in the last 90 days of
     commits (`git log --name-only --since=90.days`) at nav.ROOT — the
-    scanned game repo, not the gdnav tooling repo. Git prints paths
+    scanned game repo, not the neuronav tooling repo. Git prints paths
     relative to the repo top level, which may sit above ROOT, so those
     are rebased onto ROOT before matching node paths. Returns None
     (channel disabled — no visual change) when git or history is
@@ -411,7 +411,7 @@ def _build_data() -> dict:
             # cid -> human name from nav.clusters() labeler cascade
             "clusterNames": cluster_names,
             # freshness stamp: when this DATA was generated and from which
-            # gdnav commit (rendered in #stats so stale pages are obvious)
+            # neuronav commit (rendered in #stats so stale pages are obvious)
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "git": _git_head(),
         },
