@@ -1104,26 +1104,34 @@ links.forEach((l, i) => {
   if (!pairLinks.has(k)) pairLinks.set(k, []);
   pairLinks.get(k).push(i);
 });
-// baked highway arc points by link index — applyVisibility restores arc
-// geometry from here after a filter pass collapsed it
+// baked highway arc points by link index — syncEdgePos is the SINGLE
+// geometry owner for arcs (collapse + restore + spread attachment)
 const hwPts = new Map(hw);
 function syncEdgePos() {
-  const doArcs = spread !== 1;   // arcs are exact at baked scale; re-derive otherwise
   links.forEach((l, i) => {
     if (hwSlot[i] >= 0) {
-      if (!doArcs) return;
       // ATTACHMENT: highway arcs are geometry like any other edge — rescale
       // the baked arc shape affinely around the layout centroid so endpoints
       // track their (moved) nodes exactly. Arc data shape: 17 [x,y,z] points
       // (nested arrays — flat indexing here once produced NaN, killing every
-      // line in the affected buckets)
+      // line in the affected buckets). Filtered/ghost arcs collapse exactly
+      // like straight edges — black color alone is NOT hidden under normal
+      // blending.
       const arr = bucketPosIB[bucketOf[i]].array, b = hwSlot[i];
       const pts = hwPts.get(i);
       if (!pts || !pts.length) return;
+      const ghost = alphaTgt[l.s] < 0.05 && alphaTgt[l.t] < 0.05;
+      const hidden = linkFiltered(l) || ghost;
       for (let v = 0; v < 16; v++) {
+        const o = b + v * 6;
+        if (hidden) {
+          const sx = pos[l.s*3], sy = pos[l.s*3+1] + 0.05, sz = pos[l.s*3+2];
+          arr[o] = sx; arr[o+1] = sy; arr[o+2] = sz;
+          arr[o+3] = sx; arr[o+4] = sy; arr[o+5] = sz;
+          continue;
+        }
         const A = pts[v], B = pts[v + 1];
         if (!A || !B) return;
-        const o = b + v * 6;
         arr[o]   = baseCx + (A[0] - baseCx) * spread;
         arr[o+1] = baseCy + (A[1] - baseCy) * spread;
         arr[o+2] = baseCz + (A[2] - baseCz) * spread;
@@ -1513,7 +1521,6 @@ function applyVisibility() {
   // cluster colors carry the overview; full type colors return on focus.
     const grayMix = focusing ? 0 : 0.92;
   const touched = [false, false, false];
-  const touchedPos = [false, false, false];
   links.forEach((l, i) => {
     let k;
     // dir-filtered endpoints (tests/tools hidden, active dir isolation):
@@ -1547,21 +1554,13 @@ function applyVisibility() {
     const b = bucketOf[i], o6 = i * 6;
     const tgt = bucketColIB[b].array;
     if (k === 0) {
-      // filtered-out edge (tests/tools hidden, dir filter): black + the
-      // geometry collapses (straight edges via syncEdgePos below, baked
-      // highway arcs here — normal blending would paint a black line).
+      // filtered-out edge (tests/tools hidden, dir filter, focus ghost):
+      // colors go black here; GEOMETRY is syncEdgePos's job (it collapses
+      // filtered/ghost arcs + straight edges — this pass used to write
+      // arc positions too, racing the re-derivation and letting black
+      // full-length wires paint over content)
       if (hwSlot[i] >= 0) {
         tgt.fill(0, hwSlot[i], hwSlot[i] + 96);
-        const parr = bucketPosIB[b].array;
-        const sx = pos[l.s*3], sy = pos[l.s*3+1], sz = pos[l.s*3+2];
-        for (let v = 0; v < 16; v++) {
-          const q = hwSlot[i] + v * 6;
-          parr[q] = sx; parr[q+1] = sy; parr[q+2] = sz;
-          // tiny y offset: exactly-equal endpoints NaN LineMaterial's
-          // normalize(0) (streak quads)
-          parr[q+3] = sx; parr[q+4] = sy + 0.05; parr[q+5] = sz;
-        }
-        touchedPos[b] = true;
       } else {
         tgt.fill(0, slotOf[i] * 6, slotOf[i] * 6 + 6);
       }
@@ -1570,20 +1569,11 @@ function applyVisibility() {
     }
     if (hwSlot[i] >= 0) {
       // highway: replicate the (possibly grayed/dimmed) color across all
-      // 16 segments; geometry also restores from the baked arc in case a
-      // previous filter pass collapsed it (k===0 collapse is not undone
-      // anywhere else)
+      // 16 segments. Geometry is NOT touched here — syncEdgePos() right
+      // below re-derives arc positions in the CURRENT coordinate space
+      // (this block used to restore baked arcs, detaching them from
+      // spread-moved nodes)
       const base = hwSlot[i];
-      const arc = hwPts.get(i);
-      if (arc) {
-        const parr = bucketPosIB[b].array;
-        for (let s2 = 0; s2 < 16; s2++) {
-          const q = base + s2 * 6, p = arc[s2], r = arc[s2 + 1];
-          parr[q] = p[0]; parr[q+1] = p[1]; parr[q+2] = p[2];
-          parr[q+3] = r[0]; parr[q+4] = r[1]; parr[q+5] = r[2];
-        }
-        touchedPos[b] = true;
-      }
       if (grayMix > 0) {
         const g = (0.10 + 0.18 * Math.min(1, l.w / 8)) * k;
         for (let v = 0; v < 16; v++) {
@@ -1612,7 +1602,6 @@ function applyVisibility() {
   });
   touched.forEach((t, b) => { if (t) bucketColIB[b].needsUpdate = true; });
   syncEdgePos();   // geometry follows the new filter state (collapse/restore)
-  touchedPos.forEach((t, b) => { if (t) bucketPosIB[b].needsUpdate = true; });
   if (focusing) {
     let lit = 0;
     for (let i = 0; i < N; i++) if (level[i] >= 0 && nodeVisible(nodes[i])) lit++;

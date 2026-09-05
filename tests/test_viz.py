@@ -75,6 +75,43 @@ def run_tests():
         check("tests toggle roundtrip", lit_shown > lit_hidden and lit_hidden == lit_base,
               f"base {lit_base} / shown {lit_shown} / hidden {lit_hidden}")
 
+        # 3b. regression: hidden-test WIRE geometry collapses (not just black
+        # color — normal blending paints black pixels over content). Find a
+        # highway arc with a test endpoint; while tests are hidden its arc
+        # slot must be degenerate (all 16 segments at the source node).
+        arc_hidden = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const isTest = j => d.nodes[j].path.startsWith('tests/') || d.nodes[j].path.startsWith('tools/');
+                 for (let i = 0; i < d.links.length; i++) {
+                   if (d.hwSlot[i] < 0) continue;
+                   if (!isTest(d.links[i].s) && !isTest(d.links[i].t)) continue;
+                   const arr = d.bucketPosIB[d.bucketOf[i]].array, b = d.hwSlot[i];
+                   const s = d.links[i].s;
+                   let span = 0;
+                   for (let v = 0; v < 16; v++) {
+                     const o = b + v * 6;
+                     span += Math.abs(arr[o] - d.pos[s*3]) + Math.abs(arr[o+2] - d.pos[s*3+2]);
+                   }
+                   return span;
+                 }
+                 return -1; }""")
+        tchip.click()  # show tests again for later checks
+        arc_shown = page.evaluate(
+            """() => { const d = window.__dbg;
+                 for (let i = 0; i < d.links.length; i++) {
+                   if (d.hwSlot[i] < 0) continue;
+                   const isTest = j => d.nodes[j].path.startsWith('tests/') || d.nodes[j].path.startsWith('tools/');
+                   if (!isTest(d.links[i].s) && !isTest(d.links[i].t)) continue;
+                   const arr = d.bucketPosIB[d.bucketOf[i]].array, b = d.hwSlot[i];
+                   const s = d.links[i].s, t = d.links[i].t;
+                   return Math.abs(arr[b] - d.pos[s*3]) + Math.abs(arr[b+93] - d.pos[t*3]);
+                 }
+                 return -1; }""")
+        check("hidden-test arcs collapse geometrically",
+              arc_hidden == 0 and (arc_shown < 0 or arc_shown <= 1),
+              f"hidden span {arc_hidden} / shown endpoint err {arc_shown}")
+
+
         # 4. focus + functions: fn boxes exist and sit ON the wires
         page.fill("#search", "magicplayer")
         page.dispatch_event("#search", "input")
