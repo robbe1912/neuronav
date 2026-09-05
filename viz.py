@@ -717,7 +717,7 @@ nodes.forEach((n, i) => {
   pos[i*3] = frozenPos[i][0]; pos[i*3+1] = frozenPos[i][1]; pos[i*3+2] = frozenPos[i][2];
   const c = colorOf(n);
   colArr[i*3] = c.r; colArr[i*3+1] = c.g; colArr[i*3+2] = c.b;
-  sizes[i] = Math.min(18, 6 + Math.sqrt(degree[i]) * 1.8);
+  sizes[i] = Math.min(10, 3.5 + Math.sqrt(degree[i]) * 1.0);
 });
 
 const alphaArr = new Float32Array(N).fill(1);
@@ -1471,9 +1471,46 @@ function rebuildFnLayer(focusing) {
     visEdges.push(e);
   });
   if (!visEdges.length) return;
-  // pass 2: fn nodes live ON the wire between their two file nodes — t is
-  // a deterministic hash of the fn name in [0.30, 0.70], keeping each box
-  // clear of both file spheres and spreading multiple fns along the wire
+  // pass 2: fn nodes live ON the wire between their two file nodes.
+  // Unique fns on a wire get evenly spaced slots in [0.32, 0.68]; a fn shared
+  // across wires is positioned on its first wire (random hash placement made
+  // boxes overlap; per-call slot counting pushed shared boxes past the wire).
+  const keySlot = new Map();   // fn key -> { a, b, slot, n }
+  {
+    const wireKeys = new Map();  // "a|b" -> [unique fn keys in edge order]
+    for (const e of visEdges) {
+      const wk = e[0] + "|" + e[2];
+      let arr = wireKeys.get(wk);
+      if (!arr) { arr = []; wireKeys.set(wk, arr); }
+      for (const kk of [e[0] + "::" + e[1], e[2] + "::" + e[3]]) {
+        if (!keySlot.has(kk) && !arr.includes(kk)) {
+          keySlot.set(kk, { a: e[0], b: e[2], slot: arr.length, wk });
+          arr.push(kk);
+        }
+      }
+    }
+    for (const [kk, s] of keySlot) {
+      s.n = wireKeys.get(s.wk).length;
+      s.t = 0.32 + (s.n > 1 ? (0.36 * s.slot) / (s.n - 1) : 0.18);
+      // baked positions are rounded to integers, so wires A->B and B->C can
+      // be near-collinear: along-wire jitter can't separate boxes there.
+      // Offset perpendicular to the wire instead (±3 units — reads as
+      // on-wire at box size 6, deterministic by fn name).
+      let h = 2166136261;
+      const nm = kk.slice(kk.indexOf("::") + 2);
+      for (let c = 0; c < nm.length; c++) { h ^= nm.charCodeAt(c); h = Math.imul(h, 16777619); }
+      let dx = pos[s.b*3] - pos[s.a*3], dy = pos[s.b*3+1] - pos[s.a*3+1], dz = pos[s.b*3+2] - pos[s.a*3+2];
+      const len = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
+      dx /= len; dy /= len; dz /= len;
+      // perp = dir x (0,1,0); fallback dir x (1,0,0) for vertical wires
+      let px = -dz, py = 0, pz = dx;
+      if (px*px + py*py + pz*pz < 1e-6) { px = dy; py = -dx; pz = 0; }
+      const pl = Math.sqrt(px*px + py*py + pz*pz) || 1;
+      const off = (((h >>> 0) % 1000) / 1000 - 0.5) * 6;
+      s.ox = (px / pl) * off; s.oy = (py / pl) * off; s.oz = (pz / pl) * off;
+      s.t = Math.min(0.70, Math.max(0.30, s.t + (((h >>> 9) % 1000) / 1000 - 0.5) * 0.04));
+    }
+  }
   const fIdx = new Map(), fpos = [], fcol = [], eidx = [];
   const nodeOf = (e, isSrc) => {
     const fi = isSrc ? e[0] : e[2], name = isSrc ? e[1] : e[3];
@@ -1481,14 +1518,11 @@ function rebuildFnLayer(focusing) {
     let ix = fIdx.get(k);
     if (ix === undefined) {
       ix = fnMeta.length; fIdx.set(k, ix);
-      let h = 2166136261;
-      for (let c = 0; c < name.length; c++) { h ^= name.charCodeAt(c); h = Math.imul(h, 16777619); }
-      const t = 0.30 + ((h >>> 0) % 1000) / 1000 * 0.40;
-      const B = isSrc ? e[2] : e[0];
-      const px = pos[fi*3] + (pos[B*3] - pos[fi*3]) * t;
-      const py = pos[fi*3+1] + (pos[B*3+1] - pos[fi*3+1]) * t;
-      const pz = pos[fi*3+2] + (pos[B*3+2] - pos[fi*3+2]) * t;
-      fnMeta.push({ file: fi, name, p: [px, py, pz] });
+      const s = keySlot.get(k);
+      const px = pos[s.a*3] + (pos[s.b*3] - pos[s.a*3]) * s.t + (s.ox || 0);
+      const py = pos[s.a*3+1] + (pos[s.b*3+1] - pos[s.a*3+1]) * s.t + (s.oy || 0);
+      const pz = pos[s.a*3+2] + (pos[s.b*3+2] - pos[s.a*3+2]) * s.t + (s.oz || 0);
+      fnMeta.push({ file: fi, name, p: [px, py, pz], s, dir: (name.charCodeAt(0) & 1) ? 1 : -1 });
       fpos.push(px, py, pz);
       fcol.push(colArr[fi*3], colArr[fi*3+1], colArr[fi*3+2]);
     }
@@ -1498,6 +1532,32 @@ function rebuildFnLayer(focusing) {
     const a = nodeOf(e, true), b = nodeOf(e, false);
     eidx.push(a, b);
   });
+  // collision resolve: two boxes can still land near-coincident (near-collinear
+  // wires through a shared file). Nudge along own wire — stays on-wire, keeps
+  // even slot spacing for everyone else. Deterministic; O(n²) is trivial here.
+  const reposition = (m, ix) => {
+    const px = pos[m.s.a*3] + (pos[m.s.b*3] - pos[m.s.a*3]) * m.s.t + (m.s.ox || 0);
+    const py = pos[m.s.a*3+1] + (pos[m.s.b*3+1] - pos[m.s.a*3+1]) * m.s.t + (m.s.oy || 0);
+    const pz = pos[m.s.a*3+2] + (pos[m.s.b*3+2] - pos[m.s.a*3+2]) * m.s.t + (m.s.oz || 0);
+    m.p[0] = px; m.p[1] = py; m.p[2] = pz;
+    fpos[ix*3] = px; fpos[ix*3+1] = py; fpos[ix*3+2] = pz;
+  };
+  for (let i = 1; i < fnMeta.length; i++) {
+    const m = fnMeta[i];
+    for (let guard = 0; guard < 60; guard++) {
+      let clash = false;
+      for (let j = 0; j < i && !clash; j++) {
+        const q = fnMeta[j].p;
+        const dx = m.p[0]-q[0], dy = m.p[1]-q[1], dz = m.p[2]-q[2];
+        clash = dx*dx + dy*dy + dz*dz < 4;  // 2-unit separation radius
+      }
+      if (!clash) break;
+      m.s.t += 0.02 * m.dir;
+      if (m.s.t <= 0.30 || m.s.t >= 0.70) m.dir = -m.dir;
+      m.s.t = Math.min(0.70, Math.max(0.30, m.s.t));
+      reposition(m, i);
+    }
+  }
   if (!fnMeta.length) return;
   // fn boxes: true 3D cubes on the wires, colored by owning cluster hue,
   // each with a deterministic varied roll so adjacent boxes stay readable
@@ -1510,7 +1570,7 @@ function rebuildFnLayer(focusing) {
   for (let i = 0; i < fnMeta.length; i++) {
     fdummy.position.set(fpos[i*3], fpos[i*3+1], fpos[i*3+2]);
     fdummy.rotation.set(((i * 37) % 90) * Math.PI / 180, ((i * 53) % 90) * Math.PI / 180, 0);
-    fdummy.scale.setScalar(9);
+    fdummy.scale.setScalar(6);
     fdummy.updateMatrix();
     fnMesh.setMatrixAt(i, fdummy.matrix);
     _col.setRGB(fcol[i*3], fcol[i*3+1], fcol[i*3+2]);
