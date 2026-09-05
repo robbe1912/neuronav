@@ -558,7 +558,7 @@ if __name__ == "__main__":
     elif cmd == "drop":
         import chromadb as _c
         client = _c.PersistentClient(path=str(DB_DIR))
-        for name in (COLLECTION, "swmg-fns"):
+        for name in (COLLECTION, f"{COLLECTION}-fns"):
             try:
                 client.delete_collection(name)
                 print(f"dropped {name}")
