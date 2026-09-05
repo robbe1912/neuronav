@@ -151,6 +151,21 @@ def main() -> None:
         )
         miss = text_of(recv(4)["result"])
         check("context: unknown file is graceful", "unknown file" in miss, miss[:120])
+
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {"name": "context", "arguments": {}},
+            }
+        )
+        over = text_of(recv(5)["result"])
+        check(
+            "context: no-path clusters overview",
+            "clusters overview" in over and "ext=" in over,
+            over.splitlines()[:1],
+        )
     finally:
         proc.kill()
         time.sleep(0.5)

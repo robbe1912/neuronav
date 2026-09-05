@@ -240,23 +240,57 @@ def _ctx_semantic(path: str, k: int = 6) -> list[tuple[float, str]]:
         return []
 
 
+def _ctx_overview(g) -> str:
+    """All-clusters overview: label, size, top members, external edges."""
+    import clusters as _clusters
+
+    cs = nav.clusters()
+    _adj, indeg = _ctx_adjacency(g)
+    ct = _clusters.crosstalk(cs, g)
+    ext = {b["id"]: b["external_out"] + b["external_in"] for b in ct["by_cluster"]}
+    clustered = {pp for c in cs for pp, _ in c["paths"]}
+    unclustered = max(0, len(g.files) - len(clustered))
+    lines = [
+        f"clusters overview — {len(cs)} clusters, {len(g.files)} files "
+        f"({unclustered} unclustered), "
+        f'{ct["internal_edges"]} internal / {ct["external_edges"]} external edges '
+        f'({ct["external_ratio"]:.0%} external)'
+    ]
+    for c in sorted(cs, key=lambda c: c["size"], reverse=True):
+        top = sorted(
+            ((indeg.get(pp, 0), pp) for pp, _ in c["paths"]), reverse=True
+        )[:3]
+        top_s = ", ".join(f"res://{pp} (in {v})" for v, pp in top)
+        lines.append(
+            f'c{c["id"]} "{c["label"]}" — {c["size"]} files '
+            f'[{c["method"]}, conf {c["confidence"]:.2f}] '
+            f'ext={ext.get(c["id"], 0)}'
+        )
+        if top_s:
+            lines.append(f"    top: {top_s}")
+    return "\n".join(lines)
+
+
 @mcp.tool()
-def context(path: str, depth: int = 1) -> str:
+def context(path: str = "", depth: int = 1) -> str:
     """Subsystem map for one repo file — the orientation tool for agents.
 
     Fresh-agent entry point: pass a res:// path (or repo-relative) and get
     a text map — its cluster (label, confidence, member hubs by in-degree),
     structural neighbors grouped by edge type (call/signal/var/attach/inst
     with counts and direction, depth 1-3), top semantic neighbors (embedding
-    cosine), and hub status (in-degree rank). Build from existing clusters
-    + graph + vector index; no new deps.
+    cosine), and hub status (in-degree rank). Called with no path, returns
+    the all-clusters overview instead (label, size, top members, external
+    edges). Build from existing clusters + graph + vector index; no new deps.
     """
     depth = max(1, min(depth, 3))
     p = path.strip()
+    g = graph.get_graph()
+    if not p:
+        return _ctx_overview(g)
     if p.startswith("res://"):
         p = p[len("res://"):]
     p = p.replace("\\", "/").lstrip("/")
-    g = graph.get_graph()
     if p not in g.files:
         import difflib
 
