@@ -737,8 +737,11 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <input id="search" placeholder="search file / class…">
   <div id="depthRow">
     <span>depth</span>
-    <input id="depth" type="range" min="1" max="3" value="2">
-    <span id="depthVal">2</span>
+<input id="depth" type="range" min="1" max="3" value="2">
+<span id="depthVal">2</span>
+<span style="margin-left:10px">spread</span>
+<input id="spread" type="range" min="60" max="260" value="100" title="stretch the whole layout apart (scales from the centroid)">
+<span id="spreadVal">1.0</span>
     <label class="cb"><input type="checkbox" id="cbFn"> functions</label>
   </div>
   <div id="dirRow">
@@ -915,6 +918,34 @@ nodes.forEach((n, i) => {
 });
 if (hot) document.getElementById("caption").textContent += " · size also encodes 90-day churn";
 
+// spread control: uniformly re-scale the baked layout around its centroid.
+// basePos holds the baked coordinates; pos is the live (scaled) copy that
+// every renderer reads, so a slider change just re-derives pos + re-syncs.
+const basePos = Float32Array.from(pos);
+let spread = 1;
+// centroid of the baked layout — the affine center for spread transforms
+let baseCx = 0, baseCy = 0, baseCz = 0;
+for (let i = 0; i < N; i++) { baseCx += basePos[i*3]; baseCy += basePos[i*3+1]; baseCz += basePos[i*3+2]; }
+baseCx /= N; baseCy /= N; baseCz /= N;
+function applySpread(s) {
+  if (s === spread) return;   // no-op: never fight camera tweens / mid-flight syncs
+  spread = s;
+  let cx = 0, cy = 0, cz = 0;
+  for (let i = 0; i < N; i++) { cx += basePos[i*3]; cy += basePos[i*3+1]; cz += basePos[i*3+2]; }
+  cx /= N; cy /= N; cz /= N;
+  for (let i = 0; i < N; i++) {
+    pos[i*3]   = cx + (basePos[i*3]   - cx) * s;
+    pos[i*3+1] = cy + (basePos[i*3+1] - cy) * s;
+    pos[i*3+2] = cz + (basePos[i*3+2] - cz) * s;
+  }
+  // fn satellites re-derive from their wires and edges re-attach — all via
+  // applyVisibility (owns the fn layer + edge geometry + labels)
+  syncFileMesh();
+  applyVisibility();
+  buildContainment();
+  frameGraph();
+}
+
 const alphaArr = new Float32Array(N).fill(1);
 // per-node alpha TARGETS: alphaArr eases toward these each tick (fade);
 // visibility checks (raycast, edge kill, labels) read the targets
@@ -1072,13 +1103,30 @@ links.forEach((l, i) => {
 // geometry from here after a filter pass collapsed it
 const hwPts = new Map(hw);
 function syncEdgePos() {
+  const doArcs = spread !== 1;   // arcs are exact at baked scale; re-derive otherwise
   links.forEach((l, i) => {
-    if (hwSlot[i] >= 0) return;   // highway arcs are baked, never resynced
+    if (hwSlot[i] >= 0) {
+      if (!doArcs) return;
+      // ATTACHMENT: highway arcs are geometry like any other edge — rescale
+      // the baked arc shape affinely around the layout centroid so endpoints
+      // track their (moved) nodes exactly
+      const arr = bucketPosIB[bucketOf[i]].array, b = hwSlot[i];
+      const arc = hwPts.get(i);
+      if (!arc) return;
+      for (let f = 0; f < 96; f++)
+        arr[b + f] = (f % 3 === 0 ? baseCx : f % 3 === 1 ? baseCy : baseCz) +
+          (arc[f] - (f % 3 === 0 ? baseCx : f % 3 === 1 ? baseCy : baseCz)) * spread;
+      bucketPosIB[bucketOf[i]].needsUpdate = true;
+      return;
+    }
     const s = l.s * 3, t = l.t * 3;
     // single owner of edge geometry: applyVisibility re-runs this after
     // every filter change, so filtered links collapse here and unfiltered
-    // links always restore full positions
-    if (linkFiltered(l)) {
+    // links always restore full positions.
+    // ghost = both endpoints outside the current focus (alpha ~ 0): a line
+    // between two invisible nodes is pure noise — collapse it too.
+    const ghost = alphaTgt[l.s] < 0.05 && alphaTgt[l.t] < 0.05;
+    if (linkFiltered(l) || ghost) {
       const a0 = bucketPosIB[bucketOf[i]].array, o0 = slotOf[i] * 6;
       a0[o0] = pos[s]; a0[o0+1] = pos[s+1]; a0[o0+2] = pos[s+2];
       // tiny offset: an exactly-zero-length segment gives LineMaterial's
@@ -1460,7 +1508,10 @@ function applyVisibility() {
       (activeDirs.size && !activeDirs.has(nodes[l.s].dir));
     const tFiltered = (!showTests && isTestNode(nodes[l.t])) ||
       (activeDirs.size && !activeDirs.has(nodes[l.t].dir));
-    if (sFiltered || tFiltered) k = 0.0;
+    // ghost: both endpoints outside the focus — kill outright (the arc
+    // collapse in the k===0 branch below removes its baked geometry too)
+    const ghost = alphaTgt[l.s] < 0.05 && alphaTgt[l.t] < 0.05;
+    if (sFiltered || tFiltered || ghost) k = 0.0;
     else if (!typeVisible(l.ty) || alphaTgt[l.s] <= 0.5 || alphaTgt[l.t] <= 0.5) k = 0.012;
     else if (fnMode && focusing && l.ty === "call" && level[l.s] >= 0 && level[l.t] >= 0) k = 0.04; // wire mode: fn wires replace the aggregate call line
     else if (focusing) k = Math.max(0.34, 1 - 0.18 * Math.max(level[l.s], level[l.t]));
@@ -1765,7 +1816,15 @@ function rebuildFocusLabels(focusing) {
       if (level[m.file] === 0) own.push(ix);
       else if (level[m.file] === 1 && alphaTgt[m.file] > 0.5) near.push(ix);
     });
-    own.concat(near).slice(0, 48).forEach(ix => {
+    // cap + prefer state writers: labels are the densest channel, so when
+    // the neighborhood is busy the pure functions yield their labels first
+    const cands = own.concat(near);
+    const writerFirst = (a, b) => {
+      const ioa = DATA.fio && DATA.fio[nodes[fnMeta[a].file].path + "::" + fnMeta[a].name];
+      const iob = DATA.fio && DATA.fio[nodes[fnMeta[b].file].path + "::" + fnMeta[b].name];
+      return ((iob && iob.w.length) ? 1 : 0) - ((ioa && ioa.w.length) ? 1 : 0);
+    };
+    cands.sort(writerFirst).slice(0, 32).forEach(ix => {
       const m = fnMeta[ix];
       const io = DATA.fio && DATA.fio[nodes[m.file].path + "::" + m.name];
       const el = document.createElement("div");
@@ -2164,6 +2223,11 @@ searchEl.oninput = e => {
   applyVisibility();
 };
 depthEl.oninput = e => { depth = +e.target.value; document.getElementById("depthVal").textContent = depth; applyVisibility(); };
+document.getElementById("spread").oninput = e => {
+  const v = +e.target.value / 100;
+  document.getElementById("spreadVal").textContent = v.toFixed(1);
+  applySpread(v);
+};
 document.querySelectorAll("#dirRow .seg").forEach(b => {
   b.onclick = () => {
     dirMode = +b.dataset.d;
@@ -2207,6 +2271,9 @@ function resetAll() {
   groupsMode = false;   // coloring level is view state — reset to fine clusters
   searchEl.value = ""; depthEl.value = 2;
   document.getElementById("depthVal").textContent = "2";
+document.getElementById("spread").value = 100;
+document.getElementById("spreadVal").textContent = "1.0";
+applySpread(1);
   cbFnEl.checked = false;
   info.style.display = "none";
   camTween = null;
