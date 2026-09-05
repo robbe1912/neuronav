@@ -50,8 +50,9 @@ with sync_playwright() as pw:
              return { boxes: meta.length, maxOff, minSep, maxSphere: sz }; }"""
     )
     print(res)
-    ok = res["maxOff"] < 3.5 and res["minSep"] is not None and res["minSep"] > 2
+    ok = res["maxOff"] < 10 and res["minSep"] is not None and res["minSep"] > 4
     print(("PASS" if ok else "FAIL") + " — boxes separated on wires "
-          f"(min separation {res['minSep']:.1f} vs box size 6, maxOff {res['maxOff']:.2f})")
+          f"(min separation {res['minSep']:.1f} vs box size 4, maxOff {res['maxOff']:.2f})")
     b.close()
     sys.exit(0 if ok else 1)
+

@@ -473,11 +473,13 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
     mb = sem[:, 1].astype(np.int64)
     mrest = 950.0 * (1.0 - sem[:, 2])
 
-    # hub-weighted repulsion coefficients: sqrt-degree product normalised by
-    # the mean, so an average pair repels like the old uniform 52000 while
-    # hub-hub pairs push much harder (hubs stop drowning in the core)
+    # hub-weighted repulsion coefficients: degree product (0.35 exponent —
+    # sqrt was so steep that degree-50+ hubs got evicted from their own dense
+    # cluster into the nearest sparse pocket) normalised by the mean, so an
+    # average pair repels like the old uniform 52000 while hub-hub pairs
+    # still push harder (hubs keep breathing room without exile)
     dbar = float(deg.mean()) + 1.0
-    ds = np.sqrt(deg + 1.0).astype(np.float32)
+    ds = ((deg + 1.0) ** 0.35).astype(np.float32)
     # spread constant ~2x the old browser value: the frozen layout has fewer
     # integration steps, so repulsion needs more authority to open the graph
     kcoef = (110000.0 * np.outer(ds, ds) / (dbar * dbar)).astype(np.float32)
@@ -526,13 +528,18 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
             fms = (md / mdist[:, None]) * (((mdist - mrest) / mdist) * 0.006)[:, None]
             np.add.at(vel, ma, -fms)
             np.add.at(vel, mb, fms)
-        # cluster gravity toward per-cluster centroid
+        # cluster gravity toward per-cluster centroid, scaled by degree:
+        # hubs carry huge repulsion coefficients, so a flat gravity lets the
+        # repulsion evict them from their own cluster (Blood_showcase drifted
+        # 310 units from Blood into the sparse pocket next to Gameplay).
+        # Degree-scaled anchor keeps hubs home; average nodes barely move.
         csum = np.zeros((nc, 3), dtype=np.float32)
         np.add.at(csum, cinv, pos)
         cen = csum / ccount[:, None]
         if step % 50 == 0:
             _TRACE.append((step, cen.copy()))
-        vel += (cen[cinv] - pos) * 0.006
+        gcoef = (0.006 * (1.0 + deg / 40.0)).astype(np.float32)
+        vel += (cen[cinv] - pos) * gcoef[:, None]
         # cluster-centroid semantic springs: similar clusters (by embedding
         # centroid cosine) attract toward the same rest law as node springs;
         # members inherit the pull through cluster gravity. Only pairs with
@@ -1822,24 +1829,25 @@ function rebuildFnLayer(focusing) {
     }
     for (const [kk, s] of keySlot) {
       s.n = wireKeys.get(s.wk).length;
-      s.t = 0.32 + (s.n > 1 ? (0.36 * s.slot) / (s.n - 1) : 0.18);
+      s.t = 0.22 + (s.n > 1 ? (0.56 * s.slot) / (s.n - 1) : 0.28);
       // baked positions are rounded to integers, so wires A->B and B->C can
       // be near-collinear: along-wire jitter can't separate boxes there.
-      // Offset perpendicular to the wire instead (±3 units — reads as
-      // on-wire at box size 6, deterministic by fn name).
+      // Offset perpendicular to the wire instead (±7 units — reads as
+      // on-wire at box size 4, deterministic by fn name). The relaxation
+      // pass below grows these offsets further when wires bunch up.
       let h = 2166136261;
       const nm = kk.slice(kk.indexOf("::") + 2);
       for (let c = 0; c < nm.length; c++) { h ^= nm.charCodeAt(c); h = Math.imul(h, 16777619); }
       let dx = pos[s.b*3] - pos[s.a*3], dy = pos[s.b*3+1] - pos[s.a*3+1], dz = pos[s.b*3+2] - pos[s.a*3+2];
       const len = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
-      dx /= len; dy /= len; dz /= len;
+      s.dx = dx / len; s.dy = dy / len; s.dz = dz / len; s.len = len;
       // perp = dir x (0,1,0); fallback dir x (1,0,0) for vertical wires
-      let px = -dz, py = 0, pz = dx;
-      if (px*px + py*py + pz*pz < 1e-6) { px = dy; py = -dx; pz = 0; }
+      let px = -s.dz, py = 0, pz = s.dx;
+      if (px*px + py*py + pz*pz < 1e-6) { px = s.dy; py = -s.dx; pz = 0; }
       const pl = Math.sqrt(px*px + py*py + pz*pz) || 1;
-      const off = (((h >>> 0) % 1000) / 1000 - 0.5) * 6;
+      const off = (((h >>> 0) % 1000) / 1000 - 0.5) * 14;
       s.ox = (px / pl) * off; s.oy = (py / pl) * off; s.oz = (pz / pl) * off;
-      s.t = Math.min(0.70, Math.max(0.30, s.t + (((h >>> 9) % 1000) / 1000 - 0.5) * 0.04));
+      s.t = Math.min(0.78, Math.max(0.22, s.t + (((h >>> 9) % 1000) / 1000 - 0.5) * 0.04));
     }
   }
   const fIdx = new Map(), fpos = [], fcol = [], eidx = [];
@@ -1862,31 +1870,44 @@ function rebuildFnLayer(focusing) {
     const a = nodeOf(e, true), b = nodeOf(e, false);
     eidx.push(a, b);
   });
-  // collision resolve: two boxes can still land near-coincident (near-collinear
-  // wires through a shared file). Nudge along own wire — stays on-wire, keeps
-  // even slot spacing for everyone else. Deterministic; O(n²) is trivial here.
-  const reposition = (m, ix) => {
-    const px = pos[m.s.a*3] + (pos[m.s.b*3] - pos[m.s.a*3]) * m.s.t + (m.s.ox || 0);
-    const py = pos[m.s.a*3+1] + (pos[m.s.b*3+1] - pos[m.s.a*3+1]) * m.s.t + (m.s.oy || 0);
-    const pz = pos[m.s.a*3+2] + (pos[m.s.b*3+2] - pos[m.s.a*3+2]) * m.s.t + (m.s.oz || 0);
-    m.p[0] = px; m.p[1] = py; m.p[2] = pz;
-    fpos[ix*3] = px; fpos[ix*3+1] = py; fpos[ix*3+2] = pz;
+  // relaxation: push overlapping fn boxes apart, then re-project each box
+  // into its own wire corridor (t clamp [0.22,0.78], perp offset cap ±10).
+  // The old nudge-only pass enforced 2-unit separation while a scale-4 box
+  // spans ~3.5 — legal overlap; near-parallel wire clumps need a real
+  // all-pairs relax. Deterministic order; O(n²) trivial at fn-layer sizes.
+  const FN_SEP = 7, PERP_MAX = 10, T_MIN = 0.22, T_MAX = 0.78;
+  const reproject = (m, ix) => {
+    const s = m.s;
+    let rx = m.p[0] - pos[s.a*3], ry = m.p[1] - pos[s.a*3+1], rz = m.p[2] - pos[s.a*3+2];
+    let t = (rx*s.dx + ry*s.dy + rz*s.dz) / (s.len || 1);
+    t = Math.min(T_MAX, Math.max(T_MIN, t));
+    let bx = pos[s.a*3] + s.dx * s.len * t, by = pos[s.a*3+1] + s.dy * s.len * t, bz = pos[s.a*3+2] + s.dz * s.len * t;
+    let ox = m.p[0] - bx, oy = m.p[1] - by, oz = m.p[2] - bz;
+    const ol = Math.sqrt(ox*ox + oy*oy + oz*oz);
+    if (ol > PERP_MAX) { const k = PERP_MAX / ol; ox *= k; oy *= k; oz *= k; }
+    s.t = t; s.ox = ox; s.oy = oy; s.oz = oz;
+    m.p[0] = bx + ox; m.p[1] = by + oy; m.p[2] = bz + oz;
+    fpos[ix*3] = m.p[0]; fpos[ix*3+1] = m.p[1]; fpos[ix*3+2] = m.p[2];
   };
-  for (let i = 1; i < fnMeta.length; i++) {
-    const m = fnMeta[i];
-    for (let guard = 0; guard < 60; guard++) {
-      let clash = false;
-      for (let j = 0; j < i && !clash; j++) {
-        const q = fnMeta[j].p;
-        const dx = m.p[0]-q[0], dy = m.p[1]-q[1], dz = m.p[2]-q[2];
-        clash = dx*dx + dy*dy + dz*dz < 4;  // 2-unit separation radius
+  for (let it = 0; it < 120; it++) {
+    let moved = false;
+    for (let a = 1; a < fnMeta.length; a++) {
+      const pa = fnMeta[a].p;
+      for (let b = 0; b < a; b++) {
+        const pb = fnMeta[b].p;
+        let dx = pa[0]-pb[0], dy = pa[1]-pb[1], dz = pa[2]-pb[2];
+        const d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 >= FN_SEP*FN_SEP) continue;
+        let d = Math.sqrt(d2);
+        if (d < 1e-3) { dx = 1; dy = 0; dz = 0; d = 1; }
+        const push = (FN_SEP - d) / d * 0.5;
+        pa[0] += dx*push; pa[1] += dy*push; pa[2] += dz*push;
+        pb[0] -= dx*push; pb[1] -= dy*push; pb[2] -= dz*push;
+        moved = true;
       }
-      if (!clash) break;
-      m.s.t += 0.02 * m.dir;
-      if (m.s.t <= 0.30 || m.s.t >= 0.70) m.dir = -m.dir;
-      m.s.t = Math.min(0.70, Math.max(0.30, m.s.t));
-      reposition(m, i);
     }
+    for (let i = 0; i < fnMeta.length; i++) reproject(fnMeta[i], i);
+    if (!moved) break;
   }
   if (!fnMeta.length) return;
   // fn boxes: true 3D cubes on the wires, colored by owning cluster hue,
@@ -1900,7 +1921,7 @@ function rebuildFnLayer(focusing) {
   for (let i = 0; i < fnMeta.length; i++) {
     fdummy.position.set(fpos[i*3], fpos[i*3+1], fpos[i*3+2]);
     fdummy.rotation.set(((i * 37) % 90) * Math.PI / 180, ((i * 53) % 90) * Math.PI / 180, 0);
-    fdummy.scale.setScalar(6);
+    fdummy.scale.setScalar(4);
     fdummy.updateMatrix();
     fnMesh.setMatrixAt(i, fdummy.matrix);
     _col.setRGB(fcol[i*3], fcol[i*3+1], fcol[i*3+2]);
