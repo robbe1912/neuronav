@@ -643,7 +643,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <button id="bSignals" class="on">signals</button>
     <button id="bInst">contains</button>
  <button id="bVar" title="member-var references — dense, off by default">var</button>
-    <button id="bDead" title="show only dead-code candidate files">dead only</button>
+    <button id="bDead" title="show only files flagged dead: at least 40% of their funcs are dead candidates">dead only</button>
     <button id="bReset">reset</button>
   </div>
 </div>
@@ -1073,7 +1073,11 @@ function frameVisible() {
 // ---- UI ---------------------------------------------------------------------
 const stats = document.getElementById("stats");
 const m = DATA.meta;
-stats.innerHTML = `${m.files} files · ${m.edges} links · ${m.clusters} clusters · dead ${m.deadLikely}+${m.deadReview} · drag orbit · wheel zoom` +
+// dead counts are function-level candidates; the map flags a file only when
+// >= 40% of its funcs are candidates — surface both so "28+62" vs 9 lit
+// files in dead-only mode doesn't read as missing data
+const flagged = nodes.reduce((a, n) => a + (n.dead > 0 ? 1 : 0), 0);
+stats.innerHTML = `${m.files} files · ${m.edges} links · ${m.clusters} clusters · <span title="${m.deadLikely} likely + ${m.deadReview} review-tier dead-FUNCTION candidates across the repo; a file is flagged (and shown in dead-only mode) when at least 40% of its funcs are candidates — currently ${flagged} files">dead ${m.deadLikely}+${m.deadReview} → ${flagged} files</span> · drag orbit · wheel zoom` +
   (m.generated_at ? `<br>gen ${m.generated_at}${m.git ? " · " + m.git : ""}` : "");
 const edgeLegend = document.getElementById("edgeLegend");
 // the legend is honest about what is on screen: the overview renders edges
