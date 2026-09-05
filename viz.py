@@ -414,6 +414,9 @@ def _build_data() -> dict:
             # neuronav commit (rendered in #stats so stale pages are obvious)
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "git": _git_head(),
+            # strata channel: height = call depth from entry files
+            "strata": True,
+            "depth": _strata_depths(len(nodes), links),
         },
     }
     if hot is not None:
@@ -426,6 +429,89 @@ def _build_data() -> dict:
 _TRACE: list = []   # debug: (step, cluster centroids snapshot) every 50 steps
 
 
+def _strata_depths(n: int, links: list) -> list:
+    """Per-node call depth for the strata layout (mermaid reading order).
+
+    Builds the directed call graph from links ({"s","t"} dicts or [s,t,...]
+    rows), condenses strongly-connected components (cycles exist — an SCC
+    shares one depth), then longest-path layering over the condensation DAG
+    in topo order from its in-degree-0 roots: every cross-SCC edge s->t
+    gets depth[t] >= depth[s] + 1, entries (in-degree 0) land at depth 0.
+    Pure stdlib so tests can run it without the index stack.
+    """
+    adj: list = [[] for _ in range(n)]
+    for l in links:
+        s, t = (l["s"], l["t"]) if isinstance(l, dict) else (l[0], l[1])
+        adj[s].append(t)
+
+    # Tarjan SCC, iterative (repo call chains can outrun the recursion limit)
+    index = [-1] * n
+    low = [0] * n
+    on = [False] * n
+    st: list = []
+    comp = [-1] * n
+    cnt = 0
+    nc = 0
+    for s0 in range(n):
+        if index[s0] != -1:
+            continue
+        call = [[s0, 0]]
+        while call:
+            v, i = call[-1]
+            if i == 0:
+                index[v] = low[v] = cnt
+                cnt += 1
+                st.append(v)
+                on[v] = True
+            descend = False
+            while i < len(adj[v]):
+                w = adj[v][i]
+                i += 1
+                if index[w] == -1:
+                    call[-1] = [v, i]
+                    call.append([w, 0])
+                    descend = True
+                    break
+                if on[w] and index[w] < low[v]:
+                    low[v] = index[w]
+            if descend:
+                continue
+            call.pop()
+            if call and low[v] < low[call[-1][0]]:
+                low[call[-1][0]] = low[v]
+            if low[v] == index[v]:
+                while True:
+                    w = st.pop()
+                    on[w] = False
+                    comp[w] = nc
+                    if w == v:
+                        break
+                nc += 1
+
+    # condensation DAG (deduped) + Kahn topo order with longest-path layering
+    cadj: list = [set() for _ in range(nc)]
+    for u in range(n):
+        cu = comp[u]
+        for v in adj[u]:
+            if cu != comp[v]:
+                cadj[cu].add(comp[v])
+    indeg = [0] * nc
+    for u in range(nc):
+        for w in cadj[u]:
+            indeg[w] += 1
+    cdepth = [0] * nc
+    q = [c for c in range(nc) if indeg[c] == 0]
+    while q:
+        c = q.pop()
+        for w in cadj[c]:
+            if cdepth[c] + 1 > cdepth[w]:
+                cdepth[w] = cdepth[c] + 1
+            indeg[w] -= 1
+            if indeg[w] == 0:
+                q.append(w)
+    return [cdepth[comp[i]] for i in range(n)]
+
+
 def _layout(n: int, links: list, sims: list, cluster_ids: list,
             ckeys: list = None, cmat: list = None) -> list:
     """Deterministic offline force layout; positions are frozen into DATA.
@@ -435,7 +521,9 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
     weak single-call springs cut from layout only (they still render),
     semantic springs after a structure-first phase, cluster gravity,
     velocity clamp against transient spikes. Seeded RNG => the same DATA
-    always produces the same picture.
+    always produces the same picture. After the sim the vertical axis is
+    re-layered by call depth (_strata_depths): entries on top, callees
+    below — XZ stays from the force sim.
     """
     import numpy as np
 
@@ -618,6 +706,34 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
         # the product below (picked away by where, but warns and poisons)
         corr = np.where((need > 0)[..., None], dirs * (np.clip(need, 0.0, None) * 0.5)[..., None], 0.0)
         pos += corr.sum(0) * 0.9
+    # strata: mermaid reading order — height = call depth from entry files.
+    # The force sim and the 3D pass above settle XZ; Y is discarded and
+    # re-layered monotonically from _strata_depths (entries on top, callees
+    # below) over ~0.55x the old Y half-range, then an XZ-only relaxation
+    # with Y frozen restores the non-overlap guarantee.
+    depths = _strata_depths(n, links)
+    maxd = max(depths, default=0)
+    if maxd > 0:
+        half = 0.55 * float(pos[:, 1].max() - pos[:, 1].min()) / 2.0
+        spacing = 2.0 * half / maxd
+        pos[:, 1] = half - np.asarray(depths, dtype=np.float32) * spacing
+        # deterministic jitter within a layer (<= 0.15 spacing): breaks exact
+        # Y ties so same-layer pairs keep a stable separation axis below
+        pos[:, 1] += (rng.uniform(-1.0, 1.0, n) * (0.15 * spacing)).astype(np.float32)
+        # required XZ distance so the 3D distance still clears min_d given
+        # the now-frozen Y gap (dy >= min_d pairs need nothing)
+        dy = pos[:, None, 1] - pos[None, :, 1]
+        req = np.sqrt(np.maximum(min_d * min_d - dy * dy, 0.0)).astype(np.float32)
+        for _ in range(140):
+            dxz = pos[:, None, [0, 2]] - pos[None, :, [0, 2]]
+            dxzd = np.sqrt((dxz * dxz).sum(-1))
+            np.fill_diagonal(dxzd, np.inf)
+            need = req - dxzd
+            if need.max() <= 0:
+                break
+            dirs = dxz / np.maximum(dxzd, 1e-3)[..., None]
+            corr = np.where((need > 0)[..., None], dirs * (np.clip(need, 0.0, None) * 0.5)[..., None], 0.0)
+            pos[:, [0, 2]] += corr.sum(0) * 0.9
     pos *= 1.45   # extra global breathing room — the frame adapts
     pos -= pos.mean(0)
     return [[round(float(x), 1) for x in p] for p in pos]
@@ -1331,6 +1447,7 @@ const m = DATA.meta;
 // files in dead-only mode doesn't read as missing data
 const flagged = nodes.reduce((a, n) => a + (n.dead > 0 ? 1 : 0), 0);
 stats.innerHTML = `${m.files} files · ${m.edges} links · ${m.clusters} clusters · <span title="${m.deadLikely} likely + ${m.deadReview} review-tier dead-FUNCTION candidates across the repo; a file is flagged (and shown in dead-only mode) when at least 40% of its funcs are candidates — currently ${flagged} files">dead ${m.deadLikely}+${m.deadReview} → ${flagged} files</span> · drag orbit · wheel zoom` +
+  (m.strata ? " · height = call depth from entry" : "") +
   (m.generated_at ? `<br>gen ${m.generated_at}${m.git ? " · " + m.git : ""}` : "");
 const edgeLegend = document.getElementById("edgeLegend");
 // the legend is honest about what is on screen: the overview renders edges
@@ -1390,16 +1507,20 @@ function buildContainment() {
         r = Math.max(r, Math.hypot(pos[i*3]-cx, pos[i*3+1]-cy, pos[i*3+2]-cz));
       });
       r *= 1.12;
-      const segs = 72, pts = [];
-      for (let s = 0; s <= segs; s++) {
-        const a = s / segs * Math.PI * 2;
-        pts.push(new THREE.Vector3(cx + Math.cos(a)*r, cy, cz + Math.sin(a)*r));
-      }
       const col = new THREE.Color().setHSL(hue(+cid), 0.72, lightOf(+cid));
-      const ring = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
-        new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.14,
-          blending: THREE.AdditiveBlending, depthWrite: false }));
-      scene.add(ring); cRings.push(ring);
+      // strata layout: halo rings assume planar cluster blobs — depth-
+      // stretched clusters would ring mid-air. Keep the name labels only.
+      if (!m.strata) {
+        const segs = 72, pts = [];
+        for (let s = 0; s <= segs; s++) {
+          const a = s / segs * Math.PI * 2;
+          pts.push(new THREE.Vector3(cx + Math.cos(a)*r, cy, cz + Math.sin(a)*r));
+        }
+        const ring = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+          new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.14,
+            blending: THREE.AdditiveBlending, depthWrite: false }));
+        scene.add(ring); cRings.push(ring);
+      }
       const el = document.createElement("div");
       el.className = "clab";
       el.style.color = "#" + col.getHexString();
