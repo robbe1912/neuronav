@@ -1002,6 +1002,8 @@ scene.add(fileMesh);
 const _dummy = new THREE.Object3D();
 const _col = new THREE.Color();
 function syncFileMesh() {
+  // fn-ownership: while a fn box is hovered its owning file lifts hard
+  const fnOwner = hoveredFn >= 0 ? fnMeta[hoveredFn].file : -1;
   for (let i = 0; i < N; i++) {
     const a = alphaArr[i];
     if (a < 0.01) {
@@ -1019,7 +1021,7 @@ function syncFileMesh() {
     fileMesh.setMatrixAt(i, _dummy.matrix);
     // dim = darken (scale keeps silhouette, color carries the focus gradient);
     // hovered nodes also lift slightly in brightness alongside the scale ease
-    const lift = a * (1 + 0.35 * (hoverScale[i] - 1));
+    const lift = a * (1 + 0.35 * (hoverScale[i] - 1)) * (i === fnOwner ? 1.9 : 1);
     _col.setRGB(colArr[i*3] * lift, colArr[i*3+1] * lift, colArr[i*3+2] * lift);
     fileMesh.setColorAt(i, _col);
   }
@@ -2466,6 +2468,27 @@ function showFnInfo(k) {
   renderFn("kUsedBy", "iUsedBy", "CALLED BY", ins);
 }
 
+// fn-ownership affordance: hovering a fn box draws a stalk from the box to
+// its owning file — with two files close together, color alone can't say
+// which sphere a function belongs to
+let fnStalk = null;
+function fnStalkUpdate(fi, p) {
+  if (!fnStalk) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3));
+    fnStalk = new THREE.Line(g, new THREE.LineBasicMaterial(
+      { color: 0xffffff, transparent: true, opacity: 0.85, depthTest: false }));
+    fnStalk.renderOrder = 5;
+    scene.add(fnStalk);
+  }
+  const a = fnStalk.geometry.attributes.position.array;
+  a[0] = p[0]; a[1] = p[1]; a[2] = p[2];
+  a[3] = pos[fi*3]; a[4] = pos[fi*3+1]; a[5] = pos[fi*3+2];
+  fnStalk.geometry.attributes.position.needsUpdate = true;
+  fnStalk.visible = true;
+}
+function fnStalkHide() { if (fnStalk) fnStalk.visible = false; }
+
 renderer.domElement.addEventListener("pointermove", e => {
   mouse.x = (e.clientX/innerWidth)*2-1; mouse.y = -(e.clientY/innerHeight)*2+1;
   raycaster.setFromCamera(mouse, camera);
@@ -2494,6 +2517,8 @@ renderer.domElement.addEventListener("pointermove", e => {
       if (dist < bestPx) { bestPx = dist; hovered = h.instanceId; hoveredFn = -1; }
     }
   }
+  if (hoveredFn >= 0) fnStalkUpdate(fnMeta[hoveredFn].file, fnMeta[hoveredFn].p);
+  else fnStalkHide();
   let txt = null;
   if (hoveredFn >= 0) {
     const fm = fnMeta[hoveredFn];
@@ -2601,6 +2626,9 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get hovered() { return hovered; },
   get groundGrid() { return groundGrid; },
   get groupsMode() { return groupsMode; }, groups,
+  get spread() { return spread; }, get deadOnly() { return deadOnly; },
+  colArr,
+  get fnStalk() { return fnStalk; },
   syncFileMesh };
 tick();
 </script>

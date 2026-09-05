@@ -112,8 +112,18 @@ def run_tests():
               f"hidden span {arc_hidden} / shown endpoint err {arc_shown}")
 
 
-        # 4. focus + functions: fn boxes exist and sit ON the wires
-        page.fill("#search", "magicplayer")
+        # 4. focus + functions: fn boxes exist and sit ON the wires.
+        # The focus token must exist in THIS index (harness is config-agnostic
+        # since the self-index landed): aim at the highest-degree node's
+        # path stem — 'magicplayer' hardcoding died when config left SWMG.
+        tok = page.evaluate(
+            """() => { const d = window.__dbg;
+                 let best = 0;
+                 for (let i = 1; i < d.nodes.length; i++)
+                   if ((d.adj[i]||[]).length > (d.adj[best]||[]).length) best = i;
+                 return d.nodes[best].path.split('/').pop().replace(/\\.[^.]+$/, '').toLowerCase(); }"""
+        )
+        page.fill("#search", tok)
         page.dispatch_event("#search", "input")
         page.check("#cbFn")
         page.wait_for_timeout(1200)
@@ -164,6 +174,31 @@ def run_tests():
         check("hover tooltip on fn box", bool(hover) and hover["shown"]
               and hover["text"] == hover["want"], str(hover))
 
+        # 5a. fn hover makes OWNERSHIP visible: white stalk box→owner file
+        # plus the owner's instance color lifting above its base cluster hue
+        own = page.evaluate(
+            """() => { const d = window.__dbg; const fm = d.fnMeta[0]; if (!fm) return null;
+                 const v = new d.THREE.Vector3(fm.p[0], fm.p[1], fm.p[2]).project(d.camera);
+                 const r = d.renderer.domElement.getBoundingClientRect();
+                 const sx = (v.x*0.5+0.5)*r.width + r.left, sy = (-v.y*0.5+0.5)*r.height + r.top;
+                 d.renderer.domElement.dispatchEvent(
+                   new PointerEvent('pointermove', { clientX: sx, clientY: sy, bubbles: true }));
+                 return new Promise(res => setTimeout(() => {
+                   // instance color = colArr × alpha × lift; lift==1.9 for the
+                   // owner, 1 otherwise — compare against the un-lifted render
+                   // value colArr × alpha, not raw colArr (focus dims level-1
+                   // owners below their own base hue)
+                   const f = fm.file;
+                   res({ vis: !!(d.fnStalk && d.fnStalk.visible),
+                         lifted: d.fileMesh.instanceColor.array[f*3]
+                                 > d.colArr[f*3] * d.alpha[f] * 1.5 }); }, 300)); }"""
+        )
+        check("fn hover stalks + lifts owner file",
+              bool(own) and own["vis"] and own["lifted"], str(own))
+
+        # pointer still parked on the fn box -> capture the stalk evidence
+        page.screenshot(path=str(ROOT / "tests" / "qa_stalk.png"), scale="css", type="png")
+
         # 5b. hover a lit neighbor while focused -> tooltip shows BFS path to seed
         hop = page.evaluate(
             """() => { const d = window.__dbg;
@@ -171,13 +206,13 @@ def run_tests():
                  // same set), so pick the first lit match as the seed
                  let seed = -1;
                  for (let j = 0; j < d.nodes.length; j++) {
-                   if (d.nodes[j].path.toLowerCase().includes('magicplayer') && d.alphaTgt[j] > 0.5) { seed = j; break; }
+                   if (d.nodes[j].path.toLowerCase().includes('__TOK__') && d.alphaTgt[j] > 0.5) { seed = j; break; }
                  }
                  if (seed < 0) return { fail: 'no lit query match' };
                  let nb = -1;
                  const A = d.adj || {};
                  for (const v of (A[seed] || [])) {
-                   if (d.alphaTgt[v] > 0.5 && !d.nodes[v].path.toLowerCase().includes('magicplayer')) { nb = v; break; } }
+                   if (d.alphaTgt[v] > 0.5 && !d.nodes[v].path.toLowerCase().includes('__TOK__')) { nb = v; break; } }
                  if (nb < 0) return { fail: 'no lit neighbor' };
                  const v = new d.THREE.Vector3(d.pos[nb*3], d.pos[nb*3+1], d.pos[nb*3+2]).project(d.camera);
                  const r = d.renderer.domElement.getBoundingClientRect();
@@ -188,8 +223,8 @@ def run_tests():
                    const tip = document.getElementById('tip');
                    res({ shown: tip.style.display === 'block',
                          text: tip.textContent,
-                         seedLabel: d.nodes[seed].label,
-                         nbLabel: d.nodes[nb].label }); }, 300)); }"""
+                          seedLabel: d.nodes[seed].label,
+                          nbLabel: d.nodes[nb].label }); }, 300)); }""".replace("__TOK__", tok)
         )
         check("hover path to seed",
               bool(hop) and hop.get("shown")
@@ -257,22 +292,33 @@ def run_tests():
               and island.get("d1", 0) < island.get("d0", 1) * 0.9,
               str(island))
 
-        # 5d. dead-only toggle frames the dead set
+        # 5d. dead-only toggle frames the dead set. Data-gated: with zero dead
+        # files the toggle may legitimately be inert (nothing to frame) — and
+        # MUST be toggled back off or every later check measures zeroed
+        # instances (all nodes hidden).
         page.evaluate("() => document.getElementById('bReset').click()")
         page.wait_for_timeout(200)
         dead = page.evaluate(
             """() => { const b = document.getElementById('bDead');
+                 const nd = window.__dbg.nodes.filter(n => n.dead > 0).length;
                  const d0 = window.__dbg.camera.position.distanceTo(window.__dbg.controls.target);
                  b.click();
                  return new Promise(res => setTimeout(() => {
                    const dd = window.__dbg;
-                   res({ d0: Math.round(d0),
-                         d1: Math.round(dd.camera.position.distanceTo(dd.controls.target)) });
+                   const out = { nd,
+                                 d0: Math.round(d0),
+                                 d1: Math.round(dd.camera.position.distanceTo(dd.controls.target)) };
+                   b.click();   // always restore: deadOnly must not leak downstream
+                   res(out);
                  }, 600)); }"""
         )
-        check("dead only frames dead set",
-              bool(dead) and dead.get("d1", 0) < dead.get("d0", 1) * 0.85,
-              str(dead))
+        if dead.get("nd", 0) == 0:
+            check("dead only inert with no dead files",
+                  abs(dead["d1"] - dead["d0"]) <= 2, str(dead))
+        else:
+            check("dead only frames dead set",
+                  bool(dead) and dead.get("d1", 0) < dead.get("d0", 1) * 0.85,
+                  str(dead))
 
         # 5e. ground grid: off by default, button toggles, state survives resetAll
         ground = page.evaluate(
@@ -292,7 +338,15 @@ def run_tests():
               str(ground))
 
         # 6. git-churn channel: DATA.hot normalized 0..1, size boost applied
-        # to the hottest file, cold files untouched, caption notes the channel
+        # to the hottest file, cold files untouched, caption notes the channel.
+        # The dead-only cycle above zeroed alphaTgt for a moment; alphaArr
+        # eases back slowly, so wait until every node that SHOULD be visible
+        # has finished easing — otherwise matrices measure as scale-0 (flaky).
+        page.wait_for_function(
+            """() => { const d = window.__dbg;
+                    for (let i = 0; i < d.nodes.length; i++)
+                      if (d.alphaTgt[i] > 0.5 && d.alpha[i] <= 0.5) return false;
+                    return true; }""", timeout=20000)
         churn = page.evaluate(
             """() => { const d = window.__dbg;
                  const h = d.hot;
@@ -308,11 +362,14 @@ def run_tests():
                  const base = i => Math.min(10, 3.5 + Math.sqrt(deg[i]));
                  const mat = new d.THREE.Matrix4();
                  const mx = i => { d.fileMesh.getMatrixAt(i, mat); return mat.elements[0]; };
-                 // instance scale = sizes*1.1 at overview (no dead boost/hover)
-                 const expHot = base(arg) * 1.1 * (1 + 0.35 * h[arg]);
-                 return { n: h.length, max: h[arg], min: Math.min(...h),
+                  // instance scale = sizes*1.1 at overview (no dead boost/hover)
+                  const expHot = base(arg) * 1.1 * (1 + 0.35 * h[arg]);
+                  return { n: h.length, max: h[arg], min: Math.min(...h),
                           hotOk: Math.abs(mx(arg) / expHot - 1) < 0.02,
-                          coldOk: cold >= 0 && Math.abs(mx(cold) / (base(cold) * 1.1) - 1) < 0.01,
+                          // data-gated: an index where every file has churn
+                          // (young repo, all touched recently) has no cold file
+                          coldOk: cold < 0 ? true
+                                  : Math.abs(mx(cold) / (base(cold) * 1.1) - 1) < 0.01,
                           noted: document.getElementById('caption').textContent.includes('churn') }; }"""
         )
         check("git churn sizes hottest file and notes caption",
@@ -329,6 +386,7 @@ def run_tests():
                  if (btn.style.display === 'none') return { skip: 'no groups channel' };
                  const chips = () => document.querySelectorAll('#legend .chip');
                  const fineN = chips().length;
+                 if (fineN <= 3) return { skip: 'too few fine clusters to supergroup' };
                  let idx = -1;
                  // pick a clustered node whose fine vs group hues differ
                  // enough that recoloring is measurable in RGB
