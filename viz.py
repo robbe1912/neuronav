@@ -729,21 +729,40 @@ pGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
 pGeo.setAttribute("color", new THREE.BufferAttribute(colArr, 3));
 pGeo.setAttribute("psize", new THREE.BufferAttribute(sizes, 1));
 pGeo.setAttribute("aalpha", new THREE.BufferAttribute(alphaArr, 1));
+pGeo.setAttribute("sshape", new THREE.BufferAttribute(new Float32Array(N).fill(0), 1)); // files: discs
 const pMat = new THREE.ShaderMaterial({
   transparent: true, depthWrite: false, vertexColors: true,
   vertexShader: `
-    attribute float psize; attribute float aalpha;
-    varying vec3 vColor; varying float vA;
-    void main(){ vColor = color; vA = aalpha;
+    attribute float psize; attribute float aalpha; attribute float sshape;
+    varying vec3 vColor; varying float vA; varying float vShape;
+    void main(){ vColor = color; vA = aalpha; vShape = sshape;
       vec4 mv = modelViewMatrix * vec4(position,1.0);
       // hidden nodes (vA==0) get zero size: GL discards them entirely
       gl_PointSize = vA < 0.01 ? 0.0 : max(psize * (900.0 / -mv.z), 5.0);
       gl_Position = projectionMatrix * mv; }`,
   fragmentShader: `
-    varying vec3 vColor; varying float vA;
-    void main(){ float d = length(gl_PointCoord - 0.5);
-      // crisp disc: solid center, tight 2px anti-aliased rim — no fuzzy glow
-      float a = (1.0 - smoothstep(0.36, 0.47, d)) * vA;
+    varying vec3 vColor; varying float vA; varying float vShape;
+    float sdTriangle(vec2 p, float r){
+      const float k = sqrt(3.0);
+      p.x = abs(p.x); p.y = p.y + r / k;
+      if (p.x + k * p.y > 2.0 * r) return length(p - vec2(clamp(p.x, 0.0, 2.0 * r / k), r)) ;
+      return max(p.x, -(k * p.x + p.y)); }
+    void main(){
+      vec2 pc = gl_PointCoord - 0.5;
+      float a;
+      if (vShape < 0.5) {
+        // file node: crisp disc
+        float d = length(pc);
+        a = (1.0 - smoothstep(0.36, 0.47, d)) * vA;
+      } else if (vShape < 1.5) {
+        // function: crisp square
+        float d = max(abs(pc.x), abs(pc.y));
+        a = (1.0 - smoothstep(0.38, 0.47, d)) * vA;
+      } else {
+        // variable (reserved): crisp equilateral triangle
+        float d = sdTriangle(pc, 0.42);
+        a = (1.0 - smoothstep(0.0, 0.05, d)) * vA;
+      }
       if (a < 0.01) discard;
       gl_FragColor = vec4(vColor, a); }`,
 });
@@ -1485,6 +1504,7 @@ function rebuildFnLayer(focusing) {
   g1.setAttribute("color", new THREE.BufferAttribute(new Float32Array(fcol), 3));
   g1.setAttribute("psize", new THREE.BufferAttribute(new Float32Array(fnMeta.length).fill(4.2), 1));
   g1.setAttribute("aalpha", new THREE.BufferAttribute(new Float32Array(fnMeta.length).fill(1), 1));
+  g1.setAttribute("sshape", new THREE.BufferAttribute(new Float32Array(fnMeta.length).fill(1), 1)); // functions: squares
   fnPoints = new THREE.Points(g1, pMat);
   scene.add(fnPoints);
   // spokes: faint tie from each function satellite to its file node —
@@ -1499,13 +1519,18 @@ function rebuildFnLayer(focusing) {
   fnSpokes = new THREE.LineSegments(g3, new THREE.LineBasicMaterial({
     color: 0x445566, transparent: true, opacity: 0.14, depthWrite: false }));
   scene.add(fnSpokes);
-  const ep = [];
+  const ep = [], ec = [];
   for (let i = 0; i < eidx.length; i += 2) {
-    const a = eidx[i] * 3, b = eidx[i+1] * 3;
-    ep.push(fpos[a], fpos[a+1], fpos[a+2], fpos[b], fpos[b+1], fpos[b+2]);
+    const a = eidx[i], b = eidx[i+1];
+    ep.push(fpos[a*3], fpos[a*3+1], fpos[a*3+2], fpos[b*3], fpos[b*3+1], fpos[b*3+2]);
+    // wire colored by each endpoint's cluster hue — was missing entirely,
+    // so vertexColors read the unbound attribute (black) and additive
+    // blending made every fn wire invisible on the black background
+    ec.push(fcol[a*3], fcol[a*3+1], fcol[a*3+2], fcol[b*3], fcol[b*3+1], fcol[b*3+2]);
   }
   const g2 = new THREE.BufferGeometry();
   g2.setAttribute("position", new THREE.BufferAttribute(new Float32Array(ep), 3));
+  g2.setAttribute("color", new THREE.BufferAttribute(new Float32Array(ec), 3));
   fnLines = new THREE.LineSegments(g2, new THREE.LineBasicMaterial({
     vertexColors: true, transparent: true, opacity: 0.8,
     blending: THREE.AdditiveBlending, depthWrite: false }));
