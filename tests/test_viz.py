@@ -127,6 +127,40 @@ def run_tests():
         check("hover tooltip on fn box", bool(hover) and hover["shown"]
               and hover["text"] == hover["want"], str(hover))
 
+        # 5b. hover a lit neighbor while focused -> tooltip shows BFS path to seed
+        hop = page.evaluate(
+            """() => { const d = window.__dbg;
+                 // query focus: seeds are the search matches (pathToSeed uses the
+                 // same set), so pick the first lit match as the seed
+                 let seed = -1;
+                 for (let j = 0; j < d.nodes.length; j++) {
+                   if (d.nodes[j].path.toLowerCase().includes('magicplayer') && d.alphaTgt[j] > 0.5) { seed = j; break; }
+                 }
+                 if (seed < 0) return { fail: 'no lit query match' };
+                 let nb = -1;
+                 const A = d.adj || {};
+                 for (const v of (A[seed] || [])) {
+                   if (d.alphaTgt[v] > 0.5 && !d.nodes[v].path.toLowerCase().includes('magicplayer')) { nb = v; break; } }
+                 if (nb < 0) return { fail: 'no lit neighbor' };
+                 const v = new d.THREE.Vector3(d.pos[nb*3], d.pos[nb*3+1], d.pos[nb*3+2]).project(d.camera);
+                 const r = d.renderer.domElement.getBoundingClientRect();
+                 const sx = (v.x*0.5+0.5)*r.width + r.left, sy = (-v.y*0.5+0.5)*r.height + r.top;
+                 d.renderer.domElement.dispatchEvent(
+                   new PointerEvent('pointermove', { clientX: sx, clientY: sy, bubbles: true }));
+                 return new Promise(res => setTimeout(() => {
+                   const tip = document.getElementById('tip');
+                   res({ shown: tip.style.display === 'block',
+                         text: tip.textContent,
+                         seedLabel: d.nodes[seed].label,
+                         nbLabel: d.nodes[nb].label }); }, 300)); }"""
+        )
+        check("hover path to seed",
+              bool(hop) and hop.get("shown")
+              and "→ seed:" in (hop.get("text") or "")
+              and hop.get("seedLabel") in (hop.get("text") or "")
+              and hop.get("nbLabel") in (hop.get("text") or ""),
+              str(hop))
+
         # artifact: screenshot of the focused fn-layer state
         page.screenshot(path=str(ROOT / "tests" / "last_run.png"), scale="css", type="png")
         print("artifact: tests/last_run.png")

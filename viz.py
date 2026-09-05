@@ -712,6 +712,35 @@ function edgeSummary(i) {
   if (cont) parts.push(Math.round(cont) + " contains");
   return parts.join(" · ");
 }
+// BFS path from a hovered node to the current focus seed(s) — the "where am I
+// relative to what I focused" answer. Seeds = clicked seeds plus query matches
+// (the same seed set computeLevels uses), so the path matches the lit graph.
+function pathToSeed(i) {
+  const seeds = new Set(focusSeeds);
+  if (query) {
+    const q = query.toLowerCase();
+    nodes.forEach((n, j) => {
+      if (n.path.toLowerCase().includes(q) || (n.cls || "").toLowerCase().includes(q)) seeds.add(j);
+    });
+  }
+  if (!seeds.size || seeds.has(i)) return null;
+  const prev = new Map([[i, -1]]);
+  const queue = [i];
+  for (let qi = 0; qi < queue.length; qi++) {
+    const u = queue[qi];
+    for (const v of (adj[u] || [])) {
+      if (prev.has(v)) continue;
+      prev.set(v, u);
+      if (seeds.has(v)) {
+        const hops = [];
+        for (let x = v; x !== -1; x = prev.get(x)) hops.push(nodes[x].label);
+        return hops.reverse();
+      }
+      queue.push(v);
+    }
+  }
+  return null;   // no route: hovered node is outside the focus component
+}
 
 // ---- scene -----------------------------------------------------------------
 const renderer = new THREE.WebGLRenderer({ antialias:true });
@@ -2021,6 +2050,12 @@ renderer.domElement.addEventListener("pointermove", e => {
     txt = nodes[hovered].path;
     const s = edgeSummary(hovered);
     if (s) txt += "\n" + s;
+    const path = pathToSeed(hovered);
+    if (path) {
+      const shown = path.length <= 5 ? path.join(" → ")
+        : path.slice(0, 2).join(" → ") + " → …(" + (path.length - 3) + ")→ " + path[path.length - 1];
+      txt += "\n→ seed: " + shown;
+    }
   }
   if (txt) {
     tip.style.display = "block";
@@ -2102,7 +2137,7 @@ renderer.domElement.style.cursor = "grab";
 // debug handle last: everything it captures is initialized by here
 window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE,
   alpha: alphaArr, alphaTgt, bucketMat, bucketOf, hwSlot, bucketPosIB, bucketColIB, slotOf,
-  adjOut, adjIn, outDeg, inDeg, get dirMode() { return dirMode; }, focusSeeds, level,
+  adjOut, adjIn, adj, outDeg, inDeg, get dirMode() { return dirMode; }, focusSeeds, level,
   get camTween() { return camTween; }, get focusStack() { return focusStack; },
   get fileMesh() { return fileMesh; }, get fnMesh() { return fnMesh; },
   get fnMeta() { return fnMeta; },
