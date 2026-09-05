@@ -54,6 +54,10 @@ PY_BARE_CALL_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*\(")
 # `name: Type` params and `x = Klass(` locals (capitalized = user classes)
 PY_PARAM_TYPED_RE = re.compile(r"[(,]\s*([A-Za-z_]\w*)\s*:\s*([A-Z]\w*)\b")
 PY_LOCAL_NEW_RE = re.compile(r"(?<![\w.!=<>])([A-Za-z_]\w*)\s*=(?!=)\s*([A-Z]\w*)\s*\(")
+# local bound from an imported call: extractor = registry_for(...)
+PY_MODULE_ASSIGN_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*=\s*([a-z_]\w*)\s*\(")
+# imported_call(args).method( — registry_for(path.suffix).parse(...)
+PY_RESULT_CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\(([^()]*)\)\s*\.\s*([A-Za-z_]\w*)\s*\(")
 PY_NON_CALLS = {
     "if", "for", "while", "elif", "return", "assert", "del", "print",
     "lambda", "not", "await", "with", "except", "raise", "yield",
@@ -500,13 +504,26 @@ class Graph:
             var_types[pm.group(1)] = pm.group(2)
         for m in PY_LOCAL_NEW_RE.finditer(scan_text):
             var_types[m.group(1)] = m.group(2)
+        # x = imported_name(...): the local becomes a module-object
+        # receiver — resolve x.method( against that module (and the
+        # modules it re-exports, since registries return submodules)
+        for m in PY_MODULE_ASSIGN_RE.finditer(scan_text):
+            mod = fs.consts.get(m.group(2), "")
+            if mod in self.files:
+                var_types[m.group(1)] = "module:" + mod
         # obj.method( — head resolves via class_map (repo classes), typed
-        # receivers, or from-import consts (module-file receivers)
+        # receivers, from-import consts (module-file receivers), or
+        # module-object locals bound from an imported call
         for m in PY_ATTR_CALL_RE.finditer(scan_text):
             head, meth = m.group(1), m.group(2)
             if head in ("self", "cls"):
                 if meth in fs.funcs:
                     self._emit_call(src_key, fs.path, meth)
+                continue
+            vt = var_types.get(head, "")
+            if vt.startswith("module:"):
+                for dst in self._module_method_dsts(vt[len("module:"):], meth):
+                    self._emit_call(src_key, dst, meth)
                 continue
             cls = head if head in self.class_map else var_types.get(head, "")
             if cls and cls in self.class_map:
@@ -517,6 +534,15 @@ class Graph:
                 continue
             if meth in self.files[dst].funcs:
                 self._emit_call(src_key, dst, meth)
+        # imported_call(args).method( — calling an imported function then
+        # a method on the result (registry_for(suffix).parse(...)): the
+        # const's module chain supplies the candidate defs
+        for m in PY_RESULT_CALL_RE.finditer(scan_text):
+            head, meth = m.group(1), m.group(3)
+            mod = fs.consts.get(head, "")
+            if mod in self.files:
+                for dst in self._module_method_dsts(mod, meth):
+                    self._emit_call(src_key, dst, meth)
         # two-level chains: self.g.greet( / api.client.run(
         for m in PY_CHAIN_CALL_RE.finditer(scan_text):
             head, mid, tail = m.group(1), m.group(2), m.group(3)
@@ -538,6 +564,19 @@ class Graph:
             dst = fs.consts.get(name, "")
             if dst in self.files and name in self.files[dst].funcs:
                 self._emit_call(src_key, dst, name)
+
+    def _module_method_dsts(self, mod_rel: str, meth: str) -> list[str]:
+        """Files that may define `meth` reached through module `mod_rel`:
+        the module itself plus the modules it imports (re-export surface —
+        registries return submodules listed in their imports)."""
+        if mod_rel not in self.files:
+            return []
+        cands = [mod_rel]
+        mod_fs = self.files[mod_rel]
+        for reexport in mod_fs.consts.values():
+            if reexport in self.files and reexport != mod_rel:
+                cands.append(reexport)
+        return sorted({c for c in cands if meth in self.files[c].funcs})
 
     def _ancestor_def(self, fs: FileSym, name: str) -> str:
         """Rel path of the nearest ancestor class declaring `name`, or ''."""

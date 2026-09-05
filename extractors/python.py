@@ -90,10 +90,19 @@ def _split_names(spec: str) -> list[str]:
 def _record_import(line: str, path: Path, fs: FileSym) -> None:
     im = FROM_IMPORT_RE.match(line)
     if im:
+        import nav
+
         relmod = _module_rel(im.group(1), path)
         if relmod:
+            # `from pkg import name` may import a SUBMODULE (extractors.
+            # gdscript), not just a symbol — prefer name.py when it exists
+            if relmod.endswith("/__init__.py"):
+                pkg_dir = relmod[: -len("/__init__.py")]
+            else:
+                pkg_dir = relmod.rsplit("/", 1)[0] if "/" in relmod else ""
             for nm in _split_names(im.group(2)):
-                fs.consts[nm] = relmod
+                sub = f"{pkg_dir}/{nm}.py" if pkg_dir else f"{nm}.py"
+                fs.consts[nm] = sub if (nav.ROOT / sub).is_file() else relmod
         return
     im = PLAIN_IMPORT_RE.match(line)
     if im:
@@ -249,6 +258,23 @@ def parse(path: Path, rel: str) -> FileSym:
             main_guard_indent = -1  # guard block ended
 
         _record_import(line, path, fs)
+
+        # ENTRY_RULES = [rule_a, rule_b, ...]: the documented extractor
+        # contract dispatches these callables dynamically (graph._find_roots
+        # iterates the list) — list them as parse-declared entry points.
+        # Buffer multi-line list literals before harvesting bare idents.
+        if stripped.startswith("ENTRY_RULES") and "=" in stripped:
+            rhs = stripped.split("=", 1)[1]
+            buf = rhs
+            j = i + 1
+            while buf.count("[") > buf.count("]") and j < n:
+                buf += " " + lines[j].strip()
+                j += 1
+            for em in re.finditer(r"(?<![\w.])([A-Za-z_]\w*)(?!\s*\()", buf):
+                fs.entry_hints.add(em.group(1))
+            i = j
+            continue
+
         if not class_indents and (ind == 0 or (main_guard_indent >= 0 and ind > main_guard_indent)):
             for cm in MODULE_CALL_RE.finditer(line):
                 nm = cm.group(1)
