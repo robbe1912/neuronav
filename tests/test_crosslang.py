@@ -20,8 +20,11 @@ def check(name, cond, detail=""):
 
 g = graph.get_graph(rebuild=True)
 
-# 0. build the per-config function vector index (first build = all funcs)
-sync = graph.sync_functions([], [])
+# 0. function vector index: upsert every parsed function explicitly so the
+# check is deterministic regardless of collection state (bootstrap vs
+# already-populated exercise the same parse+embed+upsert path)
+_all = sorted(rel for rel, fs in graph._all_filesyms().items() if fs.funcs)
+sync = graph.sync_functions(_all, [])
 check("py fns synced", sync["fns_upserted"] >= 80, str(sync))
 
 # 1. graph layer parsed python
