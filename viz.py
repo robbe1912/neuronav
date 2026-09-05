@@ -756,6 +756,14 @@ const bucketPosIB = [], bucketColIB = [], bucketMat = [];
 }
 // typed strands between the same file pair run parallel instead of
 // overlapping: each gets a slot offset perpendicular to the strand
+// filter state shared by applyVisibility (colors) and syncEdgePos
+// (geometry) — declared here because syncEdgePos runs at module init
+let showTests = false;
+const activeDirs = new Set();   // multi-select dir filter
+const isHiddenPath = p => p.startsWith("tests/") || p.startsWith("tools/") ||
+  p.slice(p.lastIndexOf("/") + 1).startsWith("test_");
+const linkFiltered = l => (!showTests && (isHiddenPath(nodes[l.s].path) || isHiddenPath(nodes[l.t].path))) ||
+  (activeDirs.size && (!activeDirs.has(nodes[l.s].dir) || !activeDirs.has(nodes[l.t].dir)));
 const pairKey = (s, t) => s < t ? s + "_" + t : t + "_" + s;
 const pairLinks = new Map();
 links.forEach((l, i) => {
@@ -767,12 +775,14 @@ function syncEdgePos() {
   links.forEach((l, i) => {
     if (hwSlot[i] >= 0) return;   // highway arcs are baked, never resynced
     const s = l.s * 3, t = l.t * 3;
-    // hidden endpoints (tests/tools, dir filter): collapse to a degenerate
-    // zero-length segment — true render disable, no stray pixels at all
-    if (alphaArr[l.s] < 0.01 || alphaArr[l.t] < 0.01) {
+    // single owner of edge geometry: applyVisibility re-runs this after
+    // every filter change, so filtered links collapse here and unfiltered
+    // links always restore full positions
+    if (linkFiltered(l)) {
       const a0 = bucketPosIB[bucketOf[i]].array, o0 = slotOf[i] * 6;
       a0[o0] = pos[s]; a0[o0+1] = pos[s+1]; a0[o0+2] = pos[s+2];
       a0[o0+3] = pos[s]; a0[o0+4] = pos[s+1]; a0[o0+5] = pos[s+2];
+      bucketPosIB[bucketOf[i]].needsUpdate = true;
       return;
     }
     let ox = 0, oy = 0;
@@ -1045,7 +1055,8 @@ let activeCluster = null, deadOnly = false, query = "";
 let showInst = false, showCalls = true, focusSeed = -1, depth = 2, fnMode = false;
 // tests/tools hidden by default (chip toggles them in); dir filter row works
 // like the cluster chips — both only ever filter, never re-layout
-let showTests = false; const activeDirs = new Set();   // multi-select dir filter
+// (declarations live above syncEdgePos: the boot-time geometry writer
+// reads them through linkFiltered)
 const isTestNode = n => n.path.startsWith("tests/") || n.path.startsWith("tools/") ||
   n.path.slice(n.path.lastIndexOf("/") + 1).startsWith("test_");
 // overview LOD: intra-cluster edges stay hidden until the camera closes in
@@ -1105,6 +1116,7 @@ function applyVisibility() {
   // cluster colors carry the overview; full type colors return on focus.
     const grayMix = focusing ? 0 : 0.92;
   const touched = [false, false, false];
+  const touchedPos = [false, false, false];
   links.forEach((l, i) => {
     let k;
     // dir-filtered endpoints (tests/tools hidden, active dir isolation):
@@ -1134,12 +1146,22 @@ function applyVisibility() {
     const b = bucketOf[i], o6 = i * 6;
     const tgt = bucketColIB[b].array;
     if (k === 0) {
-      // filtered-out edge (tests/tools hidden, dir filter): pure black.
-      // The gray-mix formula below would otherwise leak (1-grayMix)=8% of
-      // the base color, visible under additive blending when many killed
-      // edges converge on a hub.
-      if (hwSlot[i] >= 0) tgt.fill(0, hwSlot[i], hwSlot[i] + 192);
-      else tgt.fill(0, slotOf[i] * 6, slotOf[i] * 6 + 6);
+      // filtered-out edge (tests/tools hidden, dir filter): black + the
+      // geometry collapses (straight edges via syncEdgePos below, baked
+      // highway arcs here — normal blending would paint a black line).
+      if (hwSlot[i] >= 0) {
+        tgt.fill(0, hwSlot[i], hwSlot[i] + 192);
+        const parr = bucketPosIB[b].array;
+        const sx = pos[l.s*3], sy = pos[l.s*3+1], sz = pos[l.s*3+2];
+        for (let v = 0; v < 32; v++) {
+          const q = hwSlot[i] + v * 6;
+          parr[q] = sx; parr[q+1] = sy; parr[q+2] = sz;
+          parr[q+3] = sx; parr[q+4] = sy; parr[q+5] = sz;
+        }
+        touchedPos[b] = true;
+      } else {
+        tgt.fill(0, slotOf[i] * 6, slotOf[i] * 6 + 6);
+      }
       touched[b] = true;
       return;
     }
@@ -1174,6 +1196,8 @@ function applyVisibility() {
     touched[b] = true;
   });
   touched.forEach((t, b) => { if (t) bucketColIB[b].needsUpdate = true; });
+  syncEdgePos();   // geometry follows the new filter state (collapse/restore)
+  touchedPos.forEach((t, b) => { if (t) bucketPosIB[b].needsUpdate = true; });
   if (focusing) {
     let lit = 0;
     for (let i = 0; i < N; i++) if (level[i] >= 0 && nodeVisible(nodes[i])) lit++;
