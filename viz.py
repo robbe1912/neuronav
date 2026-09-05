@@ -1434,6 +1434,7 @@ const esc = s => String(s).replace(/[&<>"]/g,
   ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" })[ch]);
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
+const _pickV = new THREE.Vector3();   // scratch for screen-space pick accuracy
 let hovered = -1, hoveredFn = -1, selected = -1;
 let deadOnly = false, query = "";
 let mutOnly = false;   // fn layer: show only functions that write state
@@ -2462,13 +2463,26 @@ renderer.domElement.addEventListener("pointermove", e => {
   const hits = raycaster.intersectObjects(targets);
   hovered = -1; hoveredFn = -1;
   // skip invisible nodes: filtered-out tests/tools keep raycast geometry,
-  // but hovering a ghost must not pop a tooltip (walk to first visible hit;
-  // instanced hits carry .instanceId, not .index)
+  // but hovering a ghost must not pop a tooltip. Among visible hits, pick
+  // by SCREEN-SPACE accuracy (cursor distance vs projected radius), not
+  // depth — at high spread a foreground sphere's rim otherwise steals the
+  // pick from the node the user is actually pointing at (occlusion).
+  const px = e.clientX, py = e.clientY;
+  let bestPx = 18;   // cursor forgiveness radius in pixels
   for (const h of hits) {
     if (h.object === fnMesh) {
       const fm = fnMeta[h.instanceId];
-      if (fm && alphaTgt[fm.file] > 0.5) { hoveredFn = h.instanceId; break; }
-    } else if (h.object === fileMesh && alphaTgt[h.instanceId] > 0.5) { hovered = h.instanceId; break; }
+      if (!fm || alphaTgt[fm.file] <= 0.5) continue;
+      const v = _pickV.set(fm.p[0], fm.p[1], fm.p[2]).project(camera);
+      const sx = (v.x*0.5+0.5)*innerWidth, sy = (-v.y*0.5+0.5)*innerHeight;
+      const dist = Math.hypot(sx-px, sy-py);
+      if (dist < bestPx) { bestPx = dist; hoveredFn = h.instanceId; hovered = -1; }
+    } else if (h.object === fileMesh && alphaTgt[h.instanceId] > 0.5) {
+      const v = _pickV.set(pos[h.instanceId*3], pos[h.instanceId*3+1], pos[h.instanceId*3+2]).project(camera);
+      const sx = (v.x*0.5+0.5)*innerWidth, sy = (-v.y*0.5+0.5)*innerHeight;
+      const dist = Math.hypot(sx-px, sy-py);
+      if (dist < bestPx) { bestPx = dist; hovered = h.instanceId; hoveredFn = -1; }
+    }
   }
   let txt = null;
   if (hoveredFn >= 0) {
