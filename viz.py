@@ -1051,7 +1051,7 @@ const BUCKETS = [
 const bucketOf = new Int8Array(MAXL);
 const slotOf = new Int32Array(MAXL);
 const hwSlot = new Int32Array(MAXL).fill(-1);
-const bucketPosIB = [], bucketColIB = [], bucketMat = [];
+const bucketPosIB = [], bucketColIB = [], bucketMat = [], bucketMesh = [];
 {
   const counts = [0, 0, 0];
   // arcs get no straight slot (their slots would stay zero-filled at the
@@ -1096,8 +1096,15 @@ const bucketPosIB = [], bucketColIB = [], bucketMat = [];
     bucketPosIB.push(geo.attributes.instanceStart.data);
     bucketColIB.push(geo.attributes.instanceColorStart.data);
     bucketMat.push(mat);
+    bucketMesh.push(mesh);   // dash distances are computed on the LineSegments2
   });
 }
+// focus-mode dash-flow (direction cue): world-units/s of dashOffset travel,
+// re-read each tick so window.__dbg.flowSpeed can tune it live
+const FLOW_SPEED = 2.5;
+let edgeFlowOn = false;   // set by applyVisibility, read by tick's dash pass
+let lastTickT = performance.now();
+
 // typed strands between the same file pair run parallel instead of
 // overlapping: each gets a slot offset perpendicular to the strand
 // filter state shared by applyVisibility (colors) and syncEdgePos
@@ -1143,12 +1150,30 @@ function syncEdgePos() {
         }
         const A = pts[v], B = pts[v + 1];
         if (!A || !B) return;
-        arr[o]   = baseCx + (A[0] - baseCx) * spread;
-        arr[o+1] = baseCy + (A[1] - baseCy) * spread;
-        arr[o+2] = baseCz + (A[2] - baseCz) * spread;
-        arr[o+3] = baseCx + (B[0] - baseCx) * spread;
-        arr[o+4] = baseCy + (B[1] - baseCy) * spread;
-        arr[o+5] = baseCz + (B[2] - baseCz) * spread;
+        let ax = baseCx + (A[0] - baseCx) * spread;
+        let ay = baseCy + (A[1] - baseCy) * spread;
+        let az = baseCz + (A[2] - baseCz) * spread;
+        let bx = baseCx + (B[0] - baseCx) * spread;
+        let by = baseCy + (B[1] - baseCy) * spread;
+        let bz = baseCz + (B[2] - baseCz) * spread;
+        // surface trim at the two node-attached ends (baked arc endpoints
+        // sit on the node centers): pull the terminal vertex along its own
+        // segment by the node's world radius + margin, same rule as
+        // straight edges. Interior segments untouched; a degenerate
+        // segment (tiny spread) keeps its points rather than feed
+        // normalize(0).
+        if (v === 0 || v === 15) {
+          const vx = bx - ax, vy = by - ay, vz = bz - az;
+          const vl = Math.sqrt(vx*vx + vy*vy + vz*vz);
+          const tr = (v === 0 ? sizes[l.s] : sizes[l.t]) * 1.1 * Math.sqrt(spread) + 2;
+          if (vl > tr + 0.05) {
+            const k = tr / vl;
+            if (v === 0) { ax += vx * k; ay += vy * k; az += vz * k; }
+            else { bx -= vx * k; by -= vy * k; bz -= vz * k; }
+          }
+        }
+        arr[o]   = ax; arr[o+1] = ay; arr[o+2] = az;
+        arr[o+3] = bx; arr[o+4] = by; arr[o+5] = bz;
       }
       bucketPosIB[bucketOf[i]].needsUpdate = true;
       return;
@@ -1182,10 +1207,27 @@ function syncEdgePos() {
       ox = px * slot * 9; oy = py * slot * 9;
     }
     const a = bucketPosIB[bucketOf[i]].array, o = slotOf[i] * 6;
-    a[o]   = pos[s] + ox; a[o+1] = pos[s+1] + oy; a[o+2] = pos[s+2];
-    a[o+3] = pos[t] + ox; a[o+4] = pos[t+1] + oy; a[o+5] = pos[t+2];
+    // surface trim: pull each endpoint out of its sphere (world radius =
+    // sizes*1.1*sqrt(spread), +2 margin) so strands meet the surface, not
+    // the node center. A strand shorter than both trims would invert and
+    // feed normalize(0) — fall back to the same stub the ghost path uses.
+    const ex = pos[t] - pos[s], ey = pos[t+1] - pos[s+1], ez = pos[t+2] - pos[s+2];
+    const el = Math.sqrt(ex*ex + ey*ey + ez*ez);
+    const trimS = sizes[l.s] * 1.1 * Math.sqrt(spread) + 2;
+    const trimT = sizes[l.t] * 1.1 * Math.sqrt(spread) + 2;
+    if (el - trimS - trimT <= 0.05) {
+      a[o] = pos[s]; a[o+1] = pos[s+1]; a[o+2] = pos[s+2];
+      a[o+3] = pos[s]; a[o+4] = pos[s+1] + 0.05; a[o+5] = pos[s+2];
+      return;
+    }
+    const ndx = ex / el, ndy = ey / el, ndz = ez / el;
+    a[o]   = pos[s] + ndx * trimS + ox; a[o+1] = pos[s+1] + ndy * trimS + oy; a[o+2] = pos[s+2] + ndz * trimS;
+    a[o+3] = pos[t] - ndx * trimT + ox; a[o+4] = pos[t+1] - ndy * trimT + oy; a[o+5] = pos[t+2] - ndz * trimT;
   });
   bucketPosIB.forEach(ib => { ib.needsUpdate = true; });
+  // dash support: lineDistance attributes must track every geometry
+  // rewrite — LineMaterial's USE_DASH reads instanceDistanceStart/End
+  bucketMesh.forEach(ms => ms.computeLineDistances());
 }
 syncEdgePos();
 // write the baked bezier highway arcs into their buckets (static — frozen
@@ -1250,7 +1292,22 @@ function popFocus() {
   applyVisibility();
 }
 function tick() {
+  const nowT = performance.now();
+  const dt = Math.min(0.05, (nowT - lastTickT) / 1000);
+  lastTickT = nowT;
   if (window.__dbg) { window.__dbg.renderer = renderer; window.__dbg.camera = camera; }
+  // dash-flow while focusing: one shared offset walks every edge along its
+  // s→t vertex order (caller→callee). Overview keeps dashed fully off —
+  // USE_DASH leaves the shader, so nothing shimmers at rest.
+  const flowSpd = (window.__dbg && window.__dbg.flowSpeed) || FLOW_SPEED;
+  for (const em of bucketMat) {
+    if (edgeFlowOn) {
+      if (!em.dashed) { em.dashed = true; em.dashSize = 8; em.gapSize = 5; em.needsUpdate = true; }
+      em.dashOffset -= dt * flowSpd;
+    } else if (em.dashed) {
+      em.dashed = false; em.dashOffset = 0; em.needsUpdate = true;
+    }
+  }
   // camera tween (focus / back-stack); a user drag cancels it
   if (camTween) {
     const u = Math.min(1, (performance.now() - camTween.t0) / camTween.dur);
@@ -1409,6 +1466,10 @@ function buildContainment() {
       cLabs.push({ cx, cy, cz, el });
     });
 }
+// same hysteresis as hub labels: a cluster name keeps its row while it
+// stays collision-free at the freshly projected centroid; the candidate
+// rows rerun only on collision or after a hidden frame
+const clabOff = new Map();
 function updateClusterLabs() {
   const w = innerWidth, h = innerHeight;
   // hub pills win collisions; cluster names try rows around the centroid
@@ -1423,19 +1484,27 @@ function updateClusterLabs() {
     if (clabsEl.style.display === "none") { c.el.style.display = "none"; continue; }
     hubV.set(c.cx, c.cy, c.cz).project(camera);
     if (hubV.z > 1 || Math.abs(hubV.x) > 1.05 || Math.abs(hubV.y) > 1.05) {
-      c.el.style.display = "none"; continue;
+      c.el.style.display = "none"; clabOff.delete(c.el.textContent); continue;
     }
     c.el.style.display = "block";
     const px = (hubV.x*0.5+0.5)*w, py = (-hubV.y*0.5+0.5)*h;
-    let placed = false;
-    for (const dy of [0, -34, 34, -64, 64]) {
+    const key = c.el.textContent;
+    const tryRow = dy => {
       c.el.style.transform = "translate(" + px.toFixed(1) + "px," + (py+dy).toFixed(1) + "px) translate(-50%,-50%)";
       const r = c.el.getBoundingClientRect();
-      if (hubRects.every(hr => sep(r, hr)) && taken.every(t => sep(r, t))) {
-        taken.push(r); placed = true; break;
-      }
+      return (hubRects.every(hr => sep(r, hr)) && taken.every(t => sep(r, t))) ? r : null;
+    };
+    const prev = clabOff.get(key);
+    if (prev !== undefined) {
+      const r = tryRow(prev);
+      if (r) { taken.push(r); continue; }
     }
-    if (!placed) c.el.style.display = "none";
+    let placed = false;
+    for (const dy of [0, -34, 34, -64, 64]) {
+      const r = tryRow(dy);
+      if (r) { taken.push(r); clabOff.set(key, dy); placed = true; break; }
+    }
+    if (!placed) { c.el.style.display = "none"; clabOff.delete(key); }
   }
 }
 
@@ -1508,6 +1577,7 @@ function typeVisible(ty) {
 }
 function applyVisibility() {
   const focusing = computeLevels();
+  edgeFlowOn = focusing;   // tick's dash-flow pass reads this
   // edges are a quiet layer at overview (per-bucket caps) and open up when
   // a focus set is lit
   bucketMat.forEach((mat, bi) => { mat.opacity = focusing ? 0.75 : BUCKETS[bi].op; });
@@ -1769,6 +1839,12 @@ function rebuildHubs() {
     return { i, el };
   });
 }
+// label hysteresis: each hub remembers the offset that last placed cleanly
+// (keyed by node index). While that offset stays collision-free at the new
+// projected position it is reused verbatim — no candidate re-search, so
+// labels stop hopping between rows while the camera orbits. The search
+// reruns only on a real collision or after a hidden frame.
+const hubOff = new Map();
 function updateHubs() {
   const w = innerWidth, h = innerHeight;
   // greedy placement against real measured boxes; transforms only touch
@@ -1778,23 +1854,33 @@ function updateHubs() {
   const free = (a, b) => a.right < b.left - 4 || b.right < a.left - 4 ||
     a.bottom < b.top - 4 || b.bottom < a.top - 4;
   for (const { i, el } of hubs) {
-    if (alphaTgt[i] < 0.5) { el.style.display = "none"; continue; }
+    if (alphaTgt[i] < 0.5) { el.style.display = "none"; hubOff.delete(i); continue; }
     hubV.set(pos[i*3], pos[i*3+1], pos[i*3+2]).project(camera);
     if (hubV.z > 1 || Math.abs(hubV.x) > 1.02 || Math.abs(hubV.y) > 1.02) {
-      el.style.display = "none"; continue;
+      el.style.display = "none"; hubOff.delete(i); continue;
     }
+    const rawX = (hubV.x * 0.5 + 0.5) * w;
+    // panel-avoidance: a label shoved >80px sideways from its node to
+    // clear the info panel reads as an orphan — hide it instead
+    if (310 - rawX > 80) { el.style.display = "none"; hubOff.delete(i); continue; }
     // clamp inside the viewport but clear of the left info panel
-    const x = Math.max(310, Math.min(w - 30,
-      (hubV.x * 0.5 + 0.5) * w)), y = Math.max(16, Math.min(h - 26, (-hubV.y * 0.5 + 0.5) * h));
+    const x = Math.max(310, Math.min(w - 30, rawX)), y = Math.max(16, Math.min(h - 26, (-hubV.y * 0.5 + 0.5) * h));
     el.style.display = "block";
     let r = null;
+    const prev = hubOff.get(i);
+    if (prev) {
+      el.style.transform = "translate(" + (x + prev.dx).toFixed(1) + "px," +
+        (y + prev.dy).toFixed(1) + "px) translate(-50%,0)";
+      r = el.getBoundingClientRect();
+      if (fixed.every(f => free(r, f))) { fixed.push(r); continue; }
+    }
     outer:
     for (const dy of [-19, 17, -42, 41, -65, 65, -88, 88]) {
       for (const dx of [0, 100, -100]) {
         el.style.transform = "translate(" + (x + dx).toFixed(1) + "px," +
           (y + dy).toFixed(1) + "px) translate(-50%,0)";
         r = el.getBoundingClientRect();
-        if (fixed.every(f => free(r, f))) break outer;
+        if (fixed.every(f => free(r, f))) { hubOff.set(i, { dx, dy }); break outer; }
       }
     }
     fixed.push(r);
@@ -2616,7 +2702,7 @@ applyVisibility();
 frameGraph();
 renderer.domElement.style.cursor = "grab";
 // debug handle last: everything it captures is initialized by here
-window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE,
+window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE, flowSpeed: FLOW_SPEED,
   alpha: alphaArr, alphaTgt, hoverScale, hot, bucketMat, bucketOf, hwSlot, bucketPosIB, bucketColIB, slotOf,
   adjOut, adjIn, adj, outDeg, inDeg, get dirMode() { return dirMode; }, focusSeeds, level,
   get camTween() { return camTween; }, get focusStack() { return focusStack; },
