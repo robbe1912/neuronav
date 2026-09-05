@@ -788,6 +788,9 @@ const alphaArr = new Float32Array(N).fill(1);
 // per-node alpha TARGETS: alphaArr eases toward these each tick (fade);
 // visibility checks (raycast, edge kill, labels) read the targets
 const alphaTgt = new Float32Array(N).fill(1);
+// in-scene hover feedback: per-node scale eases toward 1.8 while hovered
+// (lerped in tick's instance-matrix sync; tooltip text is unchanged)
+const hoverScale = new Float32Array(N).fill(1);
 
 // true 3D node geometry (billboard sprites read flat on screen): files =
 // shaded spheres, functions = boxes sitting ON the call wires, variables
@@ -817,12 +820,14 @@ function syncFileMesh() {
     } else {
       _dummy.position.set(pos[i*3], pos[i*3+1], pos[i*3+2]);
       // dead-only mode boosts the survivors so the red set reads at overview distance
-      _dummy.scale.setScalar(sizes[i] * 1.1 * (deadOnly && nodes[i].dead > 0 ? 1.7 : 1));
+      _dummy.scale.setScalar(sizes[i] * 1.1 * (deadOnly && nodes[i].dead > 0 ? 1.7 : 1) * hoverScale[i]);
     }
     _dummy.updateMatrix();
     fileMesh.setMatrixAt(i, _dummy.matrix);
-    // dim = darken (scale keeps silhouette, color carries the focus gradient)
-    _col.setRGB(colArr[i*3] * a, colArr[i*3+1] * a, colArr[i*3+2] * a);
+    // dim = darken (scale keeps silhouette, color carries the focus gradient);
+    // hovered nodes also lift slightly in brightness alongside the scale ease
+    const lift = a * (1 + 0.35 * (hoverScale[i] - 1));
+    _col.setRGB(colArr[i*3] * lift, colArr[i*3+1] * lift, colArr[i*3+2] * lift);
     fileMesh.setColorAt(i, _col);
   }
   fileMesh.instanceMatrix.needsUpdate = true;
@@ -1029,6 +1034,9 @@ function tick() {
   for (let i = 0; i < N; i++) {
     const d = alphaTgt[i] - alphaArr[i];
     alphaArr[i] = Math.abs(d) < 0.003 ? alphaTgt[i] : alphaArr[i] + d * 0.15;
+    const hsT = i === hovered ? 1.8 : 1;
+    const dh = hsT - hoverScale[i];
+    hoverScale[i] = Math.abs(dh) < 0.004 ? hsT : hoverScale[i] + dh * 0.18;
   }
   syncFileMesh();
   controls.update();
@@ -2207,12 +2215,13 @@ frameGraph();
 renderer.domElement.style.cursor = "grab";
 // debug handle last: everything it captures is initialized by here
 window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE,
-  alpha: alphaArr, alphaTgt, bucketMat, bucketOf, hwSlot, bucketPosIB, bucketColIB, slotOf,
+  alpha: alphaArr, alphaTgt, hoverScale, bucketMat, bucketOf, hwSlot, bucketPosIB, bucketColIB, slotOf,
   adjOut, adjIn, adj, outDeg, inDeg, get dirMode() { return dirMode; }, focusSeeds, level,
   get camTween() { return camTween; }, get focusStack() { return focusStack; },
   get fileMesh() { return fileMesh; }, get fnMesh() { return fnMesh; },
   get controls() { return controls; },
   get fnMeta() { return fnMeta; },
+  get hovered() { return hovered; },
   syncFileMesh };
 tick();
 </script>

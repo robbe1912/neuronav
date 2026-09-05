@@ -161,6 +161,44 @@ def run_tests():
               and hop.get("nbLabel") in (hop.get("text") or ""),
               str(hop))
 
+        # 5bb. hover feedback in-scene: sphere scale lerps to ~1.8x then back
+        scale = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const mat = new d.THREE.Matrix4();
+                 const mx = i => { d.fileMesh.getMatrixAt(i, mat); return mat.elements[0]; };
+                 const move = (x, y) => d.renderer.domElement.dispatchEvent(
+                   new PointerEvent('pointermove', { clientX: x, clientY: y, bubbles: true }));
+                 // reuse the still-hovered neighbor from 5b (or any lit node)
+                 let idx = d.hovered;
+                 if (idx < 0) { for (let j = 0; j < d.nodes.length; j++)
+                   if (d.alphaTgt[j] > 0.5) { idx = j; break; } }
+                 if (idx < 0) return { fail: 'no lit node' };
+                 const v = new d.THREE.Vector3(d.pos[idx*3], d.pos[idx*3+1], d.pos[idx*3+2]).project(d.camera);
+                 const r = d.renderer.domElement.getBoundingClientRect();
+                 const sx = (v.x*0.5+0.5)*r.width + r.left, sy = (-v.y*0.5+0.5)*r.height + r.top;
+                 // 1) park the pointer offscreen so any residual hover decays
+                 move(-500, -500);
+                 return new Promise(res => setTimeout(() => {
+                   const before = mx(idx);
+                   // 2) hover 500ms (ease ~0.18/frame) -> ~1.8x
+                   move(sx, sy);
+                   setTimeout(() => {
+                     const grown = mx(idx);
+                     // 3) off again -> decays back to base
+                     move(-500, -500);
+                     setTimeout(() => res({ before, grown, after: mx(idx),
+                                            hoveredOff: d.hovered === -1,
+                                            hoverScale: d.hoverScale[idx] }), 700);
+                   }, 500);
+                 }, 700)); }"""
+        )
+        check("hover scale eases 1.8x and back",
+              bool(scale) and "fail" not in scale
+              and scale.get("grown", 0) > scale.get("before", 1) * 1.5
+              and scale.get("after", 99) < scale.get("before", 1) * 1.1
+              and scale.get("hoveredOff", False),
+              str(scale))
+
         # 5c. cluster chip isolate -> camera tweens to frame the island
         # (clear focus first so chips act on the overview)
         page.keyboard.press("Escape")
