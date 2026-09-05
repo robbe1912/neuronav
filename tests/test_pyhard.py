@@ -89,5 +89,10 @@ stays_dead("dataclass: consumer control stays dead", "dataclass_fields.py", "unu
 alive("__all__: exported funcs are roots", "exports.py", ["public_api", "public_two"])
 stays_dead("__all__: non-export stays dead", "exports.py", "private_helper")
 
+# --- fixture: typehints.py ----------------------------------------------
+alive("hints: subscript value-type calls alive", "typehints.py", ["sweep", "sweep_all"])
+alive("hints: hint-referenced methods alive", "typehints.py", ["refresh", "retire"])
+stays_dead("hints: control stays dead", "typehints.py", "unused_hint")
+
 print(f"{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)

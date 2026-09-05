@@ -31,11 +31,13 @@ FIXTURE_DECOR_RE = re.compile(r"^\s*@(?:pytest\.)?fixture\b")
 # @name.setter/@name.deleter fire on attribute access — no call site
 PROP_DECOR_RE = re.compile(r"^@(?:[A-Za-z_]\w*\.)*(?:property|cached_property)$")
 PROP_ACCESSOR_RE = re.compile(r"^@([A-Za-z_]\w*)\.(?:setter|deleter)$")
-SELF_TYPED_RE = re.compile(r"^\s*self\.([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*)")
+# hints keep a flat generic subscript (self.cache: dict[str, Widget]) —
+# graph._scan_body_py resolves the value classes from it
+SELF_TYPED_RE = re.compile(r"^\s*self\.([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*(?:\[[^\]=]+\])?)")
 SELF_NEW_RE = re.compile(r"^\s*self\.([A-Za-z_]\w*)\s*=\s*([A-Z]\w*)\s*\(")
 # any-identifier type: dataclass fields are usually lowercase builtins
 # (int/str/float) — they are class vars exactly like typed user classes
-CLASS_FIELD_RE = re.compile(r"^([ \t]+)([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*)\s*(?:=|$)")
+CLASS_FIELD_RE = re.compile(r"^([ \t]+)([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*(?:\[[^\]=]+\])?)\s*(?:=|$)")
 FROM_IMPORT_RE = re.compile(r"^\s*from\s+([\w.]+)\s+import\s+(.+)$")
 PLAIN_IMPORT_RE = re.compile(r"^\s*import\s+([\w.,\s]+)$")
 MAIN_GUARD_RE = re.compile(r"^(\s*)if\s+__name__\s*==\s*['\"]__main__['\"]\s*:")

@@ -51,9 +51,19 @@ PY_CHAIN_CALL_RE = re.compile(
     r"(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\("
 )
 PY_BARE_CALL_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*\(")
-# `name: Type` params and `x = Klass(` locals (capitalized = user classes)
-PY_PARAM_TYPED_RE = re.compile(r"[(,]\s*([A-Za-z_]\w*)\s*:\s*([A-Z]\w*)\b")
+# `name: Type` params and `x = Klass(` locals (capitalized = user
+# classes); hints keep a flat generic subscript (dict[str, Widget]) so
+# subscript access can resolve the value classes inside
+PY_PARAM_TYPED_RE = re.compile(r"[(,]\s*([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*(?:\[[^\]=]+\])?)")
 PY_LOCAL_NEW_RE = re.compile(r"(?<![\w.!=<>])([A-Za-z_]\w*)\s*=(?!=)\s*([A-Z]\w*)\s*\(")
+# annotated local: local: Widget = ... / pairs: dict[str, Widget] = ...
+PY_ANNOT_ASSIGN_RE = re.compile(
+    r"(?<![\w.])([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*(?:\[[^\]=]+\])?)\s*=(?!=)"
+)
+# box[k].method( / self.box[k].method( — subscript access into a hint
+PY_SUBSCRIPT_CALL_RE = re.compile(
+    r"(?<![\w.$])([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\[[^\]]*\]\s*\.\s*([A-Za-z_]\w*)\s*\("
+)
 # local bound from an imported call: extractor = registry_for(...)
 PY_MODULE_ASSIGN_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*=\s*([a-z_]\w*)\s*\(")
 # imported_call(args).method( — registry_for(path.suffix).parse(...)
@@ -185,6 +195,16 @@ def _fold_continuations(body: str) -> str:
     if buf:
         out.append(buf)
     return "\n".join(out)
+
+
+_HINT_VALUE_RE = re.compile(r"^[A-Za-z_]\w*\[([^\]]*)\]")
+
+
+def _hint_value_classes(hint: str) -> list[str]:
+    """Value classes inside a flat generic hint's outer subscript:
+    ``dict[str, Widget]`` -> ``['Widget']`` (Union members included)."""
+    m = _HINT_VALUE_RE.match(hint)
+    return re.findall(r"\b[A-Z]\w*", m.group(1)) if m else []
 
 
 class Graph:
@@ -502,6 +522,8 @@ class Graph:
         var_types = dict(fs.members)
         for pm in PY_PARAM_TYPED_RE.finditer(scan_text):
             var_types[pm.group(1)] = pm.group(2)
+        for m in PY_ANNOT_ASSIGN_RE.finditer(scan_text):
+            var_types[m.group(1)] = m.group(2)
         for m in PY_LOCAL_NEW_RE.finditer(scan_text):
             var_types[m.group(1)] = m.group(2)
         # x = imported_name(...): the local becomes a module-object
@@ -553,6 +575,19 @@ class Graph:
                 dst = self._chain_dst(var_types, head, mid)
             if dst and tail in self.files[dst].funcs:
                 self._emit_call(src_key, dst, tail)
+        # box[k].method( / self.box[k].method( — subscript access into a
+        # generic hint (dict[str, Widget]): the capitalized names inside
+        # the outer subscript are the receiver candidates
+        for m in PY_SUBSCRIPT_CALL_RE.finditer(scan_text):
+            head, meth = m.group(1), m.group(2)
+            parts = head.split(".")
+            if len(parts) > 1 and parts[0] not in ("self", "cls"):
+                continue
+            hint = var_types.get(parts[-1], "")
+            for vc in _hint_value_classes(hint):
+                dst = self.class_map.get(vc, "")
+                if dst and meth in self.files[dst].funcs:
+                    self._emit_call(src_key, dst, meth)
         # bare name( — same-file funcs, then from-import module funcs
         for m in PY_BARE_CALL_RE.finditer(scan_text):
             name = m.group(1)
