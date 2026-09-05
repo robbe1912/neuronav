@@ -2105,18 +2105,22 @@ renderer.domElement.addEventListener("click", e => {
   if (hoveredFn >= 0) { showFnInfo(hoveredFn); return; }
   if (hovered >= 0) {
     if (e.shiftKey && focusSeeds.size) {
-      // shift-click stacks focus roots (click a selected root to drop it)
-      if (focusSeeds.has(hovered)) focusSeeds.delete(hovered);
-      else { pushFocusState(); focusSeeds.add(hovered); }
+      // shift-click stacks focus roots (click a selected root to drop it);
+      // dropping the LAST root is an implicit "clear" — same scope as Esc
+      if (focusSeeds.has(hovered)) {
+        focusSeeds.delete(hovered);
+        if (!focusSeeds.size) { clearFocus(); return; }
+      } else { pushFocusState(); focusSeeds.add(hovered); }
       applyVisibility();
-      if (focusSeeds.size) focusSeedsCamera();
+      focusSeedsCamera();
+      showInfo(hovered);
     } else {
       pushFocusState();
       focusSeeds.clear(); focusSeeds.add(hovered);
       applyVisibility();
       focus(hovered);
+      showInfo(hovered);
     }
-    showInfo(hovered);
   }
 });
 addEventListener("resize", () => {
