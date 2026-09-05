@@ -720,53 +720,49 @@ nodes.forEach((n, i) => {
   sizes[i] = Math.min(18, 6 + Math.sqrt(degree[i]) * 1.8);
 });
 
-const pGeo = new THREE.BufferGeometry();
 const alphaArr = new Float32Array(N).fill(1);
 // per-node alpha TARGETS: alphaArr eases toward these each tick (fade);
 // visibility checks (raycast, edge kill, labels) read the targets
 const alphaTgt = new Float32Array(N).fill(1);
-pGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-pGeo.setAttribute("color", new THREE.BufferAttribute(colArr, 3));
-pGeo.setAttribute("psize", new THREE.BufferAttribute(sizes, 1));
-pGeo.setAttribute("aalpha", new THREE.BufferAttribute(alphaArr, 1));
-pGeo.setAttribute("sshape", new THREE.BufferAttribute(new Float32Array(N).fill(0), 1)); // files: discs
-const pMat = new THREE.ShaderMaterial({
-  transparent: true, depthWrite: false, vertexColors: true,
-  vertexShader: `
-    attribute float psize; attribute float aalpha; attribute float sshape;
-    varying vec3 vColor; varying float vA; varying float vShape;
-    void main(){ vColor = color; vA = aalpha; vShape = sshape;
-      vec4 mv = modelViewMatrix * vec4(position,1.0);
-      // hidden nodes (vA==0) get zero size: GL discards them entirely
-      gl_PointSize = vA < 0.01 ? 0.0 : max(psize * (900.0 / -mv.z), 5.0);
-      gl_Position = projectionMatrix * mv; }`,
-  fragmentShader: `
-    varying vec3 vColor; varying float vA; varying float vShape;
-    float sdTriangle(vec2 p, float r){
-      const float k = sqrt(3.0);
-      p.x = abs(p.x); p.y = p.y + r / k;
-      if (p.x + k * p.y > 2.0 * r) return length(p - vec2(clamp(p.x, 0.0, 2.0 * r / k), r)) ;
-      return max(p.x, -(k * p.x + p.y)); }
-    void main(){
-      vec2 pc = gl_PointCoord - 0.5;
-      float a;
-      if (vShape < 0.5) {
-        // file node: crisp disc
-        float d = length(pc);
-        a = (1.0 - smoothstep(0.36, 0.47, d)) * vA;
-      } else if (vShape < 1.5) {
-        // function: crisp square
-        float d = max(abs(pc.x), abs(pc.y));
-        a = (1.0 - smoothstep(0.38, 0.47, d)) * vA;
-      } else {
-        // variable (reserved): crisp equilateral triangle
-        float d = sdTriangle(pc, 0.42);
-        a = (1.0 - smoothstep(0.0, 0.05, d)) * vA;
-      }
-      if (a < 0.01) discard;
-      gl_FragColor = vec4(vColor, a); }`,
-});
-scene.add(new THREE.Points(pGeo, pMat));
+
+// true 3D node geometry (billboard sprites read flat on screen): files =
+// shaded spheres, functions = boxes sitting ON the call wires, variables
+// later = tetrahedra. Per-instance color carries the cluster hue; hidden
+// nodes collapse to scale 0 (zero rasterized fragments); dimmed nodes
+// darken toward black instead of fading, so shading stays readable.
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.4);
+dirLight.position.set(0.4, 0.8, 0.65);
+scene.add(dirLight);
+
+const fileMesh = new THREE.InstancedMesh(
+  new THREE.SphereGeometry(1, 14, 10),
+  new THREE.MeshLambertMaterial(),
+  N
+);
+fileMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+scene.add(fileMesh);
+const _dummy = new THREE.Object3D();
+const _col = new THREE.Color();
+function syncFileMesh() {
+  for (let i = 0; i < N; i++) {
+    const a = alphaArr[i];
+    if (a < 0.01) {
+      _dummy.position.set(0, 0, 0);
+      _dummy.scale.setScalar(0);
+    } else {
+      _dummy.position.set(pos[i*3], pos[i*3+1], pos[i*3+2]);
+      _dummy.scale.setScalar(sizes[i] * 1.1);
+    }
+    _dummy.updateMatrix();
+    fileMesh.setMatrixAt(i, _dummy.matrix);
+    // dim = darken (scale keeps silhouette, color carries the focus gradient)
+    _col.setRGB(colArr[i*3] * a, colArr[i*3+1] * a, colArr[i*3+2] * a);
+    fileMesh.setColorAt(i, _col);
+  }
+  fileMesh.instanceMatrix.needsUpdate = true;
+  if (fileMesh.instanceColor) fileMesh.instanceColor.needsUpdate = true;
+}
 
 // edges: LineMaterial renders true pixel-width lines (WebGL caps
 // LineBasicMaterial linewidth at 1px); one linewidth per material, so links
@@ -955,7 +951,7 @@ function tick() {
     const d = alphaTgt[i] - alphaArr[i];
     alphaArr[i] = Math.abs(d) < 0.003 ? alphaTgt[i] : alphaArr[i] + d * 0.15;
   }
-  pGeo.attributes.aalpha.needsUpdate = true;
+  syncFileMesh();
   controls.update();
   updateHubs();
   updateClusterLabs();
@@ -1100,7 +1096,6 @@ const crumb = document.getElementById("crumb");
 const esc = s => String(s).replace(/[&<>"]/g,
   ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" })[ch]);
 const raycaster = new THREE.Raycaster();
-raycaster.params.Points.threshold = 14;
 const mouse = new THREE.Vector2();
 let hovered = -1, hoveredFn = -1, selected = -1;
 let deadOnly = false, query = "";
@@ -1181,8 +1176,7 @@ function applyVisibility() {
       colArr[i*3] = c.r; colArr[i*3+1] = c.g; colArr[i*3+2] = c.b;
     }
   }
-  pGeo.attributes.color.needsUpdate = true;
-  pGeo.attributes.aalpha.needsUpdate = true;
+  syncFileMesh();
   // dim edges: hidden endpoints, filtered types, or focus distance
   // (dimmed eColBase written straight into each bucket's instanced colors).
   // Overview palette: edge-type hues are demoted to weight-tinted gray so
@@ -1460,72 +1454,78 @@ function updateHubs() {
 rebuildHubs();
 
 // ---- function-level layer (files inside the current focus) -------------------
-let fnPoints = null, fnLines = null, fnSpokes = null, fnMeta = [];
-const fnOffset = name => {
-  let h = 2166136261;
-  for (let c = 0; c < name.length; c++) { h ^= name.charCodeAt(c); h = Math.imul(h, 16777619); }
-  const a = (h >>> 0) / 4294967296 * Math.PI * 2;
-  const b = ((h >>> 8) % 997) / 997 * Math.PI;
-  const r = 34;
-  return [Math.cos(a) * Math.sin(b) * r, Math.cos(b) * r * 0.5, Math.sin(a) * Math.sin(b) * r];
-};
+let fnMesh = null, fnLines = null, fnMeta = [];
 function rebuildFnLayer(focusing) {
-  if (fnPoints) { scene.remove(fnPoints); fnPoints.geometry.dispose(); fnPoints = null; }
+  if (fnMesh) { scene.remove(fnMesh); fnMesh.geometry.dispose(); fnMesh.dispose(); fnMesh = null; }
   if (fnLines) { scene.remove(fnLines); fnLines.geometry.dispose(); fnLines = null; }
-  if (fnSpokes) { scene.remove(fnSpokes); fnSpokes.geometry.dispose(); fnSpokes = null; }
   fnMeta = [];
   if (!fnMode || !focusing) return;
-  const fIdx = new Map(), fpos = [], fcol = [], foffs = [], eidx = [];
-  const nodeOf = (fi, name) => {
-    const k = fi + "::" + name;
-    let ix = fIdx.get(k);
-    if (ix === undefined) {
-      ix = fnMeta.length; fIdx.set(k, ix);
-      const off = fnOffset(name);
-      fnMeta.push({ file: fi, name, off });
-      fpos.push(pos[fi*3] + off[0], pos[fi*3+1] + off[1], pos[fi*3+2] + off[2]);
-      fcol.push(colArr[fi*3], colArr[fi*3+1], colArr[fi*3+2]);
-      foffs.push(off[0], off[1], off[2]);
-    }
-    return ix;
-  };
+  // pass 1: visible cross-file fn edges
+  const visEdges = [];
   fedges.forEach(e => {
     const sf = e[0], df = e[2];
     if (level[sf] < 0 || level[df] < 0) return;
     // hidden files (tests/tools filter, dir filter): their function nodes
     // and edges must not render in the fn layer either
     if (alphaTgt[sf] <= 0.5 || alphaTgt[df] <= 0.5) return;
-    const a = nodeOf(sf, e[1]), b = nodeOf(df, e[3]);
+    visEdges.push(e);
+  });
+  if (!visEdges.length) return;
+  // pass 2: fn nodes live ON the wire between their two file nodes — t is
+  // a deterministic hash of the fn name in [0.30, 0.70], keeping each box
+  // clear of both file spheres and spreading multiple fns along the wire
+  const fIdx = new Map(), fpos = [], fcol = [], eidx = [];
+  const nodeOf = (e, isSrc) => {
+    const fi = isSrc ? e[0] : e[2], name = isSrc ? e[1] : e[3];
+    const k = fi + "::" + name;
+    let ix = fIdx.get(k);
+    if (ix === undefined) {
+      ix = fnMeta.length; fIdx.set(k, ix);
+      let h = 2166136261;
+      for (let c = 0; c < name.length; c++) { h ^= name.charCodeAt(c); h = Math.imul(h, 16777619); }
+      const t = 0.30 + ((h >>> 0) % 1000) / 1000 * 0.40;
+      const B = isSrc ? e[2] : e[0];
+      const px = pos[fi*3] + (pos[B*3] - pos[fi*3]) * t;
+      const py = pos[fi*3+1] + (pos[B*3+1] - pos[fi*3+1]) * t;
+      const pz = pos[fi*3+2] + (pos[B*3+2] - pos[fi*3+2]) * t;
+      fnMeta.push({ file: fi, name, p: [px, py, pz] });
+      fpos.push(px, py, pz);
+      fcol.push(colArr[fi*3], colArr[fi*3+1], colArr[fi*3+2]);
+    }
+    return ix;
+  };
+  visEdges.forEach(e => {
+    const a = nodeOf(e, true), b = nodeOf(e, false);
     eidx.push(a, b);
   });
   if (!fnMeta.length) return;
-  const g1 = new THREE.BufferGeometry();
-  g1.setAttribute("position", new THREE.BufferAttribute(new Float32Array(fpos), 3));
-  g1.setAttribute("color", new THREE.BufferAttribute(new Float32Array(fcol), 3));
-  g1.setAttribute("psize", new THREE.BufferAttribute(new Float32Array(fnMeta.length).fill(4.2), 1));
-  g1.setAttribute("aalpha", new THREE.BufferAttribute(new Float32Array(fnMeta.length).fill(1), 1));
-  g1.setAttribute("sshape", new THREE.BufferAttribute(new Float32Array(fnMeta.length).fill(1), 1)); // functions: squares
-  fnPoints = new THREE.Points(g1, pMat);
-  scene.add(fnPoints);
-  // spokes: faint tie from each function satellite to its file node —
-  // without them the satellites read as unconnected noise
-  const sp = [];
+  // fn boxes: true 3D cubes on the wires, colored by owning cluster hue,
+  // each with a deterministic varied roll so adjacent boxes stay readable
+  const fdummy = new THREE.Object3D();
+  fnMesh = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(1, 1, 1),
+    new THREE.MeshLambertMaterial(),
+    fnMeta.length
+  );
   for (let i = 0; i < fnMeta.length; i++) {
-    const fi = fnMeta[i].file * 3, j = i * 3;
-    sp.push(pos[fi], pos[fi+1], pos[fi+2], fpos[j], fpos[j+1], fpos[j+2]);
+    fdummy.position.set(fpos[i*3], fpos[i*3+1], fpos[i*3+2]);
+    fdummy.rotation.set(((i * 37) % 90) * Math.PI / 180, ((i * 53) % 90) * Math.PI / 180, 0);
+    fdummy.scale.setScalar(9);
+    fdummy.updateMatrix();
+    fnMesh.setMatrixAt(i, fdummy.matrix);
+    _col.setRGB(fcol[i*3], fcol[i*3+1], fcol[i*3+2]);
+    fnMesh.setColorAt(i, _col);
   }
-  const g3 = new THREE.BufferGeometry();
-  g3.setAttribute("position", new THREE.BufferAttribute(new Float32Array(sp), 3));
-  fnSpokes = new THREE.LineSegments(g3, new THREE.LineBasicMaterial({
-    color: 0x445566, transparent: true, opacity: 0.14, depthWrite: false }));
-  scene.add(fnSpokes);
+  fnMesh.instanceMatrix.needsUpdate = true;
+  if (fnMesh.instanceColor) fnMesh.instanceColor.needsUpdate = true;
+  scene.add(fnMesh);
+  // wires connect box to box — collinear with the file-file line (whose
+  // fat aggregate dims to a ghost in wire mode), so the lit segments
+  // thread through the fn boxes: the boxes ARE on the connection
   const ep = [], ec = [];
   for (let i = 0; i < eidx.length; i += 2) {
     const a = eidx[i], b = eidx[i+1];
     ep.push(fpos[a*3], fpos[a*3+1], fpos[a*3+2], fpos[b*3], fpos[b*3+1], fpos[b*3+2]);
-    // wire colored by each endpoint's cluster hue — was missing entirely,
-    // so vertexColors read the unbound attribute (black) and additive
-    // blending made every fn wire invisible on the black background
     ec.push(fcol[a*3], fcol[a*3+1], fcol[a*3+2], fcol[b*3], fcol[b*3+1], fcol[b*3+2]);
   }
   const g2 = new THREE.BufferGeometry();
@@ -1828,16 +1828,17 @@ function showFnInfo(k) {
 renderer.domElement.addEventListener("pointermove", e => {
   mouse.x = (e.clientX/innerWidth)*2-1; mouse.y = -(e.clientY/innerHeight)*2+1;
   raycaster.setFromCamera(mouse, camera);
-  const targets = fnPoints ? [scene.children[0], fnPoints] : [scene.children[0]];
+  const targets = fnMesh ? [fileMesh, fnMesh] : [fileMesh];
   const hits = raycaster.intersectObjects(targets);
   hovered = -1; hoveredFn = -1;
   // skip invisible nodes: filtered-out tests/tools keep raycast geometry,
-  // but hovering a ghost must not pop a tooltip (walk to first visible hit)
+  // but hovering a ghost must not pop a tooltip (walk to first visible hit;
+  // instanced hits carry .instanceId, not .index)
   for (const h of hits) {
-    if (h.object === fnPoints) {
-      const fm = fnMeta[h.index];
-      if (fm && alphaTgt[fm.file] > 0.5) { hoveredFn = h.index; break; }
-    } else if (alphaTgt[h.index] > 0.5) { hovered = h.index; break; }
+    if (h.object === fnMesh) {
+      const fm = fnMeta[h.instanceId];
+      if (fm && alphaTgt[fm.file] > 0.5) { hoveredFn = h.instanceId; break; }
+    } else if (h.object === fileMesh && alphaTgt[h.instanceId] > 0.5) { hovered = h.instanceId; break; }
   }
   let txt = null;
   if (hoveredFn >= 0) {
@@ -1926,10 +1927,13 @@ applyVisibility();
 frameGraph();
 renderer.domElement.style.cursor = "grab";
 // debug handle last: everything it captures is initialized by here
-window.__dbg = { pos, nodes, links, fedges, fnMeta, syncEdgePos, renderer, camera, THREE,
+window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE,
   alpha: alphaArr, alphaTgt, bucketMat, bucketOf, hwSlot, bucketPosIB, bucketColIB, slotOf,
   adjOut, adjIn, outDeg, inDeg, get dirMode() { return dirMode; }, focusSeeds, level,
-  get camTween() { return camTween; }, get focusStack() { return focusStack; } };
+  get camTween() { return camTween; }, get focusStack() { return focusStack; },
+  get fileMesh() { return fileMesh; }, get fnMesh() { return fnMesh; },
+  get fnMeta() { return fnMeta; },
+  syncFileMesh };
 tick();
 </script>
 </body>
