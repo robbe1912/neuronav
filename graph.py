@@ -44,6 +44,32 @@ MEMBER_ACCESS_RE = re.compile(
 # scripts whose funcs must count as alive
 RES_LOAD_RE = re.compile(r"res://([\w/.-]+\.gd)")
 BARE_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\s*\(")
+
+# ---- python scanning (companion to extractors/python.py) ----------------------
+PY_ATTR_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\(")
+PY_CHAIN_CALL_RE = re.compile(
+    r"(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\("
+)
+PY_BARE_CALL_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*\(")
+# `name: Type` params and `x = Klass(` locals (capitalized = user classes)
+PY_PARAM_TYPED_RE = re.compile(r"[(,]\s*([A-Za-z_]\w*)\s*:\s*([A-Z]\w*)\b")
+PY_LOCAL_NEW_RE = re.compile(r"(?<![\w.!=<>])([A-Za-z_]\w*)\s*=(?!=)\s*([A-Z]\w*)\s*\(")
+PY_NON_CALLS = {
+    "if", "for", "while", "elif", "return", "assert", "del", "print",
+    "lambda", "not", "await", "with", "except", "raise", "yield",
+    "in", "is", "and", "or", "nonlocal", "global", "import", "from",
+    "len", "range", "str", "int", "float", "bool", "list", "dict", "set",
+    "tuple", "isinstance", "issubclass", "type", "sorted", "reversed",
+    "min", "max", "sum", "enumerate", "zip", "open", "getattr", "setattr",
+    "hasattr", "repr", "abs", "any", "all", "filter", "map", "dir", "id",
+    "hash", "iter", "next", "vars", "format", "bytes", "super", "exit",
+    "quit", "help", "input", "round", "divmod", "pow", "chr", "ord", "hex",
+    "oct", "bin", "frozenset", "bytearray", "complex", "object",
+    "staticmethod", "classmethod", "property", "dataclass", "field",
+    "Exception", "ValueError", "TypeError", "RuntimeError", "KeyError",
+    "IndexError", "OSError", "IOError", "StopIteration", "FileNotFoundError",
+    "NotImplementedError",
+}
 EMIT_RE = re.compile(r"emit_signal\(\s*[\"'](\w+)[\"']|([A-Za-z_]\w*)\.emit\(")
 # .tres/.res ext_resource lines: type="Script" path="res://..."
 TRES_SCRIPT_RE = re.compile(r'ext_resource\s+type="Script"[^>]*path="([^"]+)"')
@@ -274,11 +300,23 @@ class Graph:
             if DYNAMIC_HINT_RE.search(joined):
                 self._dyn_files.add(rel)
 
+        # python sibling-module imports: like res:// load strings, an
+        # imported module executes as a unit — its funcs are all alive
         for rel, fs in self.files.items():
-            if fs.ext != ".gd":
+            if fs.ext != ".py":
                 continue
-            for fn in fs.funcs.values():
-                self._scan_body(fs, fn)
+            for mod_rel in set(fs.consts.values()):
+                if mod_rel in self.files:
+                    for other in self.files[mod_rel].funcs.values():
+                        self.referenced.add(other.key)
+
+        for rel, fs in self.files.items():
+            if fs.ext == ".gd":
+                for fn in fs.funcs.values():
+                    self._scan_body(fs, fn)
+            elif fs.ext == ".py":
+                for fn in fs.funcs.values():
+                    self._scan_body_py(fs, fn)
 
         self._wire_tscn()
         self._find_roots()
@@ -450,6 +488,57 @@ class Graph:
                         self._edge(src_key, key, ty="signal")
                         self.roots.add(key)
 
+    def _scan_body_py(self, fs: FileSym, fn: Func) -> None:
+        """Python body scan: call edges via typed receivers, class_map
+        classes, and from-import consts (module-file receivers)."""
+        src_key = fn.key
+        scan_text = _fold_continuations(fn.body)
+        # receiver types: self-members from the extractor + typed params
+        # + constructor locals in this body
+        var_types = dict(fs.members)
+        for pm in PY_PARAM_TYPED_RE.finditer(scan_text):
+            var_types[pm.group(1)] = pm.group(2)
+        for m in PY_LOCAL_NEW_RE.finditer(scan_text):
+            var_types[m.group(1)] = m.group(2)
+        # obj.method( — head resolves via class_map (repo classes), typed
+        # receivers, or from-import consts (module-file receivers)
+        for m in PY_ATTR_CALL_RE.finditer(scan_text):
+            head, meth = m.group(1), m.group(2)
+            if head in ("self", "cls"):
+                if meth in fs.funcs:
+                    self._emit_call(src_key, fs.path, meth)
+                continue
+            cls = head if head in self.class_map else var_types.get(head, "")
+            if cls and cls in self.class_map:
+                dst = self.class_map[cls]
+            elif head in fs.consts and fs.consts[head] in self.files:
+                dst = fs.consts[head]
+            else:
+                continue
+            if meth in self.files[dst].funcs:
+                self._emit_call(src_key, dst, meth)
+        # two-level chains: self.g.greet( / api.client.run(
+        for m in PY_CHAIN_CALL_RE.finditer(scan_text):
+            head, mid, tail = m.group(1), m.group(2), m.group(3)
+            if head in ("self", "cls"):
+                cls = var_types.get(mid, "")
+                dst = self.class_map.get(cls, "")
+            else:
+                dst = self._chain_dst(var_types, head, mid)
+            if dst and tail in self.files[dst].funcs:
+                self._emit_call(src_key, dst, tail)
+        # bare name( — same-file funcs, then from-import module funcs
+        for m in PY_BARE_CALL_RE.finditer(scan_text):
+            name = m.group(1)
+            if name in PY_NON_CALLS:
+                continue
+            if name in fs.funcs:
+                self._emit_call(src_key, fs.path, name)
+                continue
+            dst = fs.consts.get(name, "")
+            if dst in self.files and name in self.files[dst].funcs:
+                self._emit_call(src_key, dst, name)
+
     def _ancestor_def(self, fs: FileSym, name: str) -> str:
         """Rel path of the nearest ancestor class declaring `name`, or ''."""
         base = fs.extends
@@ -557,7 +646,7 @@ class Graph:
         # alive but have no static edge — root them so their callees survive
         if self.referenced_names:
             for rel, fs in self.files.items():
-                if fs.ext != ".gd":
+                if fs.ext not in (".gd", ".py"):
                     continue
                 for name, fn in fs.funcs.items():
                     if name in self.referenced_names:
@@ -579,7 +668,7 @@ class Graph:
     def dead_code(self, limit: int = 60) -> dict[str, object]:
         dead = []
         for rel, fs in self.files.items():
-            if fs.ext != ".gd":
+            if fs.ext not in (".gd", ".py"):
                 continue
             file_is_dynamic = bool(DYNAMIC_HINT_RE.search("\n".join(fs.funcs[f].body for f in fs.funcs))) if fs.funcs else False
             for name, fn in fs.funcs.items():
@@ -693,15 +782,17 @@ def _normalize_body(body: str) -> str:
     return "\n".join(out)
 
 
-# -- function-level vector index (chroma "swmg-fns") ---------------------------
+# -- function-level vector index (chroma "<collection>-fns") -------------------
 
 
 def _fn_collection() -> "chromadb.Collection":
     import chromadb
 
     client = chromadb.PersistentClient(path=str(nav.DB_DIR))
+    # per-config collection: two checkouts/projects sharing one .chroma dir
+    # must not mix function vectors (hardcoded name collided swmg vs gdnav)
     col = client.get_or_create_collection(
-        name="swmg-fns",
+        name=f"{nav.COLLECTION}-fns",
         metadata={"hnsw:space": "cosine"},
     )
     nav._check_model(col)
@@ -720,15 +811,15 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
     col = _fn_collection()
     dirty = nav.DB_DIR / "fns.dirty"
     if dirty.is_file() and not changed:
-        changed = sorted(rel for rel, fs in _all_filesyms().items() if fs.ext == ".gd")
+        changed = sorted(rel for rel, fs in _all_filesyms().items() if fs.funcs)
     stale = sorted(set(changed) | set(deleted))
     if stale and col.count():
         for p in stale:
             col.delete(where={"path": p})
     if col.count() == 0 and not changed:
-        # first build: index every .gd function
+        # first build: index every parsed function (any text language)
         changed = sorted(
-            rel for rel, fs in _all_filesyms().items() if fs.ext == ".gd"
+            rel for rel, fs in _all_filesyms().items() if fs.funcs
         )
     parser = Graph()
     ids: list[str] = []
@@ -736,9 +827,16 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
     metas: list[dict[str, object]] = []
     for rel in changed:
         path = nav.ROOT / rel
-        if not path.is_file() or path.suffix != ".gd":
+        suffix = path.suffix
+        # scenes have no funcs; only languages with an extractor are parseable
+        if not path.is_file() or suffix not in nav.EXTS or suffix == ".tscn":
             continue
-        fs = parser._parse_gd(path, rel)
+        if suffix == ".gd":
+            fs = parser._parse_gd(path, rel)
+        else:
+            from extractors import registry_for
+
+            fs = registry_for(suffix).parse(path, rel)
         for name, fn in fs.funcs.items():
             ids.append(f"{rel}::{name}")
             docs.append(f"{rel} :: func {name}\n{fn.body[:6000]}")

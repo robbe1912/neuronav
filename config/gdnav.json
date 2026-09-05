@@ -1,0 +1,7 @@
+{
+  "root": "E:/GitRepos/gdnav",
+  "collection": "gdnav",
+  "include_dirs": ["."],
+  "extensions": [".py"],
+  "exclude_dirs": [".git", "__pycache__", ".venv", ".chroma", "base", ".codegraph"]
+}

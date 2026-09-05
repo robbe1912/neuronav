@@ -1,7 +1,11 @@
-"""swmg-nav core: whole-file semantic index of this checkout's GDScript/Godot scenes.
+"""nav core: whole-file semantic index of a checkout (GDScript/scenes,
+Python — whatever the config's "extensions" list enables).
 
-Per-checkout index: `.swmg-nav/.chroma` (gitignored). Base index shards
-(`.swmg-nav/base/`) are tracked and give fresh clones a fast start; the
+Config resolution: $GDNAV_CONFIG env var, else ``config.json`` next to
+this file. A second config (e.g. ``config/gdnav.json`` for self-indexing)
+switches root/include_dirs/extensions/collection without touching the
+primary one. Per-checkout index: ``.chroma`` (gitignored). Base index
+shards (``base/``) are tracked and give fresh clones a fast start; the
 incremental rescan then heals the index to the current HEAD.
 """
 
@@ -10,6 +14,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import os
 import shutil
 import sys
 import time
@@ -24,20 +29,36 @@ import httpx
 
 TOOL_DIR = Path(__file__).resolve().parent
 
-_cfg_path = TOOL_DIR / "config.json"
-_cfg: dict = json.loads(_cfg_path.read_text(encoding="utf-8")) if _cfg_path.is_file() else {}
 
-ROOT = Path(_cfg.get("root") or TOOL_DIR.parent)
+def _apply_config(path: Path) -> None:
+    """(Re)bind the config-derived module globals. Called once at import
+    and again by ``nav.py --config <path>`` (which also sets GDNAV_CONFIG
+    so subprocesses and sibling modules like graph.py agree)."""
+    global ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM
+    cfg: dict = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    ROOT = Path(cfg.get("root") or TOOL_DIR.parent)
+    COLLECTION = str(cfg.get("collection", "swmg"))
+    INCLUDE_DIRS = tuple(cfg.get("include_dirs", ("scripts", "scenes", "VFX", "ai", "tests", "tools")))
+    EXTS = set(cfg.get("extensions", (".gd", ".tscn")))
+    EXCLUDE_DIRS = frozenset(cfg.get("exclude_dirs", (".git", "__pycache__")))
+    EMBED_URL = str(cfg.get("embed_url", "http://127.0.0.1:11434/api/embed"))
+    EMBED_MODEL = str(cfg.get("embed_model", "qwen3-embedding:0.6b"))
+    EMBED_DIM = int(cfg.get("embed_dim", 1024))
+
+
+ROOT: Path
+COLLECTION: str
+INCLUDE_DIRS: tuple[str, ...]
+EXTS: set[str]
+EXCLUDE_DIRS: frozenset[str]
+EMBED_URL: str
+EMBED_MODEL: str
+EMBED_DIM: int
+_apply_config(Path(os.environ.get("GDNAV_CONFIG") or TOOL_DIR / "config.json"))
+
 DB_DIR = TOOL_DIR / ".chroma"
 BASE_DIR = TOOL_DIR / "base"
-COLLECTION = str(_cfg.get("collection", "swmg"))
 
-INCLUDE_DIRS = tuple(_cfg.get("include_dirs", ("scripts", "scenes", "VFX", "ai", "tests", "tools")))
-EXTS = {".gd", ".tscn"}
-
-EMBED_URL = str(_cfg.get("embed_url", "http://127.0.0.1:11434/api/embed"))
-EMBED_MODEL = str(_cfg.get("embed_model", "qwen3-embedding:0.6b"))
-EMBED_DIM = int(_cfg.get("embed_dim", 1024))
 MAX_EMBED_CHARS = 30_000  # keep under Ollama context; head of .tscn has script links
 EMBED_BATCH = 32
 UPSERT_BATCH = 64
@@ -75,13 +96,17 @@ def embed(texts: list[str]) -> list[list[float]]:
 
 
 def iter_files() -> Iterator[Path]:
+    # os.walk (not rglob) so exclude_dirs are pruned from the traversal —
+    # a repo-root include_dir would otherwise walk .venv/.chroma/etc.
     for d in INCLUDE_DIRS:
         base = ROOT / d
         if not base.is_dir():
             continue
-        for p in base.rglob("*"):
-            if p.is_file() and p.suffix in EXTS:
-                yield p
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = sorted(dn for dn in dirnames if dn not in EXCLUDE_DIRS)
+            for name in sorted(filenames):
+                if Path(name).suffix in EXTS:
+                    yield Path(dirpath) / name
 
 
 def file_id(path: Path) -> str:
@@ -474,7 +499,22 @@ def import_base() -> dict[str, int | str]:
 
 
 if __name__ == "__main__":
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "rescan"
+    argv = list(sys.argv[1:])
+    if argv and argv[0] == "--config":
+        # switch to a second config (self-index etc.) before running:
+        # rebind globals + set GDNAV_CONFIG so sibling modules (graph.py,
+        # clusters.py) and subprocesses resolve the same root/collection
+        if len(argv) < 3:
+            print("usage: nav.py --config <path> <command>", file=sys.stderr)
+            sys.exit(2)
+        cfg_file = Path(argv[1])
+        if not cfg_file.is_file():
+            print(f"config not found: {cfg_file}", file=sys.stderr)
+            sys.exit(2)
+        os.environ["GDNAV_CONFIG"] = str(cfg_file)
+        _apply_config(cfg_file)
+        argv = argv[2:]
+    cmd = argv[0] if argv else "rescan"
     if cmd == "rescan":
         t0 = time.perf_counter()
         s = rescan()

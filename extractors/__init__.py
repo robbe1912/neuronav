@@ -14,12 +14,14 @@ Contract for an extractor module (full details: extractors/README.md):
 from __future__ import annotations
 
 from extractors import gdscript
+from extractors import python
 from extractors.model import FileSym, Func  # noqa: F401  (re-export)
 
 # suffix (lowercase) -> extractor module exposing parse() + ENTRY_RULES
 EXTENSIONS: dict[str, object] = {
     ".gd": gdscript,
     ".tscn": gdscript,
+    ".py": python,
 }
 
 

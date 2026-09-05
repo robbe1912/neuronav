@@ -21,6 +21,7 @@ virtuals, test prefixes, tool bases) lives only in the per-language module.
 | suffixes | module | exports |
 |----------|--------|---------|
 | `.gd`, `.tscn` | `gdscript.py` | `parse_gd`, `parse_tscn`, `parse`, `ENTRY_RULES` |
+| `.py` | `python.py` | `parse`, `ENTRY_RULES` (dunder virtuals, `test_*`, module-level/`__main__`/fixture entry hints; consts = repo-module imports; graph side: `_scan_body_py` + import refs) |
 
 ## Interface contract
 
@@ -64,8 +65,10 @@ An extractor module must expose:
    a FileSym-like (reuse `extractors.model.FileSym` or define compatible
    dataclasses). Define `ENTRY_RULES` for its entry points.
 2. Register suffixes in `extractors/__init__.py::EXTENSIONS`.
-3. Make sure `nav.EXTS` includes the suffixes so `nav.iter_files()`
-   yields them (`nav.py`).
+3. Make sure the suffixes are indexed: `nav.EXTS` comes from the
+    config's `"extensions"` list (default `[".gd", ".tscn"]`) — add them
+    there (a second config like `config/gdnav.json` can index a different
+    repo with different suffixes; `exclude_dirs` prunes e.g. `.venv`).
 4. Body scanning (`graph._scan_body`) is call-syntax based today; if the
    language's call/emit syntax differs, extend it behind a per-format
    check keyed on `fs.ext` — parsing stays in the extractor, edge
