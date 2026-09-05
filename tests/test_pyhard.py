@@ -94,5 +94,19 @@ alive("hints: subscript value-type calls alive", "typehints.py", ["sweep", "swee
 alive("hints: hint-referenced methods alive", "typehints.py", ["refresh", "retire"])
 stays_dead("hints: control stays dead", "typehints.py", "unused_hint")
 
+# --- fixture: async_bodies.py -------------------------------------------
+alive(
+    "async: with-target callers alive",
+    "async_bodies.py",
+    ["run_upgrade", "run_check"],
+)
+alive("async: with-target methods alive", "async_bodies.py", ["migrate", "verify"])
+alive(
+    "async: async-for/with body calls scanned",
+    "async_bodies.py",
+    ["stream_rows", "handle_row"],
+)
+stays_dead("async: control stays dead", "async_bodies.py", "unused_async")
+
 print(f"{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)

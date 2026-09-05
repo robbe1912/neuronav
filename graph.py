@@ -56,6 +56,10 @@ PY_BARE_CALL_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*\(")
 # subscript access can resolve the value classes inside
 PY_PARAM_TYPED_RE = re.compile(r"[(,]\s*([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*(?:\[[^\]=]+\])?)")
 PY_LOCAL_NEW_RE = re.compile(r"(?<![\w.!=<>])([A-Za-z_]\w*)\s*=(?!=)\s*([A-Z]\w*)\s*\(")
+# with/async-with target bound from a constructor: with Session() as s
+PY_WITH_AS_RE = re.compile(
+    r"(?<![\w.])(?:async\s+)?with\s+([A-Z]\w*)\s*\([^()]*\)\s+as\s+([A-Za-z_]\w*)"
+)
 # annotated local: local: Widget = ... / pairs: dict[str, Widget] = ...
 PY_ANNOT_ASSIGN_RE = re.compile(
     r"(?<![\w.])([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*(?:\[[^\]=]+\])?)\s*=(?!=)"
@@ -524,6 +528,8 @@ class Graph:
             var_types[pm.group(1)] = pm.group(2)
         for m in PY_ANNOT_ASSIGN_RE.finditer(scan_text):
             var_types[m.group(1)] = m.group(2)
+        for m in PY_WITH_AS_RE.finditer(scan_text):
+            var_types[m.group(2)] = m.group(1)
         for m in PY_LOCAL_NEW_RE.finditer(scan_text):
             var_types[m.group(1)] = m.group(2)
         # x = imported_name(...): the local becomes a module-object
