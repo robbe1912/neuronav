@@ -217,6 +217,8 @@ def _build_data() -> dict:
     # (mutual links resist transitive chaining, mirroring nav.clusters()).
     # Degrades to [] if the chroma store is missing/empty.
     sims: list[list] = []
+    cid_gid: dict[int, int] = {}   # fine cluster id -> supergroup id
+    groups2: list[dict] = []
     try:
         import numpy as np
 
@@ -239,8 +241,34 @@ def _build_data() -> dict:
                     b = int(b)
                     if a < b and a in knn[b] and sim[a, b] >= 0.45:
                         sims.append([a, b, round(float(sim[a, b]), 4)])
+            # two-level navigation: coarse supergroups over the fine
+            # clusters (scipy average-linkage over embedding centroids,
+            # clusters.coarse_groups). Optional UI level — degrades to []
+            # when scipy/embeddings are unavailable.
+            try:
+                from clusters import coarse_groups
+
+                emb_paths = [p for p in paths if p in emb_idx]
+                for grp in coarse_groups(clusters, emb_paths, embs):
+                    cids = [
+                        int(clusters[ci]["id"])
+                        for ci in grp["cluster_ids"]
+                        if 0 <= ci < len(clusters)
+                    ]
+                    for cid in cids:
+                        cid_gid[cid] = grp["id"]
+                    groups2.append(
+                        {"id": grp["id"], "label": grp["label"], "cids": cids}
+                    )
+            except Exception:
+                cid_gid = {}
+                groups2 = []
     except Exception:
         sims = []
+
+    # supergroup id per node (gid; -1 = unclustered / groups unavailable)
+    for nd in nodes:
+        nd["gid"] = cid_gid.get(nd["cluster"], -1)
 
     # cluster-level semantic sims for the layout: cosine between cluster
     # embedding centroids (mean of member embeddings). Drives cluster
@@ -372,6 +400,8 @@ def _build_data() -> dict:
     }
     if hot is not None:
         data["hot"] = hot
+    if groups2:
+        data["groups"] = groups2
     return data
 
 
@@ -699,6 +729,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <button id="bInst">contains</button>
   <button id="bVar" title="member-var references — dense, off by default">var</button>
     <button id="bGround" title="fixed ground grid under the graph (orientation aid)">ground</button>
+    <button id="bGroups" title="recolor by coarse supergroups (two-level navigation)">groups</button>
     <button id="bDead" title="show only files flagged dead: at least 40% of their funcs are dead candidates">dead only</button>
     <button id="bReset">reset</button>
   </div>
@@ -816,7 +847,9 @@ controls.enableDamping = true;
 const hue = c => c < 0 ? 0.08 : (c * 0.61803398875 + 0.55) % 1;
 const lightOf = c => 0.52 + 0.09 * (Math.floor(c / 13) % 3);
 const colorOf = n => {
-  const col = new THREE.Color().setHSL(hue(n.cluster), 0.72, lightOf(n.cluster));
+  // groups mode colors by supergroup id (few ids, well-spread hues)
+  const cc = (groupsMode && n.gid >= 0) ? n.gid : n.cluster;
+  const col = new THREE.Color().setHSL(hue(cc), 0.72, lightOf(cc));
   if (n.dead > 0) col.lerp(new THREE.Color(0.95, 0.12, 0.12), n.dead >= 1 ? 0.85 : 0.68);
   return col;
 };
@@ -829,6 +862,13 @@ const degree = new Float32Array(N);
 // file was touched in the last 90 days (max-touched file = 1). Absent when
 // the generator ran outside a git repo — every fallback below no-ops.
 const hot = DATA.hot || null;
+// two-level navigation (optional): coarse supergroups from clusters.py;
+// the "groups" toggle recolors nodes, halos and the legend by supergroup.
+// Absent (no scipy/embeddings) → button hidden, nothing else changes.
+const groups = DATA.groups || null;
+const gNames = {};
+if (groups) groups.forEach(g => { gNames[g.id] = g.label; });
+let groupsMode = false;
 // frozen baked layout: positions were settled offline in Python (seeded,
 // deterministic) — the browser only renders. A missing DATA.pos means the
 // offline pass failed and the build aborted halfway: fail loudly here
@@ -1223,8 +1263,11 @@ function buildContainment() {
   cRings.forEach(r => { scene.remove(r); r.geometry.dispose(); r.material.dispose(); });
   cRings = []; cLabs.forEach(c => c.el.remove()); cLabs = [];
   const byC = {};
+  // groups mode draws the halo ring per SUPERGROUP (matching node colors)
+  const keyOf = n => groupsMode ? n.gid : n.cluster;
   nodes.forEach((n, i) => {
-    if (n.cluster >= 0 && nodeVisible(n)) (byC[n.cluster] = byC[n.cluster] || []).push(i);
+    const k = keyOf(n);
+    if (k >= 0 && nodeVisible(n)) (byC[k] = byC[k] || []).push(i);
   });
   Object.entries(byC).sort((a, b) => b[1].length - a[1].length).slice(0, 14)
     .forEach(([cid, members]) => {
@@ -1249,7 +1292,8 @@ function buildContainment() {
       const el = document.createElement("div");
       el.className = "clab";
       el.style.color = "#" + col.getHexString();
-      el.textContent = (cNames[cid] || "c" + cid) + " · " + members.length;
+      const nm = groupsMode ? (gNames[+cid] || "g" + cid) : (cNames[cid] || "c" + cid);
+      el.textContent = nm + " · " + members.length;
       clabsEl.appendChild(el);
       cLabs.push({ cx, cy, cz, el });
     });
@@ -1884,29 +1928,69 @@ function rebuildFnLayer(focusing) {
 }
 
 const legend = document.getElementById("legend");
-// ALL clusters get a chip (the panel scrolls); chips double as the
-// empty-state undo handles, so keep a cid -> element map
+// chips double as the empty-state undo handles, so keep a cid -> element map
 const legendChips = new Map();
-const topClusters = Object.entries(
-  nodes.reduce((acc, n) => { if (n.cluster >= 0) acc[n.cluster] = (acc[n.cluster]||0)+1; return acc; }, {})
-).sort((a,b) => b[1]-a[1]);
-topClusters.forEach(([cid, count]) => {
-  const c = new THREE.Color().setHSL(hue(+cid), 0.72, lightOf(+cid));
-  const chip = document.createElement("span");
-  chip.className = "chip";
-  chip.style.background = `#${c.getHexString()}22`;
-  chip.style.color = `#${c.getHexString()}`;
-  chip.textContent = `${cNames[cid] || "c" + cid} · ${count}`;
-  chip.onclick = () => {
-    // multi-select: chips stack, each toggles its cluster independently
-    if (activeClusters.has(+cid)) { activeClusters.delete(+cid); chip.classList.remove("on"); }
-    else { activeClusters.add(+cid); chip.classList.add("on"); }
-    applyVisibility();
-    if (activeClusters.size || activeDirs.size) frameVisible(); else frameGraph();
-  };
-  legend.appendChild(chip);
-  legendChips.set(+cid, chip);
-});
+function buildLegend() {
+  legend.innerHTML = ""; legendChips.clear();
+  if (groupsMode && groups) {
+    // supergroup chips: one per group; clicking isolates all member
+    // fine-clusters at once (activeClusters stays fine-grained underneath)
+    const byG = {};
+    nodes.forEach(n => { if (n.gid >= 0) byG[n.gid] = (byG[n.gid] || 0) + 1; });
+    Object.entries(byG).sort((a, b) => b[1] - a[1]).forEach(([gid, count]) => {
+      const g = +gid;
+      const c = new THREE.Color().setHSL(hue(g), 0.72, lightOf(g));
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.style.background = `#${c.getHexString()}22`;
+      chip.style.color = `#${c.getHexString()}`;
+      chip.textContent = `${gNames[g] || "g" + g} · ${count}`;
+      const cids = (groups.find(gr => gr.id === g) || {}).cids || [];
+      chip.onclick = () => {
+        const on = !chip.classList.contains("on");
+        cids.forEach(cid => { if (on) activeClusters.add(cid); else activeClusters.delete(cid); });
+        chip.classList.toggle("on", on);
+        applyVisibility();
+        if (activeClusters.size || activeDirs.size) frameVisible(); else frameGraph();
+      };
+      legend.appendChild(chip);
+      cids.forEach(cid => legendChips.set(cid, chip));
+    });
+    return;
+  }
+  // fine clusters: ALL clusters get a chip (the panel scrolls)
+  const topClusters = Object.entries(
+    nodes.reduce((acc, n) => { if (n.cluster >= 0) acc[n.cluster] = (acc[n.cluster]||0)+1; return acc; }, {})
+  ).sort((a,b) => b[1]-a[1]);
+  topClusters.forEach(([cid, count]) => {
+    const c = new THREE.Color().setHSL(hue(+cid), 0.72, lightOf(+cid));
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.style.background = `#${c.getHexString()}22`;
+    chip.style.color = `#${c.getHexString()}`;
+    chip.textContent = `${cNames[cid] || "c" + cid} · ${count}`;
+    chip.onclick = () => {
+      // multi-select: chips stack, each toggles its cluster independently
+      if (activeClusters.has(+cid)) { activeClusters.delete(+cid); chip.classList.remove("on"); }
+      else { activeClusters.add(+cid); chip.classList.add("on"); }
+      applyVisibility();
+      if (activeClusters.size || activeDirs.size) frameVisible(); else frameGraph();
+    };
+    legend.appendChild(chip);
+    legendChips.set(+cid, chip);
+  });
+}
+buildLegend();
+if (!groups) document.getElementById("bGroups").style.display = "none";
+document.getElementById("bGroups").onclick = e => {
+  groupsMode = !groupsMode;
+  e.target.classList.toggle("on", groupsMode);
+  // fine-cluster selection from the other level is stale — drop it
+  activeClusters.clear();
+  buildLegend();
+  buildContainment();
+  applyVisibility();
+};
 
 // dir filter row: top-8 directories as chips + a tests chip (tests/tools
 // files are hidden by default; toggling them in rebuilds containment)
@@ -2030,6 +2114,7 @@ function resetAll() {
   deadOnly = false; query = ""; focusSeeds.clear(); focusStack = [];
   dirMode = 0; showSignals = true; showVar = false; fnMode = false; depth = 2;
   showInst = false; showCalls = true; showTests = false;
+  groupsMode = false;   // coloring level is view state — reset to fine clusters
   searchEl.value = ""; depthEl.value = 2;
   document.getElementById("depthVal").textContent = "2";
   cbFnEl.checked = false;
@@ -2040,9 +2125,10 @@ function resetAll() {
   document.getElementById("bCalls").classList.add("on");
   document.getElementById("bSignals").classList.add("on");
   document.querySelector("#dirRow .seg").classList.add("on");
-  // ground is a viewport pref, not filter state — it survives the reset
+  // ground is a viewport pref, not filter state - it survives the reset
   if (showGround) document.getElementById("bGround").classList.add("on");
   frameGraph();
+  buildLegend();
   buildContainment(); applyVisibility();
 }
 document.getElementById("bReset").onclick = resetAll;
@@ -2309,6 +2395,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnMeta() { return fnMeta; },
   get hovered() { return hovered; },
   get groundGrid() { return groundGrid; },
+  get groupsMode() { return groupsMode; }, groups,
   syncFileMesh };
 tick();
 </script>

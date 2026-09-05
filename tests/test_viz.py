@@ -285,6 +285,53 @@ def run_tests():
               and churn.get("hotOk") and churn.get("coldOk") and churn.get("noted"),
               str(churn))
 
+        # 7. groups toggle: supergroup recoloring + legend swap + reset
+        grp = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const btn = document.getElementById('bGroups');
+                 if (btn.style.display === 'none') return { skip: 'no groups channel' };
+                 const chips = () => document.querySelectorAll('#legend .chip');
+                 const fineN = chips().length;
+                 let idx = -1;
+                 // pick a clustered node whose fine vs group hues differ
+                 // enough that recoloring is measurable in RGB
+                 const hue = c => c < 0 ? 0.08 : (c * 0.61803398875 + 0.55) % 1;
+                 for (let j = 0; j < d.nodes.length; j++) {
+                   const nd = d.nodes[j];
+                   if (nd.cluster < 0 || nd.gid < 0 || d.alphaTgt[j] <= 0.5) continue;
+                   let dh = Math.abs(hue(nd.gid) - hue(nd.cluster));
+                   dh = Math.min(dh, 1 - dh);
+                   if (dh > 0.15 && nd.dead <= 0) { idx = j; break; }
+                 }
+                 if (idx < 0) return { fail: 'no recolorable node' };
+                 const cArr = d.fileMesh.instanceColor.array;
+                 const c0 = [cArr[idx*3], cArr[idx*3+1], cArr[idx*3+2]];
+                 btn.click();
+                 return new Promise(res => setTimeout(() => {
+                   const c1 = [cArr[idx*3], cArr[idx*3+1], cArr[idx*3+2]];
+                   const groupN = chips().length;
+                   const firstChip = chips()[0].textContent;
+                   const mode1 = d.groupsMode;
+                   document.getElementById('bReset').click();
+                   setTimeout(() => {
+                     res({ fineN, groupN, mode1, firstChip,
+                           recolored: Math.max(...c0.map((v, k) => Math.abs(v - c1[k]))) > 0.02,
+                           modeAfterReset: d.groupsMode,
+                           restoredN: chips().length });
+                   }, 150);
+                 }, 250)); }"""
+        )
+        if grp and "skip" in grp:
+            print(f"SKIP groups toggle — {grp.get('skip')}")
+        else:
+            check("groups toggle recolors and swaps legend",
+                  bool(grp) and "fail" not in grp
+                  and grp.get("mode1") and not grp.get("modeAfterReset")
+                  and grp.get("groupN", 99) < grp.get("fineN", 0)
+                  and grp.get("restoredN") == grp.get("fineN")
+                  and grp.get("recolored"),
+                  str(grp))
+
         # artifact: screenshot of the focused fn-layer state
         page.screenshot(path=str(ROOT / "tests" / "last_run.png"), scale="css", type="png")
         print("artifact: tests/last_run.png")
