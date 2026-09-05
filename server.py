@@ -11,6 +11,8 @@ Tools:
 - duplicates(): exact-clone function bodies (normalized hash groups)
 - clusters(k, min_sim): subsystem clusters over the embedding space
 - crosstalk(): cross-cluster coupling-hotspot report
+- context(path, depth=1): subsystem map for one file (cluster, structural
+  + semantic neighbors, hub rank) — the fresh-agent orientation tool
 - visualize(): generate the interactive 3D graph (graph.html) and return path
 - rescan(): incremental re-index of everything above
 """
@@ -189,6 +191,169 @@ def crosstalk() -> str:
     return "\n".join(lines)
 
 
+def _ctx_file_of(key: str) -> str:
+    return key.rsplit("::", 1)[0]
+
+
+def _ctx_adjacency(g) -> tuple[dict, dict]:
+    """File-level adjacency (both directions, per edge-type counts) and
+    cross-file in-degree, aggregated once from the func-level edge set."""
+    adj: dict[str, dict[str, dict]] = {}  # file -> nb -> {"->": t:n, "<-": t:n}
+    indeg: dict[str, int] = {}
+    for (s, d), tys in g.edge_types.items():
+        sf, df = _ctx_file_of(s), _ctx_file_of(d)
+        if sf == df:
+            continue
+        cell = adj.setdefault(sf, {}).setdefault(df, {">": {}, "<": {}})
+        for t in tys:
+            cell[">"][t] = cell[">"].get(t, 0) + 1
+        cell = adj.setdefault(df, {}).setdefault(sf, {">": {}, "<": {}})
+        for t in tys:
+            cell["<"][t] = cell["<"].get(t, 0) + 1
+        indeg[df] = indeg.get(df, 0) + len(tys)
+    return adj, indeg
+
+
+def _ctx_types(counts: dict[str, int]) -> str:
+    return ", ".join(f"{t} x{n}" for t, n in sorted(counts.items(), key=lambda kv: -kv[1]))
+
+
+def _ctx_semantic(path: str, k: int = 6) -> list[tuple[float, str]]:
+    """Nearest files by embedding cosine — query with the file's own
+    stored vector (no embed call, no new deps)."""
+    try:
+        col = nav._collection()
+        got = col.get(ids=[path], include=["embeddings"])
+        if not got["ids"]:
+            return []
+        res = col.query(
+            query_embeddings=[got["embeddings"][0]],
+            n_results=k + 1,
+            include=["distances"],
+        )
+        return [
+            (round(1.0 - float(d), 3), fid)
+            for fid, d in zip(res["ids"][0], res["distances"][0])
+            if fid != path
+        ][:k]
+    except Exception:
+        return []
+
+
+@mcp.tool()
+def context(path: str, depth: int = 1) -> str:
+    """Subsystem map for one repo file — the orientation tool for agents.
+
+    Fresh-agent entry point: pass a res:// path (or repo-relative) and get
+    a text map — its cluster (label, confidence, member hubs by in-degree),
+    structural neighbors grouped by edge type (call/signal/var/attach/inst
+    with counts and direction, depth 1-3), top semantic neighbors (embedding
+    cosine), and hub status (in-degree rank). Build from existing clusters
+    + graph + vector index; no new deps.
+    """
+    depth = max(1, min(depth, 3))
+    p = path.strip()
+    if p.startswith("res://"):
+        p = p[len("res://"):]
+    p = p.replace("\\", "/").lstrip("/")
+    g = graph.get_graph()
+    if p not in g.files:
+        import difflib
+
+        close = difflib.get_close_matches(p, list(g.files), n=3, cutoff=0.4)
+        sug = f" Closest matches: {', '.join(close)}" if close else ""
+        return f"unknown file: {p} — pass a repo-relative or res:// path, or rescan first.{sug}"
+    fs = g.files[p]
+    adj, indeg = _ctx_adjacency(g)
+    lines: list[str] = []
+    if fs.class_name and fs.extends:
+        tag = f"{fs.class_name} extends {fs.extends}"
+    else:
+        tag = fs.class_name or fs.extends or fs.ext
+    lines.append(f"res://{p}  [{tag}]")
+
+    cs = nav.clusters()
+    mine = next((c for c in cs if any(pp == p for pp, _ in c["paths"])), None)
+    if mine is None:
+        lines.append("cluster: unclustered")
+    else:
+        members = sorted(
+            ((indeg.get(pp, 0), pp, cc) for pp, cc in mine["paths"]), reverse=True
+        )
+        my_rank = next(i for i, (_v, pp, _c) in enumerate(members, 1) if pp == p)
+        lines.append(
+            f'cluster: c{mine["id"]} "{mine["label"]}" (conf {mine["confidence"]:.2f}, '
+            f'{mine["method"]}) — {mine["size"]} files, '
+            f"this file ranks #{my_rank} by in-degree"
+        )
+        lines.append(f"  members (top {min(12, len(members))} by in-degree):")
+        for v, pp, cc in members[:12]:
+            cls = f" ({cc})" if cc else ""
+            lines.append(f"    {v:>3}  res://{pp}{cls}")
+        if len(members) > 12:
+            lines.append(f"    … +{len(members) - 12} more")
+
+    lines.append(f"structural neighbors (depth {depth}):")
+    if p not in adj:
+        lines.append("  none — isolated file")
+    else:
+        direct = adj[p]
+        entries = sorted(
+            (
+                (
+                    sum(cell[">"].values()) + sum(cell["<"].values()),
+                    nb,
+                    cell[">"],
+                    cell["<"],
+                )
+                for nb, cell in direct.items()
+            ),
+            key=lambda e: -e[0],
+        )
+        for _w, nb, out_t, in_t in entries[:15]:
+            parts = []
+            if out_t:
+                parts.append("-> " + _ctx_types(out_t))
+            if in_t:
+                parts.append("<- " + _ctx_types(in_t))
+            lines.append(f"  res://{nb}  {'  '.join(parts)}")
+        if len(entries) > 15:
+            lines.append(f"  … +{len(entries) - 15} more")
+        if depth >= 2:
+            seen = {p} | set(direct)
+            hop2: dict[str, str] = {}
+            for nb in direct:
+                for nb2 in adj.get(nb, {}):
+                    if nb2 not in seen and nb2 not in hop2:
+                        hop2[nb2] = nb
+            if hop2:
+                h2 = sorted(hop2.items(), key=lambda kv: -indeg.get(kv[0], 0))[:10]
+                lines.append(f"  2-hop ({len(hop2)} files, top {len(h2)} by in-degree):")
+                for f2, via in h2:
+                    lines.append(f"    res://{f2}  via res://{via}")
+
+    lines.append("semantic neighbors (cosine):")
+    sem = _ctx_semantic(p)
+    if not sem:
+        lines.append("  n/a (file not embedded — rescan first)")
+    else:
+        for s, fid in sem:
+            lines.append(f"  {s:.3f}  res://{fid}")
+
+    ind = indeg.get(p, 0)
+    ranked = sorted(g.files, key=lambda f: -indeg.get(f, 0))
+    rank = ranked.index(p) + 1
+    total = len(ranked)
+    if ind:
+        lines.append(
+            f"hub: in-degree {ind} — rank {rank} of {total} files "
+            f"(top {100.0 * rank / total:.0f}%)"
+        )
+    else:
+        lines.append(f"hub: in-degree 0 — rank {rank} of {total} files (leaf)")
+    return "\n".join(lines)
+
+
 @mcp.tool()
 def visualize() -> str:
     """Generate the interactive 3D code-graph (rotatable neuron map).
@@ -243,6 +408,15 @@ if __name__ == "__main__":
     t0 = time.perf_counter()
     stats = nav.rescan()
     g, fns, _ = _sync_chain(stats)
+    # warm the clusters stack (networkx/numpy/sklearn/scipy) on the main
+    # thread before the event loop serves: importing these C extensions
+    # lazily inside a fastmcp tool call (on the anyio loop thread) blocks
+    # the stdio server indefinitely on Windows — clusters/context/crosstalk
+    # all ride these imports
+    import networkx  # noqa: F401
+    import numpy  # noqa: F401
+    import scipy.cluster.hierarchy  # noqa: F401
+    import sklearn.cluster  # noqa: F401
     print(
         f"swmg-nav: startup files {stats['added']}/{stats['updated']}/"
         f"{stats['unchanged']}/{stats['deleted']}, "
