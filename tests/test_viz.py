@@ -182,6 +182,23 @@ def run_tests():
               and island.get("d1", 0) < island.get("d0", 1) * 0.9,
               str(island))
 
+        # 5d. dead-only toggle frames the dead set
+        page.evaluate("() => document.getElementById('bReset').click()")
+        page.wait_for_timeout(200)
+        dead = page.evaluate(
+            """() => { const b = document.getElementById('bDead');
+                 const d0 = window.__dbg.camera.position.distanceTo(window.__dbg.controls.target);
+                 b.click();
+                 return new Promise(res => setTimeout(() => {
+                   const dd = window.__dbg;
+                   res({ d0: Math.round(d0),
+                         d1: Math.round(dd.camera.position.distanceTo(dd.controls.target)) });
+                 }, 600)); }"""
+        )
+        check("dead only frames dead set",
+              bool(dead) and dead.get("d1", 0) < dead.get("d0", 1) * 0.85,
+              str(dead))
+
         # artifact: screenshot of the focused fn-layer state
         page.screenshot(path=str(ROOT / "tests" / "last_run.png"), scale="css", type="png")
         print("artifact: tests/last_run.png")

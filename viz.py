@@ -1828,6 +1828,8 @@ document.getElementById("bDead").onclick = e => {
   deadOnly = !deadOnly;
   e.target.classList.toggle("on", deadOnly);
   applyVisibility();
+  // frame the dead archipelago: 9-90 scattered files read better zoomed
+  if (deadOnly) frameVisible();
 };
 document.getElementById("bCalls").onclick = e => {
   showCalls = !showCalls;
