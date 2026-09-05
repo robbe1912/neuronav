@@ -254,6 +254,37 @@ def run_tests():
               bool(ground) and all(ground.get(k) for k in ("off0", "on1", "survived", "off2")),
               str(ground))
 
+        # 6. git-churn channel: DATA.hot normalized 0..1, size boost applied
+        # to the hottest file, cold files untouched, caption notes the channel
+        churn = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const h = d.hot;
+                 if (!h) return { fail: 'no DATA.hot' };
+                 let arg = 0;
+                 for (let j = 1; j < h.length; j++) if (h[j] > h[arg]) arg = j;
+                 let cold = -1;
+                 for (let j = 0; j < h.length; j++)
+                   if (h[j] === 0 && d.alphaTgt[j] > 0.5) { cold = j; break; }
+                 // degree = sum of link weights (same recurrence as sizes)
+                 const deg = new Float32Array(d.nodes.length);
+                 d.links.forEach(l => { deg[l.s] += l.w; deg[l.t] += l.w; });
+                 const base = i => Math.min(10, 3.5 + Math.sqrt(deg[i]));
+                 const mat = new d.THREE.Matrix4();
+                 const mx = i => { d.fileMesh.getMatrixAt(i, mat); return mat.elements[0]; };
+                 // instance scale = sizes*1.1 at overview (no dead boost/hover)
+                 const expHot = base(arg) * 1.1 * (1 + 0.35 * h[arg]);
+                 return { n: h.length, max: h[arg], min: Math.min(...h),
+                          hotOk: Math.abs(mx(arg) / expHot - 1) < 0.02,
+                          coldOk: cold >= 0 && Math.abs(mx(cold) / (base(cold) * 1.1) - 1) < 0.01,
+                          noted: document.getElementById('caption').textContent.includes('churn') }; }"""
+        )
+        check("git churn sizes hottest file and notes caption",
+              bool(churn) and "fail" not in churn
+              and churn.get("n") == page.evaluate("() => window.__dbg.nodes.length")
+              and 0 <= churn.get("min", -1) and 0 < churn.get("max", 0) <= 1
+              and churn.get("hotOk") and churn.get("coldOk") and churn.get("noted"),
+              str(churn))
+
         # artifact: screenshot of the focused fn-layer state
         page.screenshot(path=str(ROOT / "tests" / "last_run.png"), scale="css", type="png")
         print("artifact: tests/last_run.png")

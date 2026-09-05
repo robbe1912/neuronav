@@ -35,6 +35,53 @@ def _git_head() -> str:
         return ""
 
 
+def _churn_hot(paths: list[str]) -> list[float] | None:
+    """Per-file git churn of the TARGET project, normalized to 0..1.
+
+    Counts how often each indexed file appears in the last 90 days of
+    commits (`git log --name-only --since=90.days`) at nav.ROOT — the
+    scanned game repo, not the gdnav tooling repo. Git prints paths
+    relative to the repo top level, which may sit above ROOT, so those
+    are rebased onto ROOT before matching node paths. Returns None
+    (channel disabled — no visual change) when git or history is
+    unavailable.
+    """
+    try:
+        root = str(nav.ROOT)
+        got = subprocess.run(
+            ["git", "log", "--name-only", "--since=90.days", "--pretty=format:"],
+            cwd=root,
+            capture_output=True, text=True, timeout=15,
+        )
+        if got.returncode != 0:
+            return None
+        pre = ""
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], cwd=root,
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip().replace("\\", "/")
+        if top:
+            try:
+                pre = Path(root).resolve().relative_to(Path(top).resolve()).as_posix()
+                if pre in (".", ""):
+                    pre = ""
+                else:
+                    pre += "/"
+            except ValueError:
+                pre = ""
+        touches: dict[str, int] = defaultdict(int)
+        for line in got.stdout.splitlines():
+            line = line.strip().replace("\\", "/")
+            if line and line.startswith(pre):
+                touches[line[len(pre):]] += 1
+        if not touches:
+            return None
+        mx = max(touches.values())
+        return [round(touches.get(p, 0) / mx, 3) for p in paths]
+    except Exception:
+        return None
+
+
 def _build_data() -> dict:
     g = graph.get_graph()
     clusters = nav.clusters()
@@ -297,7 +344,11 @@ def _build_data() -> dict:
         except Exception:
             hw = []
 
-    return {
+    # git-churn channel: optional (None when git/history unavailable → DATA.hot
+    # absent → renderer leaves sizes untouched, no legend note)
+    hot = _churn_hot([nd["path"] for nd in nodes])
+
+    data = {
         "nodes": nodes,
         "links": links,
         "fedges": fedges,
@@ -319,6 +370,9 @@ def _build_data() -> dict:
             "git": _git_head(),
         },
     }
+    if hot is not None:
+        data["hot"] = hot
+    return data
 
 
 _TRACE: list = []   # debug: (step, cluster centroids snapshot) every 50 steps
@@ -771,6 +825,10 @@ const pos = new Float32Array(N * 3);
 const colArr = new Float32Array(N * 3);
 const sizes = new Float32Array(N);
 const degree = new Float32Array(N);
+// git-churn channel (optional): DATA.hot[i] in 0..1 = how often node i's
+// file was touched in the last 90 days (max-touched file = 1). Absent when
+// the generator ran outside a git repo — every fallback below no-ops.
+const hot = DATA.hot || null;
 // frozen baked layout: positions were settled offline in Python (seeded,
 // deterministic) — the browser only renders. A missing DATA.pos means the
 // offline pass failed and the build aborted halfway: fail loudly here
@@ -782,8 +840,11 @@ nodes.forEach((n, i) => {
   pos[i*3] = frozenPos[i][0]; pos[i*3+1] = frozenPos[i][1]; pos[i*3+2] = frozenPos[i][2];
   const c = colorOf(n);
   colArr[i*3] = c.r; colArr[i*3+1] = c.g; colArr[i*3+2] = c.b;
-  sizes[i] = Math.min(10, 3.5 + Math.sqrt(degree[i]) * 1.0);
+  // churn boost rides on top of the connectivity size (up to +35% radius
+  // for the most-touched file) — subtle, never shrinks
+  sizes[i] = Math.min(10, 3.5 + Math.sqrt(degree[i]) * 1.0) * (hot ? 1 + 0.35 * hot[i] : 1);
 });
+if (hot) document.getElementById("caption").textContent += " · size also encodes 90-day churn";
 
 const alphaArr = new Float32Array(N).fill(1);
 // per-node alpha TARGETS: alphaArr eases toward these each tick (fade);
@@ -2240,7 +2301,7 @@ frameGraph();
 renderer.domElement.style.cursor = "grab";
 // debug handle last: everything it captures is initialized by here
 window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE,
-  alpha: alphaArr, alphaTgt, hoverScale, bucketMat, bucketOf, hwSlot, bucketPosIB, bucketColIB, slotOf,
+  alpha: alphaArr, alphaTgt, hoverScale, hot, bucketMat, bucketOf, hwSlot, bucketPosIB, bucketColIB, slotOf,
   adjOut, adjIn, adj, outDeg, inDeg, get dirMode() { return dirMode; }, focusSeeds, level,
   get camTween() { return camTween; }, get focusStack() { return focusStack; },
   get fileMesh() { return fileMesh; }, get fnMesh() { return fnMesh; },
