@@ -393,6 +393,21 @@ def _build_data() -> dict:
                 "mp": sorted(fn.mut_params),
             }
 
+    # crosstalk corridors: top inter-cluster file pairs by edge count, baked
+    # for the overview labels. Deterministic order: count desc, then cid asc.
+    cl_of = [nd["cluster"] for nd in nodes]
+    pair_n: dict = {}
+    for l in links:
+        ca, cb = cl_of[l["s"]], cl_of[l["t"]]
+        if ca < 0 or cb < 0 or ca == cb:
+            continue
+        key = (ca, cb) if ca < cb else (cb, ca)
+        pair_n[key] = pair_n.get(key, 0) + 1
+    crosstalk = [
+        {"a": a, "b": b, "n": k}
+        for (a, b), k in sorted(pair_n.items(), key=lambda kv: (-kv[1], kv[0][0], kv[0][1]))[:5]
+    ]
+
     data = {
         "nodes": nodes,
         "links": links,
@@ -417,6 +432,8 @@ def _build_data() -> dict:
             # strata channel: height = call depth from entry files
             "strata": True,
             "depth": _strata_depths(len(nodes), links),
+            # top inter-cluster corridors, labeled at their arc midpoints
+            "crosstalk": crosstalk,
         },
     }
     if hot is not None:
@@ -828,6 +845,11 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .elab { position:absolute; left:0; top:0; display:none; white-space:nowrap;
     font-size:11px; padding:0 5px; border-radius:5px;
     background:rgba(8,12,16,.75); pointer-events:none; }
+  #xtlabs { position:fixed; inset:0; z-index:4; pointer-events:none;
+    overflow:hidden; }
+  .xtlab { position:absolute; left:0; top:0; display:none; white-space:nowrap;
+    font-size:10.5px; color:#b0bec5; padding:0 5px; border-radius:5px;
+    background:rgba(8,12,16,.75); pointer-events:none; }
   #clabs { position:fixed; inset:0; z-index:3; pointer-events:none;
     overflow:hidden; }
   .clab { position:absolute; left:0; top:0; display:none; white-space:nowrap;
@@ -897,6 +919,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <div id="tip"></div>
 <div id="hubs"></div>
 <div id="elabs"></div>
+<div id="xtlabs"></div>
 <div id="flabs"></div>
 <div id="clabs"></div>
 
@@ -1466,6 +1489,7 @@ function tick() {
   updateHubs();
   updateClusterLabs();
   updateEdgeLabels();
+  updateXtLabels();
   updateFocusLabels();
   renderer.render(scene, camera);
   requestAnimationFrame(tick);
@@ -1574,7 +1598,7 @@ function buildContainment() {
     const k = keyOf(n);
     if (k >= 0 && nodeVisible(n)) (byC[k] = byC[k] || []).push(i);
   });
-  Object.entries(byC).sort((a, b) => b[1].length - a[1].length).slice(0, 14)
+  Object.entries(byC).sort((a, b) => b[1].length - a[1].length)
     .forEach(([cid, members]) => {
       let cx = 0, cy = 0, cz = 0;
       members.forEach(i => { cx += pos[i*3]; cy += pos[i*3+1]; cz += pos[i*3+2]; });
@@ -1607,46 +1631,64 @@ function buildContainment() {
       cLabs.push({ cx, cy, cz, el });
     });
 }
-// same hysteresis as hub labels: a cluster name keeps its row while it
-// stays collision-free at the freshly projected centroid; the candidate
-// rows rerun only on collision or after a hidden frame
+// same hysteresis as hub labels: a cluster name keeps its placement (radial
+// slot or row) while it stays collision-free at the freshly projected
+// centroid; the candidate search reruns only on collision or after a hidden
+// frame. Radial-outward wins first: 40px from the centroid along the
+// screen-space direction away from the galaxy center of mass.
 const clabOff = new Map();
 function updateClusterLabs() {
   const w = innerWidth, h = innerHeight;
-  // hub pills win collisions; cluster names try rows around the centroid
+  // hub pills win collisions; cluster names try placements around the centroid
   const hubRects = [...document.querySelectorAll("#hubs .hub")]
     .filter(el => el.style.display !== "none")
     .map(el => el.getBoundingClientRect());
   const sep = (a, b) =>
     a.right < b.left - 4 || b.right < a.left - 4 ||
     a.bottom < b.top - 4 || b.bottom < a.top - 4;
-  const taken = [];
+  // project every centroid once; the mean of the on-screen projections is
+  // the galaxy center of mass the radial candidates point away from
+  const proj = [];
+  let gx = 0, gy = 0, gn = 0;
   for (const c of cLabs) {
-    if (clabsEl.style.display === "none") { c.el.style.display = "none"; continue; }
+    if (clabsEl.style.display === "none") { proj.push(null); continue; }
     hubV.set(c.cx, c.cy, c.cz).project(camera);
     if (hubV.z > 1 || Math.abs(hubV.x) > 1.05 || Math.abs(hubV.y) > 1.05) {
-      c.el.style.display = "none"; clabOff.delete(c.el.textContent); continue;
+      proj.push(null); continue;
     }
-    c.el.style.display = "block";
     const px = (hubV.x*0.5+0.5)*w, py = (-hubV.y*0.5+0.5)*h;
+    proj.push({ px, py });
+    gx += px; gy += py; gn++;
+  }
+  gx /= (gn || 1); gy /= (gn || 1);
+  const taken = [];
+  cLabs.forEach((c, k) => {
+    const pj = proj[k];
+    if (!pj) { c.el.style.display = "none"; clabOff.delete(c.el.textContent); return; }
+    c.el.style.display = "block";
+    const px = pj.px, py = pj.py;
     const key = c.el.textContent;
-    const tryRow = dy => {
-      c.el.style.transform = "translate(" + px.toFixed(1) + "px," + (py+dy).toFixed(1) + "px) translate(-50%,-50%)";
+    const dx = px - gx, dy2 = py - gy;
+    const dl = Math.hypot(dx, dy2) || 1;
+    const rx = px + dx / dl * 40, ry = py + dy2 / dl * 40;
+    const tryAt = (x, y) => {
+      c.el.style.transform = "translate(" + x.toFixed(1) + "px," + y.toFixed(1) + "px) translate(-50%,-50%)";
       const r = c.el.getBoundingClientRect();
       return (hubRects.every(hr => sep(r, hr)) && taken.every(t => sep(r, t))) ? r : null;
     };
     const prev = clabOff.get(key);
     if (prev !== undefined) {
-      const r = tryRow(prev);
-      if (r) { taken.push(r); continue; }
+      const r = prev.rad ? tryAt(rx, ry) : tryAt(px, py + prev.dy);
+      if (r) { taken.push(r); return; }
     }
-    let placed = false;
+    const rRad = tryAt(rx, ry);
+    if (rRad) { clabOff.set(key, { rad: true }); taken.push(rRad); return; }
     for (const dy of [0, -34, 34, -64, 64]) {
-      const r = tryRow(dy);
-      if (r) { taken.push(r); clabOff.set(key, dy); placed = true; break; }
+      const r = tryAt(px, py + dy);
+      if (r) { clabOff.set(key, { rad: false, dy }); taken.push(r); return; }
     }
-    if (!placed) { c.el.style.display = "none"; clabOff.delete(key); }
-  }
+    c.el.style.display = "none"; clabOff.delete(key);
+  });
 }
 
 const tip = document.getElementById("tip");
@@ -1956,6 +1998,52 @@ function updateEdgeLabels() {
       if (!ok) { p.el.style.display = "none"; continue; }
     }
     taken.push(r);
+  }
+}
+
+// ---- crosstalk corridors: top inter-cluster pairs, labeled at the arc ----
+// baked in DATA.meta.crosstalk (count desc); each pair claims the heaviest
+// highway arc between its two clusters and labels that arc's baked midpoint
+// (pts[8]). Overview-only: hidden while focusing or once the camera closes
+// inside the LOD threshold (same gate family as the overview edge state).
+const xtEl = document.getElementById("xtlabs");
+let xtLabs = [];
+(function buildXtLabs() {
+  const xt = m.crosstalk || [];
+  xt.forEach(p => {
+    let best = null;
+    for (const [li, pts] of hw) {
+      const l = links[li];
+      const ca = nodes[l.s].cluster, cb = nodes[l.t].cluster;
+      if ((ca === p.a && cb === p.b) || (ca === p.b && cb === p.a)) {
+        if (!best || l.w > best.w) best = { w: l.w, mid: pts[8] };
+      }
+    }
+    if (!best) return;
+    const el = document.createElement("div");
+    el.className = "xtlab";
+    el.textContent = (cNames[p.a] || "c" + p.a) + " - " +
+      (cNames[p.b] || "c" + p.b) + " ×" + p.n;
+    xtEl.appendChild(el);
+    xtLabs.push({ mid: best.mid, el });
+  });
+})();
+function updateXtLabels() {
+  const overview = !focusSeeds.size && !query &&
+    camera.position.distanceTo(controls.target) >= lodDist;
+  if (!overview) {
+    xtLabs.forEach(k => { k.el.style.display = "none"; });
+    return;
+  }
+  const w = innerWidth, h = innerHeight;
+  for (const k of xtLabs) {
+    hubV.set(k.mid[0], k.mid[1], k.mid[2]).project(camera);
+    if (hubV.z > 1 || Math.abs(hubV.x) > 1.05 || Math.abs(hubV.y) > 1.05) {
+      k.el.style.display = "none"; continue;
+    }
+    k.el.style.display = "block";
+    k.el.style.transform = "translate(" + ((hubV.x*0.5+0.5)*w).toFixed(1) + "px," +
+      ((-hubV.y*0.5+0.5)*h).toFixed(1) + "px) translate(-50%,-50%)";
   }
 }
 
