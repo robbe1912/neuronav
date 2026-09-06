@@ -783,8 +783,9 @@ def run_tests():
             wres = page.evaluate(
                 """(s) => { const d = window.__dbg, tip = document.getElementById('tip');
                      const rc = d.raycaster;
-                     rc.setFromCamera(new d.THREE.Vector2((s.sx/innerWidth)*2-1,
-                       -(s.sy/innerHeight)*2+1), d.camera);
+                     const cr = d.renderer.domElement.getBoundingClientRect();
+                     rc.setFromCamera(new d.THREE.Vector2((s.sx/cr.width)*2-1,
+                       -(s.sy/cr.height)*2+1), d.camera);
                      let want = null;
                      for (const h of rc.intersectObjects(d.bucketMesh)) {
                        const li = d.linkOfSeg(d.bucketMesh.indexOf(h.object), h.faceIndex);
@@ -794,13 +795,13 @@ def run_tests():
                            (d.alphaTgt[l.s] < 0.05 && d.alphaTgt[l.t] < 0.05)) continue;
                        const pair = (d.mwires || []).filter(w =>
                          (w[1] === l.s && w[3] === l.t) || (w[1] === l.t && w[3] === l.s));
-                       if (pair.length) {
-                         const deg = new Map();
-                         pair.forEach(w => deg.set(w[3] + '::' + w[4],
-                           (deg.get(w[3] + '::' + w[4]) || 0) + 1));
-                         pair.sort((a, b) => (deg.get(b[3] + '::' + b[4]) || 0) -
-                           (deg.get(a[3] + '::' + a[4]) || 0) ||
-                           (a[4] < b[4] ? -1 : a[4] > b[4] ? 1 : 0));
+                        if (pair.length) {
+                          const deg = new Map();          // GLOBAL callee in-degree (handler parity)
+                          (d.mwires || []).forEach(w =>
+                            deg.set(w[3] + '::' + w[4], (deg.get(w[3] + '::' + w[4]) || 0) + 1));
+                          pair.sort((a, b) => (deg.get(b[3] + '::' + b[4]) || 0) -
+                            (deg.get(a[3] + '::' + a[4]) || 0) ||
+                            (a[4] < b[4] ? -1 : a[4] > b[4] ? 1 : 0));
                          want = d.nodes[pair[0][1]].label + '::' + pair[0][2] +
                            ' \\u2192 ' + d.nodes[pair[0][3]].label + '::' + pair[0][4];
                        }
