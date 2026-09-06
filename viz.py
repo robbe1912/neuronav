@@ -980,6 +980,9 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .flab:hover { color:#fff; background:rgba(20,30,38,.92); }
   .flab.fn { font-size:10px; color:#8fa3ad; background:rgba(8,12,16,.6); }
   .flab.fn:hover { color:#d0f2ea; background:rgba(14,26,24,.9); }
+  #mapPane { position:fixed; top:0; right:0; width:440px; height:100%;
+    display:none; background:#0b0f14; z-index:8;
+    border-left:1px solid #1de9b633; }
 </style>
 </head>
 <body>
@@ -1019,6 +1022,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <button id="bGroups" title="recolor by coarse supergroups (two-level navigation)">groups</button>
     <button id="bCollapse" title="collapse every cluster of 3+ visible files into one supernode; edges re-attach to the merged sphere">collapse</button>
     <button id="bDead" title="show only files flagged dead: at least 40% of their funcs are dead candidates">dead only</button>
+    <button id="bMap" title="mermaid-style layered map of the focused subgraph (right pane)">map</button>
     <button id="bCyc" title="show only files inside call cycles (strongly connected components); cycle members tint red like madge's cyclic marker">cycles</button>
     <button id="bReset">reset</button>
   </div>
@@ -1040,6 +1044,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <div id="xtlabs"></div>
 <div id="flabs"></div>
 <div id="clabs"></div>
+<canvas id="mapPane"></canvas>
 
 <script type="importmap">
 { "imports": {
@@ -2172,6 +2177,7 @@ function applyVisibility() {
   rebuildHubs();
   rebuildEdgeLabels(focusing);
   rebuildFocusLabels(focusing);
+  drawMapPane();   // mermaid pane mirrors the new focus state
 }
 
 // ---- edge labels: focus detail mode (small lit set) ---------------------------
@@ -2807,6 +2813,194 @@ document.getElementById("bVar").onclick = e => {
   e.target.classList.toggle("on", showVar);
   applyVisibility();
 };
+
+// ---- mermaid-mode map pane ---------------------------------------------------
+// pure canvas-2D detail pane for the focused subgraph: lit nodes drawn as a
+// layered diagram — rows = BFS level (level 0 on top), columns = barycenter
+// ordering (mean column of predecessors, 3 downward sweeps, node-index
+// tie-breaks => deterministic). Edges are orthogonal 3-segment routes
+// (vertical → horizontal → vertical) with 8px 45° chamfer corners and an
+// arrowhead at the target, colored by the SOURCE cluster hue. Clicking a
+// node rect runs the same jump as a hub label click. applyVisibility redraws.
+const mapPane = document.getElementById("mapPane");
+const MAP_MAX = 40;            // lit-node cap: past this the pane refuses
+let mapVisible = false;
+let mapRects = [];             // last drawn node rects (click hit-testing)
+function sizeMapPane() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  mapPane.width = Math.round((mapPane.clientWidth || 440) * dpr);
+  mapPane.height = Math.round((mapPane.clientHeight || innerHeight) * dpr);
+}
+// css twin of the 3D cluster palette: stroke / translucent body fill / text
+function mapCols(c) {
+  if (c < 0) return { s: "hsl(198,8%,62%)", f: "hsla(198,8%,62%,0.2)", t: "hsl(198,8%,84%)" };
+  const h = Math.round(hue(c) * 360), l = Math.round(lightOf(c) * 100);
+  return { s: `hsl(${h},72%,${l}%)`, f: `hsla(${h},72%,${l}%,0.2)`, t: `hsl(${h},72%,${Math.min(92, l + 22)}%)` };
+}
+function drawMapPane() {
+  if (!mapVisible) return;
+  const ctx = mapPane.getContext("2d");
+  const cw = mapPane.clientWidth || 440, chh = mapPane.clientHeight || innerHeight;
+  const dpr = mapPane.width / cw || 1;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#0b0f14";
+  ctx.fillRect(0, 0, cw, chh);
+  mapRects = [];
+  const hint = txt => {
+    ctx.fillStyle = "#546e7a";
+    ctx.font = '12px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(txt, cw / 2, chh / 2);
+  };
+  if (!focusActive) { hint("focus a node to see its map"); return; }
+  const lit = [];
+  for (let i = 0; i < N; i++) if (level[i] >= 0 && nodeVisible(nodes[i])) lit.push(i);
+  if (lit.length > MAP_MAX) { hint(lit.length + " files - narrow the focus"); return; }
+  if (!lit.length) { hint("focus a node to see its map"); return; }
+  // in-focus edges (deduped per directed pair, type-filtered like the 3D view)
+  const litSet = new Set(lit);
+  const edges = [];
+  const seenPair = new Set();
+  links.forEach(l => {
+    if (l.s === l.t || !litSet.has(l.s) || !litSet.has(l.t) || !typeVisible(l.ty)) return;
+    const k = l.s + "_" + l.t;
+    if (seenPair.has(k)) return;
+    seenPair.add(k);
+    edges.push(l);
+  });
+  // rows by BFS level
+  const rows = [];
+  lit.forEach(i => { (rows[level[i]] = rows[level[i]] || []).push(i); });
+  // barycenter columns: 3 downward sweeps, predecessors = in-set sources
+  const preds = new Map();
+  edges.forEach(l => {
+    if (!preds.has(l.t)) preds.set(l.t, []);
+    preds.get(l.t).push(l.s);
+  });
+  const col = new Map();
+  for (let r = 0; r < rows.length; r++) if (rows[r]) rows[r].forEach((i, k) => col.set(i, k));
+  for (let sw = 0; sw < 3; sw++) {
+    for (let r = 0; r < rows.length; r++) {
+      const row = rows[r];
+      if (!row || row.length < 2) continue;
+      const bc = row.map(i => {
+        const ps = preds.get(i);
+        if (!ps || !ps.length) return { i, b: col.get(i) };
+        let s = 0; for (const p of ps) s += col.get(p);
+        return { i, b: s / ps.length };
+      });
+      bc.sort((a, b) => a.b - b.b || a.i - b.i);
+      rows[r] = bc.map(x => x.i);
+      rows[r].forEach((i, k) => col.set(i, k));
+    }
+  }
+  // geometry: node height 22, width by label length, rows centered
+  const NH = 22, GAPX = 14, TOP = 46;
+  const nRows = rows.filter(Boolean).length || 1;
+  const rowH = Math.max(NH + 16, Math.min(110, (chh - TOP - 14) / nRows));
+  ctx.font = '11px "Segoe UI", system-ui, sans-serif';
+  const wOf = i => Math.max(38, Math.ceil(ctx.measureText(nodes[i].label).width) + 18);
+  const place = new Map();
+  for (let r = 0; r < rows.length; r++) {
+    const row = rows[r];
+    if (!row) continue;
+    const tw = row.reduce((a, i) => a + wOf(i), 0) + GAPX * (row.length - 1);
+    let x = Math.max(8, (cw - tw) / 2);
+    row.forEach(i => {
+      place.set(i, { x, y: TOP + r * rowH, w: wOf(i) });
+      x += wOf(i) + GAPX;
+    });
+  }
+  // edges first so node bodies overlay the attachment points
+  ctx.lineWidth = 1.5;
+  ctx.globalAlpha = 0.85;
+  edges.forEach(l => {
+    const A = place.get(l.s), B = place.get(l.t);
+    if (!A || !B) return;
+    const sx = A.x + A.w / 2, sy = A.y + NH;          // source bottom
+    const tx = B.x + B.w / 2;
+    const sameRow = level[l.s] === level[l.t];
+    // same-row edges detour through the gap BELOW their row (enter bottom)
+    const yCh = sameRow ? sy + (rowH - NH) / 2 : (sy + B.y) / 2;
+    const ty = sameRow ? B.y + NH : B.y;              // entry y on the target
+    const dir = tx >= sx ? 1 : -1;
+    const ch = Math.max(0, Math.min(8, Math.abs(tx - sx) / 2, (yCh - sy) / 2, (yCh - ty) / 2));
+    const c = mapCols(nodes[l.s].cluster);
+    ctx.strokeStyle = c.s;
+    ctx.fillStyle = c.s;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(sx, yCh - ch);
+    ctx.lineTo(sx + dir * ch, yCh);
+    ctx.lineTo(tx - dir * ch, yCh);
+    ctx.lineTo(tx, sameRow ? yCh - ch : yCh + ch);
+    ctx.lineTo(tx, ty);
+    ctx.stroke();
+    ctx.beginPath();
+    if (sameRow) {
+      ctx.moveTo(tx, ty);
+      ctx.lineTo(tx - 4.5, ty + 8);
+      ctx.lineTo(tx + 4.5, ty + 8);
+    } else {
+      ctx.moveTo(tx, ty);
+      ctx.lineTo(tx - 4.5, ty - 8);
+      ctx.lineTo(tx + 4.5, ty - 8);
+    }
+    ctx.closePath();
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+  // node rects: rounded (6px), cluster-hue border + translucent fill
+  lit.forEach(i => {
+    const p = place.get(i);
+    const c = mapCols(nodes[i].cluster);
+    ctx.fillStyle = c.f;
+    ctx.strokeStyle = c.s;
+    ctx.lineWidth = 1.5;
+    const rad = 6;
+    ctx.beginPath();
+    ctx.moveTo(p.x + rad, p.y);
+    ctx.arcTo(p.x + p.w, p.y, p.x + p.w, p.y + NH, rad);
+    ctx.arcTo(p.x + p.w, p.y + NH, p.x, p.y + NH, rad);
+    ctx.arcTo(p.x, p.y + NH, p.x, p.y, rad);
+    ctx.arcTo(p.x, p.y, p.x + p.w, p.y, rad);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = c.t;
+    ctx.font = '11px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(nodes[i].label, p.x + p.w / 2, p.y + NH / 2 + 0.5);
+    mapRects.push({ i, x: p.x, y: p.y, w: p.w, h: NH });
+  });
+}
+document.getElementById("bMap").onclick = e => {
+  mapVisible = !mapVisible;
+  e.target.classList.toggle("on", mapVisible);
+  mapPane.style.display = mapVisible ? "block" : "none";
+  if (mapVisible) { sizeMapPane(); drawMapPane(); }
+};
+// click a node rect = the hub-label jump: re-seed focus around that file
+mapPane.addEventListener("click", e => {
+  const b = mapPane.getBoundingClientRect();
+  const x = e.clientX - b.left, y = e.clientY - b.top;
+  for (const rc of mapRects) {
+    if (x >= rc.x && x <= rc.x + rc.w && y >= rc.y && y <= rc.y + rc.h) {
+      pushFocusState(); showInfo(rc.i); focusSeeds.clear(); focusSeeds.add(rc.i);
+      applyVisibility(); focus(rc.i);
+      return;
+    }
+  }
+});
+mapPane.addEventListener("pointermove", e => {
+  if (!mapVisible) return;
+  const b = mapPane.getBoundingClientRect();
+  const x = e.clientX - b.left, y = e.clientY - b.top;
+  mapPane.style.cursor = mapRects.some(rc =>
+    x >= rc.x && x <= rc.x + rc.w && y >= rc.y && y <= rc.y + rc.h) ? "pointer" : "default";
+});
+addEventListener("resize", () => { if (mapVisible) { sizeMapPane(); drawMapPane(); } });
 document.getElementById("bGround").onclick = e => {
   showGround = !showGround;
   groundGrid.visible = showGround;
@@ -2905,6 +3099,8 @@ applySpread(1);
   document.querySelector("#dirRow .seg").classList.add("on");
   // ground is a viewport pref, not filter state - it survives the reset
   if (showGround) document.getElementById("bGround").classList.add("on");
+  // the map pane is a viewport pref too — keep its button in lockstep
+  if (mapVisible) document.getElementById("bMap").classList.add("on");
   frameGraph();
   buildLegend();
   buildContainment(); applyVisibility();
@@ -3284,7 +3480,8 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get collapsed() { return collapsed; }, dpos, supCollapsed, refreshCollapse,
   colArr,
   get fnStalk() { return fnStalk; },
-  syncFileMesh };
+  syncFileMesh,
+  mapPane: { canvas: mapPane, draw: drawMapPane } };
 tick();
 </script>
 </body>
