@@ -1698,7 +1698,13 @@ const esc = s => String(s).replace(/[&<>"]/g,
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 const _pickV = new THREE.Vector3();   // scratch for screen-space pick accuracy
-let hovered = -1, hoveredFn = -1, selected = -1;
+  let hovered = -1, hoveredFn = -1, selected = -1;
+  // hover greyout (Cosmograph pattern): hovering a node greys everything
+  // outside its 1-hop neighborhood to 0.12 alpha — zero-click orientation.
+  // hoverGreyIdx = the node currently greyed (-1 = clean overview);
+  // focusActive mirrors applyVisibility's focusing so focus mode owns the
+  // scene and hover must not fight its BFS dimming.
+  let hoverGreyIdx = -1, focusActive = false;
 let deadOnly = false, query = "";
 let mutOnly = false;   // fn layer: show only functions that write state
 const activeClusters = new Set();   // multi-select cluster filter (legend chips)
@@ -1760,6 +1766,7 @@ function typeVisible(ty) {
 }
 function applyVisibility() {
   const focusing = computeLevels();
+  focusActive = focusing;   // hover greyout defers to focus mode
   edgeFlowOn = focusing;   // tick's dash-flow pass reads this
   // edges are a quiet layer at overview (per-bucket caps) and open up when
   // a focus set is lit
@@ -1867,6 +1874,7 @@ function applyVisibility() {
   });
   touched.forEach((t, b) => { if (t) bucketColIB[b].needsUpdate = true; });
   syncEdgePos();   // geometry follows the new filter state (collapse/restore)
+  hoverGreyIdx = -1;   // baseline rebuilt — next hover re-greys from here
   if (focusing) {
     let lit = 0;
     for (let i = 0; i < N; i++) if (level[i] >= 0 && nodeVisible(nodes[i])) lit++;
@@ -2804,6 +2812,39 @@ function fnStalkUpdate(fi, p) {
 }
 function fnStalkHide() { if (fnStalk) fnStalk.visible = false; }
 
+// hover greyout: steal from Cosmograph (cosmos config.ts highlightedPointIndices
+// / linkGreyoutOpacity 0.1) — dim everything outside the hovered node's 1-hop
+// neighborhood instead of waiting for a click. Grey, not hidden: structure
+// stays on screen, the eye gets an instant "what relates to this".
+function hoverGrey(i) {
+  if (i === hoverGreyIdx) return;
+  if (pointerDown || focusActive || deadOnly || query) {
+    if (hoverGreyIdx >= 0) { hoverGreyIdx = -1; applyVisibility(); }
+    return;
+  }
+  if (i >= 0 && alphaTgt[i] <= 0.5) i = -1;   // can't grey around a ghost
+  if (i < 0) {
+    if (hoverGreyIdx >= 0) { hoverGreyIdx = -1; applyVisibility(); }
+    return;
+  }
+  // full baseline first (restores any previous grey), then dim to 0.12
+  hoverGreyIdx = -1;
+  applyVisibility();
+  hoverGreyIdx = i;
+  const lit = new Set([i]);
+  (adj[i] || []).forEach(j => lit.add(j));
+  for (let j = 0; j < N; j++)
+    if (!lit.has(j) && alphaTgt[j] > 0.12) alphaTgt[j] = 0.12;
+  links.forEach((l, k) => {
+    if (alphaTgt[l.s] > 0.5 && alphaTgt[l.t] > 0.5) return;
+    const b = bucketOf[k], o6 = k * 6, tgt = bucketColIB[b].array;
+    // grey = 12% of the edge's own color; collapsed/black links stay black
+    tgt[o6] *= 0.12; tgt[o6+1] *= 0.12; tgt[o6+2] *= 0.12;
+    tgt[o6+3] *= 0.12; tgt[o6+4] *= 0.12; tgt[o6+5] *= 0.12;
+    bucketColIB[b].needsUpdate = true;
+  });
+}
+
 renderer.domElement.addEventListener("pointermove", e => {
   mouse.x = (e.clientX/innerWidth)*2-1; mouse.y = -(e.clientY/innerHeight)*2+1;
   raycaster.setFromCamera(mouse, camera);
@@ -2834,6 +2875,7 @@ renderer.domElement.addEventListener("pointermove", e => {
   }
   if (hoveredFn >= 0) fnStalkUpdate(fnMeta[hoveredFn].file, fnMeta[hoveredFn].p);
   else fnStalkHide();
+  hoverGrey(hoveredFn >= 0 ? fnMeta[hoveredFn].file : hovered);
   let txt = null;
   if (hoveredFn >= 0) {
     const fm = fnMeta[hoveredFn];

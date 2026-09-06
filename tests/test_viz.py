@@ -285,6 +285,55 @@ def run_tests():
               and scale.get("hoveredOff", False),
               str(scale))
 
+        # 5bb2. hover greyout: hovering a node dims everything outside its
+        # 1-hop neighborhood to ~0.12 and restores on leave (Cosmograph steal).
+        # Clear the 5b search focus first — greyout defers to focus mode.
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(400)
+        grey_setup = page.evaluate(
+            """() => { const d = window.__dbg;
+                 // pick a visible hub with >= 2 neighbors and a far-away node
+                 let hub = -1;
+                 for (let j = 0; j < d.nodes.length; j++) {
+                   if (d.alphaTgt[j] <= 0.5) continue;
+                   if ((d.adj[j] || []).length >= 2) { hub = j; break; } }
+                 if (hub < 0) return { fail: 'no hub' };
+                 const nb = d.adj[hub][0];
+                 let far = -1;
+                 for (let j = 0; j < d.nodes.length; j++) {
+                   if (j === hub || j === nb || (d.adj[j] || []).includes(hub)) continue;
+                   if (d.alphaTgt[j] > 0.5) { far = j; break; } }
+                 if (far < 0) return { fail: 'no unconnected node' };
+                 const move = (x, y) => d.renderer.domElement.dispatchEvent(
+                   new PointerEvent('pointermove', { clientX: x, clientY: y, bubbles: true }));
+                 const v = new d.THREE.Vector3(d.pos[hub*3], d.pos[hub*3+1], d.pos[hub*3+2]).project(d.camera);
+                 const r = d.renderer.domElement.getBoundingClientRect();
+                 move((v.x*0.5+0.5)*r.width + r.left, (-v.y*0.5+0.5)*r.height + r.top);
+                 return { hub, nb, far }; }"""
+        )
+        page.wait_for_timeout(700)
+        grey_on = page.evaluate(
+            """(s) => { const d = window.__dbg;
+                 return { hub: d.alphaTgt[s.hub], nb: d.alphaTgt[s.nb], far: d.alphaTgt[s.far] }; }""",
+            grey_setup)
+        page.screenshot(path=str(ROOT / "tests" / "qa_grey.png"), scale="css", type="png")
+        page.evaluate(
+            """() => window.__dbg.renderer.domElement.dispatchEvent(
+                 new PointerEvent('pointermove', { clientX: -500, clientY: -500, bubbles: true }))"""
+        )
+        page.wait_for_timeout(700)
+        grey_back = page.evaluate(
+            """(s) => { const d = window.__dbg;
+                 return { hubTgt: d.alphaTgt[s.hub], farBack: d.alphaTgt[s.far] }; }""",
+            grey_setup)
+        check("hover greys non-neighbors",
+              bool(grey_setup) and "fail" not in grey_setup
+              and grey_on.get("hub", 0) > 0.9
+              and grey_on.get("nb", 0) > 0.9
+              and grey_on.get("far", 1) <= 0.13
+              and grey_back.get("farBack", 0) > 0.9,
+              f"on {grey_on} / back {grey_back}")
+
         # 5c. cluster chip isolate -> camera tweens to frame the island
         # (clear focus first so chips act on the overview)
         page.keyboard.press("Escape")
