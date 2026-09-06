@@ -3183,7 +3183,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get camTween() { return camTween; }, get focusStack() { return focusStack; },
   get fileMesh() { return fileMesh; }, get fnMesh() { return fnMesh; },
   get controls() { return controls; },
-  get fnMeta() { return fnMeta; },
+  get fnMeta() { return fnMeta; }, get fnStalks() { return fnStalks; },
   get hovered() { return hovered; },
   get groundGrid() { return groundGrid; },
   get groupsMode() { return groupsMode; }, groups,

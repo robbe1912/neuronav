@@ -202,6 +202,23 @@ def run_tests():
         check("fn hover stalks + lifts owner file",
               bool(own) and own["vis"] and own["lifted"], str(own))
 
+        # 5a2. persistent ownership stalks: one faint segment per fn box,
+        # rebuilt with the fn layer (agg boxes render degenerate by design)
+        stalks = page.evaluate(
+            """() => { const d = window.__dbg;
+                 if (!d.fnStalks) return { fail: 'no fnStalks mesh' };
+                 if (!d.fnStalks.visible) return { fail: 'stalks not visible' };
+                 const arr = d.fnStalks.geometry.attributes.position.array;
+                 let real = 0;
+                 for (let i = 0; i < arr.length; i += 6)
+                   if (arr[i] !== arr[i+3] || arr[i+1] !== arr[i+4] || arr[i+2] !== arr[i+5]) real++;
+                 return { fns: d.fnMeta.length, real,
+                          agg: d.fnMeta.filter(m => m.agg).length }; }"""
+        )
+        check("persistent fn stalks present",
+              bool(stalks) and "fail" not in stalks and stalks.get("real", 0) > 0,
+              str(stalks))
+
         # pointer still parked on the fn box -> capture the stalk evidence
         page.screenshot(path=str(ROOT / "tests" / "qa_stalk.png"), scale="css", type="png")
 
@@ -471,6 +488,60 @@ def run_tests():
         check("ground grid toggles and survives reset",
               bool(ground) and all(ground.get(k) for k in ("off0", "on1", "survived", "off2")),
               str(ground))
+
+        # 5f. cluster supernode collapse: members hide, dpos re-targets to
+        # centroids, uncollapse restores. Data-gated (needs a 3+ cluster).
+        # Membership = VISIBLE members measured pre-click (tests stay hidden
+        # through a collapse cycle and must not count against restore).
+        sup = page.evaluate(
+            """() => new Promise(res => { const d = window.__dbg;
+                 const b = document.getElementById('bCollapse');
+                 if (!b) return res({ fail: 'no bCollapse' });
+                 // baseline: visible members per cluster
+                 const vis = new Map();
+                 for (let j = 0; j < d.nodes.length; j++) {
+                   if (d.alphaTgt[j] <= 0.5) continue;
+                   const c = d.nodes[j].cluster;
+                   if (c < 0) continue;
+                   if (!vis.has(c)) vis.set(c, []);
+                   vis.get(c).push(j);
+                 }
+                 let cid = -1, mems = [];
+                 for (const [c, list] of vis)
+                   if (list.length >= 3 && list.length > mems.length) { cid = c; mems = list; }
+                 if (cid < 0) { b.click(); return res({ skip: 'no 3+ member cluster' }); }
+                 b.click();
+                 setTimeout(() => {
+                   if (!d.supCollapsed.has(cid))
+                     { b.click(); return res({ skip: 'chosen cluster not collapsed' }); }
+                   const info = d.supCollapsed.get(cid);
+                   let memHidden = 0, dposOk = 0;
+                   for (const j of mems) {
+                     if (d.alphaTgt[j] < 0.05) memHidden++;
+                     const dx = d.dpos[j*3] - info.cx, dy = d.dpos[j*3+1] - info.cy,
+                           dz = d.dpos[j*3+2] - info.cz;
+                     if (Math.sqrt(dx*dx + dy*dy + dz*dz) < 1) dposOk++;
+                   }
+                   const snap = { collapsed: d.collapsed, mems: mems.length,
+                                  memHidden, dposOk };
+                   b.click();
+                   setTimeout(() => {
+                     let restored = 0;
+                     for (const j of mems) if (d.alphaTgt[j] > 0.5) restored++;
+                     res({ ...snap, collapsed2: d.collapsed, restored });
+                   }, 500);
+                 }, 500); })"""
+        )
+        if sup and "skip" in sup:
+            print(f"SKIP supernode collapse — {sup.get('skip')}")
+        else:
+            check("supernode collapse re-targets and restores",
+                  bool(sup) and "fail" not in sup
+                  and sup.get("collapsed") and not sup.get("collapsed2")
+                  and sup.get("memHidden") == sup.get("mems")
+                  and sup.get("dposOk") == sup.get("mems")
+                  and sup.get("restored") == sup.get("mems"),
+                  str(sup))
 
         # 6. git-churn channel: DATA.hot normalized 0..1, size boost applied
         # to the hottest file, cold files untouched, caption notes the channel.
