@@ -2971,21 +2971,41 @@ function drawMapPane() {
   const claimLane = (x, ya, yb) => {
     for (const g of crossedBands(ya, yb)) (laneX[g] || (laneX[g] = [])).push(x);
   };
+  // pass 1: detour band + bus slot per edge - slots spread across the WHOLE
+  // band (no modulo wrap), so no two horizontal runs ever share a y
+  const bandOf = [], busOf = [], busTotal = [];
+  edges.forEach((l, ei) => {
+    const A = place.get(l.s), B = place.get(l.t);
+    if (!A || !B) { bandOf.push(-1); busOf.push(-1); return; }
+    const sameRow = level[l.s] === level[l.t];
+    const sy = A.y + NH;
+    const bands = sameRow ? crossedBands(sy, sy + 1) : crossedBands(B.y - 1, B.y);
+    const band = bands.length ? bands[0] : -1;
+    bandOf.push(band); busOf.push(band);
+    if (band >= 0) busTotal[band] = (busTotal[band] || 0) + 1;
+  });
+  // sequential slot per band: nth edge in a band gets slot n
+  {
+    const seen = [];
+    bandOf.forEach((b, i) => {
+      if (b < 0) return;
+      busOf[i] = seen[b] = (seen[b] === undefined ? 0 : seen[b] + 1);
+    });
+  }
   ctx.lineWidth = 1.5;
   ctx.globalAlpha = 0.85;
-  edges.forEach(l => {
+  edges.forEach((l, ei) => {
     const A = place.get(l.s), B = place.get(l.t);
     if (!A || !B) return;
     const sy = A.y + NH;                              // source bottom
     const sameRow = level[l.s] === level[l.t];
     const ty = sameRow ? B.y + NH : B.y;              // entry y on the target
-    // bus y: staggered slot inside the detour band so parallel runs
-    // ride distinct lines instead of drawing one thick line
-    const band = sameRow ? crossedBands(sy, sy + 1)[0] : crossedBands(B.y - 1, B.y)[0];
+    // bus y: this edge's own slot inside the detour band
+    const band = bandOf[ei];
     let yCh = sameRow ? sy + (rowH - NH) / 2 : (sy + B.y) / 2;
-    if (band !== undefined && gapY[band]) {
+    if (band >= 0 && gapY[band]) {
       const gy = gapY[band], bh = gy.y1 - gy.y0;
-      yCh = gy.y0 + bh * (((busCnt[band] = (busCnt[band] || 0) + 1) - 1) % 4 + 0.5) / 4;
+      yCh = gy.y0 + bh * (busOf[ei] + 0.5) / busTotal[band];
     }
     const sx = freeX(A.x + A.w / 2, Math.min(sy, yCh), Math.max(sy, yCh));
     claimLane(sx, sy, yCh);
@@ -2994,9 +3014,14 @@ function drawMapPane() {
     claimLane(tx, yCh, ty);
     const dir = tx >= sx ? 1 : -1;
     const ch = Math.max(0, Math.min(8, Math.abs(tx - sx) / 2, (yCh - sy) / 2, (yCh - ty) / 2));
-    const c = mapCols(nodes[l.s].cluster);
-    ctx.strokeStyle = c.s;
-    ctx.fillStyle = c.s;
+    // gradient source hue -> target hue: shared-cluster edges still
+    // separate visually and the color itself carries the direction
+    const cS = mapCols(nodes[l.s].cluster), cT = mapCols(nodes[l.t].cluster);
+    const grad = ctx.createLinearGradient(A.x + A.w / 2, sy, tx, ty);
+    grad.addColorStop(0, cS.s);
+    grad.addColorStop(1, cT.s);
+    ctx.strokeStyle = grad;
+    ctx.fillStyle = cT.s;
     ctx.beginPath();
     ctx.moveTo(A.x + A.w / 2, sy);
     ctx.lineTo(sx, sy);                               // jog along the box bottom to the lane
