@@ -230,6 +230,97 @@ def run_tests():
         # pointer still parked on the fn box -> capture the stalk evidence
         page.screenshot(path=str(ROOT / "tests" / "qa_stalk.png"), scale="css", type="png")
 
+        # 5aa. aggregate fn box ('n×') click opens the fn picker over that
+        # file's roster (ranked by incident-wire count then name) — NOT the
+        # empty-name fn panel. Data-gated: needs a file owning > AGG_MAX (6)
+        # wired fns in the focused set.
+        pick = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const agg = d.fnMeta.find(m => m.count);
+                 if (!agg) return null;
+                 const v = new d.THREE.Vector3(agg.p[0], agg.p[1], agg.p[2]).project(d.camera);
+                 const r = d.renderer.domElement.getBoundingClientRect();
+                 return { sx: (v.x*0.5+0.5)*r.width + r.left,
+                          sy: (-v.y*0.5+0.5)*r.height + r.top,
+                          path: d.nodes[agg.file].path, fi: agg.file }; }"""
+        )
+        if not pick:
+            print("SKIP fn picker — no aggregate fn box in this focus")
+        else:
+            # dispatch on the canvas (harness convention): a real mouse move
+            # can be swallowed by DOM labels (.hub pills take pointer events)
+            page.evaluate(
+                """(s) => { const el = window.__dbg.renderer.domElement;
+                     const o = { clientX: s.sx, clientY: s.sy, bubbles: true };
+                     el.dispatchEvent(new PointerEvent('pointermove', o));
+                     el.dispatchEvent(new PointerEvent('pointerdown', o));
+                     el.dispatchEvent(new PointerEvent('pointerup', o));
+                     el.dispatchEvent(new MouseEvent('click', o)); }""", pick)
+            page.wait_for_timeout(300)
+            pk = page.evaluate(
+                """(s) => { const d = window.__dbg;
+                     const el = document.getElementById('fnPick');
+                     if (!el || el.style.display !== 'block') return { fail: 'picker did not open' };
+                     const rows = [...el.querySelectorAll('.row')];
+                     if (!rows.length) return { fail: 'picker has no rows' };
+                     const inc = new Map();
+                     (d.mwires || []).forEach(w => {
+                       if (w[1] === s.fi) inc.set(w[2], (inc.get(w[2]) || 0) + 1);
+                       if (w[3] === s.fi) inc.set(w[4], (inc.get(w[4]) || 0) + 1); });
+                     const want = (d.fns[s.path] || [])
+                       .map(r => [r[0], r[1], inc.get(r[0]) || 0])
+                       .sort((a, b) => (b[2] - a[2]) ||
+                         (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+                       .slice(0, 80)
+                       .map(r => r[0] + '  :' + r[1]);
+                     return { got: rows.map(r => r.textContent), want }; }""", pick)
+            check("fn picker opens on aggregate chip click",
+                  "fail" not in pk and pk["got"] == pk["want"], str(pk)[:200])
+            # ESC while the picker is OPEN: picker-only close, focus survives
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(200)
+            check("esc closes fn picker",
+                  page.evaluate(
+                      "() => document.getElementById('fnPick').style.display") == "none")
+            # reopen, then a row click = the same fn panel as that fn box
+            # (in-page dispatch: the picker itself must not fight overlays)
+            page.evaluate(
+                """(s) => { const el = window.__dbg.renderer.domElement;
+                     const o = { clientX: s.sx, clientY: s.sy, bubbles: true };
+                     el.dispatchEvent(new PointerEvent('pointermove', o));
+                     el.dispatchEvent(new PointerEvent('pointerdown', o));
+                     el.dispatchEvent(new PointerEvent('pointerup', o));
+                     el.dispatchEvent(new MouseEvent('click', o)); }""", pick)
+            page.wait_for_timeout(300)
+            page.evaluate(
+                """() => document.querySelector('#fnPick .row')
+                     .dispatchEvent(new MouseEvent('click', { bubbles: true }))""")
+            page.wait_for_timeout(300)
+            fn_info = page.evaluate(
+                """() => ({ open: document.getElementById('info').style.display === 'block',
+                     title: document.getElementById('iTitle').textContent })""")
+            check("fn picker row opens fn panel",
+                  fn_info["open"] and fn_info["title"].endswith("()"), str(fn_info))
+
+        # 5aab. aggregate fn boxes keep sphere clearance like individual
+        # boxes: they ride the OUTER arc ring (arcR+12), never tucked against
+        # the owner sphere surface.
+        sc = page.evaluate(
+            """() => { const d = window.__dbg;
+                 let aggMin = Infinity, indMin = Infinity;
+                 for (const m of d.fnMeta) {
+                   const dx = m.p[0]-d.pos[m.file*3], dy = m.p[1]-d.pos[m.file*3+1], dz = m.p[2]-d.pos[m.file*3+2];
+                   const clr = Math.sqrt(dx*dx+dy*dy+dz*dz) -
+                     d.sizes[m.file] * 1.1 * Math.sqrt(d.spread);
+                   if (m.count) aggMin = Math.min(aggMin, clr);
+                   else if (!m.agg) indMin = Math.min(indMin, clr);
+                 }
+                 return { agg: aggMin === Infinity ? -1 : +aggMin.toFixed(1),
+                          ind: indMin === Infinity ? -1 : +indMin.toFixed(1) }; }"""
+        )
+        check("aggregate fn boxes keep sphere clearance",
+              sc["agg"] < 0 or (sc["agg"] >= 24 and sc["ind"] >= 13), str(sc))
+
         # 5b. hover a lit neighbor while focused -> tooltip shows BFS path to seed
         hop = page.evaluate(
             """() => { const d = window.__dbg;
@@ -362,6 +453,10 @@ def run_tests():
             """(s) => { const d = window.__dbg;
                  return { hub: d.alphaTgt[s.hub], nb: d.alphaTgt[s.nb], far: d.alphaTgt[s.far] }; }""",
             grey_setup)
+        grey_labs_on = page.evaluate(
+            """() => ["hubs", "clabs", "flabs"].map(id =>
+                 document.getElementById(id).style.opacity)"""
+        )
         page.screenshot(path=str(ROOT / "tests" / "qa_grey.png"), scale="css", type="png")
         page.evaluate(
             """() => window.__dbg.renderer.domElement.dispatchEvent(
@@ -372,6 +467,10 @@ def run_tests():
             """(s) => { const d = window.__dbg;
                  return { hubTgt: d.alphaTgt[s.hub], farBack: d.alphaTgt[s.far] }; }""",
             grey_setup)
+        grey_labs_back = page.evaluate(
+            """() => ["hubs", "clabs", "flabs"].map(id =>
+                 document.getElementById(id).style.opacity)"""
+        )
         check("hover greys non-neighbors",
               bool(grey_setup) and "fail" not in grey_setup
               and grey_on.get("hub", 0) > 0.9
@@ -379,6 +478,10 @@ def run_tests():
               and grey_on.get("far", 1) <= 0.13
               and grey_back.get("farBack", 0) > 0.9,
               f"on {grey_on} / back {grey_back}")
+        check("greyout dims hub/cluster labels and restores",
+              grey_labs_on == ["0.25", "0.25", "0.25"]
+              and grey_labs_back == ["", "", ""],
+              f"on {grey_labs_on} / back {grey_labs_back}")
 
         # 5c. cluster chip isolate -> camera tweens to frame the island
         # (clear focus first so chips act on the overview)
@@ -588,6 +691,13 @@ def run_tests():
                          memHidden, dposOk, cx: info.cx, cy: info.cy, cz: info.cz });
                  }, 500); })"""
         )
+        # 5fb. crosstalk corridor labels must not outlive their arcs: hidden
+        # while a collapse is active, back after uncollapse
+        xt_state = page.evaluate(
+            """() => { const labs = [...document.querySelectorAll('.xtlab')];
+                 return { n: labs.length,
+                          hidden: labs.every(el => el.style.display === 'none') }; }"""
+        )
         if not (sup and "skip" in sup) and sup and "fail" not in sup:
             page.screenshot(path=str(ROOT / "tests" / "qa_collapse.png"), scale="css", type="png")
         sup2 = page.evaluate(
@@ -603,9 +713,18 @@ def run_tests():
                          want: (window.__supMems || []).length });
                  }, 500); })"""
         )
+        xt_back = page.evaluate(
+            """() => { const labs = [...document.querySelectorAll('.xtlab')];
+                 return { n: labs.length,
+                          shown: labs.filter(el => el.style.display === 'block').length }; }"""
+        )
         if sup and "skip" in sup:
             print(f"SKIP supernode collapse — {sup.get('skip')}")
         else:
+            check("crosstalk labels hide while collapsed",
+                  xt_state["n"] == 0 or xt_state["hidden"], str(xt_state))
+            check("crosstalk labels return after uncollapse",
+                  xt_back["n"] == 0 or xt_back["shown"] > 0, str(xt_back))
             check("supernode collapse re-targets and restores",
                   bool(sup) and "fail" not in sup
                   and sup.get("collapsed") and not sup2.get("collapsed2")
@@ -613,6 +732,88 @@ def run_tests():
                   and sup.get("dposOk") == sup.get("mems")
                   and sup2.get("restored") == sup2.get("want"),
                   f"{sup} / {sup2}")
+
+        # 5g. wire hover: pointer over an edge names its strongest named wire
+        # ('A::sfn -> B::dfn' from DATA.mwires). Data-gated on mwires + an
+        # on-screen probeable edge.
+        wtip = page.evaluate(
+            """() => { const d = window.__dbg;
+                 if (!(d.mwires || []).length) return null;
+                 const r = d.renderer.domElement.getBoundingClientRect();
+                 for (let i = 0; i < d.links.length; i++) {
+                   const l = d.links[i];
+                   if (d.hwSlot[i] >= 0) continue;   // straight slots only
+                   if (d.alphaTgt[l.s] <= 0.5 || d.alphaTgt[l.t] <= 0.5) continue;
+                   const arr = d.bucketPosIB[d.bucketOf[i]].array, o = d.slotOf[i] * 6;
+                   if (Math.abs(arr[o] - arr[o+3]) + Math.abs(arr[o+1] - arr[o+4]) < 2) continue;
+                   const mx = (arr[o] + arr[o+3]) / 2, my = (arr[o+1] + arr[o+4]) / 2, mz = (arr[o+2] + arr[o+5]) / 2;
+                   const vm = new d.THREE.Vector3(mx, my, mz).project(d.camera);
+                   if (Math.abs(vm.x) > 0.85 || Math.abs(vm.y) > 0.85 || vm.z > 1) continue;
+                   const px = p => [(p.x*0.5+0.5)*r.width, (-p.y*0.5+0.5)*r.height];
+                   const vs = px(new d.THREE.Vector3(d.pos[l.s*3], d.pos[l.s*3+1], d.pos[l.s*3+2]).project(d.camera));
+                   const vt = px(new d.THREE.Vector3(d.pos[l.t*3], d.pos[l.t*3+1], d.pos[l.t*3+2]).project(d.camera));
+                   const mp = px(vm);
+                   // clear of both endpoints so the node tooltip can't win
+                   if (Math.hypot(mp[0]-vs[0], mp[1]-vs[1]) < 40 ||
+                       Math.hypot(mp[0]-vt[0], mp[1]-vt[1]) < 40) continue;
+                   let has = false;
+                   (d.mwires || []).forEach(w => {
+                     if ((w[1] === l.s && w[3] === l.t) ||
+                         (w[1] === l.t && w[3] === l.s)) has = true; });
+                   if (!has) continue;
+                   return { sx: mp[0] + r.left, sy: mp[1] + r.top, s: l.s, t: l.t };
+                 }
+                 return null; }"""
+        )
+        if wtip:
+            # harness convention: dispatch on the canvas (real mouse moves
+            # can be swallowed by DOM labels); park off-canvas first so no
+            # node tooltip lingers
+            page.evaluate(
+                """(s) => { const el = window.__dbg.renderer.domElement;
+                     el.dispatchEvent(new PointerEvent('pointermove',
+                       { clientX: -500, clientY: -500, bubbles: true }));
+                     el.dispatchEvent(new PointerEvent('pointermove',
+                       { clientX: s.sx, clientY: s.sy, bubbles: true })); }""",
+                wtip)
+            page.wait_for_timeout(300)
+            # expectation: whichever edge the raycast resolves FIRST (dense
+            # scenes have parallel strands under the cursor), and the top
+            # named wire on that pair
+            wres = page.evaluate(
+                """(s) => { const d = window.__dbg, tip = document.getElementById('tip');
+                     const rc = d.raycaster;
+                     rc.setFromCamera(new d.THREE.Vector2((s.sx/innerWidth)*2-1,
+                       -(s.sy/innerHeight)*2+1), d.camera);
+                     let want = null;
+                     for (const h of rc.intersectObjects(d.bucketMesh)) {
+                       const li = d.linkOfSeg(d.bucketMesh.indexOf(h.object), h.faceIndex);
+                       if (li < 0) continue;
+                       const l = d.links[li];
+                       if (d.linkFiltered(l) || !d.typeVisible(l.ty) ||
+                           (d.alphaTgt[l.s] < 0.05 && d.alphaTgt[l.t] < 0.05)) continue;
+                       const pair = (d.mwires || []).filter(w =>
+                         (w[1] === l.s && w[3] === l.t) || (w[1] === l.t && w[3] === l.s));
+                       if (pair.length) {
+                         const deg = new Map();
+                         pair.forEach(w => deg.set(w[3] + '::' + w[4],
+                           (deg.get(w[3] + '::' + w[4]) || 0) + 1));
+                         pair.sort((a, b) => (deg.get(b[3] + '::' + b[4]) || 0) -
+                           (deg.get(a[3] + '::' + a[4]) || 0) ||
+                           (a[4] < b[4] ? -1 : a[4] > b[4] ? 1 : 0));
+                         want = d.nodes[pair[0][1]].label + '::' + pair[0][2] +
+                           ' \\u2192 ' + d.nodes[pair[0][3]].label + '::' + pair[0][4];
+                       }
+                       break;
+                     }
+                     return { shown: tip.style.display === 'block',
+                              text: tip.textContent, want }; }""",
+                wtip)
+            check("wire tooltip on edge hover",
+                  wres["shown"] and wres["want"] and wres["text"] == wres["want"],
+                  str(wres))
+        else:
+            print("SKIP wire tooltip — no probeable on-screen wired edge")
 
         # 6. git-churn channel: DATA.hot normalized 0..1, size boost applied
         # to the hottest file, cold files untouched, caption notes the channel.

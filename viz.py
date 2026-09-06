@@ -1069,16 +1069,20 @@ _TEMPLATE = r"""<!DOCTYPE html>
     overflow-y:auto; }
   #mapList h3 { margin:0 0 6px; font-size:11px; font-weight:600; color:#1de9b6;
     word-break:break-all; }
-  #mapList .row, #mapPick .row { padding:2px 4px; border-radius:4px;
+  #mapList .row, #mapPick .row, #fnPick .row { padding:2px 4px; border-radius:4px;
     cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  #mapList .row:hover, #mapPick .row:hover { background:#1de9b61a; color:#1de9b6; }
-  #mapPick { position:absolute; display:none; pointer-events:auto;
+  #mapList .row:hover, #mapPick .row:hover, #fnPick .row:hover {
+    background:#1de9b61a; color:#1de9b6; }
+  #mapPick, #fnPick { display:none; pointer-events:auto;
     background:rgba(8,12,16,.95); border:1px solid #263238; border-radius:8px;
     padding:8px; width:250px; max-height:40vh; overflow-y:auto; }
-  #mapPick input { width:100%; box-sizing:border-box; background:#0b1116;
+  #mapPick { position:absolute; }
+  /* fn picker rides the 3D view: body-level fixed, viewport coords */
+  #fnPick { position:fixed; z-index:6; }
+  #mapPick input, #fnPick input { width:100%; box-sizing:border-box; background:#0b1116;
     color:#cfd8dc; border:1px solid #263238; border-radius:5px; padding:4px 6px;
     outline:none; font:inherit; margin-bottom:6px; }
-  #mapPick input:focus { border-color:#1de9b688; }
+  #mapPick input:focus, #fnPick input:focus { border-color:#1de9b688; }
   </style>
 </head>
 <body>
@@ -1399,6 +1403,10 @@ const _dummy = new THREE.Object3D();
 const _col = new THREE.Color();
 function syncFileMesh() {
   // fn-ownership: while a fn box is hovered its owning file lifts hard
+  // stale pick guard: fnMeta is rebuilt/cleared by rebuildFnLayer (focus
+  // cleared, collapse, fn toggle) — a hoveredFn pointing past it would
+  // crash this per-frame read and kill the tick loop
+  if (hoveredFn >= 0 && !fnMeta[hoveredFn]) hoveredFn = -1;
   const fnOwner = hoveredFn >= 0 ? fnMeta[hoveredFn].file : -1;
   for (let i = 0; i < N; i++) {
     const a = alphaArr[i];
@@ -1567,6 +1575,27 @@ const bucketPosIB = [], bucketColIB = [], bucketMat = [], bucketMesh = [];
     bucketMesh.push(mesh);   // dash distances are computed on the LineSegments2
   });
 }
+// wire-hover reverse maps: LineSegments2.raycast reports faceIndex = the
+// segment index inside its bucket geometry. Straight links own one segment
+// each (slotOf), highway arcs own 16 (hwSlot is the FLOAT base -> base
+// segment = hwSlot/6). Static slot layout, built once.
+const segLink = [[], [], []];   // per bucket: straight segment ix -> link ix
+const segArc = new Map();       // "bucket_baseSeg" -> link ix
+links.forEach((l, i) => {
+  const b = bucketOf[i];
+  if (hwSlot[i] >= 0) segArc.set(b + "_" + (hwSlot[i] / 6), i);
+  else segLink[b][slotOf[i]] = i;
+});
+function linkOfSeg(b, seg) {
+  if (segLink[b][seg] !== undefined) return segLink[b][seg];
+  for (const [k, li] of segArc) {
+    const us = k.indexOf("_");
+    if (+k.slice(0, us) !== b) continue;
+    const base = +k.slice(us + 1);
+    if (seg >= base && seg < base + 16) return li;
+  }
+  return -1;
+}
 // focus-mode dash-flow (direction cue): world-units/s of dashOffset travel,
 // re-read each tick
 const FLOW_SPEED = 2.5;
@@ -1719,6 +1748,14 @@ function syncEdgePos() {
     a[o+3] = dpos[t] - ndx * trimT + ox; a[o+4] = dpos[t+1] - ndy * trimT + oy; a[o+5] = dpos[t+2] - ndz * trimT;
   });
   bucketPosIB.forEach(ib => { ib.needsUpdate = true; });
+  // Line2 raycast short-circuits on geometry.boundingSphere AND
+  // geometry.boundingBox — an init-time compute cached degenerate ones over
+  // the empty buffers, so invalidate and let the next raycast rebuild them
+  // from live positions
+  bucketMesh.forEach(mesh => {
+    mesh.geometry.boundingSphere = null;
+    mesh.geometry.boundingBox = null;
+  });
   // dash support: lineDistance attributes must track every geometry
   // rewrite, but only USE_DASH reads them - and every edgeFlowOn false->true
   // transition flows through the applyVisibility() call that just ran this
@@ -2034,8 +2071,11 @@ const tip = document.getElementById("tip");
 const crumb = document.getElementById("crumb");
 const esc = s => String(s).replace(/[&<>"]/g,
   ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" })[ch]);
-const raycaster = new THREE.Raycaster();
-const mouse = new THREE.Vector2();
+  const raycaster = new THREE.Raycaster();
+  // fat-line picking: LineSegments2.raycast reads params.Line2.threshold
+  // (screen-space px, stacked on material.linewidth). ~4px forgiveness.
+  raycaster.params.Line2 = { threshold: 4 };
+  const mouse = new THREE.Vector2();
 const _pickV = new THREE.Vector3();   // scratch for screen-space pick accuracy
   let hovered = -1, hoveredFn = -1;
   // hover greyout (Cosmograph pattern): hovering a node greys everything
@@ -2389,7 +2429,10 @@ let xtLabs = [];
   });
 })();
 function updateXtLabels() {
-  const overview = !focusSeeds.size && !query &&
+  // collapse hides crosstalk labels too: the arcs they annotate re-target to
+  // supernode centroids, so the "A - B ×n" captions would float over merged
+  // piles pointing at nothing
+  const overview = !collapsed && !focusSeeds.size && !query &&
     camera.position.distanceTo(controls.target) >= lodDist;
   if (!overview) {
     xtLabs.forEach(k => { k.el.style.display = "none"; });
@@ -2698,8 +2741,12 @@ function rebuildFnLayer(focusing) {
     // entry with count=n.
     if (n > AGG_MAX) {
       for (const ix of arr) fnMeta[ix].agg = true;
+      // sphereClear parity: individual boxes ride rings arcR..arcR+12; the
+      // aggregate takes the OUTER ring (arcR+12) so a big owner sphere plus
+      // its hover lift never swallows it
       aggs.push({ file: fi, count: n,
-        p: [pos[fi*3] + Math.cos(th) * arcR, pos[fi*3+1], pos[fi*3+2] + Math.sin(th) * arcR] });
+        p: [pos[fi*3] + Math.cos(th) * (arcR + 12), pos[fi*3+1],
+            pos[fi*3+2] + Math.sin(th) * (arcR + 12)] });
     }
   }
   for (const ag of aggs) {
@@ -2931,6 +2978,14 @@ const MGLYPH = {
 // named-wire rows (spec section 0): [ty, sf, sfn, df, dfn, line, extra]
 const mwires = DATA.mwires || [];
 const mfns = DATA.fns || {};                // path -> [[fn, line], ...]
+// wire degree (callee / caller in-degree over ALL rows): rank for the 3D
+// wire-hover tooltip's "strongest wire" pick (map F14 rank family)
+const wireDeg = new Map(), wireSrcDeg = new Map();
+mwires.forEach(w => {
+  const dk = w[3] + "::" + w[4], sk = w[1] + "::" + w[2];
+  wireDeg.set(dk, (wireDeg.get(dk) || 0) + 1);
+  wireSrcDeg.set(sk, (wireSrcDeg.get(sk) || 0) + 1);
+});
 let mapVisible = false;
 let mapZ = 0, mapPX = 0, mapPY = 0;      // view: zoom + pan over the world
 let mapDrag = null, mapDragged = false;
@@ -2973,9 +3028,11 @@ const mapPickRows = mapOvEl.querySelector("#mapPick .rows");
 let mapPickRc = null;
 function mapTipHide() { mapTipEl.style.display = "none"; }
 function mapClosePick() { mapPickEl.style.display = "none"; mapPickRc = null; }
-// ESC priority (section 8): picker, then pinned list, then the L3 freeze
+// ESC priority (section 8): picker (fn picker first, then map picker),
+// then pinned list, then the L3 freeze
 function mapOvCloseOne() {
   let closed = false;
+  if (fnPickEl.style.display === "block") { fnClosePick(); closed = true; }
   if (mapPickEl.style.display === "block") { mapClosePick(); closed = true; }
   if (mapListEl.style.display === "block") { mapListEl.style.display = "none"; closed = true; }
   if (mapFrozenIx >= 0) { mapFrozenIx = -1; closed = true; drawMapPane(); }
@@ -3086,6 +3143,57 @@ function mapOpenPicker(rc) {
 mapPickIn.addEventListener("input", () => mapPickFill(mapPickIn.value));
 mapPickIn.addEventListener("keydown", e => {
   if (e.key === "Escape") { e.stopPropagation(); mapClosePick(); }
+});
+// fn picker over the 3D view: clicking a per-file aggregate fn box ('n×')
+// must not call showFnInfo with an empty fn name — it opens this picker
+// listing the file's full roster (DATA.fns), ranked by incident-wire count
+// then name; a row click = the same fn panel as clicking that fn box
+// (mapShowFn covers roster fns that have no fnMeta box). Styling is
+// #mapPick's via the shared selectors above.
+const fnPickEl = document.createElement("div");
+fnPickEl.id = "fnPick";
+fnPickEl.innerHTML = '<input placeholder="filter fns..."><div class="rows"></div>';
+document.body.appendChild(fnPickEl);
+const fnPickIn = fnPickEl.querySelector("input");
+const fnPickRows = fnPickEl.querySelector(".rows");
+let fnPickFile = -1;
+function fnClosePick() { fnPickEl.style.display = "none"; fnPickFile = -1; }
+function fnPickFill(q) {
+  if (fnPickFile < 0) return;
+  const fi = fnPickFile;
+  const inc = new Map();   // fn -> incident wire count (calls in + out)
+  mwires.forEach(w => {
+    if (w[1] === fi) inc.set(w[2], (inc.get(w[2]) || 0) + 1);
+    if (w[3] === fi) inc.set(w[4], (inc.get(w[4]) || 0) + 1);
+  });
+  fnPickRows.innerHTML = "";
+  const ql = q.toLowerCase();
+  (mfns[nodes[fi].path] || [])
+    .filter(r => !ql || r[0].toLowerCase().includes(ql))
+    .map(r => [r[0], r[1], inc.get(r[0]) || 0])
+    .sort((a, b) => (b[2] - a[2]) ||
+      (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .slice(0, 80)
+    .forEach(r => {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.textContent = r[0] + "  :" + r[1];
+      row.onclick = () => { fnClosePick(); mapShowFn(fi, r[0]); };
+      fnPickRows.appendChild(row);
+    });
+}
+function openFnPicker(fi, x, y) {
+  fnPickFile = fi;
+  fnPickFill("");
+  fnPickEl.style.left = Math.max(4, Math.min(x, innerWidth - 270)) + "px";
+  fnPickEl.style.top = Math.max(4, Math.min(y, innerHeight - 40)) + "px";
+  fnPickEl.style.display = "block";
+  fnPickIn.value = "";
+  setTimeout(() => fnPickIn.focus(), 0);
+}
+fnPickIn.addEventListener("input", () => fnPickFill(fnPickIn.value));
+fnPickIn.addEventListener("keydown", e => {
+  if (e.key === "Escape") { e.stopPropagation(); fnClosePick(); }
 });
 function mapRender() {
   if (!mapVisible) return;
@@ -4189,20 +4297,28 @@ function fnStalkHide() { if (fnStalk) fnStalk.visible = false; }
 // / linkGreyoutOpacity 0.1) — dim everything outside the hovered node's 1-hop
 // neighborhood instead of waiting for a click. Grey, not hidden: structure
 // stays on screen, the eye gets an instant "what relates to this".
+// greyout also dims the DOM label layers (hub pills, cluster names, focus
+// labels): labels at full ink floating over a greyed scene read as
+// un-greyed content
+const greyLabelEls = ["hubs", "clabs", "flabs"].map(id => document.getElementById(id));
+function greyLabelsDim(on) {
+  greyLabelEls.forEach(el => { el.style.opacity = on ? 0.25 : ""; });
+}
 function hoverGrey(i) {
   if (i === hoverGreyIdx) return;
   if (pointerDown || focusActive || deadOnly || query) {
-    if (hoverGreyIdx >= 0) { hoverGreyIdx = -1; applyVisibility(); }
+    if (hoverGreyIdx >= 0) { hoverGreyIdx = -1; applyVisibility(); greyLabelsDim(false); }
     return;
   }
   if (i >= 0 && alphaTgt[i] <= 0.5) i = -1;   // can't grey around a ghost
   if (i < 0) {
-    if (hoverGreyIdx >= 0) { hoverGreyIdx = -1; applyVisibility(); }
+    if (hoverGreyIdx >= 0) { hoverGreyIdx = -1; applyVisibility(); greyLabelsDim(false); }
     return;
   }
   // full baseline first (restores any previous grey), then dim to 0.12
   hoverGreyIdx = -1;
   applyVisibility();
+  greyLabelsDim(true);
   hoverGreyIdx = i;
   const lit = new Set([i]);
   (adj[i] || []).forEach(j => lit.add(j));
@@ -4275,6 +4391,36 @@ renderer.domElement.addEventListener("pointermove", e => {
       txt += "\n→ seed: " + shown;
     }
   }
+  // wire hover: no node under the cursor -> raycast the edge buckets and
+  // name the strongest named wire on that file pair ('A::sfn -> B::dfn').
+  // Suppressed while focus mode is active (its tooltips + dash-flow own the
+  // scene) and while dragging. Filtered/ghost edges never match.
+  if (!txt && !focusActive && !pointerDown && mwires.length) {
+    for (const h of raycaster.intersectObjects(bucketMesh)) {
+      const li = linkOfSeg(bucketMesh.indexOf(h.object), h.faceIndex);
+      if (li < 0) continue;
+      const l = links[li];
+      if (linkFiltered(l) || !typeVisible(l.ty) ||
+          (alphaTgt[l.s] < 0.05 && alphaTgt[l.t] < 0.05)) continue;
+      const pair = [];
+      mwires.forEach(w => {
+        if ((w[1] === l.s && w[3] === l.t) || (w[1] === l.t && w[3] === l.s)) pair.push(w);
+      });
+      if (pair.length) {
+        // highest-weight wire: callee in-degree, then caller in-degree,
+        // then names/line for determinism
+        pair.sort((a, b) =>
+          (wireDeg.get(b[3] + "::" + b[4]) || 0) - (wireDeg.get(a[3] + "::" + a[4]) || 0) ||
+          (wireSrcDeg.get(b[1] + "::" + b[2]) || 0) - (wireSrcDeg.get(a[1] + "::" + a[2]) || 0) ||
+          (a[4] < b[4] ? -1 : a[4] > b[4] ? 1 : 0) ||
+          (a[2] < b[2] ? -1 : a[2] > b[2] ? 1 : 0) ||
+          (a[5] - b[5]));
+        txt = nodes[pair[0][1]].label + "::" + pair[0][2] +
+          " → " + nodes[pair[0][3]].label + "::" + pair[0][4];
+      }
+      break;
+    }
+  }
   if (txt) {
     tip.style.display = "block";
     tip.style.left = (e.clientX+14)+"px"; tip.style.top = (e.clientY+14)+"px";
@@ -4290,6 +4436,7 @@ let pointerDown = false, overCanvas = false;
 renderer.domElement.addEventListener("pointerdown", e => {
   downX = e.clientX; downY = e.clientY;
   pointerDown = true;
+  fnClosePick();   // canvas input closes the fn picker (map picker parity)
   camTween = null;   // user grab beats the tween
   if (hovered < 0 && hoveredFn < 0) renderer.domElement.style.cursor = "grabbing";
 });
@@ -4319,7 +4466,14 @@ function focusSeedsCamera() {
 }
 renderer.domElement.addEventListener("click", e => {
   if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
-  if (hoveredFn >= 0) { showFnInfo(hoveredFn); return; }
+  if (hoveredFn >= 0) {
+    // aggregate box ('n×') has no single fn behind it: open the picker over
+    // that file's roster instead of showFnInfo with an empty fn name
+    const fm = fnMeta[hoveredFn];
+    if (fm.count) openFnPicker(fm.file, e.clientX, e.clientY);
+    else showFnInfo(hoveredFn);
+    return;
+  }
   if (hovered >= 0) {
     if (e.shiftKey && focusSeeds.size) {
       // shift-click stacks focus roots (click a selected root to drop it);
@@ -4365,6 +4519,7 @@ renderer.domElement.style.cursor = "grab";
 // debug handle last: everything it captures is initialized by here
 window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE, sizes, degree,
   meta: DATA.meta, controls, get spinEnabled() { return spinEnabled; }, get hubCap() { return hubCapNow; },
+  fns: DATA.fns || {},
   alpha: alphaArr, alphaTgt, hoverScale, hot, bucketMat, bucketOf, hwSlot, bucketPosIB, bucketColIB, slotOf,
   adjOut, adjIn, adj, outDeg, inDeg, get dirMode() { return dirMode; }, focusSeeds, level,
   get camTween() { return camTween; }, get focusStack() { return focusStack; },
@@ -4380,6 +4535,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnStalk() { return fnStalk; },
   syncFileMesh,
   mapPane: { canvas: mapPane, draw: drawMapPane },
+  get bucketMesh() { return bucketMesh; }, linkOfSeg, raycaster, linkFiltered, typeVisible,
   mwires, mapInfo, get mapVars() { return mapVarsOn; }, mapExpandUser };
 tick();
 </script>
