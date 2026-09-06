@@ -522,14 +522,24 @@ def run_tests():
                            dz = d.dpos[j*3+2] - info.cz;
                      if (Math.sqrt(dx*dx + dy*dy + dz*dz) < 1) dposOk++;
                    }
-                   const snap = { collapsed: d.collapsed, mems: mems.length,
-                                  memHidden, dposOk };
-                   b.click();
-                   setTimeout(() => {
-                     let restored = 0;
-                     for (const j of mems) if (d.alphaTgt[j] > 0.5) restored++;
-                     res({ ...snap, collapsed2: d.collapsed, restored });
-                   }, 500);
+                   window.__supMems = mems;
+                   res({ collapsed: d.collapsed, mems: mems.length,
+                         memHidden, dposOk, cx: info.cx, cy: info.cy, cz: info.cz });
+                 }, 500); })"""
+        )
+        if not (sup and "skip" in sup) and sup and "fail" not in sup:
+            page.screenshot(path=str(ROOT / "tests" / "qa_collapse.png"), scale="css", type="png")
+        sup2 = page.evaluate(
+            """() => new Promise(res => { const d = window.__dbg;
+                 const b = document.getElementById('bCollapse');
+                 if (!d.collapsed) return res({ state: 'already restored' });
+                 b.click();
+                 setTimeout(() => {
+                   let restored = 0;
+                   for (const j of (window.__supMems || []))
+                     if (d.alphaTgt[j] > 0.5) restored++;
+                   res({ collapsed2: d.collapsed, restored,
+                         want: (window.__supMems || []).length });
                  }, 500); })"""
         )
         if sup and "skip" in sup:
@@ -537,11 +547,11 @@ def run_tests():
         else:
             check("supernode collapse re-targets and restores",
                   bool(sup) and "fail" not in sup
-                  and sup.get("collapsed") and not sup.get("collapsed2")
+                  and sup.get("collapsed") and not sup2.get("collapsed2")
                   and sup.get("memHidden") == sup.get("mems")
                   and sup.get("dposOk") == sup.get("mems")
-                  and sup.get("restored") == sup.get("mems"),
-                  str(sup))
+                  and sup2.get("restored") == sup2.get("want"),
+                  f"{sup} / {sup2}")
 
         # 6. git-churn channel: DATA.hot normalized 0..1, size boost applied
         # to the hottest file, cold files untouched, caption notes the channel.
