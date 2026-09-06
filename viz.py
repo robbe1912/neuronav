@@ -11,6 +11,7 @@ Usage:  python viz.py            # writes graph.html next to this file
 
 from __future__ import annotations
 
+import os
 import json
 import subprocess
 import sys
@@ -316,10 +317,13 @@ def _build_data() -> dict:
     # a failed offline pass aborts the build loudly.
     pos_baked = None
     depths, cyc_ids = _strata_analysis(len(nodes), links)
+    # churn boost is part of the rendered radius - the overlap relax MUST
+    # use the same radii the browser draws or hot files overlap neighbors
+    hot = _churn_hot([nd["path"] for nd in nodes])
     try:
         pos_baked = _layout(
             len(nodes), links, sims, [nd["cluster"] for nd in nodes],
-            ckeys=ckeys, cmat=cmat, depths=depths,
+            ckeys=ckeys, cmat=cmat, depths=depths, hot=hot,
         )
     except Exception as e:
         raise RuntimeError(f"offline layout failed: {e}") from e
@@ -357,6 +361,17 @@ def _build_data() -> dict:
                 # chord offscreen at close zoom (bow apex = half this value)
                 ch = P[l["t"]] - P[l["s"]]
                 chl = float(_np.linalg.norm(ch))
+                # radial-out bias: corridors that cut through the galaxy
+                # core (centroid-midpoint pull aims them there) pass over
+                # the hub pile and re-create the hairball under additive
+                # blending. Bow them outward around the core instead; a
+                # corridor whose midpoint sits AT the core gets no radial
+                # direction, so fall back to the chord perpendicular.
+                out = mid - P.mean(axis=0)
+                out[1] = 0.0
+                ol = float(_np.linalg.norm(out))
+                if ol > 40.0:
+                    ctrl = ctrl + (out / ol) * min(40.0 + 0.30 * ol, 260.0)
                 perp = _np.cross(ch, [0.0, 0.0, 1.0])
                 pl = float(_np.linalg.norm(perp))
                 if pl < 0.001:
@@ -364,6 +379,8 @@ def _build_data() -> dict:
                 else:
                     perp = perp / pl
                 ctrl = ctrl + perp * min(chl * 0.2, 80.0)
+                if ol <= 40.0:
+                    ctrl = ctrl + perp * min(chl * 0.25, 120.0)
                 pts = []
                 for k in range(17):
                     u = k / 16.0
@@ -553,7 +570,7 @@ def _strata_analysis(n: int, links: list) -> tuple:
 
 def _layout(n: int, links: list, sims: list, cluster_ids: list,
             ckeys: list = None, cmat: list = None,
-            depths: list = None) -> list:
+            depths: list = None, hot: list = None) -> list:
     """Deterministic offline force layout; positions are frozen into DATA.
 
     Mirrors the constants the in-browser sim was QA'd against, plus the
@@ -730,20 +747,61 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
         w_ = (l.get("w", 1) if isinstance(l, dict) else (l[2] if len(l) > 2 else 1))
         deg[s_] += w_
         deg[t_] += w_
-    rad = (np.minimum(10.0, 3.5 + np.sqrt(deg) * 1.0) * 1.1).astype(np.float32)
-    min_d = (rad[:, None] + rad[None, :]) * 1.7
-    for _ in range(140):
-        diff = pos[:, None, :] - pos[None, :, :]
-        dist = np.sqrt((diff * diff).sum(-1))
-        np.fill_diagonal(dist, np.inf)
-        need = min_d - dist
-        if need.max() <= 0:
-            break
-        dirs = diff / np.maximum(dist, 1e-3)[..., None]
-        # clip need: the diagonal is inf-dist -> -inf need -> 0*-inf = NaN in
-        # the product below (picked away by where, but warns and poisons)
-        corr = np.where((need > 0)[..., None], dirs * (np.clip(need, 0.0, None) * 0.5)[..., None], 0.0)
-        pos += corr.sum(0) * 0.9
+    # radius parity with the renderer: min(10, 3.5+sqrt(deg)) * churn boost
+    # * 1.1 — the browser draws exactly this; the relax must too or hot
+    # files (up to +35% radius) end up overlapping their neighbors
+    churn = (np.asarray(hot, dtype=np.float32) if hot is not None
+             else np.zeros(n, dtype=np.float32))
+    rad = (np.minimum(12.0, 4.5 + np.sqrt(deg) * 1.0)
+           * (1.0 + 0.35 * churn) * 1.1).astype(np.float32)
+    min_d = (rad[:, None] + rad[None, :]) * 2.0
+    # dilation fallback: pure pair-pushing oscillates in dense cores (a
+    # correction that fixes one pair re-violates its neighbors). If a burst
+    # of iterations doesn't converge, inflate the layout slightly and retry
+    # — geometric relaxation plus dilation always terminates.
+    dbg = os.environ.get("NEURONAV_DEBUG_RELAX")
+    def depenetrate() -> int:
+        """Separate near-concentric pairs deterministically (see comment)."""
+        d0 = pos[:, None, :] - pos[None, :, :]
+        dd0 = np.sqrt((d0 * d0).sum(-1))
+        np.fill_diagonal(dd0, np.inf)
+        fused = np.argwhere(dd0 < 5.0)
+        moved = 0
+        for a, b in fused:
+            if a >= b:
+                continue
+            h = (int(a) * 2654435761 + int(b) * 40503) % 9973
+            ang = h / 9973.0 * 6.2831853
+            axis = np.array([np.cos(ang), 0.35 * np.sin(ang * 1.7), np.sin(ang)], dtype=np.float32)
+            axis /= max(float(np.sqrt((axis * axis).sum())), 1e-3)
+            sep = float(min_d[a, b]) * 1.2
+            mid = (pos[a] + pos[b]) * 0.5
+            pos[a] = mid - axis * (sep * 0.5)
+            pos[b] = mid + axis * (sep * 0.5)
+            moved += 1
+        return moved
+    # the force sim can leave two files at nearly identical positions (same
+    # gravity basin), where every push direction cancels and they stay
+    # concentric forever - which would poison the exact scale pass below
+    # (s = min_d/dist explodes on a dist~0 pair). Depenetrate up front, and
+    # again after the pushes (pushing can create new fusions).
+    n0 = depenetrate()
+    # pair pushes REJECTED: at 0.5 gain they created 112 new fusions on
+    # SWMG (nodes shoved into bystanders) while only marginally reducing
+    # the exact-scale factor. Depenetration + exact scale alone is both
+    # simpler and provably sufficient: scaling is linear in pos, so one
+    # multiply clears every pair.
+    n1 = depenetrate()
+    if dbg and (n0 or n1):
+        print(f"[depen] fixed {n0} before / {n1} after pushes", file=sys.stderr)
+    dist = np.sqrt(((pos[:, None, :] - pos[None, :, :]) ** 2).sum(-1))
+    np.fill_diagonal(dist, np.inf)
+    s = float((min_d / dist).max())
+    if s > 1.0:
+        if dbg:
+            print(f"[relax3d] exact scale pass: s={s:.3f}", file=sys.stderr)
+        pos *= s * 1.01
+    # strata: mermaid reading order - height = call depth from entry files.
     # strata: mermaid reading order — height = call depth from entry files.
     # The force sim and the 3D pass above settle XZ; Y is discarded and
     # re-layered monotonically from _strata_depths (entries on top, callees
@@ -753,26 +811,61 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
         depths = _strata_depths(n, links)
     maxd = max(depths, default=0)
     if maxd > 0:
-        half = 0.55 * float(pos[:, 1].max() - pos[:, 1].min()) / 2.0
+        # strata Y range proportional to the (relaxed) XZ extent: the old
+        # fixed 0.55x-of-old-Y range went pancake-flat once the exact XZ
+        # scale inflated the plane 4-5x - an edge-on disc reads as one
+        # merged blob. ~0.2x of XZ span keeps terraces visible.
+        span = float(max(pos[:, 0].max() - pos[:, 0].min(),
+                         pos[:, 2].max() - pos[:, 2].min()))
+        half = max(0.32 * span, 160.0)
         spacing = 2.0 * half / maxd
         pos[:, 1] = half - np.asarray(depths, dtype=np.float32) * spacing
         # deterministic jitter within a layer (<= 0.15 spacing): breaks exact
         # Y ties so same-layer pairs keep a stable separation axis below
-        pos[:, 1] += (rng.uniform(-1.0, 1.0, n) * (0.15 * spacing)).astype(np.float32)
+        pos[:, 1] += (rng.uniform(-1.0, 1.0, n) * (0.30 * spacing)).astype(np.float32)
         # required XZ distance so the 3D distance still clears min_d given
         # the now-frozen Y gap (dy >= min_d pairs need nothing)
         dy = pos[:, None, 1] - pos[None, :, 1]
         req = np.sqrt(np.maximum(min_d * min_d - dy * dy, 0.0)).astype(np.float32)
-        for _ in range(140):
-            dxz = pos[:, None, [0, 2]] - pos[None, :, [0, 2]]
-            dxzd = np.sqrt((dxz * dxz).sum(-1))
-            np.fill_diagonal(dxzd, np.inf)
-            need = req - dxzd
-            if need.max() <= 0:
+        # XZ twin of the 3D relax, Y (strata axis) frozen; same exact-scale
+        # finisher: dxz scales linearly, s = max(req/dxz) clears all pairs
+        # while the frozen Y gaps keep their contribution to the 3D distance
+        # strata Y reassignment stacks same-depth nodes into one layer:
+        # pairs the OLD Y kept apart vertically can now sit at dxz~0 with
+        # dy~0 (jitter) - depenetrate them in XZ (same trick as the 3D
+        # pass) before the exact XZ scale, or s explodes on a dxz~0 pair
+        for sweep in range(30):
+            dxz0 = pos[:, None, [0, 2]] - pos[None, :, [0, 2]]
+            dd0 = np.sqrt((dxz0 * dxz0).sum(-1))
+            np.fill_diagonal(dd0, np.inf)
+            fused = np.argwhere((dd0 < 8.0) & (req > 0.0))
+            if not len(fused):
                 break
-            dirs = dxz / np.maximum(dxzd, 1e-3)[..., None]
-            corr = np.where((need > 0)[..., None], dirs * (np.clip(need, 0.0, None) * 0.5)[..., None], 0.0)
-            pos[:, [0, 2]] += corr.sum(0) * 0.9
+            for a, b in fused:
+                if a >= b:
+                    continue
+                h = (int(a) * 2654435761 + int(b) * 40503) % 9973
+                ang = h / 9973.0 * 6.2831853
+                axis = np.array([np.cos(ang), np.sin(ang)], dtype=np.float32)
+                axis /= max(float(np.sqrt((axis * axis).sum())), 1e-3)
+                sep = float(req[a, b]) * 1.2
+                mid = (pos[a, [0, 2]] + pos[b, [0, 2]]) * 0.5
+                pos[a, [0, 2]] = mid - axis * (sep * 0.5)
+                pos[b, [0, 2]] = mid + axis * (sep * 0.5)
+        # exact XZ scale: dxz scales linearly, s = max(req/dxz) clears all
+        # pairs. Y scales by the SAME factor (around 0): anisotropic
+        # XZ-only inflation turned the galaxy into a pancake - uniform
+        # scaling keeps the sphere-to-scene ratio the eye was calibrated on.
+        dxz = pos[:, None, [0, 2]] - pos[None, :, [0, 2]]
+        dxzd = np.sqrt((dxz * dxz).sum(-1))
+        np.fill_diagonal(dxzd, np.inf)
+        s = float((req / dxzd).max())
+        if s > 1.0:
+            if dbg:
+                print(f"[relaxXZ] exact scale pass: s={s:.3f}", file=sys.stderr)
+            pos *= s * 1.01
+        else:
+            pos *= 1.01
     pos *= 1.45   # extra global breathing room — the frame adapts
     pos -= pos.mean(0)
     return [[round(float(x), 1) for x in p] for p in pos]
@@ -1092,7 +1185,7 @@ nodes.forEach((n, i) => {
   colArr[i*3] = c.r; colArr[i*3+1] = c.g; colArr[i*3+2] = c.b;
   // churn boost rides on top of the connectivity size (up to +35% radius
   // for the most-touched file) — subtle, never shrinks
-  sizes[i] = Math.min(10, 3.5 + Math.sqrt(degree[i]) * 1.0) * (hot ? 1 + 0.35 * hot[i] : 1);
+  sizes[i] = Math.min(12, 4.5 + Math.sqrt(degree[i]) * 1.0) * (hot ? 1 + 0.35 * hot[i] : 1);
 });
 if (hot) document.getElementById("caption").textContent += " · size also encodes 90-day churn";
 
@@ -1105,8 +1198,13 @@ let spread = 1;
 let baseCx = 0, baseCy = 0, baseCz = 0;
 for (let i = 0; i < N; i++) { baseCx += basePos[i*3]; baseCy += basePos[i*3+1]; baseCz += basePos[i*3+2]; }
 baseCx /= N; baseCy /= N; baseCz /= N;
+// absolute fog density must track the layout size (frameGraph recomputes
+// it on reset/isolates): a constant tuned for one graph size fogs out far
+// nodes once the relax inflates the layout
+scene.fog.density = 0.17 / Math.max(420, graphBounds().radius * 1.55);
 function applySpread(s) {
   if (s === spread) return;   // no-op: never fight camera tweens / mid-flight syncs
+  const spreadPrev = spread;
   spread = s;
   // centroid of basePos is constant since boot (baseCx/Cy/Cz) - recomputing
   // per call was redundant with syncEdgePos's arc anchor
@@ -1121,8 +1219,10 @@ function applySpread(s) {
   // NO frameGraph here: spread must keep the user's zoom (reframing halved
   // apparent node size and made the graph unrecognizable); spheres grow by
   // sqrt(spread) in syncFileMesh so they stay readable as gaps open.
-  // fog must weaken as the galaxy expands or far clusters sink into black
-  scene.fog.density = 0.00022 / spread;
+  // fog must weaken as the galaxy expands or far clusters sink into black;
+  // frameGraph owns the absolute part (layout-size-derived), spread scales
+  // it relatively
+  scene.fog.density *= spreadPrev / s;
   syncFileMesh();
   applyVisibility();
   buildContainment();
@@ -1310,9 +1410,9 @@ const TYPE_COLORS = {
 // overview opacity is flat 0.35 across buckets: width already encodes
 // weight — the old descending ops made heavy edges DIMMER than trivial ones
 const BUCKETS = [
-  { max: 1, width: 1.3, op: 0.35 },          // w <= 1
-  { max: 4, width: 2.2, op: 0.35 },          // 2..4
-  { max: Infinity, width: 3.5, op: 0.35 },   // >= 5
+  { max: 1, width: 1.3, op: 0.10 },          // w <= 1
+  { max: 4, width: 2.2, op: 0.12 },          // 2..4
+  { max: Infinity, width: 3.5, op: 0.14 },   // >= 5
 ];
 const bucketOf = new Int8Array(MAXL);
 const slotOf = new Int32Array(MAXL);
@@ -1635,11 +1735,21 @@ function frameGraph() {
     camera.position.z - controls.target.z);
   if (dir.lengthSq() < 1) dir.set(0.42, 0.5, 0.76).normalize(); // elevated 3/4 view
   dir.normalize();
-  camera.position.copy(b.center).addScaledVector(dir, Math.max(420, b.radius * 2.2));
+  camera.position.copy(b.center).addScaledVector(dir, Math.max(420, b.radius * 1.55));
   controls.target.copy(b.center);
+  // perceptual recenter: the elevated 3/4 view + left info panel bias the
+  // mass low-left on screen; aim slightly below the bbox center so the
+  // galaxy lands mid-canvas
+  const lift = b.radius * 0.06;
+  camera.position.y -= lift;
+  controls.target.y -= lift;
   // LOD threshold tracks the framing distance so overview stays overview
   // regardless of graph size
-  lodDist = Math.max(420, b.radius * 1.8) * 0.9;
+  lodDist = Math.max(420, b.radius * 1.1);
+  // fog scales with the layout: an absolute density tuned for one graph
+  // size fogs out every far node once the relax inflates the layout (the
+  // "spheres render dim" regression). Visibility ~ 6 framing distances.
+  scene.fog.density = 0.17 / Math.max(420, b.radius * 1.55);
 }
 
 // frame only the nodes the filters still show (cluster/dir isolates) — the
@@ -1939,7 +2049,15 @@ function applyVisibility() {
       ((alphaTgt[l.s] <= 0.5 && !supMem[l.s]) || (alphaTgt[l.t] <= 0.5 && !supMem[l.t]))) k = 0.012;
     else if (fnMode && focusing && l.ty === "call" && level[l.s] >= 0 && level[l.t] >= 0) k = 0; // wire mode: fn wires replace the aggregate call line; geometry collapse (k===0 branch) handles invisibility — a ghost 0.04 double-draws under the additive fn wires
     else if (focusing) k = Math.max(0.34, 1 - 0.18 * Math.max(level[l.s], level[l.t]));
-    else k = 1;
+    else {
+      // overview edge budget: single-ref wires are noise at full extent
+      // (1530 lines summing to white over the core under additive blending)
+      // - only multi-ref links earn a line until a focus opens the scene.
+      // Corridors (hw arcs) are the intended carriers - they keep more ink
+      // than same-band straight chords, which fade to near-nothing.
+      k = l.w >= 2 ? 1 : 0.0;
+      if (k > 0.0) k = hwSlot[i] >= 0 ? Math.min(1, k * 1.5) : k * 0.5;
+    }
     if (!focusing && !lodClose && k > 0.04) {
       const dx = pos[l.s*3] - pos[l.t*3], dy = pos[l.s*3+1] - pos[l.t*3+1],
             dz = pos[l.s*3+2] - pos[l.t*3+2];
@@ -1950,8 +2068,8 @@ function applyVisibility() {
       // galaxy and re-form the hairball the layout just removed.
       // highway arcs are exempt from the chord cut: bundled beziers ARE
       // the intended inter-cluster carriers
-      if (sameC) { if (k > 0.15) k = 0.15; }
-      else if (el3 > 200 && hwSlot[i] < 0) k = 0.08;
+      if (sameC) { if (k > 0.05) k = 0.05; }
+      else if (el3 > 200 && hwSlot[i] < 0) k = 0.04;
     }
     const b = bucketOf[i], o6 = i * 6;
     const tgt = bucketColIB[b].array;
@@ -2174,6 +2292,12 @@ function updateXtLabels() {
     return;
   }
   const w = innerWidth, h = innerHeight;
+  // greedy collision skip: two corridor labels stacked on the same screen
+  // region read as garbage; the later one yields (first come = highest
+  // crosstalk count, since meta.crosstalk is baked count-desc)
+  const taken = [];
+  const free = (a, b) => a.right < b.left - 4 || b.right < a.left - 4 ||
+    a.bottom < b.top - 4 || b.bottom < a.top - 4;
   for (const k of xtLabs) {
     hubV.set(k.mid[0], k.mid[1], k.mid[2]).project(camera);
     if (hubV.z > 1 || Math.abs(hubV.x) > 1.05 || Math.abs(hubV.y) > 1.05) {
@@ -2182,6 +2306,9 @@ function updateXtLabels() {
     k.el.style.display = "block";
     k.el.style.transform = "translate(" + ((hubV.x*0.5+0.5)*w).toFixed(1) + "px," +
       ((-hubV.y*0.5+0.5)*h).toFixed(1) + "px) translate(-50%,-50%)";
+    const r = k.el.getBoundingClientRect();
+    if (taken.every(t => free(r, t))) taken.push(r);
+    else k.el.style.display = "none";
   }
 }
 
@@ -3210,7 +3337,7 @@ applyVisibility();
 frameGraph();
 renderer.domElement.style.cursor = "grab";
 // debug handle last: everything it captures is initialized by here
-window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE,
+window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE, sizes, degree,
   meta: DATA.meta, controls, get spinEnabled() { return spinEnabled; }, get hubCap() { return hubCapNow; },
   alpha: alphaArr, alphaTgt, hoverScale, hot, bucketMat, bucketOf, hwSlot, bucketPosIB, bucketColIB, slotOf,
   adjOut, adjIn, adj, outDeg, inDeg, get dirMode() { return dirMode; }, focusSeeds, level,

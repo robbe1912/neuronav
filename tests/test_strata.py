@@ -28,7 +28,8 @@ def load_viz_funcs():
                            "_strata_analysis", "_layout")]
     assert len(body) == 5, "expected strata helpers + _layout in viz.py"
     mod = ast.Module(body=body, type_ignores=[])
-    g = {}
+    import os as _os
+    g = {"os": _os, "sys": sys}   # _layout debug prints guard on os.environ
     exec(compile(mod, str(ROOT / "viz.py"), "exec"), g)
     return g
 

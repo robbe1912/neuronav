@@ -110,12 +110,25 @@ def run_tests():
                    if (!isTest(d.links[i].s) && !isTest(d.links[i].t)) continue;
                    const arr = d.bucketPosIB[d.bucketOf[i]].array, b = d.hwSlot[i];
                    const s = d.links[i].s, t = d.links[i].t;
-                   return Math.abs(arr[b] - d.pos[s*3]) + Math.abs(arr[b+93] - d.pos[t*3]);
+                   // both endpoints are surface-trimmed (radius + 2 margin):
+                   // expected total offset = trim_s + trim_t
+                   const exp = d.sizes[s] * 1.1 + 2 + d.sizes[t] * 1.1 + 2;
+                   const d3 = (o, j) => {
+                     const dx = arr[o] - d.pos[j*3], dy = arr[o+1] - d.pos[j*3+1], dz = arr[o+2] - d.pos[j*3+2];
+                     return Math.sqrt(dx*dx + dy*dy + dz*dz);
+                   };
+                   const err = d3(b, s) + d3(b + 93, t);
+                   return { err: +err.toFixed(1), exp: +exp.toFixed(1),
+                            ssz: +d.sizes[s].toFixed(1), tsz: +d.sizes[t].toFixed(1),
+                            a0: [+arr[b].toFixed(1), +arr[b+1].toFixed(1)],
+                            pS: [+d.pos[s*3].toFixed(1), +d.pos[s*3+1].toFixed(1)],
+                            path: d.nodes[s].path };
                  }
-                 return -1; }""")
+                 return { err: -1, exp: 0 }; }""")
         check("hidden-test arcs collapse geometrically",
-              arc_hidden == 0 and (arc_shown < 0 or 2 <= arc_shown <= 15.5),
-              f"hidden span {arc_hidden} / shown endpoint err {arc_shown} (surface-trimmed ~sizes*1.1+2)")
+              arc_hidden == 0 and (arc_shown.get("err", -1) < 0 or
+                                   0.5 * arc_shown["exp"] <= arc_shown["err"] <= arc_shown["exp"] + 2.0),
+              f"hidden span {arc_hidden} / shown trim {arc_shown}")
 
 
         # 4. focus + functions: fn boxes exist and sit ON the wires.
@@ -165,7 +178,9 @@ def run_tests():
 
         # 5. hover a fn box -> tooltip shows path :: name
         hover = page.evaluate(
-            """() => { const d = window.__dbg; const fm = d.fnMeta[0]; if (!fm) return null;
+            """() => { const d = window.__dbg;
+                 // hover a REAL box: aggregated members render scale-0 and cannot be raycast
+                 const fm = d.fnMeta.find(m => !m.agg || m.count) || d.fnMeta[0]; if (!fm) return null;
                  const v = new d.THREE.Vector3(fm.p[0], fm.p[1], fm.p[2]).project(d.camera);
                  const r = d.renderer.domElement.getBoundingClientRect();
                  const sx = (v.x*0.5+0.5)*r.width + r.left, sy = (-v.y*0.5+0.5)*r.height + r.top;
@@ -183,7 +198,9 @@ def run_tests():
         # 5a. fn hover makes OWNERSHIP visible: white stalk box→owner file
         # plus the owner's instance color lifting above its base cluster hue
         own = page.evaluate(
-            """() => { const d = window.__dbg; const fm = d.fnMeta[0]; if (!fm) return null;
+            """() => { const d = window.__dbg;
+                 // hover a REAL box: aggregated members render scale-0 and cannot be raycast
+                 const fm = d.fnMeta.find(m => !m.agg || m.count) || d.fnMeta[0]; if (!fm) return null;
                  const v = new d.THREE.Vector3(fm.p[0], fm.p[1], fm.p[2]).project(d.camera);
                  const r = d.renderer.domElement.getBoundingClientRect();
                  const sx = (v.x*0.5+0.5)*r.width + r.left, sy = (-v.y*0.5+0.5)*r.height + r.top;
@@ -262,8 +279,12 @@ def run_tests():
               "dashed on call materials during focus")
 
         # 5bb. hover feedback in-scene: sphere scale lerps to ~1.8x then back
-        # (auto-spin off first: rotation moves the projection we aim at)
-        page.evaluate("() => document.getElementById('cbSpin').click()")
+        # (auto-spin off first: rotation moves the projection we aim at;
+        # fn layer off too — its boxes steal the raycast pick near the
+        # focused node)
+        page.evaluate("""() => { document.getElementById('cbSpin').click();
+                                 if (document.getElementById('cbFn').checked)
+                                   document.getElementById('cbFn').click(); }""")
         page.wait_for_timeout(150)
         scale = page.evaluate(
             """() => { const d = window.__dbg;
@@ -271,11 +292,23 @@ def run_tests():
                  const mx = i => { d.fileMesh.getMatrixAt(i, mat); return mat.elements[0]; };
                  const move = (x, y) => d.renderer.domElement.dispatchEvent(
                    new PointerEvent('pointermove', { clientX: x, clientY: y, bubbles: true }));
-                 // reuse the still-hovered neighbor from 5b (or any lit node)
+                 // reuse the still-hovered neighbor from 5b, else the node
+                 // nearest the camera target (post-hop that's the framed
+                 // node; "first lit node" may be behind the camera)
                  let idx = d.hovered;
-                 if (idx < 0) { for (let j = 0; j < d.nodes.length; j++)
-                   if (d.alphaTgt[j] > 0.5) { idx = j; break; } }
+                 if (idx >= 0 && d.alphaTgt[idx] <= 0.9) idx = -1;
+                 if (idx < 0) {
+                   const t = d.controls.target;
+                   let best = 1e18;
+                   for (let j = 0; j < d.nodes.length; j++) {
+                     if (d.alphaTgt[j] <= 0.9) continue;   // fully lit only
+                     const dx = d.pos[j*3]-t.x, dy = d.pos[j*3+1]-t.y, dz = d.pos[j*3+2]-t.z;
+                     const q = dx*dx+dy*dy+dz*dz;
+                     if (q < best) { best = q; idx = j; }
+                   }
+                 }
                  if (idx < 0) return { fail: 'no lit node' };
+                 const vv = new d.THREE.Vector3(d.pos[idx*3], d.pos[idx*3+1], d.pos[idx*3+2]).project(d.camera);
                  const v = new d.THREE.Vector3(d.pos[idx*3], d.pos[idx*3+1], d.pos[idx*3+2]).project(d.camera);
                  const r = d.renderer.domElement.getBoundingClientRect();
                  const sx = (v.x*0.5+0.5)*r.width + r.left, sy = (-v.y*0.5+0.5)*r.height + r.top;
@@ -287,9 +320,13 @@ def run_tests():
                    move(sx, sy);
                    setTimeout(() => {
                      const grown = mx(idx);
+                     const hAt = d.hovered;
                      // 3) off again -> decays back to base
                      move(-500, -500);
                      setTimeout(() => res({ before, grown, after: mx(idx),
+                                            hoveredAt: hAt,
+                                            vinfo: { z: +vv.z.toFixed(4), sx: Math.round(sx), sy: Math.round(sy),
+                                                     a: d.alphaTgt[idx], fn: d.hoveredFn },
                                             hoveredOff: d.hovered === -1,
                                             hoverScale: d.hoverScale[idx] }), 700);
                    }, 500);
@@ -607,7 +644,7 @@ def run_tests():
                  // degree = sum of link weights (same recurrence as sizes)
                  const deg = new Float32Array(d.nodes.length);
                  d.links.forEach(l => { deg[l.s] += l.w; deg[l.t] += l.w; });
-                  const base = i => Math.min(10, 3.5 + Math.sqrt(deg[i]));
+                  const base = i => Math.min(12, 4.5 + Math.sqrt(deg[i]));
                   const mat = new d.THREE.Matrix4();
                   const mx = i => { d.fileMesh.getMatrixAt(i, mat); return mat.elements[0]; };
                   // instance scale = sizes*1.1 × dim-shrink (0.45+0.55a) at
