@@ -2831,6 +2831,8 @@ document.getElementById("bVar").onclick = e => {
 const mapPane = document.getElementById("mapPane");
 const MAP_MAX = 40;            // lit-node cap: past this the pane refuses
 let mapVisible = false;
+let mapZ = 0, mapPX = 0, mapPY = 0;      // view: zoom + pan over the world
+let mapDrag = null, mapDragged = false;
 let mapRects = [];             // last drawn node rects (click hit-testing)
 function sizeMapPane() {
   const dpr = Math.min(devicePixelRatio || 1, 2);
@@ -2847,17 +2849,19 @@ function mapCols(c) {
 function drawMapPane() {
   if (!mapVisible) return;
   const ctx = mapPane.getContext("2d");
-  const cw = mapPane.clientWidth || 440, chh = mapPane.clientHeight || innerHeight;
-  const dpr = mapPane.width / cw || 1;
+  const cwView = mapPane.clientWidth || 440;
+  const dpr = mapPane.width / cwView || 1;
+  const cw = 1100;                  // world width - the pane is just a window
+  if (!mapZ) mapZ = cwView / cw;    // first draw: fit width, user zooms in
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = "#0b0f14";
-  ctx.fillRect(0, 0, cw, chh);
+  ctx.fillRect(0, 0, cwView, mapPane.clientHeight);
   mapRects = [];
   const hint = txt => {
     ctx.fillStyle = "#546e7a";
     ctx.font = '12px "Segoe UI", system-ui, sans-serif';
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText(txt, cw / 2, chh / 2);
+    ctx.fillText(txt, cwView / 2, mapPane.clientHeight / 2);
   };
   if (!focusActive) { hint("focus a node to see its map"); return; }
   const litAll = [];
@@ -2870,7 +2874,7 @@ function drawMapPane() {
     ctx.fillStyle = "#546e7a";
     ctx.font = '11px "Segoe UI", system-ui, sans-serif';
     ctx.textAlign = "center"; ctx.textBaseline = "top";
-    ctx.fillText("top " + MAP_MAX + " of " + litAll.length + " files (by connectivity)", cw / 2, 8);
+    ctx.fillText("top " + MAP_MAX + " of " + litAll.length + " files (by connectivity)", cwView / 2, 8);
   }
   if (!lit.length) { hint("focus a node to see its map"); return; }
   // in-focus edges (deduped per directed pair, type-filtered like the 3D view)
@@ -2933,6 +2937,8 @@ function drawMapPane() {
     if (cur.length) chunks.push(cur);
   }
   const nRows = chunks.length || 1;
+  // world height grows with content - vertical scroll/zoom covers the rest
+  const chh = Math.max(mapPane.clientHeight || innerHeight, TOP + nRows * 64 + 20);
   const rowH = Math.max(NH + 16, (chh - TOP - 14) / nRows);
   const place = new Map();
   chunks.forEach((chunk, rr) => {
@@ -2941,6 +2947,8 @@ function drawMapPane() {
     const y = TOP + rr * rowH;
     chunk.forEach(i => { place.set(i, { x, y, w: wOf(i) }); x += wOf(i) + GAPX; });
   });
+  // window on the world: pan/zoom transform for everything below
+  ctx.setTransform(dpr * mapZ, 0, 0, dpr * mapZ, -mapPX * dpr * mapZ, -mapPY * dpr * mapZ);
   // edges first so node bodies overlay the attachment points
   const rects = [];
   place.forEach(p => rects.push({ x0: p.x, x1: p.x + p.w, y0: p.y, y1: p.y + NH }));
@@ -3076,6 +3084,12 @@ function drawMapPane() {
     ctx.fillText(nodes[i].label, p.x + p.w / 2, p.y + NH / 2 + 0.5);
     mapRects.push({ i, x: p.x, y: p.y, w: p.w, h: NH });
   });
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#546e7a";
+  ctx.font = '10px "Segoe UI", system-ui, sans-serif';
+  ctx.textAlign = "left";
+  ctx.textBaseline = "bottom";
+  ctx.fillText("wheel = zoom · drag = pan", 8, mapPane.clientHeight - 6);
 }
 document.getElementById("bMap").onclick = e => {
   mapVisible = !mapVisible;
@@ -3086,11 +3100,34 @@ document.getElementById("bMap").onclick = e => {
   if (mapVisible) { sizeMapPane(); drawMapPane(); }
 };
 // click a node rect = the hub-label jump: re-seed focus around that file
-mapPane.addEventListener("click", e => {
+const mapToWorld = e => {
   const b = mapPane.getBoundingClientRect();
-  const x = e.clientX - b.left, y = e.clientY - b.top;
+  return { x: (e.clientX - b.left) / mapZ + mapPX, y: (e.clientY - b.top) / mapZ + mapPY };
+};
+mapPane.addEventListener("wheel", e => {
+  if (!mapVisible) return;
+  e.preventDefault();
+  const b = mapPane.getBoundingClientRect();
+  const cx = e.clientX - b.left, cy = e.clientY - b.top;
+  const wx = cx / mapZ + mapPX, wy = cy / mapZ + mapPY;
+  mapZ = Math.max(0.2, Math.min(3, mapZ * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+  mapPX = wx - cx / mapZ;
+  mapPY = wy - cy / mapZ;
+  drawMapPane();
+}, { passive: false });
+mapPane.addEventListener("pointerdown", e => {
+  if (!mapVisible) return;
+  mapDrag = { x: e.clientX, y: e.clientY, px: mapPX, py: mapPY, moved: false };
+  mapPane.setPointerCapture(e.pointerId);
+});
+mapPane.addEventListener("pointerup", () => {
+  if (mapDrag) { mapDragged = mapDrag.moved; mapDrag = null; }
+});
+mapPane.addEventListener("click", e => {
+  if (mapDragged) { mapDragged = false; return; }   // it was a pan, not a pick
+  const w = mapToWorld(e);
   for (const rc of mapRects) {
-    if (x >= rc.x && x <= rc.x + rc.w && y >= rc.y && y <= rc.y + rc.h) {
+    if (w.x >= rc.x && w.x <= rc.x + rc.w && w.y >= rc.y && w.y <= rc.y + rc.h) {
       pushFocusState(); showInfo(rc.i); focusSeeds.clear(); focusSeeds.add(rc.i);
       applyVisibility(); focus(rc.i);
       return;
@@ -3099,10 +3136,17 @@ mapPane.addEventListener("click", e => {
 });
 mapPane.addEventListener("pointermove", e => {
   if (!mapVisible) return;
-  const b = mapPane.getBoundingClientRect();
-  const x = e.clientX - b.left, y = e.clientY - b.top;
+  if (mapDrag) {
+    const dx = e.clientX - mapDrag.x, dy = e.clientY - mapDrag.y;
+    if (Math.hypot(dx, dy) > 4) mapDrag.moved = true;
+    mapPX = mapDrag.px - dx / mapZ;
+    mapPY = mapDrag.py - dy / mapZ;
+    drawMapPane();
+    return;
+  }
+  const w = mapToWorld(e);
   mapPane.style.cursor = mapRects.some(rc =>
-    x >= rc.x && x <= rc.x + rc.w && y >= rc.y && y <= rc.y + rc.h) ? "pointer" : "default";
+    w.x >= rc.x && w.x <= rc.x + rc.w && w.y >= rc.y && w.y <= rc.y + rc.h) ? "pointer" : "default";
 });
 addEventListener("resize", () => { if (mapVisible) { sizeMapPane(); drawMapPane(); } });
 document.getElementById("bGround").onclick = e => {
