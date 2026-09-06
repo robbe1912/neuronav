@@ -2853,9 +2853,18 @@ function drawMapPane() {
     ctx.fillText(txt, cw / 2, chh / 2);
   };
   if (!focusActive) { hint("focus a node to see its map"); return; }
-  const lit = [];
-  for (let i = 0; i < N; i++) if (level[i] >= 0 && nodeVisible(nodes[i])) lit.push(i);
-  if (lit.length > MAP_MAX) { hint(lit.length + " files - narrow the focus"); return; }
+  const litAll = [];
+  for (let i = 0; i < N; i++) if (level[i] >= 0 && nodeVisible(nodes[i])) litAll.push(i);
+  // cap by connectivity: keep the MAP_MAX most-connected lit files so a hub
+  // focus still draws a diagram instead of a "narrow the focus" shrug
+  let lit = litAll;
+  if (litAll.length > MAP_MAX) {
+    lit = litAll.slice().sort((a, b) => (degree[b] - degree[a]) || (a - b)).slice(0, MAP_MAX);
+    ctx.fillStyle = "#546e7a";
+    ctx.font = '11px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    ctx.fillText("top " + MAP_MAX + " of " + litAll.length + " files (by connectivity)", cw / 2, 8);
+  }
   if (!lit.length) { hint("focus a node to see its map"); return; }
   // in-focus edges (deduped per directed pair, type-filtered like the 3D view)
   const litSet = new Set(lit);
@@ -2894,23 +2903,31 @@ function drawMapPane() {
       rows[r].forEach((i, k) => col.set(i, k));
     }
   }
-  // geometry: node height 22, width by label length, rows centered
-  const NH = 22, GAPX = 14, TOP = 46;
-  const nRows = rows.filter(Boolean).length || 1;
-  const rowH = Math.max(NH + 16, Math.min(110, (chh - TOP - 14) / nRows));
+  // geometry: node height 22, width by label length; rows WRAP to pane width
+  const NH = 22, GAPX = 14, TOP = 46, WRAP = cw - 16;
   ctx.font = '11px "Segoe UI", system-ui, sans-serif';
   const wOf = i => Math.max(38, Math.ceil(ctx.measureText(nodes[i].label).width) + 18);
-  const place = new Map();
+  const chunks = [];
   for (let r = 0; r < rows.length; r++) {
     const row = rows[r];
     if (!row) continue;
-    const tw = row.reduce((a, i) => a + wOf(i), 0) + GAPX * (row.length - 1);
-    let x = Math.max(8, (cw - tw) / 2);
+    let cur = [], twc = -GAPX;
     row.forEach(i => {
-      place.set(i, { x, y: TOP + r * rowH, w: wOf(i) });
-      x += wOf(i) + GAPX;
+      const w = wOf(i);
+      if (twc + GAPX + w > WRAP && cur.length) { chunks.push(cur); cur = []; twc = -GAPX; }
+      cur.push(i); twc += GAPX + w;
     });
+    if (cur.length) chunks.push(cur);
   }
+  const nRows = chunks.length || 1;
+  const rowH = Math.max(NH + 16, (chh - TOP - 14) / nRows);
+  const place = new Map();
+  chunks.forEach((chunk, rr) => {
+    const tw = chunk.reduce((a, i) => a + wOf(i), 0) + GAPX * (chunk.length - 1);
+    let x = Math.max(8, (cw - tw) / 2);
+    const y = TOP + rr * rowH;
+    chunk.forEach(i => { place.set(i, { x, y, w: wOf(i) }); x += wOf(i) + GAPX; });
+  });
   // edges first so node bodies overlay the attachment points
   ctx.lineWidth = 1.5;
   ctx.globalAlpha = 0.85;
