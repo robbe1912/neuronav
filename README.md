@@ -58,7 +58,25 @@ Defaults: root = parent of this folder. Extensions per extractors
 ```
 
 3. Rescan once per checkout; again after big refactors. Per-checkout index
-(`.chroma/`, gitignored) - each worktree reflects its own branch.
+   (`.chroma/`, gitignored) - each worktree reflects its own branch.
+
+### Multiple projects from one install
+
+`config.json` (the default profile) is just the fallback - named profiles in
+`config/` let one install serve many projects. Each project's MCP entry pins
+its profile via `NEURONAV_CONFIG` in the server env:
+
+```json
+{ "mcpServers": { "neuronav": {
+    "command": "E:\\path\\to\\neuronav\\.venv\\Scripts\\python.exe",
+    "args": ["-X", "utf8", "E:\\path\\to\\neuronav\\server.py"],
+    "env": { "NEURONAV_CONFIG": "E:\\path\\to\\neuronav\\config\\mygame.json" } } } }
+```
+
+`tools/wire-project.ps1 -ProjectPath <path> [-WithBaseShards]` does all of it:
+writes the profile, (optionally) seeds from tracked shards, rescans, and wires
+`.mcp.json` / `opencode.json` in the target project. Agent-facing guidance for
+consuming repos: `templates/agents-snippet.md`.
 
 ## Fast onboarding: base shards (skip the re-embed)
 
@@ -89,6 +107,10 @@ dead-code lenses, crosstalk corridors.
 - `base index model mismatch` - the tracked shards were exported with a
   different embedding model; re-export (`export-base`) or `ollama pull` the
   manifest's model.
+- `NEURONAV_EMBED_FAKE=1` — CI/plumbing mode: deterministic hash embeddings,
+  no Ollama needed. Exercises upsert/query/scoping for real; NOT semantic.
+  Never mix with a real collection you care about (same collection gets
+  fake vectors upserted).
 - Empty results with Ollama down - embeddings backend unreachable; search
   degrades to lexical matching marked "degraded", or fails loudly during
   indexing. Start Ollama and `rescan`.
