@@ -2966,6 +2966,7 @@ let mapDrag = null, mapDragged = false;
 let mapRects = [];             // last drawn node rects (click hit-testing)
 let mapVarsOn = false;         // var wires OFF by default, map-local chip [F10]
 let mapZoomExp = false;        // hysteresis latch: expand >=1.5, collapse <1.2 [F7]
+let mapFullAdmit = false;      // zoom-tiered admission latch: full >=1.5, w>=3 <1.2
 const mapExpandUser = new Map();   // file ix -> bool override (dblclick)
 let mapHover = -1;             // hovered named-wire ix (L1 disclosure)
 let mapHoverChip = -1;         // hovered bundle chip ix (cursor affordance)
@@ -3148,6 +3149,12 @@ function mapRender() {
   // wired boxes, < 1.2 collapses, in between keeps the current state
   if (mapZ >= 1.5) mapZoomExp = true;
   else if (mapZ < 1.2) mapZoomExp = false;
+  // zoom-tiered admission latch (same band shape as the expand latch):
+  // z >= 1.5 restores the full tier-1 rank, z < 1.2 keeps only w>=3
+  // corridors + chip-worthy pairs. Relayouts fire on threshold crossings
+  // only - never per wheel tick (layout cache keyed via the key below).
+  if (mapZ >= 1.5) mapFullAdmit = true;
+  else if (mapZ < 1.2) mapFullAdmit = false;
   // focus signature ("focusVersion"): every input that changes the lit set
   // or the typed admission. pan/zoom never touch it (section 5).
   const sig = lit.join(",") + "|" + query + "|" + mapVarsOn + "|" +
@@ -3166,8 +3173,19 @@ function mapRender() {
   });
   const top8 = new Set([...lit].sort((a, b) => degree[b] - degree[a] || a - b).slice(0, 8));
   cand.sort((a, b) => (b.w || 1) - (a.w || 1) || a.s - b.s || a.t - b.t);
-  const edges = cand.filter((l, i) =>
-    (l.w || 1) >= 2 || i < 120 || top8.has(l.s) || top8.has(l.t)).slice(0, 160);
+  // pairs carrying 2+ named (non-var) wires stay admitted even at fit zoom:
+  // their corridor spine carries the bundle chips (section 7 click targets)
+  const pairNamed = new Map();
+  mwires.forEach(w => {
+    if (w[0] === "var") return;
+    const k = w[1] + "_" + w[3];
+    pairNamed.set(k, (pairNamed.get(k) || 0) + 1);
+  });
+  const edges = cand.filter((l, i) => {
+    if (!mapFullAdmit)   // fit / low zoom: heavy corridors + chip-worthy pairs
+      return (l.w || 1) >= 3 || (pairNamed.get(l.s + "_" + l.t) || 0) >= 2;
+    return (l.w || 1) >= 2 || i < 120 || top8.has(l.s) || top8.has(l.t);
+  }).slice(0, 160);
   const E = edges.length;
   // expansion set (sections 4/5): user dblclick override > seeds open at L0 >
   // E<=12 wired boxes open at any zoom [F9] > zoom-latch wired boxes [F7]
@@ -3184,8 +3202,11 @@ function mapRender() {
     if (u !== undefined ? u : (level[i] === 0 || wired && (E <= 12 || mapZoomExp)))
       expand.add(i);
   });
-  // layout cache (section 5 [F7]): hit = pure repaint under pan/zoom
-  const key = sig + "||" + [...expand].sort((a, b) => a - b).join(",") + "||" +
+  // layout cache (section 5 [F7]): hit = pure repaint under pan/zoom. The
+  // admission tier rides the KEY (not the refit sig) so a threshold
+  // crossing relayouts without resetting zoom/pan.
+  const key = sig + "|" + (mapFullAdmit ? "A1" : "A0") + "||" +
+    [...expand].sort((a, b) => a - b).join(",") + "||" +
     Math.round(cwView) + "x" + Math.round(chView);
   if (mapLayout && mapLayout.key === key) { mapPaint(ctx, dpr, cwView, chView, capNote); return; }
   // ---- tier-2 named wires over the admitted corridors (section 2 [F1]) ----
@@ -3351,9 +3372,9 @@ function mapRender() {
     const bands = crossedBands(ya, yb);
     const taken = c =>
       span.some(r => c >= r.x0 && c <= r.x1) ||
-      bands.some(g => laneX[g] && laneX[g].some(u => Math.abs(u - c) < 3.5));
+      bands.some(g => laneX[g] && laneX[g].some(u => Math.abs(u - c) < 5));
     if (!taken(x)) return { x, ok: true };
-    for (let d = 3.5; d <= maxX; d += 3.5) {   // stay near home - no margin walls
+    for (let d = 5; d <= maxX; d += 5) {   // stay near home - no margin walls
       if (x + d <= cw - 6 && !taken(x + d)) return { x: x + d, ok: true };
       if (x - d >= 6 && !taken(x - d)) return { x: x - d, ok: true };
     }
@@ -3367,8 +3388,8 @@ function mapRender() {
     y >= r.y0 && y <= r.y1 && x1 >= r.x0 && x0 <= r.x1);
   const nextY = (x0, x1, startY, limitY) => {
     let y = startY;
-    while ((usedY.some(u => Math.abs(u - y) < 3) ||
-            spanHits(Math.min(x0, x1), Math.max(x0, x1), y)) && y < limitY) y += 3;
+    while ((usedY.some(u => Math.abs(u - y) < 4) ||
+            spanHits(Math.min(x0, x1), Math.max(x0, x1), y)) && y < limitY) y += 4;
     usedY.push(y);
     return { y, ok: y < limitY };
   };
@@ -3461,8 +3482,35 @@ function mapRender() {
     const tx0 = B.x + B.w * (tIx + 1) / ((inN.get(l.t) || 1) + 1);
     const amber = l.ty === "signal" && !(byPair.get(l.s + "_" + l.t) || []).length;
     spines.push(Object.assign(
-      { s: l.s, t: l.t, pair: l.s + "_" + l.t, amber },
+      { s: l.s, t: l.t, pair: l.s + "_" + l.t, amber, sRow: A.row, tRow: B.row,
+        xb: sameRow ? [] : crossedBands(sy, ty) },
       routeOrtho(A, B, sy, ty, sameRow, sx0, tx0)));
+  });
+  // band consolidation: corridors spanning the same chunk-row hop (source
+  // row -> target row) share ONE trunk - the highest-ranked member's route,
+  // stroked at combined width. Members keep chips + enumerated lists but
+  // stop stroking parallel near-identical lines. Amber corridors (F13),
+  // lane-exhausted beziers and same-row local hops stay individual.
+  // Deterministic: groups keyed by the ordered row pair, the leader is the
+  // first spine in edges order (w desc, s, t).
+  const spineGroups = new Map();
+  spines.forEach(sp => {
+    if (sp.amber || sp.bez || !sp.xb.length) return;
+    const k = sp.sRow + ">" + sp.tRow;
+    let a = spineGroups.get(k);
+    if (!a) spineGroups.set(k, a = []);
+    a.push(sp);
+  });
+  let trunkGroups = 0;
+  spineGroups.forEach(a => {
+    if (a.length < 2) return;
+    trunkGroups++;
+    a[0].trunkW = a.length;               // leader strokes at combined width
+    for (let j = 1; j < a.length; j++) {
+      a[j].con = true;                    // twin: chip carrier, no stroke
+      a[j].gLeader = a[0];
+      a[j].gIx = j;
+    }
   });
   // 3) individual named wires (tier-2 top-1/pair): terminate ON their fn rows
   indiv.forEach(w => {
@@ -3543,8 +3591,11 @@ function mapRender() {
     const riders = (byPair.get(sp.pair) || []).filter(w => !indivSet.has(w));
     const perTy = new Map();
     riders.forEach(w => perTy.set(w.ty, (perTy.get(w.ty) || 0) + 1));
-    const anc = chipAnchor(sp.pts);
-    let cy = anc[1] - 8;
+    // consolidated members park their chips on the shared trunk, stacked
+    // deterministically by group index so every pair keeps a click target
+    const onTrunk = sp.gLeader && sp.gIx > 0 ? sp.gLeader : null;
+    const anc = chipAnchor(onTrunk ? onTrunk.pts : sp.pts);
+    let cy = anc[1] - 8 - (onTrunk ? sp.gIx * 18 : 0);
     perTy.forEach((n, ty) => {
       const txt = "\u00d7" + n;
       const cwid = txtW(txt) + 10;
@@ -3571,6 +3622,7 @@ function mapRender() {
   mapLayout = {
     key, sig, lit, edges, E, place, geo, rects, wires, spines, underlays,
     chips, labels, rosterRows, expandedSet: expand, worldH, capNote,
+    trunkGroups,
   };
   mapPaint(ctx, dpr, cwView, chView, capNote);
 }
@@ -3609,18 +3661,19 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     ctx.stroke();
   };
   // render order (section 9): underlays -> spines -> wires -> boxes/rosters
-  // -> labels/chips/terminators
+  // -> labels/chips/terminators. Underlay alpha 0.25 (declutter lever 5).
   L.underlays.forEach(u => {
     seg(u, MGLYPH[u.ty0] ? MGLYPH[u.ty0].c : MGLYPH.attach.c, 1,
-        MGLYPH.attach.dash, 0.40 * dim(u.s, u.t));
+        MGLYPH.attach.dash, 0.25 * dim(u.s, u.t));
     // T-junction terminator: short tick across the entry, no arrow
-    ctx.globalAlpha = 0.40 * dim(u.s, u.t);
+    ctx.globalAlpha = 0.25 * dim(u.s, u.t);
     ctx.setLineDash([]);
     ctx.beginPath();
     ctx.moveTo(u.tx - 4, u.ty); ctx.lineTo(u.tx + 4, u.ty);
     ctx.stroke();
   });
   L.spines.forEach(sp => {
+    if (sp.con) return;   // consolidated twin: its ink rides the shared trunk
     const gl = sp.amber ? null : mapCols(nodes[sp.s].cluster);
     let color = "#ffb347";
     if (!sp.amber) {
@@ -3631,11 +3684,13 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
       grad.addColorStop(1, cT.s);
       color = grad;
     }
-    seg(sp, color, 2, null, 0.5 * dim(sp.s, sp.t));
+    // trunk leader: combined-width stroke for every corridor riding it
+    seg(sp, color, sp.trunkW ? Math.min(2 + 1.1 * (sp.trunkW - 1), 7) : 2,
+        null, 0.5 * dim(sp.s, sp.t));
   });
   L.wires.forEach(w => {
     const g = MGLYPH[w.ty] || MGLYPH.call;
-    seg(w, g.c, 1.5, g.dash, (w.bez ? 0.35 : 0.9) * dim(w.sf, w.df));
+    seg(w, g.c, 1.5, g.dash, (w.bez ? 0.25 : 0.9) * dim(w.sf, w.df));
   });
   // boxes + rosters
   ctx.setLineDash([]);
@@ -3701,16 +3756,20 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText("\u00d7" + ch.n, ch.x + ch.w / 2, ch.y + ch.h / 2 + 0.5);
   });
-  // labels: zoom tiers only when E>12 (section 6); E<=12 -> ALL
+  // labels: zoom tiers only when E>12 (section 6); E<=12 -> ALL. Label
+  // pressure at z<0.9 (declutter lever 4): ONLY the 12 highest-degree
+  // targets keep labels (hidden otherwise, never faded), deterministic
+  // by degree then index.
   const inView = (x, y) => {
     const sx = (x - mapPX) * mapZ, sy = (y - mapPY) * mapZ;
     return sx >= -30 && sx <= cwView + 30 && sy >= -10 && sy <= chView + 10;
   };
   let tier;
   if (L.E <= 12) tier = () => true;
-  else if (mapZ < 0.7) {
-    const top = new Set(L.wires.slice(0, 8).map((w, k) => k));
-    tier = l => top.has(l.w);
+  else if (mapZ < 0.9) {
+    const t12 = new Set([...L.lit].sort((a, b) =>
+      degree[b] - degree[a] || a - b).slice(0, 12));
+    tier = l => t12.has(L.wires[l.w].df);
   } else if (mapZ >= 1.5) tier = l => inView(l.x, l.y);
   else tier = () => true;
   mapShownLabels = 0;
@@ -3959,6 +4018,14 @@ const mapInfo = () => {
     chips: mapLayout.chips.length,
     rosterRows: mapLayout.rosterRows,
     expanded: mapLayout.expandedSet.size,
+    // corridor trunk consolidation: admitted corridor polylines vs the
+    // count actually stroked (consolidated twins ride the shared trunk)
+    spineTotal: mapLayout.spines.length,
+    spinesDrawn: mapLayout.spines.filter(sp => !sp.con).length,
+    trunkGroups: mapLayout.trunkGroups || 0,
+    drawnPolys: mapLayout.underlays.length +
+      mapLayout.spines.filter(sp => !sp.con).length +
+      mapLayout.wires.length,
     probeWire: probe,
   };
 };
@@ -4454,7 +4521,8 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   mapPane: { canvas: mapPane, draw: drawMapPane },
   mwires, mapInfo, get mapVars() { return mapVarsOn; }, mapExpandUser,
   get paneW() { return paneW; }, setMapVisible, divider,
-  get glW() { return glW(); } };
+  get glW() { return glW(); },
+  get mapLayout() { return mapLayout; } };
 tick();
 </script>
 </body>
