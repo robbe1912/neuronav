@@ -904,6 +904,8 @@ _TEMPLATE = r"""<!DOCTYPE html>
     text-align:center; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   button.on { color:#1de9b6; border-color:#1de9b688; }
   #info { position:fixed; top:12px; right:12px; z-index:10; width:290px;
+    transition:right .25s ease; }
+  #info.mapShift { right:452px; }   /* clear of the 440px map pane */
     background:rgba(10,14,18,.88); border:1px solid #1de9b633; border-radius:10px;
     padding:12px; display:none; backdrop-filter: blur(4px); }
   #info h2 { font-size:13px; margin:0 0 4px; color:#fff; word-break:break-all; }
@@ -999,7 +1001,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <span style="margin-left:10px">spread</span>
 <input id="spread" type="range" min="60" max="260" value="100" title="stretch the whole layout apart (scales from the centroid)">
 <span id="spreadVal">1.0</span>
-    <label class="cb"><input type="checkbox" id="cbFn"> functions</label>
+    <label class="cb"><input type="checkbox" id="cbFn" checked> functions</label>
     <label class="cb"><input type="checkbox" id="cbSpin"> spin</label>
   </div>
   <div id="dirRow">
@@ -2447,9 +2449,13 @@ function rebuildFocusLabels(focusing) {
       if (m.agg && !m.count) return;   // box collapsed into a wire aggregate
       const el = document.createElement("div");
       el.className = "flab fn";
-      if (m.count) {   // wire aggregate: 'n×' badge instead of a fn name
+      if (m.count) {   // per-file aggregate: 'n×' badge; tooltip lists the names
+        const names = fnMeta.filter(x => x.agg && !x.count && x.file === m.file)
+                            .map(x => x.name);
+        const listed = names.slice(0, 12).join(", ") +
+                       (names.length > 12 ? " +" + (names.length - 12) + " more" : "");
         el.textContent = m.count + "×";
-        el.title = nodes[m.file].path + " :: " + m.count + " calls";
+        el.title = nodes[m.file].path + " :: " + m.count + " fns" + (listed ? "\n" + listed : "");
         flabsEl.appendChild(el);
         fLabs.push({ kind: 1, i: m.file, ix, el });
         return;
@@ -2996,6 +3002,8 @@ document.getElementById("bMap").onclick = e => {
   mapVisible = !mapVisible;
   e.target.classList.toggle("on", mapVisible);
   mapPane.style.display = mapVisible ? "block" : "none";
+  // keep the node info panel clear of the pane instead of underneath it
+  info.classList.toggle("mapShift", mapVisible);
   if (mapVisible) { sizeMapPane(); drawMapPane(); }
 };
 // click a node rect = the hub-label jump: re-seed focus around that file
@@ -3026,6 +3034,7 @@ document.getElementById("bGround").onclick = e => {
 const searchEl = document.getElementById("search");
 const depthEl = document.getElementById("depth");
 const cbFnEl = document.getElementById("cbFn");
+fnMode = cbFnEl.checked;   // checkbox is the truth; sync the flag at boot
 const cbSpinEl = document.getElementById("cbSpin");
 cbSpinEl.addEventListener("change", () => { spinEnabled = cbSpinEl.checked; });
 const bDeadEl = document.getElementById("bDead");
