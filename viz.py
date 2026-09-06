@@ -2197,7 +2197,9 @@ let hubs = [];
 const hubV = new THREE.Vector3();
 function rebuildHubs() {
   const vis = [];
-  for (let i = 0; i < N; i++) if (nodeVisible(nodes[i])) vis.push(i);
+  // degree-0 files render near-invisible spheres - their labels would
+  // float as orphans, so they never earn one
+  for (let i = 0; i < N; i++) if (degree[i] > 0 && nodeVisible(nodes[i])) vis.push(i);
   vis.sort((a, b) => degree[b] - degree[a]);
   hubsEl.innerHTML = "";
   hubs = vis.slice(0, HUB_MAX).map(i => {
