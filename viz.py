@@ -901,6 +901,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <button id="bVar" title="member-var references — dense, off by default">var</button>
     <button id="bGround" title="fixed ground grid under the graph (orientation aid)">ground</button>
     <button id="bGroups" title="recolor by coarse supergroups (two-level navigation)">groups</button>
+    <button id="bCollapse" title="collapse every cluster of 3+ visible files into one supernode; edges re-attach to the merged sphere">collapse</button>
     <button id="bDead" title="show only files flagged dead: at least 40% of their funcs are dead candidates">dead only</button>
     <button id="bReset">reset</button>
   </div>
@@ -1110,6 +1111,20 @@ const alphaTgt = new Float32Array(N).fill(1);
 // (lerped in tick's instance-matrix sync; tooltip text is unchanged)
 const hoverScale = new Float32Array(N).fill(1);
 
+// supernode collapse: when ON, each cluster with >= 3 visible members
+// merges into one sphere at the member centroid. pos NEVER moves (the
+// layout is frozen); dpos is the edge-ATTACHMENT copy — identical to pos
+// normally, but a collapsed member's slot points at its cluster centroid
+// so every edge re-targets the supernode.
+let collapsed = false, fnWasOn = false;   // fnWasOn: fn-layer state across a collapse round-trip
+const dpos = new Float32Array(N * 3);
+dpos.set(pos);
+// cluster -> { cx, cy, cz, n, first } for currently-collapsed clusters,
+// plus per-node membership (alphaTgt is zeroed for members, so the edge
+// dim pass needs this to keep supernode-carried edges bright)
+const supCollapsed = new Map();
+const supMem = new Uint8Array(N);
+
 // true 3D node geometry (billboard sprites read flat on screen): files =
 // shaded spheres, functions = boxes sitting ON the call wires, variables
 // later = tetrahedra. Per-instance color carries the cluster hue; hidden
@@ -1178,6 +1193,74 @@ function syncFileMesh() {
   }
   fileMesh.instanceMatrix.needsUpdate = true;
   if (fileMesh.instanceColor) fileMesh.instanceColor.needsUpdate = true;
+}
+
+// supernode spheres: second instanced mesh, capacity = cluster count.
+// count + matrices/colors are rewritten by refreshCollapse whenever the
+// collapse set changes; hidden entirely while the toggle is off.
+let CLMAX = -1;
+for (let i = 0; i < N; i++) if (nodes[i].cluster > CLMAX) CLMAX = nodes[i].cluster;
+const supMesh = new THREE.InstancedMesh(
+  new THREE.SphereGeometry(1, 14, 10),
+  new THREE.MeshLambertMaterial(),
+  Math.max(1, CLMAX + 1)
+);
+supMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+supMesh.frustumCulled = false;
+supMesh.count = 0;
+supMesh.visible = false;
+scene.add(supMesh);
+// rebuild dpos + the collapse set from the CURRENT alphaTgt (called from
+// applyVisibility right after per-node targets are set). Members of a
+// collapsed cluster get alphaTgt 0 — the existing hide path fades their
+// spheres out and drops their hub labels — while their dpos slots point
+// at the centroid so syncEdgePos re-targets every edge they carry.
+function refreshCollapse() {
+  dpos.set(pos);
+  supCollapsed.clear(); supMem.fill(0);
+  if (!collapsed) {
+    supMesh.count = 0; supMesh.visible = false;
+    return;
+  }
+  const byC = {};
+  for (let i = 0; i < N; i++) {
+    if (alphaTgt[i] <= 0.05) continue;   // "visible" = would render under current filters/focus
+    const c = nodes[i].cluster;
+    if (c < 0) continue;
+    (byC[c] = byC[c] || []).push(i);
+  }
+  // ascending cluster ids, ascending member indices — deterministic
+  Object.keys(byC).map(Number).sort((a, b) => a - b).forEach(c => {
+    const members = byC[c];
+    if (members.length < 3) return;
+    let cx = 0, cy = 0, cz = 0;
+    members.forEach(i => { cx += pos[i*3]; cy += pos[i*3+1]; cz += pos[i*3+2]; });
+    cx /= members.length; cy /= members.length; cz /= members.length;
+    supCollapsed.set(c, { cx, cy, cz, n: members.length, first: members[0] });
+    members.forEach(i => {
+      dpos[i*3] = cx; dpos[i*3+1] = cy; dpos[i*3+2] = cz;
+      alphaTgt[i] = 0;
+      supMem[i] = 1;
+    });
+  });
+  let k = 0;
+  for (const c of [...supCollapsed.keys()].sort((a, b) => a - b)) {
+    const s = supCollapsed.get(c);
+    _dummy.position.set(s.cx, s.cy, s.cz);
+    // radius encodes the merged mass: 4 + sqrt(memberCount)
+    _dummy.scale.setScalar(4 + Math.sqrt(s.n));
+    _dummy.updateMatrix();
+    supMesh.setMatrixAt(k, _dummy.matrix);
+    // cluster hue via a member's frozen color slot
+    _col.setRGB(colArr[s.first*3], colArr[s.first*3+1], colArr[s.first*3+2]);
+    supMesh.setColorAt(k, _col);
+    k++;
+  }
+  supMesh.count = k;
+  supMesh.visible = k > 0;
+  supMesh.instanceMatrix.needsUpdate = true;
+  if (supMesh.instanceColor) supMesh.instanceColor.needsUpdate = true;
+  if (k > 0) supMesh.computeBoundingSphere();
 }
 
 // edges: LineMaterial renders true pixel-width lines (WebGL caps
@@ -1278,6 +1361,12 @@ links.forEach((l, i) => {
 // baked highway arc points by link index — syncEdgePos is the SINGLE
 // geometry owner for arcs (collapse + restore + spread attachment)
 const hwPts = new Map(hw);
+// attachment trim at node i's CURRENT body: its own sphere (world radius
+// sizes*1.1*sqrt(spread) + 2 margin), or the supernode (4 + sqrt(members)
+// + 2) when i's cluster is collapsed
+const trimAt = i => supMem[i]
+  ? 4 + Math.sqrt(supCollapsed.get(nodes[i].cluster).n) + 2
+  : sizes[i] * 1.1 * Math.sqrt(spread) + 2;
 function syncEdgePos() {
   links.forEach((l, i) => {
     if (hwSlot[i] >= 0) {
@@ -1296,19 +1385,36 @@ function syncEdgePos() {
       for (let v = 0; v < 16; v++) {
         const o = b + v * 6;
         if (hidden) {
-          const sx = pos[l.s*3], sy = pos[l.s*3+1] + 0.05, sz = pos[l.s*3+2];
+          const sx = dpos[l.s*3], sy = dpos[l.s*3+1] + 0.05, sz = dpos[l.s*3+2];
           arr[o] = sx; arr[o+1] = sy; arr[o+2] = sz;
           arr[o+3] = sx; arr[o+4] = sy; arr[o+5] = sz;
           continue;
         }
         const A = pts[v], B = pts[v + 1];
         if (!A || !B) return;
-        let ax = baseCx + (A[0] - baseCx) * spread;
-        let ay = baseCy + (A[1] - baseCy) * spread;
-        let az = baseCz + (A[2] - baseCz) * spread;
-        let bx = baseCx + (B[0] - baseCx) * spread;
-        let by = baseCy + (B[1] - baseCy) * spread;
-        let bz = baseCz + (B[2] - baseCz) * spread;
+        // per-endpoint re-rooted affine: the baked arc is mapped into live
+        // space anchored at each endpoint's CURRENT attachment point
+        // (dpos — supernode centroid when collapsed, the node itself
+        // otherwise, which reproduces the plain centroid affine exactly),
+        // then blended along the arc: v=0 maps purely through the s-anchor,
+        // v=16 purely through the t-anchor. Retargets arcs onto supernodes
+        // without disturbing uncollapsed ones.
+        const p0 = pts[0], p16 = pts[16];
+        const sax = dpos[l.s*3] + (A[0] - p0[0]) * spread,
+              say = dpos[l.s*3+1] + (A[1] - p0[1]) * spread,
+              saz = dpos[l.s*3+2] + (A[2] - p0[2]) * spread;
+        const tax = dpos[l.t*3] + (A[0] - p16[0]) * spread,
+              tay = dpos[l.t*3+1] + (A[1] - p16[1]) * spread,
+              taz = dpos[l.t*3+2] + (A[2] - p16[2]) * spread;
+        const sbx = dpos[l.s*3] + (B[0] - p0[0]) * spread,
+              sby = dpos[l.s*3+1] + (B[1] - p0[1]) * spread,
+              sbz = dpos[l.s*3+2] + (B[2] - p0[2]) * spread;
+        const tbx = dpos[l.t*3] + (B[0] - p16[0]) * spread,
+              tby = dpos[l.t*3+1] + (B[1] - p16[1]) * spread,
+              tbz = dpos[l.t*3+2] + (B[2] - p16[2]) * spread;
+        const u1 = v / 16, u2 = (v + 1) / 16;
+        let ax = sax + (tax - sax) * u1, ay = say + (tay - say) * u1, az = saz + (taz - saz) * u1;
+        let bx = sbx + (tbx - sbx) * u2, by = sby + (tby - sby) * u2, bz = sbz + (tbz - sbz) * u2;
         // surface trim at the two node-attached ends (baked arc endpoints
         // sit on the node centers): pull the terminal vertex along its own
         // segment by the node's world radius + margin, same rule as
@@ -1318,7 +1424,7 @@ function syncEdgePos() {
         if (v === 0 || v === 15) {
           const vx = bx - ax, vy = by - ay, vz = bz - az;
           const vl = Math.sqrt(vx*vx + vy*vy + vz*vz);
-          const tr = (v === 0 ? sizes[l.s] : sizes[l.t]) * 1.1 * Math.sqrt(spread) + 2;
+          const tr = trimAt(v === 0 ? l.s : l.t);
           if (vl > tr + 0.05) {
             const k = tr / vl;
             if (v === 0) { ax += vx * k; ay += vy * k; az += vz * k; }
@@ -1340,10 +1446,10 @@ function syncEdgePos() {
     const ghost = alphaTgt[l.s] < 0.05 && alphaTgt[l.t] < 0.05;
     if (linkFiltered(l) || ghost) {
       const a0 = bucketPosIB[bucketOf[i]].array, o0 = slotOf[i] * 6;
-      a0[o0] = pos[s]; a0[o0+1] = pos[s+1]; a0[o0+2] = pos[s+2];
+      a0[o0] = dpos[s]; a0[o0+1] = dpos[s+1]; a0[o0+2] = dpos[s+2];
       // tiny offset: an exactly-zero-length segment gives LineMaterial's
       // normalize(0) NaN screen quads (driver-dependent streaks)
-      a0[o0+3] = pos[s]; a0[o0+4] = pos[s+1] + 0.05; a0[o0+5] = pos[s+2];
+      a0[o0+3] = dpos[s]; a0[o0+4] = dpos[s+1] + 0.05; a0[o0+5] = dpos[s+2];
       bucketPosIB[bucketOf[i]].needsUpdate = true;
       return;
     }
@@ -1353,29 +1459,28 @@ function syncEdgePos() {
       const slot = g.indexOf(i) - (g.length - 1) / 2;
       // perpendicular to the strand in the xy-plane; +X fallback when the
       // strand is nearly parallel to Z (cross with Z degenerates)
-      const dx = pos[t] - pos[s], dy = pos[t+1] - pos[s+1];
+      const dx = dpos[t] - dpos[s], dy = dpos[t+1] - dpos[s+1];
       let px = dy, py = -dx;
       const pl = Math.sqrt(px*px + py*py);
       if (pl < 0.001) { px = 1; py = 0; } else { px /= pl; py /= pl; }
       ox = px * slot * 9; oy = py * slot * 9;
     }
     const a = bucketPosIB[bucketOf[i]].array, o = slotOf[i] * 6;
-    // surface trim: pull each endpoint out of its sphere (world radius =
-    // sizes*1.1*sqrt(spread), +2 margin) so strands meet the surface, not
-    // the node center. A strand shorter than both trims would invert and
-    // feed normalize(0) — fall back to the same stub the ghost path uses.
-    const ex = pos[t] - pos[s], ey = pos[t+1] - pos[s+1], ez = pos[t+2] - pos[s+2];
+    // surface trim: pull each endpoint out of its attachment body (own
+    // sphere or supernode — trimAt) so strands meet the surface, not the
+    // center. A strand shorter than both trims would invert and feed
+    // normalize(0) — fall back to the same stub the ghost path uses.
+    const ex = dpos[t] - dpos[s], ey = dpos[t+1] - dpos[s+1], ez = dpos[t+2] - dpos[s+2];
     const el = Math.sqrt(ex*ex + ey*ey + ez*ez);
-    const trimS = sizes[l.s] * 1.1 * Math.sqrt(spread) + 2;
-    const trimT = sizes[l.t] * 1.1 * Math.sqrt(spread) + 2;
+    const trimS = trimAt(l.s), trimT = trimAt(l.t);
     if (el - trimS - trimT <= 0.05) {
-      a[o] = pos[s]; a[o+1] = pos[s+1]; a[o+2] = pos[s+2];
-      a[o+3] = pos[s]; a[o+4] = pos[s+1] + 0.05; a[o+5] = pos[s+2];
+      a[o] = dpos[s]; a[o+1] = dpos[s+1]; a[o+2] = dpos[s+2];
+      a[o+3] = dpos[s]; a[o+4] = dpos[s+1] + 0.05; a[o+5] = dpos[s+2];
       return;
     }
     const ndx = ex / el, ndy = ey / el, ndz = ez / el;
-    a[o]   = pos[s] + ndx * trimS + ox; a[o+1] = pos[s+1] + ndy * trimS + oy; a[o+2] = pos[s+2] + ndz * trimS;
-    a[o+3] = pos[t] - ndx * trimT + ox; a[o+4] = pos[t+1] - ndy * trimT + oy; a[o+5] = pos[t+2] - ndz * trimT;
+    a[o]   = dpos[s] + ndx * trimS + ox; a[o+1] = dpos[s+1] + ndy * trimS + oy; a[o+2] = dpos[s+2] + ndz * trimS;
+    a[o+3] = dpos[t] - ndx * trimT + ox; a[o+4] = dpos[t+1] - ndy * trimT + oy; a[o+5] = dpos[t+2] - ndz * trimT;
   });
   bucketPosIB.forEach(ib => { ib.needsUpdate = true; });
   // dash support: lineDistance attributes must track every geometry
@@ -1626,7 +1731,9 @@ function buildContainment() {
       el.className = "clab";
       el.style.color = "#" + col.getHexString();
       const nm = groupsMode ? (gNames[+cid] || "g" + cid) : (cNames[cid] || "c" + cid);
-      el.textContent = nm + " · " + members.length;
+      // collapsed clusters announce the merged mass on the label
+      const sup = collapsed ? supCollapsed.get(+cid) : null;
+      el.textContent = sup ? nm + " · " + sup.n + " files" : nm + " · " + members.length;
       clabsEl.appendChild(el);
       cLabs.push({ cx, cy, cz, el });
     });
@@ -1786,6 +1893,10 @@ function applyVisibility() {
       colArr[i*3] = c.r; colArr[i*3+1] = c.g; colArr[i*3+2] = c.b;
     }
   }
+  // collapse pass: re-derives dpos + the supernode set from the targets
+  // just computed; zeroes member alphaTgt (existing hide path fades the
+  // spheres and drops hub labels)
+  refreshCollapse();
   syncFileMesh();
   // dim edges: hidden endpoints, filtered types, or focus distance
   // (dimmed eColBase written straight into each bucket's instanced colors).
@@ -1806,7 +1917,10 @@ function applyVisibility() {
     // collapse in the k===0 branch below removes its baked geometry too)
     const ghost = alphaTgt[l.s] < 0.05 && alphaTgt[l.t] < 0.05;
     if (sFiltered || tFiltered || ghost) k = 0.0;
-    else if (!typeVisible(l.ty) || alphaTgt[l.s] <= 0.5 || alphaTgt[l.t] <= 0.5) k = 0.012;
+    // collapsed members carry alphaTgt 0 but their edges LIVE (re-targeted
+    // to the supernode) — only non-member dim endpoints take the 0.012 dim
+    else if (!typeVisible(l.ty) ||
+      ((alphaTgt[l.s] <= 0.5 && !supMem[l.s]) || (alphaTgt[l.t] <= 0.5 && !supMem[l.t]))) k = 0.012;
     else if (fnMode && focusing && l.ty === "call" && level[l.s] >= 0 && level[l.t] >= 0) k = 0; // wire mode: fn wires replace the aggregate call line; geometry collapse (k===0 branch) handles invisibility — a ghost 0.04 double-draws under the additive fn wires
     else if (focusing) k = Math.max(0.34, 1 - 0.18 * Math.max(level[l.s], level[l.t]));
     else k = 1;
@@ -2645,6 +2759,19 @@ document.querySelectorAll("#dirRow .seg").forEach(b => {
   };
 });
 document.getElementById("cbFn").onchange = e => { fnMode = e.target.checked; applyVisibility(); };
+// cluster supernode collapse: toggle owns collapsed + the fn layer (the fn
+// wires reference individual member files, meaningless once members merge;
+// forced off and restored across the round-trip). applyVisibility runs the
+// collapse pass (alphaTgt/dpos/supernode matrices), then the containment
+// rebuild picks up the " · N files" labels.
+document.getElementById("bCollapse").onclick = e => {
+  collapsed = !collapsed;
+  e.target.classList.toggle("on", collapsed);
+  if (collapsed) { fnWasOn = fnMode; fnMode = false; cbFnEl.checked = false; }
+  else { fnMode = fnWasOn; cbFnEl.checked = fnWasOn; fnWasOn = false; }
+  applyVisibility();
+  buildContainment();
+};
 function clearFocus() {
   // one scope for Esc / right-click / crumb ✕: drop the focus, the query,
   // the back-stack and the info panel together
@@ -2677,6 +2804,7 @@ function resetAll() {
   mutOnly = false;
   showInst = false; showCalls = true; showTests = false;
   groupsMode = false;   // coloring level is view state — reset to fine clusters
+  collapsed = false; fnWasOn = false;   // supernode collapse off — resetAll's button wipe clears its .on
   searchEl.value = ""; depthEl.value = 2;
   document.getElementById("depthVal").textContent = "2";
 document.getElementById("spread").value = 100;
@@ -3060,6 +3188,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get groundGrid() { return groundGrid; },
   get groupsMode() { return groupsMode; }, groups,
   get spread() { return spread; }, get deadOnly() { return deadOnly; },
+  get collapsed() { return collapsed; }, dpos, supCollapsed, refreshCollapse,
   colArr,
   get fnStalk() { return fnStalk; },
   syncFileMesh };
