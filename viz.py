@@ -1251,10 +1251,11 @@ function pathToSeed(i) {
 // 3D/map split: the map pane is a permanent part of the layout (collapsible
 // via #bMap). The 3D renderer owns everything left of it; both sizes derive
 // from paneW so a divider drag reflows both at once.
-const PANE_MIN = 280, PANE_MAX = 700, PANE_DEFAULT = 440;
+const PANE_MIN = 180, PANE_DEFAULT = 440;
+const paneMax = () => Math.max(PANE_MIN + 120, innerWidth - 320);   // 3D keeps >=320
 const PANE_KEY = "neuronav.mapPaneW";
 let mapVisible = true;   // pane ships open; #bMap collapses/expands it
-let paneW = Math.max(PANE_MIN, Math.min(PANE_MAX,
+let paneW = Math.max(PANE_MIN, Math.min(paneMax(),
   parseInt(localStorage.getItem(PANE_KEY) || "", 10) || PANE_DEFAULT));
 const applyPaneW = () =>
   document.documentElement.style.setProperty("--pane-w", paneW + "px");
@@ -3020,7 +3021,6 @@ let mapZ = 0, mapPX = 0, mapPY = 0;      // view: zoom + pan over the world
 let mapDrag = null, mapDragged = false;
 let mapRects = [];             // last drawn node rects (click hit-testing)
 let mapVarsOn = false;         // var wires OFF by default, map-local chip [F10]
-let mapZoomExp = false;        // hysteresis latch: expand >=1.5, collapse <1.2 [F7]
 let mapFullAdmit = false;      // zoom-tiered admission latch: full >=1.5, w>=3 <1.2
 const mapExpandUser = new Map();   // file ix -> bool override (dblclick)
 let mapHover = -1;             // hovered named-wire ix (L1 disclosure)
@@ -3253,11 +3253,9 @@ function mapRender() {
     lit = litAll.slice().sort((a, b) => (degree[b] - degree[a]) || (a - b)).slice(0, MAP_MAX);
   }
   if (!lit.length) { mapLayout = null; hint("focus a node to see its map"); return; }
-  // hysteresis latch BEFORE expansion (section 4): zoom >= 1.5 expands
-  // wired boxes, < 1.2 collapses, in between keeps the current state
-  if (mapZ >= 1.5) mapZoomExp = true;
-  else if (mapZ < 1.2) mapZoomExp = false;
-  // zoom-tiered admission latch (same band shape as the expand latch):
+  // NOTE: rosters no longer collapse on zoom-out (owner request) - the
+  // expansion set is zoom-independent (seeds + user toggles + E<=12 wired).
+  // zoom-tiered admission latch (same band shape as the old expand latch):
   // z >= 1.5 restores the full tier-1 rank, z < 1.2 keeps only w>=3
   // corridors + chip-worthy pairs. Relayouts fire on threshold crossings
   // only - never per wheel tick (layout cache keyed via the key below).
@@ -3307,7 +3305,7 @@ function mapRender() {
     const u = mapExpandUser.get(i);
     const wired = (wireInc.get(i) || 0) >= 1;
     // seed = BFS level 0 (click seeds AND query matches): roster open at L0
-    if (u !== undefined ? u : (level[i] === 0 || wired && (E <= 12 || mapZoomExp)))
+    if (u !== undefined ? u : (level[i] === 0 || wired && E <= 12))
       expand.add(i);
   });
   // layout cache (section 5 [F7]): hit = pure repaint under pan/zoom. The
@@ -3976,7 +3974,7 @@ divider.addEventListener("pointerdown", e => {
 });
 divider.addEventListener("pointermove", e => {
   if (!divider.classList.contains("drag")) return;
-  paneW = Math.round(Math.max(PANE_MIN, Math.min(PANE_MAX, innerWidth - e.clientX)));
+  paneW = Math.round(Math.max(PANE_MIN, Math.min(paneMax(), innerWidth - e.clientX)));
   applyPaneW();
   if (!divRaf) divRaf = requestAnimationFrame(() => {
     divRaf = 0;

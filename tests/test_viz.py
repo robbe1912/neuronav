@@ -938,8 +938,8 @@ def run_tests():
           w: document.getElementById('mapPane').clientWidth,
           cw: window.__dbg.renderer.domElement.clientWidth, iw: innerWidth,
           stored: parseInt(localStorage.getItem('neuronav.mapPaneW') || '', 10) })""")
-        check("divider drag widens pane + shrinks renderer (280-700 clamp)",
-              280 <= after["w"] <= 700
+        check("divider drag widens pane + shrinks renderer (180..iw-320 clamp)",
+              180 <= after["w"] <= after["iw"] - 320
               and after["w"] >= splits["w"] + 100
               and after["cw"] < splits["cw"]
               and abs(after["cw"] + after["w"] - after["iw"]) <= 2, str(after))
