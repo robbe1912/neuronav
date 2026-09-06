@@ -131,7 +131,8 @@ def run_tests():
               f"hidden span {arc_hidden} / shown trim {arc_shown}")
 
 
-        # 4. focus + functions: fn boxes exist and sit ON the wires.
+        # 4. focus + functions: fn boxes exist and orbit their OWNER file
+        # sphere (arc placement) instead of sitting on the wire midpoints.
         # The focus token must exist in THIS index (harness is config-agnostic
         # since the self-index landed): aim at the highest-degree node's
         # path stem — 'magicplayer' hardcoding died when config left SWMG.
@@ -146,35 +147,25 @@ def run_tests():
         page.dispatch_event("#search", "input")
         page.check("#cbFn")
         page.wait_for_timeout(1200)
-        wire = page.evaluate(
+        vic = page.evaluate(
             """() => { const d = window.__dbg; const nm = d.fnMesh, meta = d.fnMeta;
                  if (!nm || !meta || !meta.length) return { fail: 'no fn layer' };
-                 const pos = d.pos, adj = {};
-                 d.links.forEach(l => { (adj[l.s]=adj[l.s]||new Set()).add(l.t);
-                                        (adj[l.t]=adj[l.t]||new Set()).add(l.s); });
+                 const pos = d.pos, sizes = d.sizes;
                  let maxOff = 0;
                  for (const fm of meta) {
-                   const A = fm.file, p = fm.p; let best = Infinity;
-                   for (const B of (adj[A]||[])) {
-                     const ax=pos[A*3],ay=pos[A*3+1],az=pos[A*3+2];
-                     const bx=pos[B*3],by=pos[B*3+1],bz=pos[B*3+2];
-                     const abx=bx-ax,aby=by-ay,abz=bz-az;
-                     const apx=p[0]-ax,apy=p[1]-ay,apz=p[2]-az;
-                     const ab2=abx*abx+aby*aby+abz*abz;
-                     let tt=ab2>0?(apx*abx+apy*aby+apz*abz)/ab2:0;
-                     tt=Math.max(0,Math.min(1,tt));
-                     const dx=apx-abx*tt,dy=apy-aby*tt,dz=apz-abz*tt;
-                     best=Math.min(best,Math.sqrt(dx*dx+dy*dy+dz*dz));
-                   }
-                   maxOff=Math.max(maxOff,best);
+                   const A = fm.file, p = fm.p;
+                   const dx = p[0]-pos[A*3], dy = p[1]-pos[A*3+1], dz = p[2]-pos[A*3+2];
+                   // owner-vicinity: boxes sit on arcs of radius
+                   // ownerRadius + 14 + (i%3)*6 — at most 26 past the surface
+                   maxOff = Math.max(maxOff, Math.sqrt(dx*dx+dy*dy+dz*dz) - sizes[A] * 1.1);
                  }
                  return { count: nm.count, geom: nm.geometry.type,
                           isInstanced: nm.isInstancedMesh, maxOff }; }"""
         )
         check("fn boxes instanced cubes",
-              wire.get("isInstanced") and wire.get("geom") == "BoxGeometry", str(wire))
-        check("fn boxes on wires", wire.get("maxOff", 99) <= 15.5,
-              f"maxOff={wire.get('maxOff')} count={wire.get('count')}")
+              vic.get("isInstanced") and vic.get("geom") == "BoxGeometry", str(vic))
+        check("fn boxes orbit owner sphere", vic.get("maxOff", 99) <= 30,
+              f"maxOff={vic.get('maxOff')} count={vic.get('count')}")
 
         # 5. hover a fn box -> tooltip shows path :: name
         hover = page.evaluate(
