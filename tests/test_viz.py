@@ -282,7 +282,8 @@ def run_tests():
         # (auto-spin off first: rotation moves the projection we aim at;
         # fn layer off too — its boxes steal the raycast pick near the
         # focused node)
-        page.evaluate("""() => { document.getElementById('cbSpin').click();
+        page.evaluate("""() => { const sb = document.getElementById('cbSpin');
+                                 if (sb.checked) sb.click();
                                  if (document.getElementById('cbFn').checked)
                                    document.getElementById('cbFn').click(); }""")
         page.wait_for_timeout(150)
@@ -461,25 +462,25 @@ def run_tests():
                   strata_y.get("checked", 0) > 0 and strata_y.get("bad", 1) == 0,
                   f"{strata_y.get('checked')} depth-rising links, {strata_y.get('bad')} inverted")
 
-        # 5ec. auto-spin: checkbox is the truth (tick re-derives autoRotate
-        # every frame — reads need a settle after each click). Harness left
-        # spin OFF at 5bb, so: on -> verify -> off -> verify -> back on.
+        # 5ec. auto-spin: OFF at boot by default (eye tracking); checkbox is
+        # the truth (tick re-derives autoRotate every frame — reads need a
+        # settle after each change): off at boot -> on after enable ->
+        # off after disable.
         spin = page.evaluate(
             """() => new Promise(res => { const d = window.__dbg;
                  const box = document.getElementById('cbSpin');
                  if (!box) return res({ fail: 'no cbSpin' });
                  const set = v => { box.checked = v; box.dispatchEvent(new Event('change')); };
-                 set(true);
-                 setTimeout(() => { const on0 = d.controls.autoRotate;
-                   set(false);
-                   setTimeout(() => { const off1 = !d.controls.autoRotate;
-                     set(true);
-                     setTimeout(() => res({ on0, off1, on2: d.controls.autoRotate }), 120);
+                 setTimeout(() => { const off0 = !box.checked && !d.controls.autoRotate;
+                   set(true);
+                   setTimeout(() => { const on1 = d.controls.autoRotate;
+                     set(false);
+                     setTimeout(() => res({ off0, on1, off2: !d.controls.autoRotate }), 120);
                    }, 120); }, 120); })"""
         )
-        check("auto-spin toggles via checkbox",
+        check("auto-spin off at boot, toggles via checkbox",
               bool(spin) and "fail" not in spin
-              and all(spin.get(k) for k in ("on0", "off1", "on2")), str(spin))
+              and all(spin.get(k) for k in ("off0", "on1", "off2")), str(spin))
 
         # 5d. dead-only toggle frames the dead set. Data-gated: with zero dead
         # files the toggle may legitimately be inert (nothing to frame) — and

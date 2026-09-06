@@ -997,7 +997,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <input id="spread" type="range" min="60" max="260" value="100" title="stretch the whole layout apart (scales from the centroid)">
 <span id="spreadVal">1.0</span>
     <label class="cb"><input type="checkbox" id="cbFn"> functions</label>
-    <label class="cb"><input type="checkbox" id="cbSpin" checked> spin</label>
+    <label class="cb"><input type="checkbox" id="cbSpin"> spin</label>
   </div>
   <div id="dirRow">
     <span>dir</span>
@@ -1138,9 +1138,9 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 // idle auto-spin (the cbSpin checkbox toggles it); tick() pauses it
 // while the user drags or inspects a fn box
-controls.autoRotate = true;
+controls.autoRotate = false;
 controls.autoRotateSpeed = 0.35;
-let spinEnabled = true;
+let spinEnabled = false;
 
 // cluster hue: golden angle spread; dead files tinted toward red.
 // lightness bands break golden-angle hue collisions across long cid runs
@@ -1408,12 +1408,12 @@ const TYPE_COLORS = {
   attach: new THREE.Color(0.24, 0.80, 0.95),
   var:    new THREE.Color(0.45, 0.90, 0.55),
 };
-// overview opacity is flat 0.35 across buckets: width already encodes
-// weight — the old descending ops made heavy edges DIMMER than trivial ones
+// overview opacity rises gently with bucket weight: width stays the main
+// weight cue — and heavy edges must never read dimmer than trivial ones
 const BUCKETS = [
-  { max: 1, width: 1.3, op: 0.10 },          // w <= 1
-  { max: 4, width: 2.2, op: 0.12 },          // 2..4
-  { max: Infinity, width: 3.5, op: 0.14 },   // >= 5
+  { max: 1, width: 1.3, op: 0.28 },          // w <= 1
+  { max: 4, width: 2.2, op: 0.32 },          // 2..4
+  { max: Infinity, width: 3.5, op: 0.36 },   // >= 5
 ];
 const bucketOf = new Int8Array(MAXL);
 const slotOf = new Int32Array(MAXL);
@@ -1470,7 +1470,6 @@ const bucketPosIB = [], bucketColIB = [], bucketMat = [], bucketMesh = [];
 // re-read each tick
 const FLOW_SPEED = 2.5;
 let edgeFlowOn = false;   // set by applyVisibility, read by tick's dash pass
-let lastTickT = performance.now();
 
 // typed strands between the same file pair run parallel instead of
 // overlapping: each gets a slot offset perpendicular to the strand
@@ -1674,20 +1673,22 @@ function popFocus() {
 }
 function tick() {
   const nowT = performance.now();
-  const dt = Math.min(0.05, (nowT - lastTickT) / 1000);
-  lastTickT = nowT;
-  // dash-flow while focusing: one shared offset walks every edge along its
-  // s→t vertex order (caller→callee). Overview keeps dashed fully off —
-  // USE_DASH leaves the shader, so nothing shimmers at rest.
-  const flowSpd = FLOW_SPEED;
-  for (const em of bucketMat) {
+  // dash-flow while focusing: offsets walk each edge along its s→t vertex
+  // order (caller→callee), with a per-bucket phase hashed from the bucket
+  // index so the flow reads per-edge instead of one global march. Overview
+  // keeps dashed fully off — USE_DASH leaves the shader, so nothing
+  // shimmers at rest.
+  const flowT = nowT / 1000;
+  bucketMat.forEach((em, i) => {
     if (edgeFlowOn) {
       if (!em.dashed) { em.dashed = true; em.dashSize = 8; em.gapSize = 5; em.needsUpdate = true; }
-      em.dashOffset -= dt * flowSpd;
+      const period = em.dashSize + em.gapSize;
+      const hashI = (i * 2654435761) % 997 / 997 * period;
+      em.dashOffset = -((flowT * FLOW_SPEED + hashI * 13) % period);
     } else if (em.dashed) {
       em.dashed = false; em.dashOffset = 0; em.needsUpdate = true;
     }
-  }
+  });
   // camera tween (focus / back-stack); a user drag cancels it
   if (camTween) {
     const u = Math.min(1, (performance.now() - camTween.t0) / camTween.dur);
@@ -2031,7 +2032,7 @@ function applyVisibility() {
   // (dimmed eColBase written straight into each bucket's instanced colors).
   // Overview palette: edge-type hues are demoted to weight-tinted gray so
   // cluster colors carry the overview; full type colors return on focus.
-    const grayMix = focusing ? 0 : 0.82;
+    const grayMix = focusing ? 0 : 0.6;
   const touched = [false, false, false];
   links.forEach((l, i) => {
     let k;
