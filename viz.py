@@ -2986,59 +2986,59 @@ function drawMapPane() {
   const claimLane = (x, ya, yb) => {
     for (const g of crossedBands(ya, yb)) (laneX[g] || (laneX[g] = [])).push(x);
   };
-  // pass 1: detour band + bus slot per edge - slots spread across the WHOLE
-  // band (no modulo wrap), so no two horizontal runs ever share a y
-  const bandOf = [], busOf = [], busTotal = [];
-  edges.forEach((l, ei) => {
-    const A = place.get(l.s), B = place.get(l.t);
-    if (!A || !B) { bandOf.push(-1); busOf.push(-1); return; }
-    const sameRow = level[l.s] === level[l.t];
-    const sy = A.y + NH;
-    const bands = sameRow ? crossedBands(sy, sy + 1) : crossedBands(B.y - 1, B.y);
-    const band = bands.length ? bands[0] : -1;
-    bandOf.push(band); busOf.push(band);
-    if (band >= 0) busTotal[band] = (busTotal[band] || 0) + 1;
+  // ports: every edge leaves its own point on the source box bottom and
+  // arrives at its own point on the target box top - a line is traceable
+  // from the exact spot it exits to the exact spot it enters
+  const outN = new Map(), inN = new Map(), outIx = new Map(), inIx = new Map();
+  edges.forEach(l => {
+    outN.set(l.s, (outN.get(l.s) || 0) + 1);
+    inN.set(l.t, (inN.get(l.t) || 0) + 1);
   });
-  // sequential slot per band: nth edge in a band gets slot n
-  {
-    const seen = [];
-    bandOf.forEach((b, i) => {
-      if (b < 0) return;
-      busOf[i] = seen[b] = (seen[b] === undefined ? 0 : seen[b] + 1);
-    });
-  }
+  // horizontal non-overlap: claimed y per band; a run whose span would hit
+  // a node box shifts down until both the corridor and the span are clear
+  const usedY = [];
+  const spanHits = (x0, x1, y) => rects.some(r =>
+    y >= r.y0 && y <= r.y1 && x1 >= r.x0 && x0 <= r.x1);
+  const nextY = (x0, x1, startY) => {
+    let y = startY;
+    while (usedY.some(u => Math.abs(u - y) < 3) || spanHits(Math.min(x0, x1), Math.max(x0, x1), y)) y += 3;
+    usedY.push(y);
+    return y;
+  };
   ctx.lineWidth = 1.5;
   ctx.globalAlpha = 0.85;
-  edges.forEach((l, ei) => {
+  edges.forEach(l => {
     const A = place.get(l.s), B = place.get(l.t);
     if (!A || !B) return;
     const sy = A.y + NH;                              // source bottom
     const sameRow = level[l.s] === level[l.t];
     const ty = sameRow ? B.y + NH : B.y;              // entry y on the target
-    // bus y: this edge's own slot inside the detour band
-    const band = bandOf[ei];
-    let yCh = sameRow ? sy + (rowH - NH) / 2 : (sy + B.y) / 2;
-    if (band >= 0 && gapY[band]) {
-      const gy = gapY[band], bh = gy.y1 - gy.y0;
-      yCh = gy.y0 + bh * (busOf[ei] + 0.5) / busTotal[band];
-    }
-    const sx = freeX(A.x + A.w / 2, Math.min(sy, yCh), Math.max(sy, yCh));
+    const sIx = outIx.get(l.s) || 0; outIx.set(l.s, sIx + 1);
+    const tIx = inIx.get(l.t) || 0; inIx.set(l.t, tIx + 1);
+    const sx0 = A.x + A.w * (sIx + 1) / ((outN.get(l.s) || 1) + 1);
+    const tx0 = B.x + B.w * (tIx + 1) / ((inN.get(l.t) || 1) + 1);
+    // bus y: claim a corridor in the detour band, clear of boxes + peers
+    const bands = sameRow ? crossedBands(sy, sy + 1) : crossedBands(B.y - 1, B.y);
+    const startY = bands.length && gapY[bands[0]] ? gapY[bands[0]].y0 + 3
+                 : sameRow ? sy + (rowH - NH) / 2 : (sy + B.y) / 2;
+    const yCh = nextY(Math.min(sx0, tx0), Math.max(sx0, tx0), startY);
+    const sx = freeX(sx0, Math.min(sy, yCh), Math.max(sy, yCh));
     claimLane(sx, sy, yCh);
-    const tx = Math.max(B.x + 4,
-                Math.min(B.x + B.w - 4, freeX(B.x + B.w / 2, Math.min(yCh, ty), Math.max(yCh, ty))));
+    const tx = Math.max(B.x + 2,
+                Math.min(B.x + B.w - 2, freeX(tx0, Math.min(yCh, ty), Math.max(yCh, ty))));
     claimLane(tx, yCh, ty);
     const dir = tx >= sx ? 1 : -1;
     const ch = Math.max(0, Math.min(8, Math.abs(tx - sx) / 2, (yCh - sy) / 2, (yCh - ty) / 2));
     // gradient source hue -> target hue: shared-cluster edges still
     // separate visually and the color itself carries the direction
     const cS = mapCols(nodes[l.s].cluster), cT = mapCols(nodes[l.t].cluster);
-    const grad = ctx.createLinearGradient(A.x + A.w / 2, sy, tx, ty);
+    const grad = ctx.createLinearGradient(sx0, sy, tx0, ty);
     grad.addColorStop(0, cS.s);
     grad.addColorStop(1, cT.s);
     ctx.strokeStyle = grad;
     ctx.fillStyle = cT.s;
     ctx.beginPath();
-    ctx.moveTo(A.x + A.w / 2, sy);
+    ctx.moveTo(sx0, sy);
     ctx.lineTo(sx, sy);                               // jog along the box bottom to the lane
     ctx.lineTo(sx, yCh - ch);
     ctx.lineTo(sx + dir * ch, yCh);
