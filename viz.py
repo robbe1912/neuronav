@@ -2850,6 +2850,7 @@ frameGraph();
 renderer.domElement.style.cursor = "grab";
 // debug handle last: everything it captures is initialized by here
 window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE, flowSpeed: FLOW_SPEED,
+  meta: DATA.meta, controls, get spinEnabled() { return spinEnabled; },
   alpha: alphaArr, alphaTgt, hoverScale, hot, bucketMat, bucketOf, hwSlot, bucketPosIB, bucketColIB, slotOf,
   adjOut, adjIn, adj, outDeg, inDeg, get dirMode() { return dirMode; }, focusSeeds, level,
   get camTween() { return camTween; }, get focusStack() { return focusStack; },

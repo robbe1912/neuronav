@@ -54,6 +54,12 @@ def run_tests():
         check("stats line", bool(m), stats.strip()[:90])
         n_files = int(m.group(1)) if m else 0
 
+        # 1b. strata reading order: stats must announce the depth channel
+        strata = page.evaluate("() => window.__dbg.meta ? window.__dbg.meta.strata : false")
+        if strata:
+            check("strata channel noted in stats",
+                  "height = call depth from entry" in stats, stats.strip()[:90])
+
         # 2. true 3D: files are instanced spheres
         shapes = page.evaluate(
             """() => { const d = window.__dbg; return {
@@ -108,8 +114,8 @@ def run_tests():
                  }
                  return -1; }""")
         check("hidden-test arcs collapse geometrically",
-              arc_hidden == 0 and (arc_shown < 0 or arc_shown <= 1),
-              f"hidden span {arc_hidden} / shown endpoint err {arc_shown}")
+              arc_hidden == 0 and (arc_shown < 0 or 2 <= arc_shown <= 15.5),
+              f"hidden span {arc_hidden} / shown endpoint err {arc_shown} (surface-trimmed ~sizes*1.1+2)")
 
 
         # 4. focus + functions: fn boxes exist and sit ON the wires.
@@ -233,7 +239,15 @@ def run_tests():
               and hop.get("nbLabel") in (hop.get("text") or ""),
               str(hop))
 
+        # 5ba. direction flow: while focusing, call-edge materials animate
+        check("dash-flow on while focusing",
+              bool(page.evaluate("() => window.__dbg.bucketMat.some(m => m.dashed)")),
+              "dashed on call materials during focus")
+
         # 5bb. hover feedback in-scene: sphere scale lerps to ~1.8x then back
+        # (auto-spin off first: rotation moves the projection we aim at)
+        page.evaluate("() => document.getElementById('cbSpin').click()")
+        page.wait_for_timeout(150)
         scale = page.evaluate(
             """() => { const d = window.__dbg;
                  const mat = new d.THREE.Matrix4();
@@ -275,6 +289,9 @@ def run_tests():
         # (clear focus first so chips act on the overview)
         page.keyboard.press("Escape")
         page.wait_for_timeout(150)
+        check("dash-flow off after focus cleared",
+              not page.evaluate("() => window.__dbg.bucketMat.some(m => m.dashed)"),
+              "solid lines at overview")
         island = page.evaluate(
             """() => { const chip0 = document.querySelector('#legend .chip');
                  if (!chip0) return { fail: 'no legend chip' };
@@ -291,6 +308,54 @@ def run_tests():
               bool(island) and "fail" not in island
               and island.get("d1", 0) < island.get("d0", 1) * 0.9,
               str(island))
+
+        # 5eb. strata geometry: callees sit strictly below callers in Y.
+        # y = half - depth*spacing + jitter(<=0.15 spacing), so a +1-depth
+        # edge clears at least 0.7 spacing of drop; sample every link.
+        strata_y = page.evaluate(
+            """() => { const d = window.__dbg;
+                 if (!d.meta || !d.meta.strata) return { skip: true };
+                 const depth = d.meta.depth;
+                 let maxY = -1e9, minY = 1e9, maxd = 0;
+                 for (let j = 0; j < d.nodes.length; j++) {
+                   maxY = Math.max(maxY, d.pos[j*3+1]); minY = Math.min(minY, d.pos[j*3+1]); }
+                 for (let j = 0; j < depth.length; j++) maxd = Math.max(maxd, depth[j]);
+                 if (maxd === 0) return { skip: true, flat: true };
+                 const spacing = (maxY - minY) / maxd;
+                 let checked = 0, bad = 0;
+                 for (const l of d.links) {
+                   if (depth[l.t] <= depth[l.s]) continue;
+                   checked++;
+                   if (d.pos[l.t*3+1] > d.pos[l.s*3+1] - 0.4 * spacing) bad++;
+                 }
+                 return { checked, bad }; }"""
+        )
+        if strata_y.get("skip"):
+            print(f"SKIP strata Y geometry — {strata_y}")
+        else:
+            check("strata: callees below callers",
+                  strata_y.get("checked", 0) > 0 and strata_y.get("bad", 1) == 0,
+                  f"{strata_y.get('checked')} depth-rising links, {strata_y.get('bad')} inverted")
+
+        # 5ec. auto-spin: checkbox is the truth (tick re-derives autoRotate
+        # every frame — reads need a settle after each click). Harness left
+        # spin OFF at 5bb, so: on -> verify -> off -> verify -> back on.
+        spin = page.evaluate(
+            """() => new Promise(res => { const d = window.__dbg;
+                 const box = document.getElementById('cbSpin');
+                 if (!box) return res({ fail: 'no cbSpin' });
+                 const set = v => { box.checked = v; box.dispatchEvent(new Event('change')); };
+                 set(true);
+                 setTimeout(() => { const on0 = d.controls.autoRotate;
+                   set(false);
+                   setTimeout(() => { const off1 = !d.controls.autoRotate;
+                     set(true);
+                     setTimeout(() => res({ on0, off1, on2: d.controls.autoRotate }), 120);
+                   }, 120); }, 120); })"""
+        )
+        check("auto-spin toggles via checkbox",
+              bool(spin) and "fail" not in spin
+              and all(spin.get(k) for k in ("on0", "off1", "on2")), str(spin))
 
         # 5d. dead-only toggle frames the dead set. Data-gated: with zero dead
         # files the toggle may legitimately be inert (nothing to frame) — and
@@ -359,17 +424,19 @@ def run_tests():
                  // degree = sum of link weights (same recurrence as sizes)
                  const deg = new Float32Array(d.nodes.length);
                  d.links.forEach(l => { deg[l.s] += l.w; deg[l.t] += l.w; });
-                 const base = i => Math.min(10, 3.5 + Math.sqrt(deg[i]));
-                 const mat = new d.THREE.Matrix4();
-                 const mx = i => { d.fileMesh.getMatrixAt(i, mat); return mat.elements[0]; };
-                  // instance scale = sizes*1.1 at overview (no dead boost/hover)
-                  const expHot = base(arg) * 1.1 * (1 + 0.35 * h[arg]);
+                  const base = i => Math.min(10, 3.5 + Math.sqrt(deg[i]));
+                  const mat = new d.THREE.Matrix4();
+                  const mx = i => { d.fileMesh.getMatrixAt(i, mat); return mat.elements[0]; };
+                  // instance scale = sizes*1.1 × dim-shrink (0.45+0.55a) at
+                  // overview (no dead boost/hover); alpha eases, read it live
+                  const dim = i => 0.45 + 0.55 * d.alpha[i];
+                  const expHot = base(arg) * 1.1 * (1 + 0.35 * h[arg]) * dim(arg);
                   return { n: h.length, max: h[arg], min: Math.min(...h),
                           hotOk: Math.abs(mx(arg) / expHot - 1) < 0.02,
                           // data-gated: an index where every file has churn
                           // (young repo, all touched recently) has no cold file
                           coldOk: cold < 0 ? true
-                                  : Math.abs(mx(cold) / (base(cold) * 1.1) - 1) < 0.01,
+                                  : Math.abs(mx(cold) / (base(cold) * 1.1 * dim(cold)) - 1) < 0.02,
                           noted: document.getElementById('caption').textContent.includes('churn') }; }"""
         )
         check("git churn sizes hottest file and notes caption",
