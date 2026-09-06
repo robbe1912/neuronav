@@ -3233,7 +3233,7 @@ function mapRender() {
     });
     w = Math.min(260, w);
     rosterRows += r.rows.length;
-    geo.set(i, { w, h: NH + (r.rows.length + (r.more.length ? 1 : 0)) * RH, roster: r });
+    geo.set(i, { w, h: NH + (r.rows.length + (r.more.length ? 1 : 0)) * RH, roster: r, more: r.more });
   });
   // rows by BFS level, barycenter columns (survives section 10)
   const rows = [];
@@ -3790,6 +3790,15 @@ mapPane.addEventListener("pointerup", () => {
 mapPane.addEventListener("click", e => {
   if (mapDragged) { mapDragged = false; return; }   // it was a pan, not a pick
   clearTimeout(mapRefocusTimer);
+  // 0. screen-space furniture first: vars chip [F10]
+  const mb = mapPane.getBoundingClientRect();
+  const mpx = e.clientX - mb.left, mpy = e.clientY - mb.top;
+  const cr = mapVarsChipRect;
+  if (cr && mpx >= cr.x && mpx <= cr.x + cr.w && mpy >= cr.y && mpy <= cr.y + cr.h) {
+    mapVarsOn = !mapVarsOn;
+    drawMapPane();
+    return;
+  }
   const w = mapToWorld(e);
   // 1. bundle chip -> pinned enumeration list (section 7)
   const ci = mapChipAt(w.x, w.y);
