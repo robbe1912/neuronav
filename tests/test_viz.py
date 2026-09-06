@@ -771,6 +771,21 @@ def run_tests():
                       page.locator("#iUsedBy li.more").count() == 0)
             else:
                 print("SKIP map wire click — no probeable wire")
+            # corridor trunk consolidation (declutter): corridors spanning
+            # the same chunk-row hop share one trunk — distinct stroked
+            # corridor polylines must drop below the admitted corridor
+            # count. Data-gated: E>12 AND same-hop groups present in this
+            # index/focus (fit layout, after the probe above — a wire
+            # click opens the info panel without relayout).
+            zinfo = page.evaluate("() => window.__dbg.mapInfo()")
+            if zinfo and zinfo.get("E", 0) > 12 and zinfo.get("trunkGroups", 0) > 0:
+                check("map trunk consolidation reduces drawn polylines",
+                      zinfo.get("spinesDrawn", 0) < zinfo.get("spineTotal", 0)
+                      and zinfo.get("drawnPolys", 0) <
+                          zinfo.get("spineTotal", 0) + zinfo.get("wires", 0),
+                      str(zinfo))
+            else:
+                print(f"SKIP map trunk consolidation — {zinfo}")
             page.screenshot(path=str(ROOT / "tests" / "qa_map.png"), scale="css", type="png")
             print("artifact: tests/qa_map.png")
             page.evaluate("() => document.getElementById('bMap').click()")  # close pane
