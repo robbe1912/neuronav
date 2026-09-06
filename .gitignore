@@ -1,8 +1,22 @@
+# machine-local state
 .venv/
-__pycache__/
 .chroma/
 config.json
-graph.html
+base/
+.codegraph/
 
-tests/last_run.png
+# python build artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+
+# generated output
+graph.html
 graph_neuronav.html
+*.log
+
+# generated screenshots (tests + manual QA)
+*.png
