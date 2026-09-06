@@ -190,7 +190,12 @@ def _build_data() -> dict:
     ]
 
     # function-level call edges: [src_file_idx, src_fn, dst_file_idx, dst_fn, line]
+    # mwires: named-wire map rows [ty, sf, sfn, df, dfn, line, extra]
+    # (map-spec-v2 §0). call rows ride the exact fedges filters — emitted
+    # in the same iteration so the two exports cannot drift — while the
+    # ::VAR: pseudo-node dsts fedges skips are harvested as member wires.
     fedges: list[list] = []
+    mwires: list[list] = []
     for src_key, dsts in g.edges.items():
         if src_key.endswith("::tscn"):  # pseudo source, fn would be "tscn"
             continue
@@ -200,16 +205,75 @@ def _build_data() -> dict:
         src_fs = g.files.get(s_path)
         s_line = src_fs.funcs[s_fn].line if src_fs and s_fn in src_fs.funcs else 0
         for dst_key in dsts:
+            if "::VAR:" in dst_key:
+                # member wire — dst file owns the member; intra-file
+                # skipped like calls (intra-file wires: spec §11 parking lot)
+                d_path, member = dst_key.split("::VAR:", 1)
+                if d_path in idx and d_path != s_path:
+                    mwires.append(
+                        ["var", idx[s_path], s_fn, idx[d_path], member, s_line, None]
+                    )
+                continue
             if (
                 dst_key.endswith("::tscn")
                 or "::SIGNAL:" in dst_key
-                or "::VAR:" in dst_key  # var pseudo-node, not a real fn
             ):
                 continue
             d_path, d_fn = dst_key.split("::", 1)
             if d_path not in idx or d_path == s_path:
                 continue
             fedges.append([idx[s_path], s_fn, idx[d_path], d_fn, s_line])
+            mwires.append(
+                ["call", idx[s_path], s_fn, idx[d_path], d_fn, s_line, None]
+            )
+
+    # signal wires: scene connections resolved against the scene's script
+    # ext_resources, mirroring graph._wire_tscn's script_rels cascade
+    # (multi-script scenes try every script; attached_script only when no
+    # ext_resource script is indexed). A connection resolving in N scripts
+    # yields N rows; one resolving in none counts into meta.sig_unresolved
+    # — the anonymous amber corridor channel (map-spec-v2 §1/F13).
+    sig_resolved = 0
+    sig_unresolved = 0
+    for rel, fs in g.files.items():
+        if fs.ext != ".tscn" or rel not in idx:
+            continue
+        script_rels = [
+            s_rel
+            for s in fs.scripts
+            if (s_rel := s.removeprefix("res://")) in g.files
+        ]
+        if not script_rels and fs.attached_script:
+            s_rel = fs.attached_script.removeprefix("res://")
+            if s_rel in g.files:
+                script_rels.append(s_rel)
+        for sig_name, handler in fs.connections:
+            hit = [
+                s_rel
+                for s_rel in script_rels
+                if handler in g.files[s_rel].funcs and s_rel in idx
+            ]
+            if hit:
+                sig_resolved += 1
+                for s_rel in hit:
+                    mwires.append(
+                        ["signal", idx[rel], sig_name, idx[s_rel], handler, 0, None]
+                    )
+            else:
+                sig_unresolved += 1
+
+    # deterministic named-wire order: ty, sf, df, dfn, sfn, line (spec §0)
+    mwires.sort(key=lambda w: (w[0], w[1], w[3], w[4], w[2], w[5]))
+
+    # complete per-file fn roster [name, line], line order (spec §0)
+    fns: dict[str, list[list]] = {}
+    for p in paths:
+        fs = g.files.get(p)
+        if fs and fs.funcs:
+            fns[p] = [
+                [fn.name, fn.line]
+                for fn in sorted(fs.funcs.values(), key=lambda fn: (fn.line, fn.name))
+            ]
 
     n_clusters = len(clusters)
 
@@ -430,6 +494,8 @@ def _build_data() -> dict:
         "nodes": nodes,
         "links": links,
         "fedges": fedges,
+        "mwires": mwires,
+        "fns": fns,
         "hw": hw,
         "fio": fio,
         "pos": pos_baked,
@@ -454,6 +520,10 @@ def _build_data() -> dict:
             "cycIds": cyc_ids,
             # top inter-cluster corridors, labeled at their arc midpoints
             "crosstalk": crosstalk,
+            # signal-resolution counters (map-spec-v2 §0/F13): scene
+            # connections traced to a handler fn vs left anonymous
+            "sig_resolved": sig_resolved,
+            "sig_unresolved": sig_unresolved,
         },
     }
     if hot is not None:
