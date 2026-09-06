@@ -2030,7 +2030,7 @@ function updateHubs() {
 rebuildHubs();
 
 // ---- function-level layer (files inside the current focus) -------------------
-let fnMesh = null, fnLines = null, fnMeta = [];
+let fnMesh = null, fnLines = null, fnStalks = null, fnMeta = [];
 
 // ---- focus labels: name neighboring files + function satellites on focus ----
 const flabsEl = document.getElementById("flabs");
@@ -2069,9 +2069,17 @@ function rebuildFocusLabels(focusing) {
     };
     cands.sort(writerFirst).slice(0, 32).forEach(ix => {
       const m = fnMeta[ix];
-      const io = DATA.fio && DATA.fio[nodes[m.file].path + "::" + m.name];
+      if (m.agg && !m.count) return;   // box collapsed into a wire aggregate
       const el = document.createElement("div");
       el.className = "flab fn";
+      if (m.count) {   // wire aggregate: 'n×' badge instead of a fn name
+        el.textContent = m.count + "×";
+        el.title = nodes[m.file].path + " :: " + m.count + " calls";
+        flabsEl.appendChild(el);
+        fLabs.push({ kind: 1, i: m.file, ix, el });
+        return;
+      }
+      const io = DATA.fio && DATA.fio[nodes[m.file].path + "::" + m.name];
       // writes-state badge (tier-2 metadata per the LOD ladder; single
       // glyph channel — color stays cluster-owned)
       el.textContent = "ƒ " + m.name + (io && io.w.length ? " ✎" + io.w.length : "");
@@ -2125,6 +2133,7 @@ rebuildFocusLabels(false);
 function rebuildFnLayer(focusing) {
   if (fnMesh) { scene.remove(fnMesh); fnMesh.geometry.dispose(); fnMesh.dispose(); fnMesh = null; }
   if (fnLines) { scene.remove(fnLines); fnLines.geometry.dispose(); fnLines = null; }
+  if (fnStalks) { scene.remove(fnStalks); fnStalks.geometry.dispose(); fnStalks = null; }
   fnMeta = [];
   if (!fnMode || !focusing) return;
   // pass 1: visible cross-file fn edges
@@ -2273,6 +2282,34 @@ function rebuildFnLayer(focusing) {
   }
   sphereClear(false);
   if (!fnMeta.length) return;
+  // wire aggregation: a wire carrying many fns collapses to ONE 'n×' box
+  // at the wire midpoint (scale 6) — a stack of scale-4 boxes on a short
+  // wire reads as clutter, and '7×' carries the information denser.
+  // fnMeta keeps its indices (flabs + hover map by ix): members get
+  // agg=true (box scale 0, not hoverable), the aggregate is an appended
+  // entry with count=n.
+  const AGG_MAX = 6;
+  const byWire = new Map();
+  fnMeta.forEach((m, i) => {
+    let arr = byWire.get(m.s.wk);
+    if (!arr) byWire.set(m.s.wk, arr = []);
+    arr.push(i);
+  });
+  const aggs = [];
+  for (const arr of byWire.values()) {
+    if (arr.length <= AGG_MAX) continue;
+    const s = fnMeta[arr[0]].s;
+    aggs.push({ file: s.a, count: arr.length,
+      p: [(pos[s.a*3] + pos[s.b*3]) / 2,
+          (pos[s.a*3+1] + pos[s.b*3+1]) / 2,
+          (pos[s.a*3+2] + pos[s.b*3+2]) / 2] });
+    for (const ix of arr) fnMeta[ix].agg = true;
+  }
+  for (const ag of aggs) {
+    fpos.push(ag.p[0], ag.p[1], ag.p[2]);
+    fcol.push(colArr[ag.file*3], colArr[ag.file*3+1], colArr[ag.file*3+2]);
+    fnMeta.push({ file: ag.file, name: "", p: ag.p, s: null, dir: 1, count: ag.count });
+  }
   // fn boxes: true 3D cubes on the wires, colored by owning cluster hue
   const fdummy = new THREE.Object3D();
   fnMesh = new THREE.InstancedMesh(
@@ -2283,7 +2320,8 @@ function rebuildFnLayer(focusing) {
   fnMesh.frustumCulled = false;   // positions rebuilt on every focus change
   for (let i = 0; i < fnMeta.length; i++) {
     fdummy.position.set(fpos[i*3], fpos[i*3+1], fpos[i*3+2]);
-    fdummy.scale.setScalar(4);
+    const m = fnMeta[i];
+    fdummy.scale.setScalar(m.count ? 6 : (m.agg ? 0 : 4));
     fdummy.updateMatrix();
     fnMesh.setMatrixAt(i, fdummy.matrix);
     _col.setRGB(fcol[i*3], fcol[i*3+1], fcol[i*3+2]);
@@ -2292,6 +2330,25 @@ function rebuildFnLayer(focusing) {
   fnMesh.instanceMatrix.needsUpdate = true;
   if (fnMesh.instanceColor) fnMesh.instanceColor.needsUpdate = true;
   scene.add(fnMesh);
+  // persistent fn-ownership stalks: one faint segment per rendered box
+  // down to its owning file sphere — with two files close together, color
+  // alone can't say which sphere a function belongs to. The bright hover
+  // stalk (fnStalk) rides on top of these; lifetime matches the fn layer
+  // (rebuilt + disposed with it, so cbFn visibility carries over).
+  const stk = new Float32Array(fnMeta.length * 6);
+  for (let i = 0; i < fnMeta.length; i++) {
+    const m = fnMeta[i], o = i * 6;
+    const collapsed = m.agg && !m.count;   // no box → no stalk
+    stk[o]   = m.p[0]; stk[o+1] = m.p[1]; stk[o+2] = m.p[2];
+    stk[o+3] = collapsed ? m.p[0] : pos[m.file*3];
+    stk[o+4] = collapsed ? m.p[1] : pos[m.file*3+1];
+    stk[o+5] = collapsed ? m.p[2] : pos[m.file*3+2];
+  }
+  const g3 = new THREE.BufferGeometry();
+  g3.setAttribute("position", new THREE.BufferAttribute(stk, 3));
+  fnStalks = new THREE.LineSegments(g3, new THREE.LineBasicMaterial(
+    { color: 0xffffff, transparent: true, opacity: 0.25, depthWrite: false }));
+  scene.add(fnStalks);
   // wires connect box to box — collinear with the file-file line (whose
   // fat aggregate dims to a ghost in wire mode), so the lit segments
   // thread through the fn boxes: the boxes ARE on the connection
@@ -2732,7 +2789,7 @@ renderer.domElement.addEventListener("pointermove", e => {
   for (const h of hits) {
     if (h.object === fnMesh) {
       const fm = fnMeta[h.instanceId];
-      if (!fm || alphaTgt[fm.file] <= 0.5) continue;
+      if (!fm || alphaTgt[fm.file] <= 0.5 || (fm.agg && !fm.count)) continue;
       const v = _pickV.set(fm.p[0], fm.p[1], fm.p[2]).project(camera);
       const sx = (v.x*0.5+0.5)*innerWidth, sy = (-v.y*0.5+0.5)*innerHeight;
       const dist = Math.hypot(sx-px, sy-py);
@@ -2749,7 +2806,8 @@ renderer.domElement.addEventListener("pointermove", e => {
   let txt = null;
   if (hoveredFn >= 0) {
     const fm = fnMeta[hoveredFn];
-    txt = nodes[fm.file].path + " :: " + fm.name;
+    txt = fm.count ? nodes[fm.file].path + " :: " + fm.count + " calls"
+                   : nodes[fm.file].path + " :: " + fm.name;
   } else if (hovered >= 0) {
     txt = nodes[hovered].path;
     const s = edgeSummary(hovered);
