@@ -97,6 +97,19 @@ def _split_names(spec: str) -> list[str]:
     return [nm for nm in out if re.fullmatch(r"[A-Za-z_]\w*", nm)]
 
 
+def _has_exact(relpath: str) -> bool:
+    """Case-SENSITIVE file check: NTFS/Windows stat is case-insensitive, so
+    `is_file()` alone would bless `Vec2.py` when only `vec2.py` exists - the
+    graph then records a module id no file has. Compare against the actual
+    directory listing instead."""
+    import nav
+
+    p = nav.ROOT / relpath
+    if not p.is_file():
+        return False
+    return p.name in {e.name for e in p.parent.iterdir()}
+
+
 def _record_import(line: str, path: Path, fs: FileSym) -> None:
     im = FROM_IMPORT_RE.match(line)
     if im:
@@ -106,13 +119,19 @@ def _record_import(line: str, path: Path, fs: FileSym) -> None:
         if relmod:
             # `from pkg import name` may import a SUBMODULE (extractors.
             # gdscript), not just a symbol — prefer name.py when it exists
+            # (exact case) as the receiver target
             if relmod.endswith("/__init__.py"):
                 pkg_dir = relmod[: -len("/__init__.py")]
             else:
                 pkg_dir = relmod.rsplit("/", 1)[0] if "/" in relmod else ""
             for nm in _split_names(im.group(2)):
                 sub = f"{pkg_dir}/{nm}.py" if pkg_dir else f"{nm}.py"
-                fs.consts[nm] = sub if (nav.ROOT / sub).is_file() else relmod
+                target = sub if _has_exact(sub) else relmod
+                fs.consts[nm] = target
+                # from-import binds ONE name: that func survives (it is
+                # referenced by the import itself); the module's other
+                # funcs are NOT kept alive by a name-selecting import
+                fs.from_imports.add((target, nm))
         return
     im = PLAIN_IMPORT_RE.match(line)
     if im:
@@ -123,6 +142,9 @@ def _record_import(line: str, path: Path, fs: FileSym) -> None:
             relmod = _module_rel(mod_name, path)
             if relmod and re.fullmatch(r"[A-Za-z_]\w*", alias):
                 fs.consts[alias] = relmod
+                # plain import binds the whole namespace: the module may be
+                # reached dynamically, keep its funcs alive as a unit
+                fs.imported_modules.add(relmod)
 
 
 def parse(path: Path, rel: str) -> FileSym:

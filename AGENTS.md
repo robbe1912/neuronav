@@ -49,7 +49,7 @@ stdlib-first; chromadb/httpx are the only heavy deps.
 | suite | covers | needs |
 |---|---|---|
 | `test_strata` | depth layering, cycles, determinism (AST-extracts real functions) | stdlib + numpy |
-| `test_crosslang` | self-index integration: parse + embed + fn search | chroma + Ollama |
+| `test_crosslang` | self-index integration: parse + embed + fn search | chroma + Ollama (or `NEURONAV_EMBED_FAKE=1` for plumbing-only runs — what CI uses) |
 | `test_pyhard` | python extractor edge cases | stdlib |
 | `test_selfindex` | neuronav indexes itself | chroma (+ index) |
 | `test_swmg_regression` | SWMG byte-stability | chroma, SWMG checkout, default config |

@@ -15,6 +15,7 @@ import gzip
 import hashlib
 import json
 import os
+import random
 import shutil
 import sys
 import time
@@ -80,8 +81,19 @@ class Hit:
 
 
 def embed(texts: list[str]) -> list[list[float]]:
-    """Batch-embed via Ollama /api/embed. Truncates long inputs."""
+    """Batch-embed via Ollama /api/embed. Truncates long inputs.
+
+    NEURONAV_EMBED_FAKE=1 swaps in deterministic hash embeddings (CI
+    plumbing mode): same text -> same vector, so upsert/query/scoping all
+    exercise for real while no model server is needed. NOT semantic -
+    quality gates stay local with a real Ollama."""
     truncated = [t[:MAX_EMBED_CHARS] for t in texts]
+    if os.environ.get("NEURONAV_EMBED_FAKE"):
+        out = []
+        for t in truncated:
+            rng = random.Random(f"neuronav-fake:{t}")
+            out.append([rng.uniform(-1.0, 1.0) for _ in range(EMBED_DIM)])
+        return out
     resp = httpx.post(
         EMBED_URL,
         json={"model": EMBED_MODEL, "input": truncated},

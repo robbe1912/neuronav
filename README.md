@@ -107,6 +107,10 @@ dead-code lenses, crosstalk corridors.
 - `base index model mismatch` - the tracked shards were exported with a
   different embedding model; re-export (`export-base`) or `ollama pull` the
   manifest's model.
+- `NEURONAV_EMBED_FAKE=1` — CI/plumbing mode: deterministic hash embeddings,
+  no Ollama needed. Exercises upsert/query/scoping for real; NOT semantic.
+  Never mix with a real collection you care about (same collection gets
+  fake vectors upserted).
 - Empty results with Ollama down - embeddings backend unreachable; search
   degrades to lexical matching marked "degraded", or fails loudly during
   indexing. Start Ollama and `rescan`.

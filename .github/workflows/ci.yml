@@ -5,26 +5,19 @@ on:
   pull_request:
 
 jobs:
-  stdlib-suites:
+  suites:
     runs-on: ubuntu-latest
+    env:
+      NEURONAV_EMBED_FAKE: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - run: pip install numpy chromadb httpx
-      - name: Ollama (local embeddings for the integration suite)
-        run: |
-          curl -fsSL https://ollama.com/install.sh | sh
-          for i in $(seq 1 30); do
-            curl -sf http://127.0.0.1:11434/ >/dev/null && break
-            sleep 2
-          done
-          curl -sf http://127.0.0.1:11434/ >/dev/null || (nohup ollama serve >/dev/null 2>&1 & sleep 5)
-          ollama pull qwen3-embedding:0.6b
       - name: strata (depth layering, cycles, determinism)
         run: python -X utf8 tests/test_strata.py
-      - name: crosslang (self-index integration — parse + embed + search)
+      - name: crosslang (self-index integration, deterministic fake embeddings)
         run: python -X utf8 tests/test_crosslang.py
       - name: pyhard (python extractor edge cases)
         run: python -X utf8 tests/test_pyhard.py

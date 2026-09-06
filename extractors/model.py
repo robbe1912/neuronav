@@ -57,5 +57,10 @@ class FileSym:
     # at instantiation, so their targets must stay alive
     init_calls: set[str] = field(default_factory=set)
     # parse-declared entry funcs: decorators like @rpc mark network entry
-    # points — extractor fills names, an entry rule yields them as roots
+    # points - extractor fills names, an entry rule yields them as roots
     entry_hints: set[str] = field(default_factory=set)
+    # python import graph facts: plain `import x` keeps the module's funcs
+    # alive as a unit (conservative); `from x import y` binds only y, so
+    # just that name (plus the receiver const) survives
+    imported_modules: set[str] = field(default_factory=set)
+    from_imports: set[tuple[str, str]] = field(default_factory=set)

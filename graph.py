@@ -328,15 +328,20 @@ class Graph:
             if DYNAMIC_HINT_RE.search(joined):
                 self._dyn_files.add(rel)
 
-        # python sibling-module imports: like res:// load strings, an
-        # imported module executes as a unit — its funcs are all alive
+        # python import liveness: a PLAIN `import x` binds the namespace -
+        # the module may be reached dynamically, so its funcs stay alive
+        # as a unit. A `from x import y` selects exactly one name: only
+        # that func (if it is one) survives the import; siblings do not.
         for rel, fs in self.files.items():
             if fs.ext != ".py":
                 continue
-            for mod_rel in set(fs.consts.values()):
-                if mod_rel in self.files:
-                    for other in self.files[mod_rel].funcs.values():
+            for mod in fs.imported_modules:
+                if mod in self.files:
+                    for other in self.files[mod].funcs.values():
                         self.referenced.add(other.key)
+            for mod, nm in fs.from_imports:
+                if mod in self.files and nm in self.files[mod].funcs:
+                    self.referenced.add(f"{mod}::{nm}")
 
         for rel, fs in self.files.items():
             if fs.ext == ".gd":
