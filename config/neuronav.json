@@ -1,5 +1,5 @@
 {
-  "root": "E:/GitRepos/neuronav",
+  "root": "..",
   "collection": "neuronav",
   "include_dirs": ["."],
   "extensions": [".py"],

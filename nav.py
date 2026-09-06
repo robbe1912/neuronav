@@ -37,6 +37,10 @@ def _apply_config(path: Path) -> None:
     global ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM
     cfg: dict = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
     ROOT = Path(cfg.get("root") or TOOL_DIR.parent)
+    if not ROOT.is_absolute():
+        # relative roots resolve against the config file's own directory,
+        # so shipped profiles (config/neuronav.json) stay machine-portable
+        ROOT = (path.parent / ROOT).resolve()
     COLLECTION = str(cfg.get("collection", "swmg"))
     INCLUDE_DIRS = tuple(cfg.get("include_dirs", ("scripts", "scenes", "VFX", "ai", "tests", "tools")))
     EXTS = set(cfg.get("extensions", (".gd", ".tscn")))
