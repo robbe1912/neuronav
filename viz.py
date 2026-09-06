@@ -2875,15 +2875,21 @@ function drawMapPane() {
   if (!lit.length) { hint("focus a node to see its map"); return; }
   // in-focus edges (deduped per directed pair, type-filtered like the 3D view)
   const litSet = new Set(lit);
-  const edges = [];
+  const cand = [];
   const seenPair = new Set();
   links.forEach(l => {
     if (l.s === l.t || !litSet.has(l.s) || !litSet.has(l.t) || !typeVisible(l.ty)) return;
     const k = l.s + "_" + l.t;
     if (seenPair.has(k)) return;
     seenPair.add(k);
-    edges.push(l);
+    cand.push(l);
   });
+  // skeleton filter: a 440px pane cannot carry every wire - keep heavy
+  // corridors plus singles that touch the best-connected lit files
+  const top8 = new Set([...lit].sort((a, b) => degree[b] - degree[a] || a - b).slice(0, 8));
+  cand.sort((a, b) => (b.w || 1) - (a.w || 1) || a.s - b.s || a.t - b.t);
+  const edges = cand.filter((l, i) =>
+    (l.w || 1) >= 2 || i < 120 || top8.has(l.s) || top8.has(l.t)).slice(0, 160);
   // rows by BFS level
   const rows = [];
   lit.forEach(i => { (rows[level[i]] = rows[level[i]] || []).push(i); });
@@ -2956,15 +2962,16 @@ function drawMapPane() {
   // a vertical that would pierce an unrelated node OR an already-claimed
   // lane slides to the nearest free x - crossings belong in the gaps
   const freeX = (x, ya, yb) => {
+    x = Math.max(6, Math.min(cw - 6, x));   // lanes never leave the pane
     const span = rects.filter(r => r.y1 > ya && r.y0 < yb);
     const bands = crossedBands(ya, yb);
     const taken = (cand) =>
       span.some(r => cand >= r.x0 && cand <= r.x1) ||
       bands.some(g => laneX[g] && laneX[g].some(u => Math.abs(u - cand) < 3.5));
     if (!taken(x)) return x;
-    for (let d = 3.5; d <= 240; d += 3.5) {
-      if (!taken(x + d)) return x + d;
-      if (!taken(x - d)) return x - d;
+    for (let d = 3.5; d <= 90; d += 3.5) {   // stay near home - no margin walls
+      if (x + d <= cw - 6 && !taken(x + d)) return x + d;
+      if (x - d >= 6 && !taken(x - d)) return x - d;
     }
     return x;
   };
