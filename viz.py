@@ -951,6 +951,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   #hubs { position:fixed; inset:0; z-index:5; pointer-events:none;
     overflow:hidden; }
   .hub { position:absolute; left:0; top:0; display:none; white-space:nowrap;
+    max-width:230px; overflow:hidden; text-overflow:ellipsis;
     font-size:10.5px; color:#eceff1; background:rgba(8,12,16,.8);
     padding:1px 7px; border-radius:7px; border:1px solid #ffffff1f;
     pointer-events:auto; cursor:pointer; }

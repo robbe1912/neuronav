@@ -20,3 +20,6 @@ graph_neuronav.html
 
 # generated screenshots (tests + manual QA)
 *.png
+
+tools/_*.py
+tools/*.png
