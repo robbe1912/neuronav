@@ -13,9 +13,13 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install numpy chromadb httpx
+      - name: Ollama (local embeddings for the integration suite)
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama pull qwen3-embedding:0.6b
       - name: strata (depth layering, cycles, determinism)
         run: python -X utf8 tests/test_strata.py
-      - name: crosslang (extractor registry)
+      - name: crosslang (self-index integration: parse + embed + search)
         run: python -X utf8 tests/test_crosslang.py
       - name: pyhard (python extractor edge cases)
         run: python -X utf8 tests/test_pyhard.py

@@ -13,8 +13,9 @@ python -m venv .venv
 ollama pull qwen3-embedding:0.6b          # embedding backend, runs locally
 ```
 
-Windows is the primary dev platform; the stdlib suites (`test_strata`,
-`test_crosslang`, `test_pyhard`) run anywhere with numpy.
+Windows is the primary dev platform; `test_strata` + `test_pyhard` are
+hermetic (numpy + chromadb import only), `test_crosslang` is a self-index
+integration suite (needs Ollama up).
 
 ## Layout
 
