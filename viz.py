@@ -1257,9 +1257,9 @@ const supCollapsed = new Map();
 const supMem = new Uint8Array(N);
 
 // true 3D node geometry (billboard sprites read flat on screen): files =
-// shaded spheres, functions = boxes sitting ON the call wires, variables
-// later = tetrahedra. Per-instance color carries the cluster hue; hidden
-// nodes collapse to scale 0 (zero rasterized fragments); dimmed nodes
+// shaded spheres, functions = boxes orbiting their owner file sphere,
+// variables later = tetrahedra. Per-instance color carries the cluster hue;
+// hidden nodes collapse to scale 0 (zero rasterized fragments); dimmed nodes
 // darken toward black instead of fading, so shading stays readable.
 scene.add(new THREE.AmbientLight(0xffffff, 0.55));
 const dirLight = new THREE.DirectionalLight(0xffffff, 1.4);
@@ -2481,8 +2481,8 @@ function updateFocusLabels() {
     const base = "translate(" + x.toFixed(1) + "px," + y.toFixed(1) + "px) translate(-50%,-100%)";
     f.el.style.display = "block";
     f.el.style.transform = base;
-    // fn satellites may overlap each other (they're small + attached to
-    // distinct wire points) — they only avoid hubs + file labels
+    // fn satellites may overlap each other (they're small + parked on
+    // their owner's arc) — they only avoid hubs + file labels
     if (f.kind === 1) { taken.push(f.el.getBoundingClientRect()); continue; }
     let r = f.el.getBoundingClientRect();
     if (hubRects.some(hr => !clearOf(r, hr)) || taken.some(t => !clearOf(r, t))) {
@@ -2515,47 +2515,6 @@ function rebuildFnLayer(focusing) {
     visEdges.push(e);
   });
   if (!visEdges.length) return;
-  // pass 2: fn nodes live ON the wire between their two file nodes.
-  // Unique fns on a wire get evenly spaced slots in [0.32, 0.68]; a fn shared
-  // across wires is positioned on its first wire (random hash placement made
-  // boxes overlap; per-call slot counting pushed shared boxes past the wire).
-  const keySlot = new Map();   // fn key -> { a, b, slot, n }
-  {
-    const wireKeys = new Map();  // "a|b" -> [unique fn keys in edge order]
-    for (const e of visEdges) {
-      const wk = e[0] + "|" + e[2];
-      let arr = wireKeys.get(wk);
-      if (!arr) { arr = []; wireKeys.set(wk, arr); }
-      for (const kk of [e[0] + "::" + e[1], e[2] + "::" + e[3]]) {
-        if (!keySlot.has(kk) && !arr.includes(kk)) {
-          keySlot.set(kk, { a: e[0], b: e[2], slot: arr.length, wk });
-          arr.push(kk);
-        }
-      }
-    }
-    for (const [kk, s] of keySlot) {
-      s.n = wireKeys.get(s.wk).length;
-      s.t = 0.22 + (s.n > 1 ? (0.56 * s.slot) / (s.n - 1) : 0.28);
-      // baked positions are rounded to integers, so wires A->B and B->C can
-      // be near-collinear: along-wire jitter can't separate boxes there.
-      // Offset perpendicular to the wire instead (±7 units — reads as
-      // on-wire at box size 4, deterministic by fn name). The relaxation
-      // pass below grows these offsets further when wires bunch up.
-      let h = 2166136261;
-      const nm = kk.slice(kk.indexOf("::") + 2);
-      for (let c = 0; c < nm.length; c++) { h ^= nm.charCodeAt(c); h = Math.imul(h, 16777619); }
-      let dx = pos[s.b*3] - pos[s.a*3], dy = pos[s.b*3+1] - pos[s.a*3+1], dz = pos[s.b*3+2] - pos[s.a*3+2];
-      const len = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
-      s.dx = dx / len; s.dy = dy / len; s.dz = dz / len; s.len = len;
-      // perp = dir x (0,1,0); fallback dir x (1,0,0) for vertical wires
-      let px = -s.dz, py = 0, pz = s.dx;
-      if (px*px + py*py + pz*pz < 1e-6) { px = s.dy; py = -s.dx; pz = 0; }
-      const pl = Math.sqrt(px*px + py*py + pz*pz) || 1;
-      const off = (((h >>> 0) % 1000) / 1000 - 0.5) * 14;
-      s.ox = (px / pl) * off; s.oy = (py / pl) * off; s.oz = (pz / pl) * off;
-      s.t = Math.min(0.78, Math.max(0.22, s.t + (((h >>> 9) % 1000) / 1000 - 0.5) * 0.04));
-    }
-  }
   const fIdx = new Map(), fpos = [], fcol = [], eidx = [];
   // mutators-only filter: when on, fn satellites for functions with no
   // member writes are not created at all (their wires collapse with them)
@@ -2571,12 +2530,10 @@ function rebuildFnLayer(focusing) {
     let ix = fIdx.get(k);
     if (ix === undefined) {
       ix = fnMeta.length; fIdx.set(k, ix);
-      const s = keySlot.get(k);
-      const px = pos[s.a*3] + (pos[s.b*3] - pos[s.a*3]) * s.t + (s.ox || 0);
-      const py = pos[s.a*3+1] + (pos[s.b*3+1] - pos[s.a*3+1]) * s.t + (s.oy || 0);
-      const pz = pos[s.a*3+2] + (pos[s.b*3+2] - pos[s.a*3+2]) * s.t + (s.oz || 0);
-      fnMeta.push({ file: fi, name, p: [px, py, pz], s, dir: (name.charCodeAt(0) & 1) ? 1 : -1 });
-      fpos.push(px, py, pz);
+      // position filled by the owner-arc pass below (m.p is the hover and
+      // click anchor, so it must end up at the rendered box)
+      fnMeta.push({ file: fi, name, p: [0, 0, 0] });
+      fpos.push(0, 0, 0);
       fcol.push(colArr[fi*3], colArr[fi*3+1], colArr[fi*3+2]);
     }
     return ix;
@@ -2586,99 +2543,64 @@ function rebuildFnLayer(focusing) {
     if (a < 0 || b < 0) return;   // filtered out by mutators-only
     eidx.push(a, b);
   });
-  // relaxation: push overlapping fn boxes apart, then re-project each box
-  // into its own wire corridor (t clamp [0.22,0.78], perp offset cap ±10).
-  // The old nudge-only pass enforced 2-unit separation while a scale-4 box
-  // spans ~3.5 — legal overlap; near-parallel wire clumps need a real
-  // all-pairs relax. Deterministic order; O(n²) trivial at fn-layer sizes.
-  const FN_SEP = 7, PERP_MAX = 10, T_MIN = 0.22, T_MAX = 0.78;
-  const reproject = (m, ix) => {
-    const s = m.s;
-    let rx = m.p[0] - pos[s.a*3], ry = m.p[1] - pos[s.a*3+1], rz = m.p[2] - pos[s.a*3+2];
-    let t = (rx*s.dx + ry*s.dy + rz*s.dz) / (s.len || 1);
-    t = Math.min(T_MAX, Math.max(T_MIN, t));
-    let bx = pos[s.a*3] + s.dx * s.len * t, by = pos[s.a*3+1] + s.dy * s.len * t, bz = pos[s.a*3+2] + s.dz * s.len * t;
-    let ox = m.p[0] - bx, oy = m.p[1] - by, oz = m.p[2] - bz;
-    const ol = Math.sqrt(ox*ox + oy*oy + oz*oz);
-    if (ol > PERP_MAX) { const k = PERP_MAX / ol; ox *= k; oy *= k; oz *= k; }
-    s.t = t; s.ox = ox; s.oy = oy; s.oz = oz;
-    m.p[0] = bx + ox; m.p[1] = by + oy; m.p[2] = bz + oz;
-    fpos[ix*3] = m.p[0]; fpos[ix*3+1] = m.p[1]; fpos[ix*3+2] = m.p[2];
-  };
-  // keep fn boxes out of the file spheres: wires start at sphere CENTERS,
-  // so boxes near the wire ends sit inside big hub spheres (radius up to 11).
-  // Radial push to r + box-margin; runs after reprojection each iteration and
-  // once more at the end (sphere escape wins over the corridor clamp).
-  const sphereClear = (prev) => {
-    let moved = prev;
-    for (let i = 0; i < fnMeta.length; i++) {
-      const m = fnMeta[i];
-      for (let f = 0; f < N; f++) {
-        const r = sizes[f] * 1.1 + 3.4;   // rendered radius + box half-diagonal margin
-        const dx = m.p[0] - pos[f*3], dy = m.p[1] - pos[f*3+1], dz = m.p[2] - pos[f*3+2];
-        const d2 = dx*dx + dy*dy + dz*dz;
-        if (d2 >= r*r) continue;
-        const d = Math.sqrt(d2) || 0.01;
-        const k = (r - d) / d;
-        m.p[0] += dx*k; m.p[1] += dy*k; m.p[2] += dz*k;
-        moved = true;
-      }
-      fpos[i*3] = m.p[0]; fpos[i*3+1] = m.p[1]; fpos[i*3+2] = m.p[2];
-    }
-    return moved;
-  };
-  for (let it = 0; it < 120; it++) {
-    let moved = false;
-    for (let a = 1; a < fnMeta.length; a++) {
-      const pa = fnMeta[a].p;
-      for (let b = 0; b < a; b++) {
-        const pb = fnMeta[b].p;
-        let dx = pa[0]-pb[0], dy = pa[1]-pb[1], dz = pa[2]-pb[2];
-        const d2 = dx*dx + dy*dy + dz*dz;
-        if (d2 >= FN_SEP*FN_SEP) continue;
-        let d = Math.sqrt(d2);
-        if (d < 1e-3) { dx = 1; dy = 0; dz = 0; d = 1; }
-        const push = (FN_SEP - d) / d * 0.5;
-        pa[0] += dx*push; pa[1] += dy*push; pa[2] += dz*push;
-        pb[0] -= dx*push; pb[1] -= dy*push; pb[2] -= dz*push;
-        moved = true;
-      }
-    }
-    for (let i = 0; i < fnMeta.length; i++) reproject(fnMeta[i], i);
-    moved = sphereClear(moved) || moved;
-    if (!moved) break;
-  }
-  sphereClear(false);
   if (!fnMeta.length) return;
-  // wire aggregation: a wire carrying many fns collapses to ONE 'n×' box
-  // at the wire midpoint (scale 6) — a stack of scale-4 boxes on a short
-  // wire reads as clutter, and '7×' carries the information denser.
-  // fnMeta keeps its indices (flabs + hover map by ix): members get
-  // agg=true (box scale 0, not hoverable), the aggregate is an appended
-  // entry with count=n.
+  // pass 2: fn boxes orbit their OWNER file sphere. Each lit file's fns
+  // sit on a 120-degree arc around the sphere (radius grows +6 every 3rd
+  // box so consecutive boxes never stack), centered on the mean XZ
+  // direction toward the centroid of the owner's outgoing-wire targets —
+  // neighbors sorted by index so the sum is deterministic; owners with no
+  // outgoing wires face their callers instead. Ownership then reads at a
+  // glance: box color, a short stalk to the sphere surface, and the arc's
+  // facing all point at the owner, where wire midpoints blurred it.
   const AGG_MAX = 6;
-  const byWire = new Map();
-  fnMeta.forEach((m, i) => {
-    let arr = byWire.get(m.s.wk);
-    if (!arr) byWire.set(m.s.wk, arr = []);
+  const byFile = new Map();
+  for (let i = 0; i < fnMeta.length; i++) {
+    const fi = fnMeta[i].file;
+    let arr = byFile.get(fi);
+    if (!arr) byFile.set(fi, arr = []);
     arr.push(i);
-  });
+  }
   const aggs = [];
-  for (const arr of byWire.values()) {
-    if (arr.length <= AGG_MAX) continue;
-    const s = fnMeta[arr[0]].s;
-    aggs.push({ file: s.a, count: arr.length,
-      p: [(pos[s.a*3] + pos[s.b*3]) / 2,
-          (pos[s.a*3+1] + pos[s.b*3+1]) / 2,
-          (pos[s.a*3+2] + pos[s.b*3+2]) / 2] });
-    for (const ix of arr) fnMeta[ix].agg = true;
+  for (const [fi, arr] of byFile) {
+    const tgts = new Set(), srcs = new Set();
+    for (const e of visEdges) {
+      if (e[0] === fi) tgts.add(e[2]);
+      if (e[2] === fi) srcs.add(e[0]);
+    }
+    const facing = [...(tgts.size ? tgts : srcs)].sort((a, b) => a - b);
+    let mx = 0, mz = 0;
+    for (const j of facing) { mx += pos[j*3] - pos[fi*3]; mz += pos[j*3+2] - pos[fi*3+2]; }
+    const th = (mx || mz) ? Math.atan2(mz, mx) : 0;
+    const oR = sizes[fi] * 1.1 * Math.sqrt(spread);   // rendered sphere radius
+    const arcR = oR + 14;
+    const n = arr.length;
+    for (let i = 0; i < n; i++) {
+      const m = fnMeta[arr[i]];
+      const ang = th - Math.PI / 3 + (n > 1 ? (Math.PI * 2 / 3) * i / (n - 1) : Math.PI / 3);
+      const r = arcR + (i % 3) * 6;
+      m.p[0] = pos[fi*3] + Math.cos(ang) * r;
+      m.p[1] = pos[fi*3+1];
+      m.p[2] = pos[fi*3+2] + Math.sin(ang) * r;
+      fpos[arr[i]*3] = m.p[0]; fpos[arr[i]*3+1] = m.p[1]; fpos[arr[i]*3+2] = m.p[2];
+    }
+    // file aggregation: a file owning more than AGG_MAX fns collapses to
+    // ONE 'n×' box at the arc center — a ring of 7+ scale-4 boxes reads as
+    // clutter, and '7×' carries the information denser. fnMeta keeps its
+    // indices (flabs + hover map by ix): members keep their arc slot but
+    // render scale-0 and are not hoverable; the aggregate is an appended
+    // entry with count=n.
+    if (n > AGG_MAX) {
+      for (const ix of arr) fnMeta[ix].agg = true;
+      aggs.push({ file: fi, count: n,
+        p: [pos[fi*3] + Math.cos(th) * arcR, pos[fi*3+1], pos[fi*3+2] + Math.sin(th) * arcR] });
+    }
   }
   for (const ag of aggs) {
     fpos.push(ag.p[0], ag.p[1], ag.p[2]);
     fcol.push(colArr[ag.file*3], colArr[ag.file*3+1], colArr[ag.file*3+2]);
-    fnMeta.push({ file: ag.file, name: "", p: ag.p, s: null, dir: 1, count: ag.count });
+    fnMeta.push({ file: ag.file, name: "", p: ag.p, count: ag.count });
   }
-  // fn boxes: true 3D cubes on the wires, colored by owning cluster hue
+  // fn boxes: true 3D cubes on their owner arcs, colored by owning cluster hue
   const fdummy = new THREE.Object3D();
   fnMesh = new THREE.InstancedMesh(
     new THREE.BoxGeometry(1, 1, 1),
@@ -2698,28 +2620,36 @@ function rebuildFnLayer(focusing) {
   fnMesh.instanceMatrix.needsUpdate = true;
   if (fnMesh.instanceColor) fnMesh.instanceColor.needsUpdate = true;
   scene.add(fnMesh);
-  // persistent fn-ownership stalks: one faint segment per rendered box
-  // down to its owning file sphere — with two files close together, color
-  // alone can't say which sphere a function belongs to. The bright hover
-  // stalk (fnStalk) rides on top of these; lifetime matches the fn layer
-  // (rebuilt + disposed with it, so cbFn visibility carries over).
+  // persistent fn-ownership stalks: one SHORT segment per rendered box from
+  // the box down to its owner's sphere SURFACE, in the owner's own hue —
+  // the arc already says "these fns live here", the stalk pins each box to
+  // its sphere. The bright hover stalk (fnStalk) rides on top of these;
+  // lifetime matches the fn layer (rebuilt + disposed with it, so cbFn
+  // visibility carries over).
   const stk = new Float32Array(fnMeta.length * 6);
+  const stc = new Float32Array(fnMeta.length * 6);
   for (let i = 0; i < fnMeta.length; i++) {
     const m = fnMeta[i], o = i * 6;
     const collapsed = m.agg && !m.count;   // no box → no stalk
+    let ux = m.p[0] - pos[m.file*3], uy = m.p[1] - pos[m.file*3+1], uz = m.p[2] - pos[m.file*3+2];
+    const ul = Math.sqrt(ux*ux + uy*uy + uz*uz) || 1;
+    const oR = sizes[m.file] * 1.1 * Math.sqrt(spread);
     stk[o]   = m.p[0]; stk[o+1] = m.p[1]; stk[o+2] = m.p[2];
-    stk[o+3] = collapsed ? m.p[0] : pos[m.file*3];
-    stk[o+4] = collapsed ? m.p[1] : pos[m.file*3+1];
-    stk[o+5] = collapsed ? m.p[2] : pos[m.file*3+2];
+    stk[o+3] = collapsed ? m.p[0] : pos[m.file*3] + ux / ul * oR;
+    stk[o+4] = collapsed ? m.p[1] : pos[m.file*3+1] + uy / ul * oR;
+    stk[o+5] = collapsed ? m.p[2] : pos[m.file*3+2] + uz / ul * oR;
+    for (let v = 0; v < 6; v += 3) {
+      stc[o+v] = fcol[i*3]; stc[o+v+1] = fcol[i*3+1]; stc[o+v+2] = fcol[i*3+2];
+    }
   }
   const g3 = new THREE.BufferGeometry();
   g3.setAttribute("position", new THREE.BufferAttribute(stk, 3));
+  g3.setAttribute("color", new THREE.BufferAttribute(stc, 3));
   fnStalks = new THREE.LineSegments(g3, new THREE.LineBasicMaterial(
-    { color: 0xffffff, transparent: true, opacity: 0.25, depthWrite: false }));
+    { vertexColors: true, transparent: true, opacity: 0.5, depthWrite: false }));
   scene.add(fnStalks);
-  // wires connect box to box — collinear with the file-file line (whose
-  // fat aggregate dims to a ghost in wire mode), so the lit segments
-  // thread through the fn boxes: the boxes ARE on the connection
+  // call wires connect box to box — arcs park near their owners, so these
+  // read as short owner-to-owner jumps through the fn boxes
   const ep = [], ec = [];
   for (let i = 0; i < eidx.length; i += 2) {
     const a = eidx[i], b = eidx[i+1];
@@ -2730,8 +2660,8 @@ function rebuildFnLayer(focusing) {
   g2.setAttribute("position", new THREE.BufferAttribute(new Float32Array(ep), 3));
   g2.setAttribute("color", new THREE.BufferAttribute(new Float32Array(ec), 3));
   fnLines = new THREE.LineSegments(g2, new THREE.LineBasicMaterial({
-    vertexColors: true, transparent: true, opacity: 0.8,
-    blending: THREE.AdditiveBlending, depthWrite: false }));
+    vertexColors: true, transparent: true, opacity: 0.5,
+    blending: THREE.NormalBlending, depthWrite: false }));
   scene.add(fnLines);
 }
 
