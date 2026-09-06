@@ -2056,7 +2056,12 @@ function updateXtLabels() {
 }
 
 // ---- hub labels: top-degree visible files, projected to screen each frame ---
+// label LOD (Gource --dir-name-depth / Obsidian text-fade steal): overview
+// keeps the classic top-12 landmarks; zooming in raises the cap so context
+// names appear exactly when the user is close enough to read them
 const HUB_N = 12;
+const HUB_MAX = 40;
+let hubCapNow = HUB_N;   // live zoom-driven cap, exposed via __dbg.hubCap
 const hubsEl = document.getElementById("hubs");
 let hubs = [];
 const hubV = new THREE.Vector3();
@@ -2065,7 +2070,7 @@ function rebuildHubs() {
   for (let i = 0; i < N; i++) if (nodeVisible(nodes[i])) vis.push(i);
   vis.sort((a, b) => degree[b] - degree[a]);
   hubsEl.innerHTML = "";
-  hubs = vis.slice(0, HUB_N).map(i => {
+  hubs = vis.slice(0, HUB_MAX).map(i => {
     const el = document.createElement("div");
     el.className = "hub";
     el.textContent = nodes[i].label + " · " + Math.round(degree[i]);
@@ -2084,14 +2089,20 @@ function rebuildHubs() {
 const hubOff = new Map();
 function updateHubs() {
   const w = innerWidth, h = innerHeight;
+  // zoom-driven cap: squared falloff so labels bloom in as you approach
+  const camDist = camera.position.distanceTo(controls.target);
+  const cap = camDist >= lodDist * 1.2 ? HUB_N
+    : Math.min(HUB_MAX, Math.max(HUB_N, Math.round(HUB_N / Math.pow(camDist / (lodDist * 1.2), 2))));
+  hubCapNow = cap;
   // greedy placement against real measured boxes; transforms only touch
   // these few absolutely-positioned nodes, so rect reads stay cheap.
   // vertical rows first (keeps label near its node), then sideways nudges
   const fixed = [];
   const free = (a, b) => a.right < b.left - 4 || b.right < a.left - 4 ||
     a.bottom < b.top - 4 || b.bottom < a.top - 4;
-  for (const { i, el } of hubs) {
-    if (alphaTgt[i] < 0.5) { el.style.display = "none"; hubOff.delete(i); continue; }
+  for (let hi = 0; hi < hubs.length; hi++) {
+    const { i, el } = hubs[hi];
+    if (hi >= cap || alphaTgt[i] < 0.5) { el.style.display = "none"; hubOff.delete(i); continue; }
     hubV.set(pos[i*3], pos[i*3+1], pos[i*3+2]).project(camera);
     if (hubV.z > 1 || Math.abs(hubV.x) > 1.02 || Math.abs(hubV.y) > 1.02) {
       el.style.display = "none"; hubOff.delete(i); continue;
@@ -2980,7 +2991,7 @@ frameGraph();
 renderer.domElement.style.cursor = "grab";
 // debug handle last: everything it captures is initialized by here
 window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE, flowSpeed: FLOW_SPEED,
-  meta: DATA.meta, controls, get spinEnabled() { return spinEnabled; },
+  meta: DATA.meta, controls, get spinEnabled() { return spinEnabled; }, get hubCap() { return hubCapNow; },
   alpha: alphaArr, alphaTgt, hoverScale, hot, bucketMat, bucketOf, hwSlot, bucketPosIB, bucketColIB, slotOf,
   adjOut, adjIn, adj, outDeg, inDeg, get dirMode() { return dirMode; }, focusSeeds, level,
   get camTween() { return camTween; }, get focusStack() { return focusStack; },

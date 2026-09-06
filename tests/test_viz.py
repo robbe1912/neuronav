@@ -358,6 +358,27 @@ def run_tests():
               and island.get("d1", 0) < island.get("d0", 1) * 0.9,
               str(island))
 
+        # 5cb. label LOD: zoom-driven hub cap rises as the camera closes in.
+        # (Mechanism-level assert — placement/offscreen culling then decides
+        # how many labels actually show, which the other label tests cover.)
+        lod = page.evaluate(
+            """() => new Promise(res => { const d = window.__dbg;
+                 // restore overview framing first: the chip test left the
+                 // camera at island distance, which already raised the cap
+                 document.getElementById('bReset').click();
+                 setTimeout(() => {
+                   const far0 = d.hubCap;
+                   const t = d.controls.target.clone();
+                   d.camera.position.lerp(t, 0.45);
+                   setTimeout(() => { res({ far0, near1: d.hubCap }); }, 400);
+                 }, 600); })"""
+        )
+        check("label LOD: hub cap rises on zoom-in",
+              bool(lod) and "fail" not in lod
+              and lod.get("far0", 0) > 0
+              and lod.get("near1", 0) > lod.get("far0", 0),
+              str(lod))
+
         # 5eb. strata geometry: callees sit strictly below callers in Y.
         # y = half - depth*spacing + jitter(<=0.15 spacing), so a +1-depth
         # edge clears at least 0.7 spacing of drop; sample every link.
