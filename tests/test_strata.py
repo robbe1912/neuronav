@@ -24,10 +24,11 @@ def load_viz_funcs():
     tree = ast.parse((ROOT / "viz.py").read_text(encoding="utf-8"))
     body = [x for x in tree.body
             if isinstance(x, ast.FunctionDef)
-            and x.name in ("_strata_depths", "_layout")]
-    assert len(body) == 2, "expected _strata_depths and _layout in viz.py"
+            and x.name in ("_links_adj", "_tarjan_scc", "_strata_depths",
+                           "_strata_analysis", "_layout")]
+    assert len(body) == 5, "expected strata helpers + _layout in viz.py"
     mod = ast.Module(body=body, type_ignores=[])
-    g = {"_TRACE": []}   # module global _layout appends to
+    g = {}
     exec(compile(mod, str(ROOT / "viz.py"), "exec"), g)
     return g
 

@@ -315,10 +315,11 @@ def _build_data() -> dict:
     # settle, identical output across regenerations). No in-browser fallback:
     # a failed offline pass aborts the build loudly.
     pos_baked = None
+    depths, cyc_ids = _strata_analysis(len(nodes), links)
     try:
         pos_baked = _layout(
             len(nodes), links, sims, [nd["cluster"] for nd in nodes],
-            ckeys=ckeys, cmat=cmat,
+            ckeys=ckeys, cmat=cmat, depths=depths,
         )
     except Exception as e:
         raise RuntimeError(f"offline layout failed: {e}") from e
@@ -412,7 +413,6 @@ def _build_data() -> dict:
         "nodes": nodes,
         "links": links,
         "fedges": fedges,
-        "sims": sims,
         "hw": hw,
         "fio": fio,
         "pos": pos_baked,
@@ -431,7 +431,10 @@ def _build_data() -> dict:
             "git": _git_head(),
             # strata channel: height = call depth from entry files
             "strata": True,
-            "depth": _strata_depths(len(nodes), links),
+            "depth": depths,
+            # files inside call cycles (SCC size > 1) - madge's
+            # cyclicNodeColor set; the cycles toggle frames them
+            "cycIds": cyc_ids,
             # top inter-cluster corridors, labeled at their arc midpoints
             "crosstalk": crosstalk,
         },
@@ -443,25 +446,19 @@ def _build_data() -> dict:
     return data
 
 
-_TRACE: list = []   # debug: (step, cluster centroids snapshot) every 50 steps
-
-
-def _strata_depths(n: int, links: list) -> list:
-    """Per-node call depth for the strata layout (mermaid reading order).
-
-    Builds the directed call graph from links ({"s","t"} dicts or [s,t,...]
-    rows), condenses strongly-connected components (cycles exist — an SCC
-    shares one depth), then longest-path layering over the condensation DAG
-    in topo order from its in-degree-0 roots: every cross-SCC edge s->t
-    gets depth[t] >= depth[s] + 1, entries (in-degree 0) land at depth 0.
-    Pure stdlib so tests can run it without the index stack.
-    """
+def _links_adj(n: int, links: list) -> list:
+    """Directed adjacency from links rows ({"s","t"} dicts or [s,t,...])."""
     adj: list = [[] for _ in range(n)]
     for l in links:
         s, t = (l["s"], l["t"]) if isinstance(l, dict) else (l[0], l[1])
         adj[s].append(t)
+    return adj
 
-    # Tarjan SCC, iterative (repo call chains can outrun the recursion limit)
+
+def _tarjan_scc(n: int, adj: list) -> tuple:
+    """Iterative Tarjan SCC (repo call chains can outrun the recursion
+    limit) -> (comp, ncomp). One pass feeds depth layering, cycle flags,
+    and the layout."""
     index = [-1] * n
     low = [0] * n
     on = [False] * n
@@ -504,7 +501,30 @@ def _strata_depths(n: int, links: list) -> list:
                     if w == v:
                         break
                 nc += 1
+    return comp, nc
 
+
+def _strata_depths(n: int, links: list) -> list:
+    """Per-node call depth for the strata layout (mermaid reading order):
+    condense SCCs, longest-path layering over the condensation DAG in topo
+    order from its in-degree-0 roots - depth[t] >= depth[s] + 1 across
+    SCCs, entries (in-degree 0) at depth 0. Thin wrapper over
+    _strata_analysis; kept so the fixture test can call the depth channel
+    directly. Pure stdlib."""
+    return _strata_analysis(n, links)[0]
+
+
+def _strata_analysis(n: int, links: list) -> tuple:
+    """(per-node call depth, ids of nodes inside call cycles).
+
+    Cycle nodes = members of any SCC of size > 1 (madge's cyclicNodeColor
+    set). One Tarjan pass feeds depth layering, cycle flags, and the
+    layout."""
+    adj = _links_adj(n, links)
+    comp, nc = _tarjan_scc(n, adj)
+    sizes = [0] * nc
+    for c in comp:
+        sizes[c] += 1
     # condensation DAG (deduped) + Kahn topo order with longest-path layering
     cadj: list = [set() for _ in range(nc)]
     for u in range(n):
@@ -526,11 +546,14 @@ def _strata_depths(n: int, links: list) -> list:
             indeg[w] -= 1
             if indeg[w] == 0:
                 q.append(w)
-    return [cdepth[comp[i]] for i in range(n)]
+    depths = [cdepth[comp[i]] for i in range(n)]
+    cyc_ids = [i for i in range(n) if sizes[comp[i]] > 1]
+    return depths, cyc_ids
 
 
 def _layout(n: int, links: list, sims: list, cluster_ids: list,
-            ckeys: list = None, cmat: list = None) -> list:
+            ckeys: list = None, cmat: list = None,
+            depths: list = None) -> list:
     """Deterministic offline force layout; positions are frozen into DATA.
 
     Mirrors the constants the in-browser sim was QA'd against, plus the
@@ -659,8 +682,6 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
         csum = np.zeros((nc, 3), dtype=np.float32)
         np.add.at(csum, cinv, pos)
         cen = csum / ccount[:, None]
-        if step % 50 == 0:
-            _TRACE.append((step, cen.copy()))
         gcoef = (0.006 * (1.0 + deg / 40.0)).astype(np.float32)
         vel += (cen[cinv] - pos) * gcoef[:, None]
         # cluster-centroid semantic springs: similar clusters (by embedding
@@ -728,7 +749,8 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
     # re-layered monotonically from _strata_depths (entries on top, callees
     # below) over ~0.55x the old Y half-range, then an XZ-only relaxation
     # with Y frozen restores the non-overlap guarantee.
-    depths = _strata_depths(n, links)
+    if depths is None:   # direct/test callers; _build_data passes it in
+        depths = _strata_depths(n, links)
     maxd = max(depths, default=0)
     if maxd > 0:
         half = 0.55 * float(pos[:, 1].max() - pos[:, 1].min()) / 2.0
@@ -903,6 +925,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <button id="bGroups" title="recolor by coarse supergroups (two-level navigation)">groups</button>
     <button id="bCollapse" title="collapse every cluster of 3+ visible files into one supernode; edges re-attach to the merged sphere">collapse</button>
     <button id="bDead" title="show only files flagged dead: at least 40% of their funcs are dead candidates">dead only</button>
+    <button id="bCyc" title="show only files inside call cycles (strongly connected components); cycle members tint red like madge's cyclic marker">cycles</button>
     <button id="bReset">reset</button>
   </div>
 </div>
@@ -940,6 +963,11 @@ import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 const DATA = __DATA__;
 const nodes = DATA.nodes, links = DATA.links, fedges = DATA.fedges || [], hw = DATA.hw || [];
 const N = nodes.length;
+// cycle lens (madge cyclicNodeColor steal): files inside call cycles
+// (SCC size > 1), baked by _strata_analysis
+const cycSet = new Set(DATA.meta.cycIds || []);
+let cycOnly = false;
+nodes.forEach((n, i) => { n.cyc = cycSet.has(i) ? 1 : 0; });
 // undirected adjacency for focus BFS + directed halves for the in/out
 // direction modes ("what breaks if I change X" needs OUT = who I affect
 // downstream, IN = who feeds me)
@@ -1025,6 +1053,8 @@ let spinEnabled = true;
 const hue = c => c < 0 ? 0.08 : (c * 0.61803398875 + 0.55) % 1;
 const lightOf = c => 0.52 + 0.09 * (Math.floor(c / 13) % 3);
 const colorOf = n => {
+  // cycles lens: tint overrides cluster hue while the toggle is on
+  if (cycOnly && n.cyc) return new THREE.Color(0xff6c60);
   // groups mode colors by supergroup id (few ids, well-spread hues)
   const cc = (groupsMode && n.gid >= 0) ? n.gid : n.cluster;
   // unclustered: neutral desaturated gray (old hue 0.08 read orange-red)
@@ -1078,9 +1108,9 @@ baseCx /= N; baseCy /= N; baseCz /= N;
 function applySpread(s) {
   if (s === spread) return;   // no-op: never fight camera tweens / mid-flight syncs
   spread = s;
-  let cx = 0, cy = 0, cz = 0;
-  for (let i = 0; i < N; i++) { cx += basePos[i*3]; cy += basePos[i*3+1]; cz += basePos[i*3+2]; }
-  cx /= N; cy /= N; cz /= N;
+  // centroid of basePos is constant since boot (baseCx/Cy/Cz) - recomputing
+  // per call was redundant with syncEdgePos's arc anchor
+  const cx = baseCx, cy = baseCy, cz = baseCz;
   for (let i = 0; i < N; i++) {
     pos[i*3]   = cx + (basePos[i*3]   - cx) * s;
     pos[i*3+1] = cy + (basePos[i*3+1] - cy) * s;
@@ -1336,7 +1366,7 @@ const bucketPosIB = [], bucketColIB = [], bucketMat = [], bucketMesh = [];
   });
 }
 // focus-mode dash-flow (direction cue): world-units/s of dashOffset travel,
-// re-read each tick so window.__dbg.flowSpeed can tune it live
+// re-read each tick
 const FLOW_SPEED = 2.5;
 let edgeFlowOn = false;   // set by applyVisibility, read by tick's dash pass
 let lastTickT = performance.now();
@@ -1347,10 +1377,15 @@ let lastTickT = performance.now();
 // (geometry) — declared here because syncEdgePos runs at module init
 let showTests = false;
 const activeDirs = new Set();   // multi-select dir filter
-const isHiddenPath = p => p.startsWith("tests/") || p.startsWith("tools/") ||
-  p.slice(p.lastIndexOf("/") + 1).startsWith("test_");
-const linkFiltered = l => (!showTests && (isHiddenPath(nodes[l.s].path) || isHiddenPath(nodes[l.t].path))) ||
-  (activeDirs.size && (!activeDirs.has(nodes[l.s].dir) || !activeDirs.has(nodes[l.t].dir)));
+const isTestNode = n => n.path.startsWith("tests/") || n.path.startsWith("tools/") ||
+  n.path.slice(n.path.lastIndexOf("/") + 1).startsWith("test_");
+// single predicate for "is this node filtered out right now" - used by
+// nodeVisible (node alpha) and linkFiltered (edge collapse). applyVisibility's
+// per-endpoint copy of this logic once drifted and painted black full-length
+// wires over content.
+const nodeFiltered = n => (!showTests && isTestNode(n)) ||
+  (activeDirs.size && !activeDirs.has(n.dir));
+const linkFiltered = l => nodeFiltered(nodes[l.s]) || nodeFiltered(nodes[l.t]);
 const pairKey = (s, t) => s < t ? s + "_" + t : t + "_" + s;
 const pairLinks = new Map();
 links.forEach((l, i) => {
@@ -1484,22 +1519,15 @@ function syncEdgePos() {
   });
   bucketPosIB.forEach(ib => { ib.needsUpdate = true; });
   // dash support: lineDistance attributes must track every geometry
-  // rewrite — LineMaterial's USE_DASH reads instanceDistanceStart/End
-  bucketMesh.forEach(ms => ms.computeLineDistances());
+  // rewrite, but only USE_DASH reads them - and every edgeFlowOn false->true
+  // transition flows through the applyVisibility() call that just ran this
+  // syncEdgePos, so distances are fresh exactly when dashes can appear.
+  if (edgeFlowOn) bucketMesh.forEach(ms => ms.computeLineDistances());
 }
 syncEdgePos();
-// write the baked bezier highway arcs into their buckets (static — frozen
-// layout means these never move, so this happens once at module scope,
-// (static data, written once at module scope)
-hw.forEach(([li, pts]) => {
-  const arr = bucketPosIB[bucketOf[li]].array, base = hwSlot[li];
-  for (let k = 0; k < 16; k++) {
-    const o = base + k * 6, p = pts[k], q = pts[k + 1];
-    arr[o] = p[0]; arr[o+1] = p[1]; arr[o+2] = p[2];
-    arr[o+3] = q[0]; arr[o+4] = q[1]; arr[o+5] = q[2];
-  }
-});
-bucketPosIB.forEach(ib => { ib.needsUpdate = true; });
+// boot arc pre-fill deleted: syncEdgePos above already wrote the arcs
+// (with surface trim), and boot applyVisibility re-runs it before the
+// first render - the old raw re-write was dead weight + a stale comment.
 // base colors: pure type hue scaled by weight-as-brightness; the TARGET-end
 // vertex is tinted 55% toward the target node's cluster color so edges
 // show direction (start vertex keeps the pure type hue)
@@ -1513,18 +1541,9 @@ links.forEach((l, i) => {
   eColBase[o+4] = tc.g * wb + (colArr[t3+1] - tc.g * wb) * 0.55;
   eColBase[o+5] = tc.b * wb + (colArr[t3+2] - tc.b * wb) * 0.55;
 });
-// initial fill at full brightness (mirrors the pre-toggle startup state
-// where no applyVisibility pass has run yet)
-links.forEach((l, i) => {
-  const dst = bucketColIB[bucketOf[i]].array;
-  const src = eColBase.subarray(i*6, i*6+6);
-  if (hwSlot[i] >= 0) {
-    // highway: same color across all 16 segments (96 floats)
-    for (let v = 0; v < 16; v++) dst.set(src, hwSlot[i] + v * 6);
-  } else {
-    dst.set(src, slotOf[i] * 6);
-  }
-});
+// boot color pre-fill deleted: nothing renders before boot applyVisibility()
+// rewrites every link's color (bucket buffers start zeroed; first tick is
+// after that pass).
 bucketColIB.forEach(ib => { ib.needsUpdate = true; });
 
 // ---- camera tween + focus back-stack -----------------------------------------
@@ -1556,11 +1575,10 @@ function tick() {
   const nowT = performance.now();
   const dt = Math.min(0.05, (nowT - lastTickT) / 1000);
   lastTickT = nowT;
-  if (window.__dbg) { window.__dbg.renderer = renderer; window.__dbg.camera = camera; }
   // dash-flow while focusing: one shared offset walks every edge along its
   // s→t vertex order (caller→callee). Overview keeps dashed fully off —
   // USE_DASH leaves the shader, so nothing shimmers at rest.
-  const flowSpd = (window.__dbg && window.__dbg.flowSpeed) || FLOW_SPEED;
+  const flowSpd = FLOW_SPEED;
   for (const em of bucketMat) {
     if (edgeFlowOn) {
       if (!em.dashed) { em.dashed = true; em.dashSize = 8; em.gapSize = 5; em.needsUpdate = true; }
@@ -1683,7 +1701,8 @@ function updateEdgeLegend(focusing) {
     if (showVar) addKey("var", TYPE_COLORS.var);
   }
 }
-updateEdgeLegend(false);
+// boot updateEdgeLegend(false) deleted - boot applyVisibility() re-runs it
+// before the first render
 
 // ---- containment: per-cluster halo ring + name at centroid (overview) -----
 // names come from DATA.meta.clusterNames (extractor's cluster labeler fills
@@ -1805,7 +1824,7 @@ const esc = s => String(s).replace(/[&<>"]/g,
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 const _pickV = new THREE.Vector3();   // scratch for screen-space pick accuracy
-  let hovered = -1, hoveredFn = -1, selected = -1;
+  let hovered = -1, hoveredFn = -1;
   // hover greyout (Cosmograph pattern): hovering a node greys everything
   // outside its 1-hop neighborhood to 0.12 alpha — zero-click orientation.
   // hoverGreyIdx = the node currently greyed (-1 = clean overview);
@@ -1824,8 +1843,6 @@ let dirMode = 0;
 // like the cluster chips — both only ever filter, never re-layout
 // (declarations live above syncEdgePos: the boot-time geometry writer
 // reads them through linkFiltered)
-const isTestNode = n => n.path.startsWith("tests/") || n.path.startsWith("tools/") ||
-  n.path.slice(n.path.lastIndexOf("/") + 1).startsWith("test_");
 // overview LOD: intra-cluster edges stay hidden until the camera closes in
 // (zoom threshold maintained by the controls 'change' listener below)
 let lodClose = false, lodDist = 1e9;
@@ -1859,6 +1876,7 @@ function computeLevels() {
 
 function nodeVisible(n) {
   if (deadOnly && n.dead <= 0) return false;
+  if (cycOnly && !n.cyc) return false;
   if (activeClusters.size && !activeClusters.has(n.cluster)) return false;
   if (!showTests && isTestNode(n)) return false;
   if (activeDirs.size && !activeDirs.has(n.dir)) return false;
@@ -1909,10 +1927,8 @@ function applyVisibility() {
     // dir-filtered endpoints (tests/tools hidden, active dir isolation):
     // edges are killed outright, not dimmed — additive blending makes even
     // 1% gray visible when dozens of test edges converge on a hub
-    const sFiltered = (!showTests && isTestNode(nodes[l.s])) ||
-      (activeDirs.size && !activeDirs.has(nodes[l.s].dir));
-    const tFiltered = (!showTests && isTestNode(nodes[l.t])) ||
-      (activeDirs.size && !activeDirs.has(nodes[l.t].dir));
+    const sFiltered = nodeFiltered(nodes[l.s]);
+    const tFiltered = nodeFiltered(nodes[l.t]);
     // ghost: both endpoints outside the focus — kill outright (the arc
     // collapse in the k===0 branch below removes its baked geometry too)
     const ghost = alphaTgt[l.s] < 0.05 && alphaTgt[l.t] < 0.05;
@@ -2248,7 +2264,8 @@ function updateHubs() {
     fixed.push(r);
   }
 }
-rebuildHubs();
+// boot rebuildHubs() deleted - boot applyVisibility() re-runs it before the
+// first render
 
 // ---- function-level layer (files inside the current focus) -------------------
 let fnMesh = null, fnLines = null, fnStalks = null, fnMeta = [];
@@ -2350,7 +2367,7 @@ function updateFocusLabels() {
     taken.push(r);
   }
 }
-rebuildFocusLabels(false);
+// boot rebuildFocusLabels(false) deleted - boot applyVisibility() re-runs it
 function rebuildFnLayer(focusing) {
   if (fnMesh) { scene.remove(fnMesh); fnMesh.geometry.dispose(); fnMesh.dispose(); fnMesh = null; }
   if (fnLines) { scene.remove(fnLines); fnLines.geometry.dispose(); fnLines = null; }
@@ -2696,6 +2713,12 @@ document.getElementById("bDead").onclick = e => {
   // frame the dead archipelago: 9-90 scattered files read better zoomed
   if (deadOnly) frameVisible();
 };
+document.getElementById("bCyc").onclick = e => {
+  cycOnly = !cycOnly;
+  e.target.classList.toggle("on", cycOnly);
+  applyVisibility();
+  if (cycOnly) frameVisible();
+};
 document.getElementById("bCalls").onclick = e => {
   showCalls = !showCalls;
   e.target.classList.toggle("on", showCalls);
@@ -2799,7 +2822,7 @@ renderer.domElement.addEventListener("contextmenu", e => {
 // its boot state with nothing half-reset (vars and classes in lockstep)
 function resetAll() {
   activeClusters.clear(); activeDirs.clear();
-  deadOnly = false; query = ""; focusSeeds.clear(); focusStack = [];
+  deadOnly = false; cycOnly = false; query = ""; focusSeeds.clear(); focusStack = [];
   dirMode = 0; showSignals = true; showVar = false; fnMode = false; depth = 2;
   mutOnly = false;
   showInst = false; showCalls = true; showTests = false;
@@ -2875,7 +2898,6 @@ function renderSection(kindId, ulId, entries, degArr, degWord, onJump) {
 }
 function showInfo(i) {
   const n = nodes[i];
-  selected = i;
   panelCopyText = "res://" + n.path;
   info.style.display = "block";
   document.getElementById("iTitle").textContent = n.label;
@@ -3033,10 +3055,20 @@ function hoverGrey(i) {
     if (!lit.has(j) && alphaTgt[j] > 0.12) alphaTgt[j] = 0.12;
   links.forEach((l, k) => {
     if (alphaTgt[l.s] > 0.5 && alphaTgt[l.t] > 0.5) return;
-    const b = bucketOf[k], o6 = k * 6, tgt = bucketColIB[b].array;
-    // grey = 12% of the edge's own color; collapsed/black links stay black
-    tgt[o6] *= 0.12; tgt[o6+1] *= 0.12; tgt[o6+2] *= 0.12;
-    tgt[o6+3] *= 0.12; tgt[o6+4] *= 0.12; tgt[o6+5] *= 0.12;
+    const b = bucketOf[k], tgt = bucketColIB[b].array;
+    // grey = 12% of the edge's own color; collapsed/black links stay black.
+    // Buffers are SLOT-laid (applyVisibility writes at slotOf[i]*6 / hwSlot):
+    // indexing by link index k*6 dimmed whatever edge owned that slot.
+    if (hwSlot[k] >= 0) {
+      for (let o6 = hwSlot[k]; o6 < hwSlot[k] + 96; o6 += 6) {
+        tgt[o6] *= 0.12; tgt[o6+1] *= 0.12; tgt[o6+2] *= 0.12;
+        tgt[o6+3] *= 0.12; tgt[o6+4] *= 0.12; tgt[o6+5] *= 0.12;
+      }
+    } else {
+      const o6 = slotOf[k] * 6;
+      tgt[o6] *= 0.12; tgt[o6+1] *= 0.12; tgt[o6+2] *= 0.12;
+      tgt[o6+3] *= 0.12; tgt[o6+4] *= 0.12; tgt[o6+5] *= 0.12;
+    }
     bucketColIB[b].needsUpdate = true;
   });
 }
@@ -3176,7 +3208,7 @@ applyVisibility();
 frameGraph();
 renderer.domElement.style.cursor = "grab";
 // debug handle last: everything it captures is initialized by here
-window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE, flowSpeed: FLOW_SPEED,
+window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE,
   meta: DATA.meta, controls, get spinEnabled() { return spinEnabled; }, get hubCap() { return hubCapNow; },
   alpha: alphaArr, alphaTgt, hoverScale, hot, bucketMat, bucketOf, hwSlot, bucketPosIB, bucketColIB, slotOf,
   adjOut, adjIn, adj, outDeg, inDeg, get dirMode() { return dirMode; }, focusSeeds, level,

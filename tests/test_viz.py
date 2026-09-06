@@ -472,6 +472,38 @@ def run_tests():
                   bool(dead) and dead.get("d1", 0) < dead.get("d0", 1) * 0.85,
                   str(dead))
 
+        # 5d2. cycles lens: toggle frames the SCC-member set (madge steal).
+        # Data-gated on meta.cycIds; restores state for downstream checks.
+        cyc = page.evaluate(
+            """() => new Promise(res => { const d = window.__dbg;
+                 const b = document.getElementById('bCyc');
+                 if (!b) return res({ fail: 'no bCyc' });
+                 const nc = (d.meta.cycIds || []).length;
+                 if (!nc) return res({ skip: 'no call cycles in this index' });
+                 // visible cyc members (some may be tests-filtered)
+                 const cycVis = d.nodes.filter(n => n.cyc && d.alphaTgt[d.nodes.indexOf(n)] > 0.5).length;
+                 const d0 = d.camera.position.distanceTo(d.controls.target);
+                 b.click();
+                 setTimeout(() => {
+                   let lit = 0;
+                   for (let j = 0; j < d.nodes.length; j++)
+                     if (d.alphaTgt[j] > 0.5) lit++;
+                   const d1 = d.camera.position.distanceTo(d.controls.target);
+                   b.click();
+                   setTimeout(() => res({ nc, cycVis, lit, d0, d1,
+                     off: !document.getElementById('bCyc').classList.contains('on') }), 500);
+                 }, 600); })"""
+        )
+        if cyc and "skip" in cyc:
+            print(f"SKIP cycles lens — {cyc.get('skip')}")
+        else:
+            check("cycles lens frames SCC set",
+                  bool(cyc) and "fail" not in cyc
+                  and cyc.get("lit") == cyc.get("cycVis")
+                  and cyc.get("cycVis", 0) > 0
+                  and cyc.get("off"),
+                  str(cyc))
+
         # 5e. ground grid: off by default, button toggles, state survives resetAll
         ground = page.evaluate(
             """() => { const d = window.__dbg;
