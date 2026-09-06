@@ -53,7 +53,15 @@ def alive(name: str, path: str, funcs: list[str]) -> None:
 
 
 def stays_dead(name: str, path: str, func: str) -> None:
-    check(name, (path, func) in DEAD, f"{path}::{func} not in dead set")
+    key = f"{path}::{func}"
+    detail = f"{path}::{func} not in dead set"
+    if (path, func) not in DEAD:
+        detail += (
+            f"; callers={sorted(g.reverse.get(key, ()))}"
+            f"; is_root={key in g.roots}"
+            f"; tiers={[(d['path'], d['func'], d.get('tier')) for d in dead['candidates'] if d['path'] == path][:4]}"
+        )
+    check(name, (path, func) in DEAD, detail)
 
 
 # --- fixture: decor.py -------------------------------------------------
