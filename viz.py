@@ -1055,7 +1055,31 @@ _TEMPLATE = r"""<!DOCTYPE html>
   #mapPane { position:fixed; top:0; right:0; width:440px; height:100%;
     display:none; background:#0b0f14; z-index:8;
     border-left:1px solid #1de9b633; }
-</style>
+  /* map-local DOM overlays (tooltip / bundle list / fn picker) — one
+     container spanning the pane area, children opt into pointer events */
+  #mapOv { position:fixed; top:0; right:0; width:440px; height:100%;
+    z-index:9; pointer-events:none; overflow:hidden;
+    font:10.5px ui-monospace, Menlo, Consolas, monospace; color:#cfd8dc; }
+  #mapTip { position:absolute; display:none; background:#000d;
+    border:1px solid #1de9b644; color:#eee; padding:4px 8px; border-radius:6px;
+    white-space:pre-line; max-width:280px; line-height:1.5; }
+  #mapList { position:absolute; display:none; pointer-events:auto;
+    background:rgba(8,12,16,.95); border:1px solid #263238; border-radius:8px;
+    padding:8px; min-width:240px; max-width:300px; max-height:50vh;
+    overflow-y:auto; }
+  #mapList h3 { margin:0 0 6px; font-size:11px; font-weight:600; color:#1de9b6;
+    word-break:break-all; }
+  #mapList .row, #mapPick .row { padding:2px 4px; border-radius:4px;
+    cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #mapList .row:hover, #mapPick .row:hover { background:#1de9b61a; color:#1de9b6; }
+  #mapPick { position:absolute; display:none; pointer-events:auto;
+    background:rgba(8,12,16,.95); border:1px solid #263238; border-radius:8px;
+    padding:8px; width:250px; max-height:40vh; overflow-y:auto; }
+  #mapPick input { width:100%; box-sizing:border-box; background:#0b1116;
+    color:#cfd8dc; border:1px solid #263238; border-radius:5px; padding:4px 6px;
+    outline:none; font:inherit; margin-bottom:6px; }
+  #mapPick input:focus { border-color:#1de9b688; }
+  </style>
 </head>
 <body>
 <div id="panel">
@@ -2890,20 +2914,38 @@ document.getElementById("bVar").onclick = e => {
   applyVisibility();
 };
 
-// ---- mermaid-mode map pane ---------------------------------------------------
-// pure canvas-2D detail pane for the focused subgraph: lit nodes drawn as a
-// layered diagram — rows = BFS level (level 0 on top), columns = barycenter
-// ordering (mean column of predecessors, 3 downward sweeps, node-index
-// tie-breaks => deterministic). Edges are orthogonal 3-segment routes
-// (vertical → horizontal → vertical) with 8px 45° chamfer corners and an
-// arrowhead at the target, colored by the SOURCE cluster hue. Clicking a
-// node rect runs the same jump as a hub label click. applyVisibility redraws.
 const mapPane = document.getElementById("mapPane");
 const MAP_MAX = 40;            // lit-node cap: past this the pane refuses
+const FN_PORT_MAX = 12;        // roster rows per expanded box, then "+N more"
+const NH = 22, RH = 14, GAPX = 14, TOP = 46;   // header / row / gap / first-row Y
+const MAP_FONT = sz => sz + "px ui-monospace, Menlo, Consolas, monospace";
+// type glyphs (spec section 3): stroke color / dash pattern / terminator.
+// one font constant (above) covers ALL map text.
+const MGLYPH = {
+  call:   { c: "#d9e2eb", dash: null,   term: "tri" },
+  signal: { c: "#ffb347", dash: [6, 4], term: "hollow" },
+  var:    { c: "#73e68c", dash: [2, 3], term: "dot" },
+  attach: { c: "#3dccf2", dash: [1, 3], term: "tbar" },
+  inst:   { c: "#3dccf2", dash: [1, 3], term: "tbar" },
+};
+// named-wire rows (spec section 0): [ty, sf, sfn, df, dfn, line, extra]
+const mwires = DATA.mwires || [];
+const mfns = DATA.fns || {};                // path -> [[fn, line], ...]
 let mapVisible = false;
 let mapZ = 0, mapPX = 0, mapPY = 0;      // view: zoom + pan over the world
 let mapDrag = null, mapDragged = false;
 let mapRects = [];             // last drawn node rects (click hit-testing)
+let mapVarsOn = false;         // var wires OFF by default, map-local chip [F10]
+let mapZoomExp = false;        // hysteresis latch: expand >=1.5, collapse <1.2 [F7]
+const mapExpandUser = new Map();   // file ix -> bool override (dblclick)
+let mapHover = -1;             // hovered named-wire ix (L1 disclosure)
+let mapHoverChip = -1;         // hovered bundle chip ix (cursor affordance)
+let mapFrozenIx = -1;          // L3 roster-row pick: local dim 0.08, rows frozen
+let mapLayout = null;          // layout cache - keyed (focus, expansion, size)
+let mapDirty = false;          // rAF dirty flag: one draw per frame [F7]
+let mapShownLabels = 0;        // labels that passed the zoom tier (last paint)
+let mapRefocusTimer = 0;       // click-vs-dblclick discriminator on headers
+let mapVarsChipRect = null;    // screen-space vars chip rect (click hit)
 function sizeMapPane() {
   const dpr = Math.min(devicePixelRatio || 1, 2);
   mapPane.width = Math.round((mapPane.clientWidth || 440) * dpr);
@@ -2914,40 +2956,175 @@ function mapCols(c) {
   if (c < 0) return { s: "hsl(198,8%,62%)", f: "hsl(198,10%,14%)", t: "hsl(198,8%,84%)" };
   const h = Math.round(hue(c) * 360), l = Math.round(lightOf(c) * 100);
   return { s: `hsl(${h},72%,${l}%)`, f: `hsl(${h},30%,12%)`, t: `hsl(${h},72%,${Math.min(92, l +
-22)}%)` };
+  22)}%)` };
 }
-function drawMapPane() {
+// ---- map-local DOM overlays: tooltip (L1), bundle list (section 7),
+// "+N more" fn picker (section 4). One container spans the pane area.
+const mapOvEl = document.createElement("div");
+mapOvEl.id = "mapOv";
+mapOvEl.innerHTML = '<div id="mapTip"></div><div id="mapList"></div>' +
+  '<div id="mapPick"><input placeholder="filter fns..."><div class="rows"></div></div>';
+document.body.appendChild(mapOvEl);
+const mapTipEl = mapOvEl.querySelector("#mapTip");
+const mapListEl = mapOvEl.querySelector("#mapList");
+const mapPickEl = mapOvEl.querySelector("#mapPick");
+const mapPickIn = mapOvEl.querySelector("#mapPick input");
+const mapPickRows = mapOvEl.querySelector("#mapPick .rows");
+let mapPickRc = null;
+function mapTipHide() { mapTipEl.style.display = "none"; }
+function mapClosePick() { mapPickEl.style.display = "none"; mapPickRc = null; }
+// ESC priority (section 8): picker, then pinned list, then the L3 freeze
+function mapOvCloseOne() {
+  let closed = false;
+  if (mapPickEl.style.display === "block") { mapClosePick(); closed = true; }
+  if (mapListEl.style.display === "block") { mapListEl.style.display = "none"; closed = true; }
+  if (mapFrozenIx >= 0) { mapFrozenIx = -1; closed = true; drawMapPane(); }
+  return closed;
+}
+// L2: click a named wire -> fn panel. showFnInfo reads fnMeta[k] only, so a
+// miss pushes a temporary entry around the synchronous call (removed after).
+function mapShowFn(fi, name) {
+  let k = -1;
+  for (let j = 0; j < fnMeta.length; j++)
+    if (fnMeta[j].file === fi && fnMeta[j].name === name) { k = j; break; }
+  const temp = k < 0;
+  if (temp) { fnMeta.push({ file: fi, name, p: [0, 0, 0] }); k = fnMeta.length - 1; }
+  showFnInfo(k);
+  if (temp) fnMeta.splice(k, 1);
+}
+// 6px SCREEN-space wire hit test (section 8): world tolerance = 6 / mapZ
+const mapDistSeg = (px, py, ax, ay, bx, by) => {
+  const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy || 1;
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / L2));
+  return Math.hypot(px - ax - t * dx, py - ay - t * dy);
+};
+function mapWireAt(wx, wy) {
+  if (!mapLayout) return -1;
+  const tol = 6 / mapZ;
+  let best = -1, bd = tol;
+  mapLayout.wires.forEach((w, ix) => {
+    for (let s = 0; s < w.pts.length - 1; s++) {
+      const d = mapDistSeg(wx, wy, w.pts[s][0], w.pts[s][1],
+                           w.pts[s + 1][0], w.pts[s + 1][1]);
+      if (d < bd) { bd = d; best = ix; }
+    }
+  });
+  return best;
+}
+function mapChipAt(wx, wy) {
+  if (!mapLayout) return -1;
+  for (let c = 0; c < mapLayout.chips.length; c++) {
+    const ch = mapLayout.chips[c];
+    if (wx >= ch.x && wx <= ch.x + ch.w && wy >= ch.y && wy <= ch.y + ch.h) return c;
+  }
+  return -1;
+}
+// L1 tooltip (section 8): call/var = A::sfn() -> B::dfn() + line + fio
+// signature/writes/mutates; signal = scene > sig > B::handler [F5]
+function mapTipText(w) {
+  const A = nodes[w.sf], B = nodes[w.df];
+  if (w.ty === "signal")
+    return A.label + " > " + w.sfn + " > " + B.label + "::" + w.dfn;
+  let t = A.label + "::" + w.sfn + "() \u2192 " + B.label + "::" + w.dfn + "()";
+  if (w.line) t += "\nline " + w.line;
+  const io = (DATA.fio || {})[B.path + "::" + w.dfn];
+  if (io) {
+    if (io.sig) t += "\n" + io.sig + (io.ret ? " -> " + io.ret : "");
+    if (io.w.length) t += "\n\u270e " + io.w.join(", ");
+    if (io.mp.length) t += "\n\u21c4 " + io.mp.join(", ");
+  }
+  return t;
+}
+// bundle list (section 7): every wire on the corridor, enumerated + scrollable
+function mapOpenList(ci) {
+  const ch = mapLayout.chips[ci];
+  mapListEl.innerHTML = "";
+  const h = document.createElement("h3");
+  h.textContent = nodes[ch.s].label + " \u2192 " + nodes[ch.t].label +
+    "  (" + ch.ty + " \u00d7" + ch.n + ")";
+  mapListEl.appendChild(h);
+  ch.wires.forEach(wr => {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.textContent = nodes[wr.sf].label + "::" + wr.sfn + " \u2192 " +
+      nodes[wr.df].label + "::" + wr.dfn + " :" + wr.line;
+    row.onclick = () => { if (wr.ty !== "var") mapShowFn(wr.df, wr.dfn); };
+    mapListEl.appendChild(row);
+  });
+  const b = mapPane.getBoundingClientRect();
+  const sx = Math.max(4, Math.min((ch.x - mapPX) * mapZ + 16, 440 - 262));
+  const sy = Math.max(4, Math.min((ch.y - mapPY) * mapZ + 10, (b.height || innerHeight) - 170));
+  mapListEl.style.left = sx + "px";
+  mapListEl.style.top = sy + "px";
+  mapListEl.style.display = "block";
+}
+// "+N more" picker (section 4 [F11]): edge-anchored, searchable, closes on
+// canvas input + ESC (wire both below)
+const mapPickFill = q => {
+  if (!mapPickRc || !mapLayout) return;
+  const rost = mapLayout.geo.get(mapPickRc.i).roster;
+  mapPickRows.innerHTML = "";
+  const ql = q.toLowerCase();
+  rost.more.filter(r => !ql || r[0].toLowerCase().includes(ql)).slice(0, 80).forEach(r => {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.textContent = r[0] + "  :" + r[1];
+    row.onclick = () => { mapShowFn(mapPickRc.i, r[0]); mapClosePick(); };
+    mapPickRows.appendChild(row);
+  });
+};
+function mapOpenPicker(rc) {
+  mapPickRc = rc;
+  mapPickFill("");
+  const p = mapLayout.place.get(rc.i);
+  mapPickEl.style.left = Math.max(4, Math.min((p.x + p.w - mapPX) * mapZ, 440 - 258)) + "px";
+  mapPickEl.style.top = Math.max(4, (rc.more.y0 - mapPY) * mapZ) + "px";
+  mapPickEl.style.display = "block";
+  mapPickIn.value = "";
+  setTimeout(() => mapPickIn.focus(), 0);
+}
+mapPickIn.addEventListener("input", () => mapPickFill(mapPickIn.value));
+mapPickIn.addEventListener("keydown", e => {
+  if (e.key === "Escape") { e.stopPropagation(); mapClosePick(); }
+});
+function mapRender() {
   if (!mapVisible) return;
   const ctx = mapPane.getContext("2d");
   const cwView = mapPane.clientWidth || 440;
+  const chView = mapPane.clientHeight || innerHeight;
   const dpr = mapPane.width / cwView || 1;
   const cw = 1100;                  // world width - the pane is just a window
-  if (!mapZ) mapZ = cwView / cw;    // first draw: fit width, user zooms in
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = "#0b0f14";
-  ctx.fillRect(0, 0, cwView, mapPane.clientHeight);
+  ctx.fillRect(0, 0, cwView, chView);
   mapRects = [];
   const hint = txt => {
     ctx.fillStyle = "#546e7a";
-    ctx.font = '12px "Segoe UI", system-ui, sans-serif';
+    ctx.font = MAP_FONT(12);
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText(txt, cwView / 2, mapPane.clientHeight / 2);
+    ctx.fillText(txt, cwView / 2, chView / 2);
   };
-  if (!focusActive) { hint("focus a node to see its map"); return; }
+  if (!focusActive) { mapLayout = null; hint("focus a node to see its map"); return; }
   const litAll = [];
   for (let i = 0; i < N; i++) if (level[i] >= 0 && nodeVisible(nodes[i])) litAll.push(i);
   // cap by connectivity: keep the MAP_MAX most-connected lit files so a hub
   // focus still draws a diagram instead of a "narrow the focus" shrug
   let lit = litAll;
-  if (litAll.length > MAP_MAX) {
+  const capNote = litAll.length > MAP_MAX ? litAll.length : 0;
+  if (capNote) {
     lit = litAll.slice().sort((a, b) => (degree[b] - degree[a]) || (a - b)).slice(0, MAP_MAX);
-    ctx.fillStyle = "#546e7a";
-    ctx.font = '11px "Segoe UI", system-ui, sans-serif';
-    ctx.textAlign = "center"; ctx.textBaseline = "top";
-    ctx.fillText("top " + MAP_MAX + " of " + litAll.length + " files (by connectivity)", cwView / 2, 8);
   }
-  if (!lit.length) { hint("focus a node to see its map"); return; }
-  // in-focus edges (deduped per directed pair, type-filtered like the 3D view)
+  if (!lit.length) { mapLayout = null; hint("focus a node to see its map"); return; }
+  // hysteresis latch BEFORE expansion (section 4): zoom >= 1.5 expands
+  // wired boxes, < 1.2 collapses, in between keeps the current state
+  if (mapZ >= 1.5) mapZoomExp = true;
+  else if (mapZ < 1.2) mapZoomExp = false;
+  // focus signature ("focusVersion"): every input that changes the lit set
+  // or the typed admission. pan/zoom never touch it (section 5).
+  const sig = lit.join(",") + "|" + query + "|" + mapVarsOn + "|" +
+    typeVisible("call") + typeVisible("signal") + typeVisible("inst");
+  if (mapLayout && mapLayout.sig !== sig) mapZ = 0;   // focus change -> refit
+  // tier-1 admission: file skeleton unchanged (survives section 10)
   const litSet = new Set(lit);
   const cand = [];
   const seenPair = new Set();
@@ -2958,16 +3135,109 @@ function drawMapPane() {
     seenPair.add(k);
     cand.push(l);
   });
-  // skeleton filter: a 440px pane cannot carry every wire - keep heavy
-  // corridors plus singles that touch the best-connected lit files
   const top8 = new Set([...lit].sort((a, b) => degree[b] - degree[a] || a - b).slice(0, 8));
   cand.sort((a, b) => (b.w || 1) - (a.w || 1) || a.s - b.s || a.t - b.t);
   const edges = cand.filter((l, i) =>
     (l.w || 1) >= 2 || i < 120 || top8.has(l.s) || top8.has(l.t)).slice(0, 160);
-  // rows by BFS level
+  const E = edges.length;
+  // expansion set (sections 4/5): user dblclick override > seeds open at L0 >
+  // E<=12 wired boxes open at any zoom [F9] > zoom-latch wired boxes [F7]
+  const wireInc = new Map();
+  edges.forEach(l => {
+    wireInc.set(l.s, (wireInc.get(l.s) || 0) + 1);
+    wireInc.set(l.t, (wireInc.get(l.t) || 0) + 1);
+  });
+  const expand = new Set();
+  lit.forEach(i => {
+    const u = mapExpandUser.get(i);
+    const wired = (wireInc.get(i) || 0) >= 1;
+    // seed = BFS level 0 (click seeds AND query matches): roster open at L0
+    if (u !== undefined ? u : (level[i] === 0 || wired && (E <= 12 || mapZoomExp)))
+      expand.add(i);
+  });
+  // layout cache (section 5 [F7]): hit = pure repaint under pan/zoom
+  const key = sig + "||" + [...expand].sort((a, b) => a - b).join(",") + "||" +
+    Math.round(cwView) + "x" + Math.round(chView);
+  if (mapLayout && mapLayout.key === key) { mapPaint(ctx, dpr, cwView, chView, capNote); return; }
+  // ---- tier-2 named wires over the admitted corridors (section 2 [F1]) ----
+  const pairSet = new Set(edges.map(l => l.s + "_" + l.t));
+  const vw = [];
+  mwires.forEach(w => {
+    if (w[0] === "var" ? !mapVarsOn : !typeVisible(w[0])) return;
+    const sf = w[1], df = w[3];
+    if (typeof sf !== "number" || typeof df !== "number") return;
+    if (!pairSet.has(sf + "_" + df)) return;   // named wires ride admitted pairs
+    vw.push({ ty: w[0], sf, sfn: String(w[2]), df, dfn: String(w[4]), line: w[5] || 0 });
+  });
+  const inDegFn = new Map();   // callee in-degree: head of the F14 rank
+  vw.forEach(w => {
+    const k = w.df + "::" + w.dfn;
+    inDegFn.set(k, (inDegFn.get(k) || 0) + 1);
+  });
+  const byPair = new Map();
+  vw.forEach(w => {
+    const k = w.sf + "_" + w.df;
+    let a = byPair.get(k);
+    if (!a) byPair.set(k, a = []);
+    a.push(w);
+  });
+  const rk = (a, b) =>
+    ((inDegFn.get(b.df + "::" + b.dfn) || 0) - (inDegFn.get(a.df + "::" + a.dfn) || 0)) ||
+    (a.dfn < b.dfn ? -1 : a.dfn > b.dfn ? 1 : 0) ||
+    (a.sf - b.sf) ||
+    (a.sfn < b.sfn ? -1 : a.sfn > b.sfn ? 1 : 0) ||
+    (a.line - b.line);
+  const indiv = [];            // top-1 per pair: drawn + labeled [F14]
+  byPair.forEach(a => { a.sort(rk); indiv.push(a[0]); });
+  indiv.sort(rk);
+  const indivSet = new Set(indiv);
+  // ---- rosters (section 4) ----
+  const fioMap = DATA.fio || {};
+  const rosterOf = i => {
+    const all = (mfns[nodes[i].path] || []).slice();   // complete roster
+    if (!all.length) return null;
+    const pin = new Set();
+    byPair.forEach(arr => arr.forEach(w => {
+      if (level[w.sf] !== 0 && level[w.df] !== 0) return;   // seed-incident [F4]
+      if (w.df === i) pin.add(w.dfn);
+      if (w.sf === i) pin.add(w.sfn);
+    }));
+    indiv.forEach(w => {   // a named wire must terminate on its fn row
+      if (w.df === i) pin.add(w.dfn);
+      if (w.sf === i) pin.add(w.sfn);
+    });
+    const rank = nm => inDegFn.get(i + "::" + nm) || 0;
+    all.sort((a, b) => ((pin.has(b[0]) ? 1 : 0) - (pin.has(a[0]) ? 1 : 0)) ||
+      rank(b[0]) - rank(a[0]) ||
+      (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0) || (a[1] - b[1]));
+    const shown = all.slice(0, FN_PORT_MAX);
+    return {
+      rows: shown.map(r => ({ nm: r[0], ln: r[1], io: fioMap[nodes[i].path + "::" + r[0]] })),
+      more: all.slice(FN_PORT_MAX),
+    };
+  };
+  // geometry (F6: expansion resolved BEFORE the row wrap); NH/RH are module consts
+  ctx.font = MAP_FONT(10);
+  const txtW = t => Math.ceil(ctx.measureText(t).width);
+  const wOf = i => Math.max(38, txtW(nodes[i].label) + 18);
+  const geo = new Map();
+  let rosterRows = 0;
+  lit.forEach(i => {
+    if (!expand.has(i)) { geo.set(i, { w: wOf(i), h: NH, roster: null }); return; }
+    const r = rosterOf(i);
+    if (!r || !r.rows.length) { geo.set(i, { w: wOf(i), h: NH, roster: null }); return; }
+    let w = wOf(i);
+    r.rows.forEach(row => {
+      w = Math.max(w, txtW(row.nm) +
+        (row.io && row.io.w.length ? txtW("\u270e" + row.io.w.length) + 8 : 0) + 16);
+    });
+    w = Math.min(260, w);
+    rosterRows += r.rows.length;
+    geo.set(i, { w, h: NH + (r.rows.length + (r.more.length ? 1 : 0)) * RH, roster: r });
+  });
+  // rows by BFS level, barycenter columns (survives section 10)
   const rows = [];
   lit.forEach(i => { (rows[level[i]] = rows[level[i]] || []).push(i); });
-  // barycenter columns: 3 downward sweeps, predecessors = in-set sources
   const preds = new Map();
   edges.forEach(l => {
     if (!preds.has(l.t)) preds.set(l.t, []);
@@ -2990,176 +3260,497 @@ function drawMapPane() {
       rows[r].forEach((i, k) => col.set(i, k));
     }
   }
-  // geometry: node height 22, width by label length; rows WRAP to pane width
-  const NH = 22, GAPX = 14, TOP = 46, WRAP = cw - 16;
-  ctx.font = '11px "Segoe UI", system-ui, sans-serif';
-  const wOf = i => Math.max(38, Math.ceil(ctx.measureText(nodes[i].label).width) + 18);
+  // rows WRAP to world width against the resolved box widths
+  const WRAP = cw - 16;
   const chunks = [];
   for (let r = 0; r < rows.length; r++) {
     const row = rows[r];
     if (!row) continue;
     let cur = [], twc = -GAPX;
     row.forEach(i => {
-      const w = wOf(i);
+      const w = geo.get(i).w;
       if (twc + GAPX + w > WRAP && cur.length) { chunks.push(cur); cur = []; twc = -GAPX; }
       cur.push(i); twc += GAPX + w;
     });
     if (cur.length) chunks.push(cur);
   }
-  const nRows = chunks.length || 1;
-  // world height grows with content - vertical scroll/zoom covers the rest
-  const chh = Math.max(mapPane.clientHeight || innerHeight, TOP + nRows * 64 + 20);
-  const rowH = Math.max(NH + 16, (chh - TOP - 14) / nRows);
+  // per-chunk rowH = max(64, tallest expanded box in the chunk + 40) [F6]
+  const chunkRowH = [], chunkY = [], chunkTop = [];
+  let wy = TOP;
+  chunks.forEach(chunk => {
+    let tall = NH;
+    chunk.forEach(i => { tall = Math.max(tall, geo.get(i).h); });
+    chunkTop.push(tall);
+    chunkRowH.push(Math.max(64, tall + 40));
+    chunkY.push(wy);
+    wy += Math.max(64, tall + 40);
+  });
+  const worldH = Math.max(chView, wy + 20);
   const place = new Map();
   chunks.forEach((chunk, rr) => {
-    const tw = chunk.reduce((a, i) => a + wOf(i), 0) + GAPX * (chunk.length - 1);
+    const tw = chunk.reduce((a, i) => a + geo.get(i).w, 0) + GAPX * (chunk.length - 1);
     let x = Math.max(8, (cw - tw) / 2);
-    const y = TOP + rr * rowH;
-    chunk.forEach(i => { place.set(i, { x, y, w: wOf(i) }); x += wOf(i) + GAPX; });
+    const y = chunkY[rr];
+    chunk.forEach(i => {
+      place.set(i, { x, y, w: geo.get(i).w, h: geo.get(i).h, row: rr });
+      x += geo.get(i).w + GAPX;
+    });
   });
-  // window on the world: pan/zoom transform for everything below
-  ctx.setTransform(dpr * mapZ, 0, 0, dpr * mapZ, -mapPX * dpr * mapZ, -mapPY * dpr * mapZ);
-  // edges first so node bodies overlay the attachment points
-  const rects = [];
-  place.forEach(p => rects.push({ x0: p.x, x1: p.x + p.w, y0: p.y, y1: p.y + NH }));
-  // inter-row gap bands: buses stagger inside them, verticals claim unique
-  // lanes in every band they cross so parallel wires stack instead of fuse
-  const gapY = [];
-  for (let g = 0; g < nRows - 1; g++) {
-    gapY.push({ y0: TOP + g * rowH + NH + 2, y1: TOP + (g + 1) * rowH - 2 });
+  if (!mapZ) {   // focus change / first draw: fit BOTH dims, floor 1.0 [F15]
+    mapZ = Math.max(1.0, Math.min(cwView / cw, chView / worldH));
+    mapPX = Math.max(0, (cw - cwView / mapZ) / 2);
+    mapPY = Math.max(0, (worldH - chView / mapZ) / 2);
   }
-  const laneX = [];                 // per-band claimed x positions
-  const busCnt = [];                // per-band bus slot counter
+  // inter-row gap bands + lane machinery (survives section 10)
+  const rects = [];
+  place.forEach(p => rects.push({ x0: p.x, x1: p.x + p.w, y0: p.y, y1: p.y + p.h }));
+  const gapY = [];
+  for (let g = 0; g < chunks.length - 1; g++)
+    gapY.push({ y0: chunkY[g] + chunkTop[g] + 2, y1: chunkY[g + 1] - 2 });
+  const laneX = [];
   const crossedBands = (ya, yb) => {
     const out = [];
-    for (let g = 0; g < gapY.length; g++) {
+    for (let g = 0; g < gapY.length; g++)
       if (gapY[g].y1 > ya && gapY[g].y0 < yb) out.push(g);
-    }
     return out;
   };
-  // a vertical that would pierce an unrelated node OR an already-claimed
-  // lane slides to the nearest free x - crossings belong in the gaps
+  let maxX = 90;
+  geo.forEach(g => { maxX = Math.max(maxX, g.w); });   // freeX radius scales [F6]
   const freeX = (x, ya, yb) => {
-    x = Math.max(6, Math.min(cw - 6, x));   // lanes never leave the pane
+    x = Math.max(6, Math.min(cw - 6, x));   // lanes never leave the world
     const span = rects.filter(r => r.y1 > ya && r.y0 < yb);
     const bands = crossedBands(ya, yb);
-    const taken = (cand) =>
-      span.some(r => cand >= r.x0 && cand <= r.x1) ||
-      bands.some(g => laneX[g] && laneX[g].some(u => Math.abs(u - cand) < 3.5));
-    if (!taken(x)) return x;
-    for (let d = 3.5; d <= 90; d += 3.5) {   // stay near home - no margin walls
-      if (x + d <= cw - 6 && !taken(x + d)) return x + d;
-      if (x - d >= 6 && !taken(x - d)) return x - d;
+    const taken = c =>
+      span.some(r => c >= r.x0 && c <= r.x1) ||
+      bands.some(g => laneX[g] && laneX[g].some(u => Math.abs(u - c) < 3.5));
+    if (!taken(x)) return { x, ok: true };
+    for (let d = 3.5; d <= maxX; d += 3.5) {   // stay near home - no margin walls
+      if (x + d <= cw - 6 && !taken(x + d)) return { x: x + d, ok: true };
+      if (x - d >= 6 && !taken(x - d)) return { x: x - d, ok: true };
     }
-    return x;
+    return { x, ok: false };   // exhausted -> caller degrades to a bezier
   };
   const claimLane = (x, ya, yb) => {
     for (const g of crossedBands(ya, yb)) (laneX[g] || (laneX[g] = [])).push(x);
   };
-  // ports: every edge leaves its own point on the source box bottom and
-  // arrives at its own point on the target box top - a line is traceable
-  // from the exact spot it exits to the exact spot it enters
+  const usedY = [];
+  const spanHits = (x0, x1, y) => rects.some(r =>
+    y >= r.y0 && y <= r.y1 && x1 >= r.x0 && x0 <= r.x1);
+  const nextY = (x0, x1, startY, limitY) => {
+    let y = startY;
+    while ((usedY.some(u => Math.abs(u - y) < 3) ||
+            spanHits(Math.min(x0, x1), Math.max(x0, x1), y)) && y < limitY) y += 3;
+    usedY.push(y);
+    return { y, ok: y < limitY };
+  };
+  // roster row lookup: "fileIx<null>fn" -> row index (wires terminate on rows)
+  const rowOf = new Map();
+  place.forEach((p, i) => {
+    const g = geo.get(i);
+    if (!g.roster) return;
+    g.roster.rows.forEach((r, k) => rowOf.set(i + "\x00" + r.nm, k));
+  });
+  // port spreads: box-level for spines/underlays/row-less wires, row-level
+  // for wires that own a roster row
   const outN = new Map(), inN = new Map(), outIx = new Map(), inIx = new Map();
   edges.forEach(l => {
     outN.set(l.s, (outN.get(l.s) || 0) + 1);
     inN.set(l.t, (inN.get(l.t) || 0) + 1);
   });
-  // horizontal non-overlap: claimed y per band; a run whose span would hit
-  // a node box shifts down until both the corridor and the span are clear
-  const usedY = [];
-  const spanHits = (x0, x1, y) => rects.some(r =>
-    y >= r.y0 && y <= r.y1 && x1 >= r.x0 && x0 <= r.x1);
-  const nextY = (x0, x1, startY) => {
-    let y = startY;
-    while (usedY.some(u => Math.abs(u - y) < 3) || spanHits(Math.min(x0, x1), Math.max(x0, x1), y)) y += 3;
-    usedY.push(y);
-    return y;
+  const rowTotOut = new Map(), rowTotIn = new Map(),
+        rowIxOut = new Map(), rowIxIn = new Map();
+  indiv.forEach(w => {
+    const sr = rowOf.get(w.sf + "\x00" + w.sfn);
+    if (sr === undefined) outN.set(w.sf, (outN.get(w.sf) || 0) + 1);
+    else rowTotOut.set(w.sf + "_" + sr, (rowTotOut.get(w.sf + "_" + sr) || 0) + 1);
+    const dr = rowOf.get(w.df + "\x00" + w.dfn);
+    if (dr === undefined) inN.set(w.df, (inN.get(w.df) || 0) + 1);
+    else rowTotIn.set(w.df + "_" + dr, (rowTotIn.get(w.df + "_" + dr) || 0) + 1);
+  });
+  const underlays = [], spines = [], wires = [];
+  let routeSeq = 0;   // deterministic bezier bow variation
+  const routeOrtho = (A, B, sy, ty, sameRow, sx0, tx0, claim) => {
+    const bands = sameRow ? crossedBands(sy, sy + 1) : crossedBands(ty - 1, ty);
+    const lastBand = bands.length ? gapY[bands[bands.length - 1]] : null;
+    const startY = bands.length && gapY[bands[0]] ? gapY[bands[0]].y0 + 3
+                 : sameRow ? sy + 14 : (sy + ty) / 2;
+    const lim = lastBand ? lastBand.y1 : startY + 120;
+    const yc = nextY(Math.min(sx0, tx0), Math.max(sx0, tx0), startY, lim);
+    const yCh = yc.y;
+    const fx = freeX(sx0, Math.min(sy, yCh), Math.max(sy, yCh));
+    const sx = fx.x;
+    if (fx.ok) claimLane(sx, sy, yCh);
+    const fx2 = freeX(tx0, Math.min(yCh, ty), Math.max(yCh, ty));
+    const tx = Math.max(B.x + 2, Math.min(B.x + B.w - 2, fx2.x));
+    if (fx2.ok) claimLane(tx, yCh, ty);
+    if (!(fx.ok && fx2.ok && yc.ok)) {
+      // lanes exhausted: translucent bezier overlay, no lane claims (F6)
+      routeSeq++;
+      return {
+        pts: [[sx0, sy], [tx0, ty]], bez: true,
+        cx: (sx0 + tx0) / 2 + (routeSeq % 2 ? 26 : -26),
+        cy: (sy + ty) / 2 - 22 - (routeSeq % 3) * 12,
+        tx: tx0, ty,
+      };
+    }
+    const dir = tx >= sx ? 1 : -1;
+    const ch = Math.max(0, Math.min(8, Math.abs(tx - sx) / 2,
+      Math.abs(yCh - sy) / 2, Math.abs(yCh - ty) / 2));
+    return {
+      pts: [[sx0, sy], [sx, sy], [sx, yCh - ch], [sx + dir * ch, yCh],
+            [tx - dir * ch, yCh], [tx, sameRow ? yCh - ch : yCh + ch], [tx, ty]],
+      bez: false, tx, ty,
+    };
   };
-  ctx.lineWidth = 1.5;
-  ctx.globalAlpha = 0.85;
+  // 1) attach/inst underlays: anonymous + demoted (section 1) - 1px, alpha
+  //    0.40, T-junction entry, routed FIRST so named wires claim lanes first
   edges.forEach(l => {
+    if (l.ty !== "attach" && l.ty !== "inst") return;
     const A = place.get(l.s), B = place.get(l.t);
     if (!A || !B) return;
-    const sy = A.y + NH;                              // source bottom
-    const sameRow = level[l.s] === level[l.t];
-    const ty = sameRow ? B.y + NH : B.y;              // entry y on the target
+    const sy = A.y + A.h, sameRow = level[l.s] === level[l.t];
+    const ty = sameRow ? B.y + B.h : B.y;
     const sIx = outIx.get(l.s) || 0; outIx.set(l.s, sIx + 1);
     const tIx = inIx.get(l.t) || 0; inIx.set(l.t, tIx + 1);
     const sx0 = A.x + A.w * (sIx + 1) / ((outN.get(l.s) || 1) + 1);
     const tx0 = B.x + B.w * (tIx + 1) / ((inN.get(l.t) || 1) + 1);
-    // bus y: claim a corridor in the detour band, clear of boxes + peers
-    const bands = sameRow ? crossedBands(sy, sy + 1) : crossedBands(B.y - 1, B.y);
-    const startY = bands.length && gapY[bands[0]] ? gapY[bands[0]].y0 + 3
-                 : sameRow ? sy + (rowH - NH) / 2 : (sy + B.y) / 2;
-    const yCh = nextY(Math.min(sx0, tx0), Math.max(sx0, tx0), startY);
-    const sx = freeX(sx0, Math.min(sy, yCh), Math.max(sy, yCh));
-    claimLane(sx, sy, yCh);
-    const tx = Math.max(B.x + 2,
-                Math.min(B.x + B.w - 2, freeX(tx0, Math.min(yCh, ty), Math.max(yCh, ty))));
-    claimLane(tx, yCh, ty);
-    const dir = tx >= sx ? 1 : -1;
-    const ch = Math.max(0, Math.min(8, Math.abs(tx - sx) / 2, (yCh - sy) / 2, (yCh - ty) / 2));
-    // gradient source hue -> target hue: shared-cluster edges still
-    // separate visually and the color itself carries the direction
-    const cS = mapCols(nodes[l.s].cluster), cT = mapCols(nodes[l.t].cluster);
-    const grad = ctx.createLinearGradient(sx0, sy, tx0, ty);
-    grad.addColorStop(0, cS.s);
-    grad.addColorStop(1, cT.s);
-    ctx.strokeStyle = grad;
-    ctx.fillStyle = cT.s;
-    ctx.beginPath();
-    ctx.moveTo(sx0, sy);
-    ctx.lineTo(sx, sy);                               // jog along the box bottom to the lane
-    ctx.lineTo(sx, yCh - ch);
-    ctx.lineTo(sx + dir * ch, yCh);
-    ctx.lineTo(tx - dir * ch, yCh);
-    ctx.lineTo(tx, sameRow ? yCh - ch : yCh + ch);
-    ctx.lineTo(tx, ty);
-    ctx.stroke();
-    ctx.beginPath();
-    if (sameRow) {
-      ctx.moveTo(tx, ty);
-      ctx.lineTo(tx - 4.5, ty + 8);
-      ctx.lineTo(tx + 4.5, ty + 8);
-    } else {
-      ctx.moveTo(tx, ty);
-      ctx.lineTo(tx - 4.5, ty - 8);
-      ctx.lineTo(tx + 4.5, ty - 8);
-    }
-    ctx.closePath();
-    ctx.fill();
+    underlays.push(Object.assign(
+      { s: l.s, t: l.t, ty0: l.ty },
+      routeOrtho(A, B, sy, ty, sameRow, sx0, tx0)));
   });
-  ctx.globalAlpha = 1;
-  // node rects: rounded (6px), cluster-hue border + translucent fill
-  lit.forEach(i => {
-    const p = place.get(i);
+  // 2) corridor spines (section 2 tier-1): gradient; a signal pair that
+  //    resolved zero handlers renders as an anonymous amber corridor [F13]
+  edges.forEach(l => {
+    if (l.ty === "attach" || l.ty === "inst") return;
+    const A = place.get(l.s), B = place.get(l.t);
+    if (!A || !B) return;
+    const sy = A.y + A.h, sameRow = level[l.s] === level[l.t];
+    const ty = sameRow ? B.y + B.h : B.y;
+    const sIx = outIx.get(l.s) || 0; outIx.set(l.s, sIx + 1);
+    const tIx = inIx.get(l.t) || 0; inIx.set(l.t, tIx + 1);
+    const sx0 = A.x + A.w * (sIx + 1) / ((outN.get(l.s) || 1) + 1);
+    const tx0 = B.x + B.w * (tIx + 1) / ((inN.get(l.t) || 1) + 1);
+    const amber = l.ty === "signal" && !(byPair.get(l.s + "_" + l.t) || []).length;
+    spines.push(Object.assign(
+      { s: l.s, t: l.t, pair: l.s + "_" + l.t, amber },
+      routeOrtho(A, B, sy, ty, sameRow, sx0, tx0)));
+  });
+  // 3) individual named wires (tier-2 top-1/pair): terminate ON their fn rows
+  indiv.forEach(w => {
+    const A = place.get(w.sf), B = place.get(w.df);
+    if (!A || !B) return;
+    const sRow = rowOf.get(w.sf + "\x00" + w.sfn);
+    const dRow = rowOf.get(w.df + "\x00" + w.dfn);
+    const sameRow = level[w.sf] === level[w.df];
+    let sx0;
+    if (sRow === undefined) {
+      const sIx = outIx.get(w.sf) || 0; outIx.set(w.sf, sIx + 1);
+      sx0 = A.x + A.w * (sIx + 1) / ((outN.get(w.sf) || 1) + 1);
+    } else {
+      const kk = w.sf + "_" + sRow;
+      const sIx = rowIxOut.get(kk) || 0; rowIxOut.set(kk, sIx + 1);
+      sx0 = A.x + A.w * (sIx + 1) / ((rowTotOut.get(kk) || 1) + 1);
+    }
+    let tx0;
+    if (dRow === undefined) {
+      const tIx = inIx.get(w.df) || 0; inIx.set(w.df, tIx + 1);
+      tx0 = B.x + B.w * (tIx + 1) / ((inN.get(w.df) || 1) + 1);
+    } else {
+      const kk = w.df + "_" + dRow;
+      const tIx = rowIxIn.get(kk) || 0; rowIxIn.set(kk, tIx + 1);
+      tx0 = B.x + B.w * (tIx + 1) / ((rowTotIn.get(kk) || 1) + 1);
+    }
+    const sy = sRow === undefined ? A.y + A.h : A.y + NH + (sRow + 1) * RH;
+    const ty = dRow === undefined
+      ? (sameRow ? B.y + B.h : B.y)
+      : (sameRow ? B.y + NH + (dRow + 1) * RH : B.y + NH + dRow * RH);
+    wires.push(Object.assign({
+      sf: w.sf, sfn: w.sfn, df: w.df, dfn: w.dfn, ty: w.ty, line: w.line,
+      up: sameRow, pair: w.sf + "_" + w.df,
+    }, routeOrtho(A, B, sy, ty, sameRow, sx0, tx0)));
+  });
+  // ---- labels (section 6 [F2]): entry micro-label at the arrowhead, greedy
+  // dy ladder, first-fit, hide-if-no-fit (hub-label pattern), budget 2/target
+  const LAD = [0, -9, -18, 9, 18, -27, 27, -36, 36];
+  const labels = [];
+  const placed = [];
+  const budget = new Map();
+  wires.forEach((w, ix) => {
+    const b = budget.get(w.df) || 0;
+    if (b >= 2) return;
+    const txt = w.ty === "signal" ? w.sfn : w.dfn;   // NAME per section 1
+    const tw = txtW(txt) + 2;
+    for (const dy of LAD) {
+      const lx = w.tx + 5, ly = w.ty + dy;   // +4px offset at the arrowhead
+      if (lx + tw > cw - 4) continue;
+      const r = { x0: lx, y0: ly - 10, x1: lx + tw, y1: ly + 2 };
+      if (placed.some(p => !(r.x1 < p.x0 - 1 || p.x1 < r.x0 - 1 ||
+                             r.y1 < p.y0 - 1 || p.y1 < r.y0 - 1))) continue;
+      placed.push(r);
+      labels.push({ w: ix, x: lx, y: ly, text: txt, ty: w.ty });
+      budget.set(w.df, b + 1);
+      return;
+    }
+  });
+  // ---- bundle chips (section 7 [F3]): typed "xN" micro-chips on the spine
+  const chipAnchor = pts => {
+    let tot = 0;
+    for (let s = 0; s < pts.length - 1; s++)
+      tot += Math.hypot(pts[s + 1][0] - pts[s][0], pts[s + 1][1] - pts[s][1]);
+    let acc = 0;
+    for (let s = 0; s < pts.length - 1; s++) {
+      const d = Math.hypot(pts[s + 1][0] - pts[s][0], pts[s + 1][1] - pts[s][1]);
+      if (acc + d >= tot / 2) {
+        const t = (tot / 2 - acc) / (d || 1);
+        return [pts[s][0] + (pts[s + 1][0] - pts[s][0]) * t,
+                pts[s][1] + (pts[s + 1][1] - pts[s][1]) * t];
+      }
+      acc += d;
+    }
+    return pts[0];
+  };
+  const chips = [];
+  spines.forEach(sp => {
+    const riders = (byPair.get(sp.pair) || []).filter(w => !indivSet.has(w));
+    const perTy = new Map();
+    riders.forEach(w => perTy.set(w.ty, (perTy.get(w.ty) || 0) + 1));
+    const anc = chipAnchor(sp.pts);
+    let cy = anc[1] - 8;
+    perTy.forEach((n, ty) => {
+      const txt = "\u00d7" + n;
+      const cwid = txtW(txt) + 10;
+      chips.push({ pair: sp.pair, s: sp.s, t: sp.t, ty, n,
+                   x: anc[0] - cwid / 2, y: cy - 7, w: cwid, h: 14,
+                   wires: riders.filter(w => w.ty === ty) });
+      cy -= 16;
+    });
+  });
+  // node rects with roster zones (header refocus / row L3 / "+N more" picker)
+  mapRects = [];
+  place.forEach((p, i) => {
+    const g = geo.get(i);
+    const rc = { i, x: p.x, y: p.y, w: p.w, h: g.h, rows: [], more: null };
+    if (g.roster) {
+      g.roster.rows.forEach((r, k) => rc.rows.push({
+        nm: r.nm, y0: p.y + NH + k * RH, y1: p.y + NH + (k + 1) * RH }));
+      if (g.more.length)
+        rc.more = { y0: p.y + NH + g.roster.rows.length * RH,
+                    y1: p.y + NH + (g.roster.rows.length + 1) * RH };
+    }
+    mapRects.push(rc);
+  });
+  mapLayout = {
+    key, sig, lit, edges, E, place, geo, rects, wires, spines, underlays,
+    chips, labels, rosterRows, expandedSet: expand, worldH, capNote,
+  };
+  mapPaint(ctx, dpr, cwView, chView, capNote);
+}
+function mapPaint(ctx, dpr, cwView, chView, capNote) {
+  const L = mapLayout;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#0b0f14";
+  ctx.fillRect(0, 0, cwView, chView);
+  if (capNote) {
+    ctx.fillStyle = "#546e7a";
+    ctx.font = MAP_FONT(11);
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    ctx.fillText("top " + MAP_MAX + " of " + capNote + " files (by connectivity)", cwView / 2, 8);
+  }
+  // window on the world: pan/zoom = pure transform of the cached layout
+  ctx.setTransform(dpr * mapZ, 0, 0, dpr * mapZ, -mapPX * dpr * mapZ, -mapPY * dpr * mapZ);
+  // disclosure dimming: L1 hover dims non-incident to 0.15; L3 freeze to 0.08
+  const hov = mapHover >= 0 && L.wires[mapHover] ? L.wires[mapHover] : null;
+  const dim = (a, b) => {
+    if (mapFrozenIx >= 0) return (a === mapFrozenIx || b === mapFrozenIx) ? 1 : 0.08;
+    if (hov) return (a === hov.sf || a === hov.df || b === hov.sf || b === hov.df) ? 1 : 0.15;
+    return 1;
+  };
+  const seg = (rec, color, width, dash, alpha) => {
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.setLineDash(dash || []);
+    ctx.beginPath();
+    if (rec.bez) {
+      ctx.moveTo(rec.pts[0][0], rec.pts[0][1]);
+      ctx.quadraticCurveTo(rec.cx, rec.cy, rec.pts[1][0], rec.pts[1][1]);
+    } else {
+      rec.pts.forEach((p, k) => k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
+    }
+    ctx.stroke();
+  };
+  // render order (section 9): underlays -> spines -> wires -> boxes/rosters
+  // -> labels/chips/terminators
+  L.underlays.forEach(u => {
+    seg(u, MGLYPH[u.ty0] ? MGLYPH[u.ty0].c : MGLYPH.attach.c, 1,
+        MGLYPH.attach.dash, 0.40 * dim(u.s, u.t));
+    // T-junction terminator: short tick across the entry, no arrow
+    ctx.globalAlpha = 0.40 * dim(u.s, u.t);
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(u.tx - 4, u.ty); ctx.lineTo(u.tx + 4, u.ty);
+    ctx.stroke();
+  });
+  L.spines.forEach(sp => {
+    const gl = sp.amber ? null : mapCols(nodes[sp.s].cluster);
+    let color = "#ffb347";
+    if (!sp.amber) {
+      const cT = mapCols(nodes[sp.t].cluster);
+      const grad = ctx.createLinearGradient(sp.pts[0][0], sp.pts[0][1],
+        sp.pts[sp.pts.length - 1][0], sp.pts[sp.pts.length - 1][1]);
+      grad.addColorStop(0, gl.s);
+      grad.addColorStop(1, cT.s);
+      color = grad;
+    }
+    seg(sp, color, 2, null, 0.5 * dim(sp.s, sp.t));
+  });
+  L.wires.forEach(w => {
+    const g = MGLYPH[w.ty] || MGLYPH.call;
+    seg(w, g.c, 1.5, g.dash, (w.bez ? 0.35 : 0.9) * dim(w.sf, w.df));
+  });
+  // boxes + rosters
+  ctx.setLineDash([]);
+  L.lit.forEach(i => {
+    const p = L.place.get(i), g = L.geo.get(i);
     const c = mapCols(nodes[i].cluster);
+    const a = dim(i);
+    ctx.globalAlpha = a;
     ctx.fillStyle = c.f;
     ctx.strokeStyle = c.s;
     ctx.lineWidth = 1.5;
     const rad = 6;
     ctx.beginPath();
     ctx.moveTo(p.x + rad, p.y);
-    ctx.arcTo(p.x + p.w, p.y, p.x + p.w, p.y + NH, rad);
-    ctx.arcTo(p.x + p.w, p.y + NH, p.x, p.y + NH, rad);
-    ctx.arcTo(p.x, p.y + NH, p.x, p.y, rad);
+    ctx.arcTo(p.x + p.w, p.y, p.x + p.w, p.y + g.h, rad);
+    ctx.arcTo(p.x + p.w, p.y + g.h, p.x, p.y + g.h, rad);
+    ctx.arcTo(p.x, p.y + g.h, p.x, p.y, rad);
     ctx.arcTo(p.x, p.y, p.x + p.w, p.y, rad);
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
     ctx.fillStyle = c.t;
-    ctx.font = '11px "Segoe UI", system-ui, sans-serif';
+    ctx.font = MAP_FONT(11);
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(nodes[i].label, p.x + p.w / 2, p.y + NH / 2 + 0.5);
-    mapRects.push({ i, x: p.x, y: p.y, w: p.w, h: NH });
+    ctx.fillText(nodes[i].label, p.x + p.w / 2, p.y + 11 + 0.5);
+    if (g.roster) {
+      ctx.font = MAP_FONT(10);
+      ctx.textAlign = "left";
+      g.roster.rows.forEach((r, k) => {
+        const ry = p.y + 22 + k * RH + RH / 2 + 0.5;
+        ctx.globalAlpha = a;
+        ctx.fillStyle = c.t;
+        ctx.fillText(r.nm, p.x + 8, ry);
+        if (r.io && r.io.w.length) {   // writes badge (section 4)
+          ctx.fillStyle = "#80cbc4";
+          ctx.textAlign = "right";
+          ctx.fillText("\u270e" + r.io.w.length, p.x + p.w - 6, ry);
+          ctx.textAlign = "left";
+        }
+      });
+      if (g.roster.more.length) {
+        ctx.fillStyle = "#546e7a";
+        ctx.fillText("+" + g.roster.more.length + " more...",
+          p.x + 8, p.y + 22 + g.roster.rows.length * RH + RH / 2 + 0.5);
+      }
+    }
   });
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.fillStyle = "#546e7a";
-  ctx.font = '10px "Segoe UI", system-ui, sans-serif';
+  // chips (click -> pinned enumeration list)
+  ctx.font = MAP_FONT(10);
+  L.chips.forEach(ch => {
+    const g = MGLYPH[ch.ty] || MGLYPH.call;
+    ctx.globalAlpha = dim(ch.s, ch.t);
+    ctx.fillStyle = "rgba(8,12,16,.85)";
+    ctx.strokeStyle = g.c;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(ch.x, ch.y, ch.w, ch.h, 4);
+    else ctx.rect(ch.x, ch.y, ch.w, ch.h);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = g.c;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("\u00d7" + ch.n, ch.x + ch.w / 2, ch.y + ch.h / 2 + 0.5);
+  });
+  // labels: zoom tiers only when E>12 (section 6); E<=12 -> ALL
+  const inView = (x, y) => {
+    const sx = (x - mapPX) * mapZ, sy = (y - mapPY) * mapZ;
+    return sx >= -30 && sx <= cwView + 30 && sy >= -10 && sy <= chView + 10;
+  };
+  let tier;
+  if (L.E <= 12) tier = () => true;
+  else if (mapZ < 0.7) {
+    const top = new Set(L.wires.slice(0, 8).map((w, k) => k));
+    tier = l => top.has(l.w);
+  } else if (mapZ >= 1.5) tier = l => inView(l.x, l.y);
+  else tier = () => true;
+  mapShownLabels = 0;
   ctx.textAlign = "left";
-  ctx.textBaseline = "bottom";
-  ctx.fillText("wheel = zoom · drag = pan", 8, mapPane.clientHeight - 6);
+  ctx.textBaseline = "alphabetic";
+  L.labels.forEach(l => {
+    if (!tier(l)) return;
+    const w = L.wires[l.w];
+    const g = MGLYPH[l.ty] || MGLYPH.call;
+    let txt = l.text;
+    ctx.font = l.ty === "signal" ? "italic " + MAP_FONT(10) : MAP_FONT(10);
+    if (ctx.measureText(txt).width * mapZ > 90)
+      txt = txt.slice(0, 9) + "\u2026";   // truncate 9 chars when narrow
+    ctx.globalAlpha = dim(w.sf, w.df);
+    ctx.fillStyle = g.c;
+    ctx.fillText(txt, l.x, l.y);
+    mapShownLabels++;
+  });
+  // terminators last so arrowheads/dots sit on the box edges (section 9)
+  ctx.setLineDash([]);
+  L.wires.forEach(w => {
+    const g = MGLYPH[w.ty] || MGLYPH.call;
+    ctx.globalAlpha = dim(w.sf, w.df);
+    const off = w.up ? 8 : -8;
+    if (g.term === "tri" || g.term === "hollow") {
+      ctx.beginPath();
+      ctx.moveTo(w.tx, w.ty);
+      ctx.lineTo(w.tx - 4.5, w.ty + off);
+      ctx.lineTo(w.tx + 4.5, w.ty + off);
+      ctx.closePath();
+      if (g.term === "tri") { ctx.fillStyle = g.c; ctx.fill(); }
+      else { ctx.strokeStyle = g.c; ctx.lineWidth = 1.5; ctx.stroke(); }
+    } else if (g.term === "dot") {
+      ctx.beginPath();
+      ctx.arc(w.tx, w.ty, 3, 0, Math.PI * 2);
+      ctx.fillStyle = g.c;
+      ctx.fill();
+    }
+  });
+  ctx.globalAlpha = 1;
+  // screen-space furniture: map-local vars chip [F10] + footer
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  mapVarsChipRect = { x: 8, y: 26, w: 46, h: 16 };
+  ctx.fillStyle = mapVarsOn ? "rgba(29,233,182,.25)" : "rgba(8,12,16,.85)";
+  ctx.strokeStyle = mapVarsOn ? "#1de9b6" : "#263238";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(8, 26, 46, 16, 4);
+  else ctx.rect(8, 26, 46, 16);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = mapVarsOn ? "#1de9b6" : "#78909c";
+  ctx.font = MAP_FONT(10);
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText("vars", 31, 34.5);
+  ctx.fillStyle = "#546e7a";
+  ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+  let foot = "wheel zoom / drag pan / dblclick box = roster";
+  const mr = DATA.meta || {};
+  if (mr.sig_unresolved)
+    foot += "  |  signals: " + (mr.sig_resolved || 0) + " ok / " +
+            mr.sig_unresolved + " unresolved";
+  ctx.fillText(foot, 8, chView - 6);
+}
+// rAF dirty-flag single draw (section 5 [F7]): every caller coalesces here
+function drawMapPane() {
+  if (!mapVisible || mapDirty) return;
+  mapDirty = true;
+  requestAnimationFrame(() => { mapDirty = false; mapRender(); });
 }
 document.getElementById("bMap").onclick = e => {
   mapVisible = !mapVisible;
@@ -3168,6 +3759,7 @@ document.getElementById("bMap").onclick = e => {
   // keep the node info panel clear of the pane instead of underneath it
   info.classList.toggle("mapShift", mapVisible);
   if (mapVisible) { sizeMapPane(); drawMapPane(); }
+  else { mapTipHide(); mapOvCloseOne(); }
 };
 // click a node rect = the hub-label jump: re-seed focus around that file
 const mapToWorld = e => {
@@ -3177,6 +3769,7 @@ const mapToWorld = e => {
 mapPane.addEventListener("wheel", e => {
   if (!mapVisible) return;
   e.preventDefault();
+  mapClosePick();   // canvas input closes the picker [F11]
   const b = mapPane.getBoundingClientRect();
   const cx = e.clientX - b.left, cy = e.clientY - b.top;
   const wx = cx / mapZ + mapPX, wy = cy / mapZ + mapPY;
@@ -3187,6 +3780,7 @@ mapPane.addEventListener("wheel", e => {
 }, { passive: false });
 mapPane.addEventListener("pointerdown", e => {
   if (!mapVisible) return;
+  mapClosePick();   // canvas input closes the picker [F11]
   mapDrag = { x: e.clientX, y: e.clientY, px: mapPX, py: mapPY, moved: false };
   mapPane.setPointerCapture(e.pointerId);
 });
@@ -3195,11 +3789,52 @@ mapPane.addEventListener("pointerup", () => {
 });
 mapPane.addEventListener("click", e => {
   if (mapDragged) { mapDragged = false; return; }   // it was a pan, not a pick
+  clearTimeout(mapRefocusTimer);
+  const w = mapToWorld(e);
+  // 1. bundle chip -> pinned enumeration list (section 7)
+  const ci = mapChipAt(w.x, w.y);
+  if (ci >= 0) { mapOpenList(ci); return; }
+  // 2. named wire (L2): showFnInfo(target) - CALLED BY is its section
+  const wi = mapWireAt(w.x, w.y);
+  if (wi >= 0 && mapLayout) {
+    const wr = mapLayout.wires[wi];
+    if (wr.ty === "var") showInfo(wr.df);   // member target is not a fn
+    else mapShowFn(wr.df, wr.dfn);
+    return;
+  }
+  // 3. boxes: roster row (L3) / "+N more" (picker) / header (click refocus)
+  for (const rc of mapRects) {
+    if (w.x < rc.x || w.x > rc.x + rc.w || w.y < rc.y || w.y > rc.y + rc.h) continue;
+    if (rc.rows.length) {
+      if (rc.more && w.y >= rc.more.y0 && w.y < rc.more.y1) { mapOpenPicker(rc); return; }
+      for (const row of rc.rows) {
+        if (w.y >= row.y0 && w.y < row.y1) {
+          // L3 [F12]: local dim only, rows frozen, NO re-seed
+          mapFrozenIx = mapFrozenIx === rc.i ? -1 : rc.i;
+          drawMapPane();
+          return;
+        }
+      }
+    }
+    const i = rc.i;   // header / collapsed box: click = refocus (220ms so a
+    mapRefocusTimer = setTimeout(() => {   // dblclick can cancel into a toggle)
+      pushFocusState(); showInfo(i); focusSeeds.clear(); focusSeeds.add(i);
+      applyVisibility(); focus(i);
+    }, 220);
+    return;
+  }
+  // 4. void: unpin the list, close the picker, drop the freeze
+  if (mapListEl.style.display === "block" || mapFrozenIx >= 0) mapOvCloseOne();
+});
+mapPane.addEventListener("dblclick", e => {
+  if (!mapVisible) return;
+  clearTimeout(mapRefocusTimer);
   const w = mapToWorld(e);
   for (const rc of mapRects) {
     if (w.x >= rc.x && w.x <= rc.x + rc.w && w.y >= rc.y && w.y <= rc.y + rc.h) {
-      pushFocusState(); showInfo(rc.i); focusSeeds.clear(); focusSeeds.add(rc.i);
-      applyVisibility(); focus(rc.i);
+      const open = mapLayout && mapLayout.expandedSet.has(rc.i);
+      mapExpandUser.set(rc.i, !open);
+      drawMapPane();
       return;
     }
   }
@@ -3215,10 +3850,46 @@ mapPane.addEventListener("pointermove", e => {
     return;
   }
   const w = mapToWorld(e);
-  mapPane.style.cursor = mapRects.some(rc =>
-    w.x >= rc.x && w.x <= rc.x + rc.w && w.y >= rc.y && w.y <= rc.y + rc.h) ? "pointer" : "default";
+  const ci = mapChipAt(w.x, w.y);
+  const wi = ci < 0 && mapFrozenIx < 0 ? mapWireAt(w.x, w.y) : -1;
+  if (mapHover !== wi) { mapHover = wi; drawMapPane(); }
+  mapHoverChip = ci;
+  mapPane.style.cursor = ci >= 0 || wi >= 0 || mapRects.some(rc =>
+    w.x >= rc.x && w.x <= rc.x + rc.w && w.y >= rc.y && w.y <= rc.y + rc.h)
+    ? "pointer" : "default";
+  if (wi >= 0) {   // map-local tooltip (L1)
+    mapTipEl.textContent = mapTipText(mapLayout.wires[wi]);
+    mapTipEl.style.display = "block";
+    const b = mapPane.getBoundingClientRect();
+    mapTipEl.style.left = Math.max(4, Math.min(e.clientX - b.left + 14, 440 - 290)) + "px";
+    mapTipEl.style.top = Math.max(4, Math.min(e.clientY - b.top + 10,
+      (b.height || innerHeight) - 100)) + "px";
+  } else mapTipHide();
 });
 addEventListener("resize", () => { if (mapVisible) { sizeMapPane(); drawMapPane(); } });
+// test/debug surface: named-wire map introspection (harness contract)
+const mapInfo = () => {
+  if (!mapLayout) return null;
+  const tg = new Set(mapLayout.labels.map(l => mapLayout.wires[l.w].df));
+  const w0 = mapLayout.wires[0];
+  let probe = null;
+  if (w0) {
+    const m = w0.pts[Math.floor(w0.pts.length / 2)];
+    probe = { sx: (m[0] - mapPX) * mapZ, sy: (m[1] - mapPY) * mapZ };
+  }
+  return {
+    E: mapLayout.E,
+    wires: mapLayout.wires.length,
+    labels: mapLayout.labels.length,
+    shownLabels: mapShownLabels,
+    labelTargets: tg.size,
+    budgetOk: mapLayout.labels.length <= 2 * tg.size,
+    chips: mapLayout.chips.length,
+    rosterRows: mapLayout.rosterRows,
+    expanded: mapLayout.expandedSet.size,
+    probeWire: probe,
+  };
+};
 document.getElementById("bGround").onclick = e => {
   showGround = !showGround;
   groundGrid.visible = showGround;
@@ -3279,6 +3950,7 @@ function clearFocus() {
   applyVisibility();
 }
 addEventListener("keydown", e => {
+  if (e.key === "Escape" && mapOvCloseOne()) return;   // map overlays own ESC first
   if (e.key === "Escape" && (focusSeeds.size || query)) clearFocus();
   else if (e.key === "Backspace" && e.target !== searchEl &&
     focusSeeds.size && focusStack.length) {
@@ -3320,6 +3992,9 @@ applySpread(1);
   if (showGround) document.getElementById("bGround").classList.add("on");
   // the map pane is a viewport pref too — keep its button in lockstep
   if (mapVisible) document.getElementById("bMap").classList.add("on");
+  // ...but its content state resets with everything else
+  mapExpandUser.clear(); mapFrozenIx = -1; mapHover = -1; mapVarsOn = false;
+  mapOvCloseOne();
   frameGraph();
   buildLegend();
   buildContainment(); applyVisibility();
@@ -3455,20 +4130,15 @@ function showFnInfo(k) {
     document.getElementById(kindId).textContent = `${label} (${entries.length})`;
     const ul = document.getElementById(ulId);
     ul.innerHTML = "";
-    const shown = entries.slice(0, 24);
-    shown.forEach(e => {
+    // no 24-cap: the ul's max-height + overflow-y scroll carries any
+    // length (map-spec-v2 section 8 BUGFIX)
+    entries.forEach(e => {
       const li = document.createElement("li");
       const j = kindId === "kUses" ? e[2] : e[0];
       li.textContent = nodes[j].label + " :: " + (kindId === "kUses" ? e[3] : e[1]);
       li.onclick = () => jumpFn(j);
       ul.appendChild(li);
     });
-    if (entries.length > shown.length) {
-      const li = document.createElement("li");
-      li.className = "more";
-      li.textContent = `+${entries.length - shown.length} more hidden`;
-      ul.appendChild(li);
-    }
   };
   const outs = [], ins = [], seen = new Set();
   fedges.forEach(e => {
@@ -3700,7 +4370,8 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   colArr,
   get fnStalk() { return fnStalk; },
   syncFileMesh,
-  mapPane: { canvas: mapPane, draw: drawMapPane } };
+  mapPane: { canvas: mapPane, draw: drawMapPane },
+  mwires, mapInfo, get mapVars() { return mapVarsOn; }, mapExpandUser };
 tick();
 </script>
 </body>

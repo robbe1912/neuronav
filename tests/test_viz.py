@@ -706,6 +706,76 @@ def run_tests():
                   and grp.get("recolored"),
                   str(grp))
 
+        # 8. map pane (map-spec-v2): named wires over fn rosters. Data-gated
+        # on DATA.mwires — an index without the named-wire exports skips.
+        mw = page.evaluate("() => window.__dbg.mwires || []")
+        if not mw:
+            print("SKIP map pane — no DATA.mwires in this index")
+        else:
+            page.fill("#search", tok)
+            page.dispatch_event("#search", "input")
+            page.wait_for_timeout(600)
+            page.evaluate("() => document.getElementById('bMap').click()")
+            page.wait_for_timeout(500)   # rAF-coalesced paint
+            minfo = page.evaluate("() => window.__dbg.mapInfo()")
+            check("map named wires drawn",
+                  bool(minfo) and minfo.get("wires", 0) > 0, str(minfo))
+            check("map roster rows rendered",
+                  bool(minfo) and minfo.get("rosterRows", 0) > 0, str(minfo))
+            # bundle chips need an admitted pair carrying 2+ same-type wires
+            has_mult = page.evaluate(
+                """() => { const d = window.__dbg; const cnt = new Map();
+                     (d.mwires || []).forEach(w => {
+                       if (w[0] === 'var') return;
+                       const k = w[1] + '_' + w[3];
+                       cnt.set(k, (cnt.get(k) || 0) + 1); });
+                     for (const v of cnt.values()) if (v >= 2) return true;
+                     return false; }""")
+            if has_mult:
+                check("map bundle chips present",
+                      bool(minfo) and minfo.get("chips", 0) > 0, str(minfo))
+            else:
+                print("SKIP map bundle chips — no multi-wire pair in this index")
+            # label ladder: per-target budget 2 holds and something is shown
+            check("map label ladder budget",
+                  bool(minfo) and minfo.get("budgetOk")
+                  and minfo.get("labels", 1) <= 2 * max(1, minfo.get("labelTargets", 0)),
+                  str(minfo))
+            check("map labels shown", bool(minfo) and minfo.get("shownLabels", 0) > 0,
+                  str(minfo))
+            # vars chip: off at boot, toggles via a real click on its rect
+            check("map vars chip default off",
+                  page.evaluate("() => !window.__dbg.mapVars"))
+            bb = page.evaluate(
+                "() => document.getElementById('mapPane').getBoundingClientRect()")
+            page.mouse.click(bb["x"] + 31, bb["y"] + 34)   # pane-local (31,34)
+            page.wait_for_timeout(300)
+            check("map vars chip toggles on",
+                  page.evaluate("() => window.__dbg.mapVars"))
+            page.mouse.click(bb["x"] + 31, bb["y"] + 34)
+            page.wait_for_timeout(300)
+            # L2: click the first named wire -> showFnInfo panel (CALLED BY
+            # section), full caller list, no "+N more hidden" 24-cap
+            probe = page.evaluate("() => window.__dbg.mapInfo().probeWire")
+            if probe:
+                bb = page.evaluate(
+                    "() => document.getElementById('mapPane').getBoundingClientRect()")
+                page.mouse.click(bb["x"] + probe["sx"], bb["y"] + probe["sy"])
+                page.wait_for_timeout(300)
+                fn_info = page.evaluate(
+                    """() => ({ open: document.getElementById('info').style.display === 'block',
+                         title: document.getElementById('iTitle').textContent })""")
+                check("map wire click opens fn panel",
+                      fn_info["open"] and fn_info["title"].endswith("()"), str(fn_info))
+                check("fn panel lists all callers (no 24-cap)",
+                      page.locator("#iUsedBy li.more").count() == 0)
+            else:
+                print("SKIP map wire click — no probeable wire")
+            page.screenshot(path=str(ROOT / "tests" / "qa_map.png"), scale="css", type="png")
+            print("artifact: tests/qa_map.png")
+            page.evaluate("() => document.getElementById('bMap').click()")  # close pane
+            page.keyboard.press("Escape")
+
         # artifact: screenshot of the focused fn-layer state
         page.screenshot(path=str(ROOT / "tests" / "last_run.png"), scale="css", type="png")
         print("artifact: tests/last_run.png")
