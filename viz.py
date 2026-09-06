@@ -2839,9 +2839,10 @@ function sizeMapPane() {
 }
 // css twin of the 3D cluster palette: stroke / translucent body fill / text
 function mapCols(c) {
-  if (c < 0) return { s: "hsl(198,8%,62%)", f: "hsla(198,8%,62%,0.2)", t: "hsl(198,8%,84%)" };
+  if (c < 0) return { s: "hsl(198,8%,62%)", f: "hsl(198,10%,14%)", t: "hsl(198,8%,84%)" };
   const h = Math.round(hue(c) * 360), l = Math.round(lightOf(c) * 100);
-  return { s: `hsl(${h},72%,${l}%)`, f: `hsla(${h},72%,${l}%,0.2)`, t: `hsl(${h},72%,${Math.min(92, l + 22)}%)` };
+  return { s: `hsl(${h},72%,${l}%)`, f: `hsl(${h},30%,12%)`, t: `hsl(${h},72%,${Math.min(92, l +
+22)}%)` };
 }
 function drawMapPane() {
   if (!mapVisible) return;
@@ -2935,17 +2936,32 @@ function drawMapPane() {
     chunk.forEach(i => { place.set(i, { x, y, w: wOf(i) }); x += wOf(i) + GAPX; });
   });
   // edges first so node bodies overlay the attachment points
+  const rects = [];
+  place.forEach(p => rects.push({ x0: p.x, x1: p.x + p.w, y0: p.y, y1: p.y + NH }));
+  // a vertical that would pierce an unrelated node slides to the nearest
+  // free lane - crossings belong in the gaps between rows, not through boxes
+  const freeX = (x, ya, yb) => {
+    const span = rects.filter(r => r.y1 > ya && r.y0 < yb);
+    if (!span.some(r => x >= r.x0 && x <= r.x1)) return x;
+    for (let d = 4; d <= 240; d += 4) {
+      if (!span.some(r => x + d >= r.x0 && x + d <= r.x1)) return x + d;
+      if (!span.some(r => x - d >= r.x0 && x - d <= r.x1)) return x - d;
+    }
+    return x;
+  };
   ctx.lineWidth = 1.5;
   ctx.globalAlpha = 0.85;
   edges.forEach(l => {
     const A = place.get(l.s), B = place.get(l.t);
     if (!A || !B) return;
-    const sx = A.x + A.w / 2, sy = A.y + NH;          // source bottom
-    const tx = B.x + B.w / 2;
+    const sy = A.y + NH;                              // source bottom
     const sameRow = level[l.s] === level[l.t];
     // same-row edges detour through the gap BELOW their row (enter bottom)
     const yCh = sameRow ? sy + (rowH - NH) / 2 : (sy + B.y) / 2;
     const ty = sameRow ? B.y + NH : B.y;              // entry y on the target
+    const sx = freeX(A.x + A.w / 2, Math.min(sy, yCh), Math.max(sy, yCh));
+    const tx = Math.max(B.x + 4,
+                Math.min(B.x + B.w - 4, freeX(B.x + B.w / 2, Math.min(yCh, ty), Math.max(yCh, ty))));
     const dir = tx >= sx ? 1 : -1;
     const ch = Math.max(0, Math.min(8, Math.abs(tx - sx) / 2, (yCh - sy) / 2, (yCh - ty) / 2));
     const c = mapCols(nodes[l.s].cluster);
