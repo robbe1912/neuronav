@@ -706,8 +706,78 @@ def run_tests():
                   and grp.get("recolored"),
                   str(grp))
 
+        # 7b. split layout: the 2D map pane is a PERMANENT part of the tool —
+        # visible at boot, sharing the window with the 3D canvas; #bMap is a
+        # collapse/expand toggle; the divider resizes both regions 280-700px
+        # and the choice persists in localStorage
+        splits = page.evaluate("""() => {
+          const p = document.getElementById('mapPane');
+          const d = document.getElementById('divider');
+          const c = window.__dbg.renderer.domElement;
+          return { open: !p.classList.contains('collapsed'),
+                   w: p.clientWidth, cw: c.clientWidth, iw: innerWidth,
+                   btnOn: document.getElementById('bMap').classList.contains('on'),
+                   divVisible: d.offsetWidth > 0 }; }""")
+        check("map pane visible at boot (default open)",
+              splits["open"] and splits["btnOn"] and splits["divVisible"],
+              str(splits))
+        check("3D canvas shares window with pane at boot",
+              abs(splits["cw"] + splits["w"] - splits["iw"]) <= 2, str(splits))
+        # divider drag: pane widens, 3D canvas shrinks by the same amount
+        db = page.evaluate(
+            "() => document.getElementById('divider').getBoundingClientRect()")
+        cx, cy = db["x"] + db["width"] / 2, db["y"] + 100
+        page.mouse.move(cx, cy)
+        page.mouse.down()
+        page.mouse.move(cx - 120, cy, steps=8)
+        page.mouse.up()
+        page.wait_for_timeout(400)   # rAF-throttled resize settles
+        after = page.evaluate("""() => ({
+          w: document.getElementById('mapPane').clientWidth,
+          cw: window.__dbg.renderer.domElement.clientWidth, iw: innerWidth,
+          stored: parseInt(localStorage.getItem('neuronav.mapPaneW') || '', 10) })""")
+        check("divider drag widens pane + shrinks renderer (280-700 clamp)",
+              280 <= after["w"] <= 700
+              and after["w"] >= splits["w"] + 100
+              and after["cw"] < splits["cw"]
+              and abs(after["cw"] + after["w"] - after["iw"]) <= 2, str(after))
+        check("divider drag persists width to localStorage",
+              after["stored"] == after["w"], str(after))
+        # bMap = collapse/expand: 3D renderer reclaims the full window
+        page.evaluate("() => document.getElementById('bMap').click()")
+        page.wait_for_timeout(300)
+        closed = page.evaluate("""() => {
+          const p = document.getElementById('mapPane');
+          const d = document.getElementById('divider');
+          const c = window.__dbg.renderer.domElement;
+          return { collapsed: p.classList.contains('collapsed'),
+                   w: p.clientWidth, cw: c.clientWidth, iw: innerWidth,
+                   divGone: d.offsetWidth === 0 }; }""")
+        check("bMap collapses pane; renderer takes full window",
+              closed["collapsed"] and closed["divGone"] and closed["w"] == 0
+              and abs(closed["cw"] - closed["iw"]) <= 2, str(closed))
+        page.evaluate("() => document.getElementById('bMap').click()")
+        page.wait_for_timeout(300)
+        reopened = page.evaluate("""() => ({
+          w: document.getElementById('mapPane').clientWidth,
+          cw: window.__dbg.renderer.domElement.clientWidth,
+          iw: innerWidth });""")
+        check("bMap re-expands pane at persisted width",
+              reopened["w"] == after["w"]
+              and abs(reopened["cw"] + reopened["w"] - reopened["iw"]) <= 2,
+              str(reopened))
+        # width choice survives a reload (localStorage)
+        page.reload()
+        page.wait_for_timeout(2000)
+        reloaded = page.evaluate("""() => ({
+          w: document.getElementById('mapPane').clientWidth,
+          open: !document.getElementById('mapPane').classList.contains('collapsed') });""")
+        check("pane width persists across reload",
+              reloaded["open"] and reloaded["w"] == after["w"], str(reloaded))
+
         # 8. map pane (map-spec-v2): named wires over fn rosters. Data-gated
         # on DATA.mwires — an index without the named-wire exports skips.
+        # The pane is already open at the persisted width from section 7b.
         mw = page.evaluate("() => window.__dbg.mwires || []")
         if not mw:
             print("SKIP map pane — no DATA.mwires in this index")
@@ -715,7 +785,6 @@ def run_tests():
             page.fill("#search", tok)
             page.dispatch_event("#search", "input")
             page.wait_for_timeout(600)
-            page.evaluate("() => document.getElementById('bMap').click()")
             page.wait_for_timeout(500)   # rAF-coalesced paint
             minfo = page.evaluate("() => window.__dbg.mapInfo()")
             check("map named wires drawn",
@@ -773,7 +842,7 @@ def run_tests():
                 print("SKIP map wire click — no probeable wire")
             page.screenshot(path=str(ROOT / "tests" / "qa_map.png"), scale="css", type="png")
             print("artifact: tests/qa_map.png")
-            page.evaluate("() => document.getElementById('bMap').click()")  # close pane
+            page.evaluate("() => document.getElementById('bMap').click()")  # collapse pane
             page.keyboard.press("Escape")
 
         # artifact: screenshot of the focused fn-layer state

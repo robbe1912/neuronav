@@ -947,6 +947,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <title>neuronav — code graph</title>
 <style>
+  :root { --pane-w: 440px; }   /* map pane width — divider drag rewrites it */
   html, body { margin:0; height:100%; background:#000; overflow:hidden;
     font: 13px/1.45 "Segoe UI", system-ui, sans-serif; color:#cfd8dc; }
   #panel { position:fixed; top:12px; left:12px; z-index:10; width:230px;
@@ -975,7 +976,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   button.on { color:#1de9b6; border-color:#1de9b688; }
   #info { position:fixed; top:12px; right:12px; z-index:10; width:290px;
     transition:right .25s ease; }
-  #info.mapShift { right:452px; }   /* clear of the 440px map pane */
+  #info.mapShift { right: calc(var(--pane-w) + 18px); }  /* clear of the map pane */
     background:rgba(10,14,18,.88); border:1px solid #1de9b633; border-radius:10px;
     padding:12px; display:none; backdrop-filter: blur(4px); }
   #info h2 { font-size:13px; margin:0 0 4px; color:#fff; word-break:break-all; }
@@ -1052,14 +1053,29 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .flab:hover { color:#fff; background:rgba(20,30,38,.92); }
   .flab.fn { font-size:10px; color:#8fa3ad; background:rgba(8,12,16,.6); }
   .flab.fn:hover { color:#d0f2ea; background:rgba(14,26,24,.9); }
-  #mapPane { position:fixed; top:0; right:0; width:440px; height:100%;
-    display:none; background:#0b0f14; z-index:8;
+  /* 3D region: canvas pinned left of the map pane; renderer.setSize keeps
+     its style box in sync on every divider/resize event */
+  canvas#gl { position:fixed; top:0; left:0; display:block; }
+  #mapPane { position:fixed; top:0; right:0; width:var(--pane-w); height:100%;
+    display:block; background:#0b0f14; z-index:8;
     border-left:1px solid #1de9b633; }
+  #mapPane.collapsed { display:none; }
+  /* draggable vertical split between the 3D view and the map pane */
+  #divider { position:fixed; top:0; right:var(--pane-w); width:7px; height:100%;
+    z-index:12; cursor:col-resize; background:transparent;
+    border-left:1px solid #1de9b633; touch-action:none; user-select:none; }
+  #divider:hover, #divider.drag { background:#1de9b622; }
+  #divider.collapsed { display:none; }
   /* map-local DOM overlays (tooltip / bundle list / fn picker) — one
      container spanning the pane area, children opt into pointer events */
-  #mapOv { position:fixed; top:0; right:0; width:440px; height:100%;
-    z-index:9; pointer-events:none; overflow:hidden;
+  #mapOv { position:fixed; top:0; right:0; width:var(--pane-w); height:100%;
+    z-index:9; pointer-events:none; overflow:hidden; display:none;
     font:10.5px ui-monospace, Menlo, Consolas, monospace; color:#cfd8dc; }
+  body.mapOpen #mapOv { display:block; }
+  /* label overlays are projected in CANVAS space — confine them to the 3D
+     region whenever the map pane cedes width */
+  body.mapOpen #hubs, body.mapOpen #elabs, body.mapOpen #xtlabs,
+  body.mapOpen #clabs, body.mapOpen #flabs { right: var(--pane-w); }
   #mapTip { position:absolute; display:none; background:#000d;
     border:1px solid #1de9b644; color:#eee; padding:4px 8px; border-radius:6px;
     white-space:pre-line; max-width:280px; line-height:1.5; }
@@ -1118,7 +1134,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <button id="bGroups" title="recolor by coarse supergroups (two-level navigation)">groups</button>
     <button id="bCollapse" title="collapse every cluster of 3+ visible files into one supernode; edges re-attach to the merged sphere">collapse</button>
     <button id="bDead" title="show only files flagged dead: at least 40% of their funcs are dead candidates">dead only</button>
-    <button id="bMap" title="mermaid-style layered map of the focused subgraph (right pane)">map</button>
+    <button id="bMap" title="collapse / expand the named-wire map pane (right)">map</button>
     <button id="bCyc" title="show only files inside call cycles (strongly connected components); cycle members tint red like madge's cyclic marker">cycles</button>
     <button id="bReset">reset</button>
   </div>
@@ -1141,6 +1157,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <div id="flabs"></div>
 <div id="clabs"></div>
 <canvas id="mapPane"></canvas>
+<div id="divider" title="drag to resize the map pane"></div>
 
 <script type="importmap">
 { "imports": {
@@ -1227,13 +1244,26 @@ function pathToSeed(i) {
 }
 
 // ---- scene -----------------------------------------------------------------
+// 3D/map split: the map pane is a permanent part of the layout (collapsible
+// via #bMap). The 3D renderer owns everything left of it; both sizes derive
+// from paneW so a divider drag reflows both at once.
+const PANE_MIN = 280, PANE_MAX = 700, PANE_DEFAULT = 440;
+const PANE_KEY = "neuronav.mapPaneW";
+let mapVisible = true;   // pane ships open; #bMap collapses/expands it
+let paneW = Math.max(PANE_MIN, Math.min(PANE_MAX,
+  parseInt(localStorage.getItem(PANE_KEY) || "", 10) || PANE_DEFAULT));
+const applyPaneW = () =>
+  document.documentElement.style.setProperty("--pane-w", paneW + "px");
+applyPaneW();
+const glW = () => Math.max(320, innerWidth - (mapVisible ? paneW : 0));
 const renderer = new THREE.WebGLRenderer({ antialias:true });
-renderer.setSize(innerWidth, innerHeight);
+renderer.domElement.id = "gl";
+renderer.setSize(glW(), innerHeight);
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 document.body.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x000000, 0.00022); // heavier fog washed out cluster hues at overview distance
-const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 1, 20000);
+const camera = new THREE.PerspectiveCamera(55, glW()/innerHeight, 1, 20000);
 camera.position.set(0, 0, 1400);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -1557,7 +1587,7 @@ const bucketPosIB = [], bucketColIB = [], bucketMat = [], bucketMesh = [];
       transparent: true, opacity: b.op, alphaToCoverage: false,
       blending: THREE.NormalBlending, depthWrite: false,
     });
-    mat.resolution.set(innerWidth, innerHeight);
+    mat.resolution.set(glW(), innerHeight);
     const mesh = new LineSegments2(geo, mat);
     mesh.frustumCulled = false;   // instance positions mutate per frame
     scene.add(mesh);
@@ -1977,7 +2007,7 @@ function buildContainment() {
 // screen-space direction away from the galaxy center of mass.
 const clabOff = new Map();
 function updateClusterLabs() {
-  const w = innerWidth, h = innerHeight;
+  const w = renderer.domElement.clientWidth, h = renderer.domElement.clientHeight;
   // hub pills win collisions; cluster names try placements around the centroid
   const hubRects = [...document.querySelectorAll("#hubs .hub")]
     .filter(el => el.style.display !== "none")
@@ -2317,7 +2347,7 @@ function rebuildEdgeLabels(focusing) {
 }
 function updateEdgeLabels() {
   if (!detailMode) return;
-  const w = innerWidth, h = innerHeight;
+  const w = renderer.domElement.clientWidth, h = renderer.domElement.clientHeight;
   const placed = [];
   for (const { i, el } of eLabs) {
     const l = links[i];
@@ -2395,7 +2425,7 @@ function updateXtLabels() {
     xtLabs.forEach(k => { k.el.style.display = "none"; });
     return;
   }
-  const w = innerWidth, h = innerHeight;
+  const w = renderer.domElement.clientWidth, h = renderer.domElement.clientHeight;
   // greedy collision skip: two corridor labels stacked on the same screen
   // region read as garbage; the later one yields (first come = highest
   // crosstalk count, since meta.crosstalk is baked count-desc)
@@ -2451,7 +2481,7 @@ function rebuildHubs() {
 // reruns only on a real collision or after a hidden frame.
 const hubOff = new Map();
 function updateHubs() {
-  const w = innerWidth, h = innerHeight;
+  const w = renderer.domElement.clientWidth, h = renderer.domElement.clientHeight;
   // zoom-driven cap: squared falloff so labels bloom in as you approach
   const camDist = camera.position.distanceTo(controls.target);
   const cap = camDist >= lodDist * 1.2 ? HUB_N
@@ -2569,7 +2599,7 @@ function rebuildFocusLabels(focusing) {
 const _flabV = new THREE.Vector3();
 function updateFocusLabels() {
   if (!fLabs.length) return;
-  const w = innerWidth, h = innerHeight;
+  const w = renderer.domElement.clientWidth, h = renderer.domElement.clientHeight;
   const clearOf = (a, b) => a.right < b.left - 2 || b.right < a.left - 2 ||
     a.bottom < b.top - 2 || b.bottom < a.top - 2;
   const hubRects = [...document.querySelectorAll(".hub")]
@@ -2931,7 +2961,6 @@ const MGLYPH = {
 // named-wire rows (spec section 0): [ty, sf, sfn, df, dfn, line, extra]
 const mwires = DATA.mwires || [];
 const mfns = DATA.fns || {};                // path -> [[fn, line], ...]
-let mapVisible = false;
 let mapZ = 0, mapPX = 0, mapPY = 0;      // view: zoom + pan over the world
 let mapDrag = null, mapDragged = false;
 let mapRects = [];             // last drawn node rects (click hit-testing)
@@ -3052,7 +3081,7 @@ function mapOpenList(ci) {
     mapListEl.appendChild(row);
   });
   const b = mapPane.getBoundingClientRect();
-  const sx = Math.max(4, Math.min((ch.x - mapPX) * mapZ + 16, 440 - 262));
+  const sx = Math.max(4, Math.min((ch.x - mapPX) * mapZ + 16, mapPane.clientWidth - 262));
   const sy = Math.max(4, Math.min((ch.y - mapPY) * mapZ + 10, (b.height || innerHeight) - 170));
   mapListEl.style.left = sx + "px";
   mapListEl.style.top = sy + "px";
@@ -3077,7 +3106,7 @@ function mapOpenPicker(rc) {
   mapPickRc = rc;
   mapPickFill("");
   const p = mapLayout.place.get(rc.i);
-  mapPickEl.style.left = Math.max(4, Math.min((p.x + p.w - mapPX) * mapZ, 440 - 258)) + "px";
+    mapPickEl.style.left = Math.max(4, Math.min((p.x + p.w - mapPX) * mapZ, mapPane.clientWidth - 258)) + "px";
   mapPickEl.style.top = Math.max(4, (rc.more.y0 - mapPY) * mapZ) + "px";
   mapPickEl.style.display = "block";
   mapPickIn.value = "";
@@ -3752,15 +3781,49 @@ function drawMapPane() {
   mapDirty = true;
   requestAnimationFrame(() => { mapDirty = false; mapRender(); });
 }
-document.getElementById("bMap").onclick = e => {
-  mapVisible = !mapVisible;
-  e.target.classList.toggle("on", mapVisible);
-  mapPane.style.display = mapVisible ? "block" : "none";
+document.getElementById("bMap").onclick = () => setMapVisible(!mapVisible);
+// mapVisible drives the whole split: pane + divider visibility, info-panel
+// shift, 3D region size. Single entry point — boot and #bMap both use it.
+function setMapVisible(v) {
+  mapVisible = v;
+  document.getElementById("bMap").classList.toggle("on", v);
+  mapPane.classList.toggle("collapsed", !v);
+  divider.classList.toggle("collapsed", !v);
+  document.body.classList.toggle("mapOpen", v);
   // keep the node info panel clear of the pane instead of underneath it
-  info.classList.toggle("mapShift", mapVisible);
-  if (mapVisible) { sizeMapPane(); drawMapPane(); }
+  info.classList.toggle("mapShift", v);
+  resize3D();
+  if (v) { sizeMapPane(); drawMapPane(); }
   else { mapTipHide(); mapOvCloseOne(); }
-};
+}
+// ---- divider drag: resize the split (rAF-throttled), never orbits the 3D ---
+// the divider is its own element — OrbitControls listens on the canvas only,
+// so a drag here cannot start a camera move by construction
+const divider = document.getElementById("divider");
+let divRaf = 0;
+divider.addEventListener("pointerdown", e => {
+  if (!mapVisible) return;
+  divider.setPointerCapture(e.pointerId);
+  divider.classList.add("drag");
+  e.preventDefault();
+});
+divider.addEventListener("pointermove", e => {
+  if (!divider.classList.contains("drag")) return;
+  paneW = Math.round(Math.max(PANE_MIN, Math.min(PANE_MAX, innerWidth - e.clientX)));
+  applyPaneW();
+  if (!divRaf) divRaf = requestAnimationFrame(() => {
+    divRaf = 0;
+    resize3D();
+    sizeMapPane();
+    drawMapPane();   // rAF dirty-flag coalesces paints across drag frames
+  });
+});
+divider.addEventListener("pointerup", () => {
+  if (!divider.classList.contains("drag")) return;
+  divider.classList.remove("drag");
+  try { localStorage.setItem(PANE_KEY, String(paneW)); } catch {}
+});
+divider.addEventListener("pointercancel", () => divider.classList.remove("drag"));
 // click a node rect = the hub-label jump: re-seed focus around that file
 const mapToWorld = e => {
   const b = mapPane.getBoundingClientRect();
@@ -3870,7 +3933,7 @@ mapPane.addEventListener("pointermove", e => {
     mapTipEl.textContent = mapTipText(mapLayout.wires[wi]);
     mapTipEl.style.display = "block";
     const b = mapPane.getBoundingClientRect();
-    mapTipEl.style.left = Math.max(4, Math.min(e.clientX - b.left + 14, 440 - 290)) + "px";
+    mapTipEl.style.left = Math.max(4, Math.min(e.clientX - b.left + 14, mapPane.clientWidth - 290)) + "px";
     mapTipEl.style.top = Math.max(4, Math.min(e.clientY - b.top + 10,
       (b.height || innerHeight) - 100)) + "px";
   } else mapTipHide();
@@ -4229,7 +4292,11 @@ function hoverGrey(i) {
 }
 
 renderer.domElement.addEventListener("pointermove", e => {
-  mouse.x = (e.clientX/innerWidth)*2-1; mouse.y = -(e.clientY/innerHeight)*2+1;
+  // raycast NDC + screen-space picks are CANVAS-relative: with the map pane
+  // owning the right edge, the canvas is no longer the whole window
+  const cr = renderer.domElement.getBoundingClientRect();
+  const ndcX = (e.clientX - cr.left) / cr.width, ndcY = (e.clientY - cr.top) / cr.height;
+  mouse.x = ndcX*2-1; mouse.y = -ndcY*2+1;
   raycaster.setFromCamera(mouse, camera);
   const targets = fnMesh ? [fileMesh, fnMesh] : [fileMesh];
   const hits = raycaster.intersectObjects(targets);
@@ -4239,19 +4306,19 @@ renderer.domElement.addEventListener("pointermove", e => {
   // by SCREEN-SPACE accuracy (cursor distance vs projected radius), not
   // depth — at high spread a foreground sphere's rim otherwise steals the
   // pick from the node the user is actually pointing at (occlusion).
-  const px = e.clientX, py = e.clientY;
+  const px = ndcX * cr.width, py = ndcY * cr.height;
   let bestPx = 18;   // cursor forgiveness radius in pixels
   for (const h of hits) {
     if (h.object === fnMesh) {
       const fm = fnMeta[h.instanceId];
       if (!fm || alphaTgt[fm.file] <= 0.5 || (fm.agg && !fm.count)) continue;
       const v = _pickV.set(fm.p[0], fm.p[1], fm.p[2]).project(camera);
-      const sx = (v.x*0.5+0.5)*innerWidth, sy = (-v.y*0.5+0.5)*innerHeight;
+      const sx = (v.x*0.5+0.5)*cr.width, sy = (-v.y*0.5+0.5)*cr.height;
       const dist = Math.hypot(sx-px, sy-py);
       if (dist < bestPx) { bestPx = dist; hoveredFn = h.instanceId; hovered = -1; }
     } else if (h.object === fileMesh && alphaTgt[h.instanceId] > 0.5) {
       const v = _pickV.set(pos[h.instanceId*3], pos[h.instanceId*3+1], pos[h.instanceId*3+2]).project(camera);
-      const sx = (v.x*0.5+0.5)*innerWidth, sy = (-v.y*0.5+0.5)*innerHeight;
+      const sx = (v.x*0.5+0.5)*cr.width, sy = (-v.y*0.5+0.5)*cr.height;
       const dist = Math.hypot(sx-px, sy-py);
       if (dist < bestPx) { bestPx = dist; hovered = h.instanceId; hoveredFn = -1; }
     }
@@ -4340,11 +4407,13 @@ renderer.domElement.addEventListener("click", e => {
     }
   }
 });
-addEventListener("resize", () => {
-  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-  bucketMat.forEach(m => m.resolution.set(innerWidth, innerHeight));
-});
+function resize3D() {
+  const w = glW(), h = innerHeight;
+  camera.aspect = w/h; camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+  bucketMat.forEach(m => m.resolution.set(w, h));
+}
+addEventListener("resize", resize3D);
 // LOD zoom threshold: crossing it reveals/hides intra-cluster edges at
 // overview (filters never re-layout — this only recomputes edge colors)
 controls.addEventListener("change", () => {
@@ -4362,6 +4431,9 @@ buildContainment();
 applyVisibility();
 frameGraph();
 renderer.domElement.style.cursor = "grab";
+// the map pane ships open — apply the split (canvas size, overlay clamp,
+// info shift) once everything it touches exists
+setMapVisible(true);
 // debug handle last: everything it captures is initialized by here
 window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE, sizes, degree,
   meta: DATA.meta, controls, get spinEnabled() { return spinEnabled; }, get hubCap() { return hubCapNow; },
@@ -4380,7 +4452,9 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnStalk() { return fnStalk; },
   syncFileMesh,
   mapPane: { canvas: mapPane, draw: drawMapPane },
-  mwires, mapInfo, get mapVars() { return mapVarsOn; }, mapExpandUser };
+  mwires, mapInfo, get mapVars() { return mapVarsOn; }, mapExpandUser,
+  get paneW() { return paneW; }, setMapVisible, divider,
+  get glW() { return glW(); } };
 tick();
 </script>
 </body>
