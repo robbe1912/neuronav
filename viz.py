@@ -2938,16 +2938,38 @@ function drawMapPane() {
   // edges first so node bodies overlay the attachment points
   const rects = [];
   place.forEach(p => rects.push({ x0: p.x, x1: p.x + p.w, y0: p.y, y1: p.y + NH }));
-  // a vertical that would pierce an unrelated node slides to the nearest
-  // free lane - crossings belong in the gaps between rows, not through boxes
+  // inter-row gap bands: buses stagger inside them, verticals claim unique
+  // lanes in every band they cross so parallel wires stack instead of fuse
+  const gapY = [];
+  for (let g = 0; g < nRows - 1; g++) {
+    gapY.push({ y0: TOP + g * rowH + NH + 2, y1: TOP + (g + 1) * rowH - 2 });
+  }
+  const laneX = [];                 // per-band claimed x positions
+  const busCnt = [];                // per-band bus slot counter
+  const crossedBands = (ya, yb) => {
+    const out = [];
+    for (let g = 0; g < gapY.length; g++) {
+      if (gapY[g].y1 > ya && gapY[g].y0 < yb) out.push(g);
+    }
+    return out;
+  };
+  // a vertical that would pierce an unrelated node OR an already-claimed
+  // lane slides to the nearest free x - crossings belong in the gaps
   const freeX = (x, ya, yb) => {
     const span = rects.filter(r => r.y1 > ya && r.y0 < yb);
-    if (!span.some(r => x >= r.x0 && x <= r.x1)) return x;
-    for (let d = 4; d <= 240; d += 4) {
-      if (!span.some(r => x + d >= r.x0 && x + d <= r.x1)) return x + d;
-      if (!span.some(r => x - d >= r.x0 && x - d <= r.x1)) return x - d;
+    const bands = crossedBands(ya, yb);
+    const taken = (cand) =>
+      span.some(r => cand >= r.x0 && cand <= r.x1) ||
+      bands.some(g => laneX[g] && laneX[g].some(u => Math.abs(u - cand) < 3.5));
+    if (!taken(x)) return x;
+    for (let d = 3.5; d <= 240; d += 3.5) {
+      if (!taken(x + d)) return x + d;
+      if (!taken(x - d)) return x - d;
     }
     return x;
+  };
+  const claimLane = (x, ya, yb) => {
+    for (const g of crossedBands(ya, yb)) (laneX[g] || (laneX[g] = [])).push(x);
   };
   ctx.lineWidth = 1.5;
   ctx.globalAlpha = 0.85;
@@ -2956,19 +2978,28 @@ function drawMapPane() {
     if (!A || !B) return;
     const sy = A.y + NH;                              // source bottom
     const sameRow = level[l.s] === level[l.t];
-    // same-row edges detour through the gap BELOW their row (enter bottom)
-    const yCh = sameRow ? sy + (rowH - NH) / 2 : (sy + B.y) / 2;
     const ty = sameRow ? B.y + NH : B.y;              // entry y on the target
+    // bus y: staggered slot inside the detour band so parallel runs
+    // ride distinct lines instead of drawing one thick line
+    const band = sameRow ? crossedBands(sy, sy + 1)[0] : crossedBands(B.y - 1, B.y)[0];
+    let yCh = sameRow ? sy + (rowH - NH) / 2 : (sy + B.y) / 2;
+    if (band !== undefined && gapY[band]) {
+      const gy = gapY[band], bh = gy.y1 - gy.y0;
+      yCh = gy.y0 + bh * (((busCnt[band] = (busCnt[band] || 0) + 1) - 1) % 4 + 0.5) / 4;
+    }
     const sx = freeX(A.x + A.w / 2, Math.min(sy, yCh), Math.max(sy, yCh));
+    claimLane(sx, sy, yCh);
     const tx = Math.max(B.x + 4,
                 Math.min(B.x + B.w - 4, freeX(B.x + B.w / 2, Math.min(yCh, ty), Math.max(yCh, ty))));
+    claimLane(tx, yCh, ty);
     const dir = tx >= sx ? 1 : -1;
     const ch = Math.max(0, Math.min(8, Math.abs(tx - sx) / 2, (yCh - sy) / 2, (yCh - ty) / 2));
     const c = mapCols(nodes[l.s].cluster);
     ctx.strokeStyle = c.s;
     ctx.fillStyle = c.s;
     ctx.beginPath();
-    ctx.moveTo(sx, sy);
+    ctx.moveTo(A.x + A.w / 2, sy);
+    ctx.lineTo(sx, sy);                               // jog along the box bottom to the lane
     ctx.lineTo(sx, yCh - ch);
     ctx.lineTo(sx + dir * ch, yCh);
     ctx.lineTo(tx - dir * ch, yCh);
