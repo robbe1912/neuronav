@@ -16,6 +16,11 @@ jobs:
       - name: Ollama (local embeddings for the integration suite)
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:11434/ >/dev/null && break
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:11434/ >/dev/null || (nohup ollama serve >/dev/null 2>&1 & sleep 5)
           ollama pull qwen3-embedding:0.6b
       - name: strata (depth layering, cycles, determinism)
         run: python -X utf8 tests/test_strata.py
