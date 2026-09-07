@@ -3393,7 +3393,7 @@ function mapRender() {
       w = Math.max(w, txtW(row.nm) +
         (row.io && row.io.w.length ? txtW("\u270e" + row.io.w.length) + 8 : 0) + 16);
     });
-    w = Math.min(260, w);
+    w = Math.min(420, w);
     rosterRows += r.rows.length;
     geo.set(i, { w, h: NH + (r.rows.length + (r.more.length ? 1 : 0)) * RH, roster: r, more: r.more });
   });
@@ -3854,22 +3854,45 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
       }
     }
   });
-  // chips (click -> pinned enumeration list)
+  // chips (click -> pinned enumeration list) + labels share ONE screen-space
+  // collision ladder: overlap with boxes, chips or earlier labels = slide
+  // down a few steps, still colliding = hidden. Never on top of text.
+  const m2s = (x, y) => ({ x: (x - mapPX) * mapZ, y: (y - mapPY) * mapZ });
+  const taken2 = [];
+  mapRects.forEach(rc => {
+    const a = m2s(rc.x, rc.y);
+    taken2.push({ x: a.x, y: a.y, w: rc.w * mapZ, h: rc.h * mapZ });
+  });
+  const hit2 = (r) => taken2.some(t =>
+    r.x < t.x + t.w && r.x + r.w > t.x && r.y < t.y + t.h && r.y + r.h > t.y);
+  const place2 = (x, y, w, h) => {
+    for (const dy of [0, -10, 10, -20, 20, -30, 30, -40]) {
+      const r = { x: x - w / 2, y: y + dy * mapZ - h / 2, w, h };
+      if (!hit2(r)) { taken2.push(r); return dy; }
+    }
+    return null;   // no room: hide rather than stack
+  };
   ctx.font = MAP_FONT(10);
   if (namedOK) L.chips.forEach(ch => {
     const g = MGLYPH[ch.ty] || MGLYPH.call;
+    const sw = ch.w * mapZ, sh = ch.h * mapZ;
+    const a = m2s(ch.x + ch.w / 2, ch.y + ch.h / 2);
+    if (!inView(ch.x, ch.y)) return;
+    const dy = place2(a.x, a.y, sw, sh);
+    if (dy === null) return;
+    const dyW = dy / mapZ;                 // screen px -> world px
     ctx.globalAlpha = dim(ch.s, ch.t);
     ctx.fillStyle = "rgba(8,12,16,.85)";
     ctx.strokeStyle = g.c;
     ctx.lineWidth = 1;
     ctx.beginPath();
-    if (ctx.roundRect) ctx.roundRect(ch.x, ch.y, ch.w, ch.h, 4);
-    else ctx.rect(ch.x, ch.y, ch.w, ch.h);
+    if (ctx.roundRect) ctx.roundRect(ch.x, ch.y + dyW, ch.w, ch.h, 4);
+    else ctx.rect(ch.x, ch.y + dyW, ch.w, ch.h);
     ctx.fill();
     ctx.stroke();
     ctx.fillStyle = g.c;
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText("\u00d7" + ch.n, ch.x + ch.w / 2, ch.y + ch.h / 2 + 0.5);
+    ctx.fillText("\u00d7" + ch.n, ch.x + ch.w / 2, ch.y + dyW + ch.h / 2 + 0.5);
   });
   // labels: zoom tiers only when E>12 (section 6); E<=12 -> ALL. Label
   // pressure at z<0.9 (declutter lever 4): ONLY the 12 highest-degree
@@ -3898,9 +3921,14 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     ctx.font = l.ty === "signal" ? "italic " + MAP_FONT(10) : MAP_FONT(10);
     if (ctx.measureText(txt).width * mapZ > 90)
       txt = txt.slice(0, 9) + "\u2026";   // truncate 9 chars when narrow
+    // collision ladder: slide down / hide rather than print on text
+    const tw = ctx.measureText(txt).width;
+    const a = m2s(l.x + tw / 2, l.y - 6);
+    const dy = place2(a.x, a.y, tw * mapZ + 2, 12 * mapZ);
+    if (dy === null) return;
     ctx.globalAlpha = dim(w.sf, w.df);
     ctx.fillStyle = g.c;
-    ctx.fillText(txt, l.x, l.y);
+    ctx.fillText(txt, l.x, l.y + dy / mapZ);
     mapShownLabels++;
   });
   // terminators last so arrowheads/dots sit on the box edges (section 9)
@@ -3942,11 +3970,11 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   ctx.fillText("vars", 31, 34.5);
   ctx.fillStyle = "#546e7a";
   ctx.textAlign = "left"; ctx.textBaseline = "bottom";
-  let foot = "wheel zoom / drag pan / dblclick box = roster";
+  let foot = "\u25b2 in  \u25bc out  \u2014 call  \u2013 signal  \u00b7 var";
   const mr = DATA.meta || {};
   if (mr.sig_unresolved)
-    foot += "  |  signals: " + (mr.sig_resolved || 0) + " ok / " +
-            mr.sig_unresolved + " unresolved";
+    foot += "  |  sig " + (mr.sig_resolved || 0) + " ok / " +
+            mr.sig_unresolved + " unres";
   ctx.fillText(foot, 8, chView - 6);
 }
 // rAF dirty-flag single draw (section 5 [F7]): every caller coalesces here
