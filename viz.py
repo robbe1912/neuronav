@@ -2992,6 +2992,7 @@ function updateHubs() {
 
 // ---- function-level layer (files inside the current focus) -------------------
 let fnMesh = null, fnLines = null, fnStalks = null, fnMeta = [], fnArrows = null, fnQuiet = null;
+let fnTrunkN = 0;   // file-pair bus trunks in the current fn layer (via __dbg)
 
 // ---- focus labels: name neighboring files + function satellites on focus ----
 const flabsEl = document.getElementById("flabs");
@@ -3283,15 +3284,31 @@ function rebuildFnLayer(focusing) {
   const tierB = mk(), tierQ = mk();
   const aPos = [], aDir = [], aCol = [];
   const cA = new THREE.Color(), cB = new THREE.Color();
-  // BUS pass: bright wires converging on ONE fn merge at a junction point
-  // (an onramp) short of the box — the shared trunk carries one arrow into
-  // the fn. Buses form by SHARED DESTINATION only (>=3 wires): blind
-  // bundling hurts path tracing (McGee & Dingliana 2012), destination
-  // bundling matches the "many feeders, one pin" mental model.
-  const inB = new Map(), dirB = new Map();
+  // BUS pass — two granularities, both SHARED-DESTINATION only (blind
+  // bundling hurts path tracing, McGee & Dingliana 2012):
+  //  1. FILE-PAIR TRUNKS: >=3 bright wires between the same two files
+  //     collapse into ONE trunk arc (the 2D spine law brought to 3D).
+  //     Member wires become short taps from their fn box to the trunk
+  //     midpoint — no per-wire arrows (the cone storm was the clutter);
+  //     the trunk carries the one direction arrow.
+  //  2. FN JUNCTIONS: among non-trunked wires, >=3 into the same fn box
+  //     merge at an onramp short of the box (one trunk, one pin arrow).
+  const pairCnt = new Map(), wireTier = [];
   for (let i = 0; i < eidx.length; i += 2) {
     const a = eidx[i], b = eidx[i+1];
-    if (level[fnMeta[a].file] !== 0 && level[fnMeta[b].file] !== 0) continue;
+    const bright = level[fnMeta[a].file] === 0 || level[fnMeta[b].file] === 0;
+    wireTier.push(bright ? 1 : 0);
+    if (bright) {
+      const k = fnMeta[a].file + ">" + fnMeta[b].file;
+      pairCnt.set(k, (pairCnt.get(k) || 0) + 1);
+    }
+  }
+  const trunked = new Set();
+  for (const [k, n] of pairCnt) if (n >= 3) trunked.add(k);
+  const inB = new Map(), dirB = new Map();
+  for (let i = 0, p = 0; i < eidx.length; i += 2, p++) {
+    const a = eidx[i], b = eidx[i+1];
+    if (!wireTier[p] || trunked.has(fnMeta[a].file + ">" + fnMeta[b].file)) continue;
     inB.set(b, (inB.get(b) || 0) + 1);
     const dx = fpos[b*3] - fpos[a*3], dy = fpos[b*3+1] - fpos[a*3+1],
           dz = fpos[b*3+2] - fpos[a*3+2];
@@ -3307,19 +3324,13 @@ function rebuildFnLayer(focusing) {
     Jof.set(b, [fpos[b*3] + d[0] / l * 14, fpos[b*3+1] + d[1] / l * 14,
                 fpos[b*3+2] + d[2] / l * 14]);
   }
-  for (let i = 0; i < eidx.length; i += 2) {
-    const a = eidx[i], b = eidx[i+1];
-    const T = (level[fnMeta[a].file] === 0 || level[fnMeta[b].file] === 0) ? tierB : tierQ;
-    const ax = fpos[a*3], ay = fpos[a*3+1], az = fpos[a*3+2];
-    const J = T === tierB ? Jof.get(b) : null;
-    const bx = J ? J[0] : fpos[b*3], by = J ? J[1] : fpos[b*3+1], bz = J ? J[2] : fpos[b*3+2];
+  // shared arc emitter: 8 quadratic segments (16 verts — the harness
+  // counts wires as verts/16), optional arrowhead at the end tangent
+  const emitArc = (T, ax, ay, az, bx, by, bz,
+                   ar, ag, ab, br, bg, bb, phase, liftFrac, arrow) => {
     const dist = Math.hypot(bx-ax, by-ay, bz-az) || 1;
-    const h = ((i + 1) * 2654435761 >>> 0) % 97 / 97;
-    const lift = (0.08 + 0.10 * h) * dist * (i % 2 ? 1 : -1);
+    const lift = liftFrac * dist * (ax + ay + az <= bx + by + bz ? 1 : -1);
     const mx = (ax+bx)/2, my = (ay+by)/2 + lift, mz = (az+bz)/2;
-    cA.setRGB(fcol[a*3], fcol[a*3+1], fcol[a*3+2]);
-    cB.setRGB(fcol[b*3], fcol[b*3+1], fcol[b*3+2]);
-    const phase = ((i + 1) * 2654435761 >>> 3) % 911 / 911 * 13;
     let px = ax, py = ay, pz = az, pd = 0;
     for (let s = 1; s <= FS; s++) {
       const t = s / FS, u = 1 - t;
@@ -3327,13 +3338,10 @@ function rebuildFnLayer(focusing) {
       const y = u*u*ay + 2*u*t*my + t*t*by;
       const z = u*u*az + 2*u*t*mz + t*t*bz;
       const dd = pd + Math.hypot(x-px, y-py, z-pz);
-      const cr = u * cA.r + t * cB.r, cg = u * cA.g + t * cB.g, cb = u * cA.b + t * cB.b;
-      const nr = u * cA.r + t * cB.r, ng = u * cA.g + t * cB.g, nb = u * cA.b + t * cB.b;
       T.ep.push(px, py, pz, x, y, z);
-      T.ec.push(cr, cg, cb, nr, ng, nb);
+      T.ec.push(ar, ag, ab, br, bg, bb);
       T.ed.push(pd + phase, dd + phase);
-      // arrowhead: position + tangent at 86% of the arc (bright tier only)
-      if (s === 7 && T === tierB) {
+      if (s === 7 && arrow) {
         const tt = 7 / FS, uu = 1 - tt;
         const axp = 2*uu*(mx-ax) + 2*tt*(bx-mx);
         const ayp = 2*uu*(my-ay) + 2*tt*(by-my);
@@ -3341,34 +3349,65 @@ function rebuildFnLayer(focusing) {
         const al = Math.hypot(axp, ayp, azp) || 1;
         aPos.push(x, y, z);
         aDir.push(axp/al, ayp/al, azp/al);
-        aCol.push(nr, ng, nb);
+        aCol.push(br, bg, bb);
       }
       px = x; py = y; pz = z; pd = dd;
     }
+  };
+  // file-pair trunks: surface-to-surface arc between each pair's fn-box
+  // centroids, colored by the DESTINATION file (the bus feeds that file)
+  const fnCen = new Map(), fnCnt = new Map();
+  for (let i = 0; i < fnMeta.length; i++) {
+    const fi = fnMeta[i].file;
+    const c = fnCen.get(fi) || [0, 0, 0];
+    c[0] += fpos[i*3]; c[1] += fpos[i*3+1]; c[2] += fpos[i*3+2];
+    fnCen.set(fi, c);
+    fnCnt.set(fi, (fnCnt.get(fi) || 0) + 1);
   }
-  // bus trunks: junction -> box, straight 8-segment run, one arrowhead at
-  // the fn (the pin), colored by the target box
-  Jof.forEach((J, b) => {
-    const len = Math.hypot(fpos[b*3]-J[0], fpos[b*3+1]-J[1], fpos[b*3+2]-J[2]) || 1;
-    const dx = (fpos[b*3]-J[0]) / len, dy = (fpos[b*3+1]-J[1]) / len,
-          dz = (fpos[b*3+2]-J[2]) / len;
-    let px = J[0], py = J[1], pz = J[2], pd = 0;
-    for (let s = 1; s <= FS; s++) {
-      const t = s / FS;
-      const x = J[0] + (fpos[b*3]-J[0]) * t;
-      const y = J[1] + (fpos[b*3+1]-J[1]) * t;
-      const z = J[2] + (fpos[b*3+2]-J[2]) * t;
-      pd += Math.hypot(x-px, y-py, z-pz);
-      tierB.ep.push(px, py, pz, x, y, z);
-      tierB.ec.push(fcol[b*3], fcol[b*3+1], fcol[b*3+2],
-                    fcol[b*3], fcol[b*3+1], fcol[b*3+2]);
-      tierB.ed.push(0, pd);
-      px = x; py = y; pz = z;
+  const surf = (fi, c) => {
+    const dx = c[0] - pos[fi*3], dy = c[1] - pos[fi*3+1], dz = c[2] - pos[fi*3+2];
+    const l = Math.hypot(dx, dy, dz) || 1;
+    const r = sphR(fi);
+    return [pos[fi*3] + dx / l * r, pos[fi*3+1] + dy / l * r, pos[fi*3+2] + dz / l * r];
+  };
+  const trunkMid = new Map();
+  fnTrunkN = 0;
+  for (const k of trunked) {
+    const parts = k.split(">");
+    const sf = +parts[0], tf = +parts[1];
+    const c0 = fnCen.get(sf), c1 = fnCen.get(tf);
+    if (!c0 || !c1) continue;
+    const p0 = surf(sf, [c0[0]/fnCnt.get(sf), c0[1]/fnCnt.get(sf), c0[2]/fnCnt.get(sf)]);
+    const p1 = surf(tf, [c1[0]/fnCnt.get(tf), c1[1]/fnCnt.get(tf), c1[2]/fnCnt.get(tf)]);
+    const mx = (p0[0]+p1[0])/2, my = (p0[1]+p1[1])/2, mz = (p0[2]+p1[2])/2;
+    emitArc(tierB, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
+            fcol[tf*3], fcol[tf*3+1], fcol[tf*3+2],
+            fcol[tf*3], fcol[tf*3+1], fcol[tf*3+2], 0, 0.10, true);
+    trunkMid.set(k, [mx, my, mz]);
+    fnTrunkN++;
+  }
+  for (let i = 0, p = 0; i < eidx.length; i += 2, p++) {
+    const a = eidx[i], b = eidx[i+1];
+    const T = wireTier[p] ? tierB : tierQ;
+    const ax = fpos[a*3], ay = fpos[a*3+1], az = fpos[a*3+2];
+    let bx = fpos[b*3], by = fpos[b*3+1], bz = fpos[b*3+2];
+    let arrow = T === tierB;
+    if (T === tierB) {
+      const tk = fnMeta[a].file + ">" + fnMeta[b].file;
+      if (trunked.has(tk)) {
+        const tm = trunkMid.get(tk);
+        if (tm) { bx = tm[0]; by = tm[1]; bz = tm[2]; arrow = false; }  // tap: feeds the bus
+      } else {
+        const J = Jof.get(b);
+        if (J) { bx = J[0]; by = J[1]; bz = J[2]; }
+      }
     }
-    aPos.push(fpos[b*3] - dx * 4, fpos[b*3+1] - dy * 4, fpos[b*3+2] - dz * 4);
-    aDir.push(dx, dy, dz);
-    aCol.push(fcol[b*3], fcol[b*3+1], fcol[b*3+2]);
-  });
+    cA.setRGB(fcol[a*3], fcol[a*3+1], fcol[a*3+2]);
+    cB.setRGB(fcol[b*3], fcol[b*3+1], fcol[b*3+2]);
+    const phase = ((i + 1) * 2654435761 >>> 3) % 911 / 911 * 13;
+    emitArc(T, ax, ay, az, bx, by, bz,
+            cA.r, cA.g, cA.b, cB.r, cB.g, cB.b, phase, 0.08 + 0.10 * (((i + 1) * 2654435761 >>> 0) % 97) / 97, arrow);
+  }
   const makeWires = (T, op) => {
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(T.ep), 3));
@@ -5362,7 +5401,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get budgetLit() { return budgetLit; }, get hoverEdgeLi() { return hoverEdgeLi; },
   get fnLines() { return fnLines; }, get hubRing() { return hubRing; },
   get fnArrows() { return fnArrows; }, get compactBallR() { return compactBallR; },
-  get fnQuiet() { return fnQuiet; },
+  get fnQuiet() { return fnQuiet; }, get fnTrunkN() { return fnTrunkN; },
   get litSet() { return compactIdx; }, get compactScale() { return compactScale; },
   get overlaps() { return compactOverlaps; },
   get camTween() { return camTween; }, get focusStack() { return focusStack; },
