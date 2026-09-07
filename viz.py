@@ -4119,7 +4119,7 @@ const mapInfo = () => {
   const tg = new Set(mapLayout.labels.map(l => mapLayout.wires[l.w].df));
   const w0 = mapLayout.wires[0];
   let probe = null;
-  if (w0) {
+  if (w0 && (mapFullAdmit || mapLayout.E <= 12)) {   // reduced tier: wires not clickable
     const m = w0.pts[Math.floor(w0.pts.length / 2)];
     probe = { sx: (m[0] - mapPX) * mapZ, sy: (m[1] - mapPY) * mapZ };
   }

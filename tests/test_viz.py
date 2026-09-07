@@ -752,10 +752,20 @@ def run_tests():
                    const px = p => [(p.x*0.5+0.5)*r.width, (-p.y*0.5+0.5)*r.height];
                    const vs = px(new d.THREE.Vector3(d.pos[l.s*3], d.pos[l.s*3+1], d.pos[l.s*3+2]).project(d.camera));
                    const vt = px(new d.THREE.Vector3(d.pos[l.t*3], d.pos[l.t*3+1], d.pos[l.t*3+2]).project(d.camera));
-                   const mp = px(vm);
-                   // clear of both endpoints so the node tooltip can't win
-                   if (Math.hypot(mp[0]-vs[0], mp[1]-vs[1]) < 40 ||
-                       Math.hypot(mp[0]-vt[0], mp[1]-vt[1]) < 40) continue;
+                    const mp = px(vm);
+                    // clear of EVERY lit node (not just endpoints) so a node
+                    // tooltip can't win the pick at the wire midpoint
+                    let near = false;
+                    for (let j = 0; j < d.nodes.length; j++) {
+                      if (d.alphaTgt[j] <= 0.5) continue;
+                      const pj = px(new d.THREE.Vector3(
+                        d.pos[j*3], d.pos[j*3+1], d.pos[j*3+2]).project(d.camera));
+                      if (Math.hypot(mp[0]-pj[0], mp[1]-pj[1]) < 40) { near = true; break; }
+                    }
+                    if (near) continue;
+                    // clear of both endpoints so the node tooltip can't win
+                    if (Math.hypot(mp[0]-vs[0], mp[1]-vs[1]) < 40 ||
+                        Math.hypot(mp[0]-vt[0], mp[1]-vt[1]) < 40) continue;
                    let has = false;
                    (d.mwires || []).forEach(w => {
                      if ((w[1] === l.s && w[3] === l.t) ||
@@ -868,17 +878,21 @@ def run_tests():
                  const chips = () => document.querySelectorAll('#legend .chip');
                  const fineN = chips().length;
                  if (fineN <= 3) return { skip: 'too few fine clusters to supergroup' };
-                 let idx = -1;
+                 let idx = -1, bestDh = 0, bestJ = -1;
                  // pick a clustered node whose fine vs group hues differ
-                 // enough that recoloring is measurable in RGB
+                 // enough that recoloring is measurable in RGB; fall back to
+                 // the max-dh node (index drift can shrink the hue gaps)
                  const hue = c => c < 0 ? 0.08 : (c * 0.61803398875 + 0.55) % 1;
                  for (let j = 0; j < d.nodes.length; j++) {
                    const nd = d.nodes[j];
                    if (nd.cluster < 0 || nd.gid < 0 || d.alphaTgt[j] <= 0.5) continue;
+                   if (nd.dead > 0) continue;
                    let dh = Math.abs(hue(nd.gid) - hue(nd.cluster));
                    dh = Math.min(dh, 1 - dh);
-                   if (dh > 0.15 && nd.dead <= 0) { idx = j; break; }
+                   if (dh > bestDh) { bestDh = dh; bestJ = j; }
+                   if (dh > 0.15) { idx = j; break; }
                  }
+                 if (idx < 0 && bestDh > 0.02) idx = bestJ;
                  if (idx < 0) return { fail: 'no recolorable node' };
                  const cArr = d.fileMesh.instanceColor.array;
                  const c0 = [cArr[idx*3], cArr[idx*3+1], cArr[idx*3+2]];
