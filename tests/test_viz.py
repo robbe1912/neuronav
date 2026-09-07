@@ -1076,8 +1076,225 @@ def run_tests():
                       str(zinfo))
             else:
                 print(f"SKIP map trunk consolidation — {zinfo}")
+
+            # 8b. wiring document (full admit): EXACTLY ONE file's wiring —
+            # scope box + paged 1-hop neighbors drawn, all other boxes absent,
+            # only scope-incident named wires; neighbor click re-scopes the
+            # document, dblclick still refocuses the 3D. Non-neighbor claims
+            # are recomputed in Python from mwires RAW 1-hop sets mirrored to
+            # the renderer gate: endpoints must exist in nodes and pass the
+            # node chips (defaults hide tests/ + tools/); wire-type chips do
+            # NOT gate document membership, only wire drawing.
+            paths = page.evaluate("() => window.__dbg.nodes.map(n => n.path)")
+
+            def is_doc_visible(j):
+                p = paths[j]
+                return not (p.startswith("tests/") or p.startswith("tools/")
+                            or p[p.rfind("/") + 1:].startswith("test_"))
+
+            def raw_1hop(ix, all_peers=False):
+                s = set()
+                for w in mw:
+                    for a, b in ((w[1], w[3]), (w[3], w[1])):
+                        if a == ix and b != ix and 0 <= b < len(paths) \
+                                and (all_peers or is_doc_visible(b)):
+                            s.add(b)
+                return s
+            bb = page.evaluate(
+                "() => document.getElementById('mapPane').getBoundingClientRect()")
+            # scope file: the unique-labeled file with the most incident named
+            # wires (a scene file high in inst edges has none - empty document)
+            labels = page.evaluate("() => window.__dbg.nodes.map(n => n.label)")
+            cnt = {}
+            for w in mw:
+                for j in (w[1], w[3]):
+                    cnt[j] = cnt.get(j, 0) + 1
+            nseed = max(cnt, key=lambda j: (cnt[j]
+                        if labels.count(labels[j]) == 1 else -1, -j))
+            page.fill("#search", labels[nseed])
+            page.dispatch_event("#search", "input")
+            page.wait_for_timeout(900)
+            page.mouse.move(bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2)
+            for _ in range(6):   # ~1.0 * 1.15^6 ≈ 2.3 → full-admit latch
+                page.mouse.wheel(0, -120)
+            page.wait_for_timeout(600)
+            doc1 = page.evaluate("() => window.__dbg.mapInfo()")
+            check("full admit engages as a wiring document",
+                  bool(doc1) and doc1.get("fullAdmit") and doc1.get("docIx") == nseed,
+                  str({k: (doc1 or {}).get(k)
+                       for k in ("fullAdmit", "docIx")} | {"want": nseed}))
+            hop1 = raw_1hop(nseed) | {nseed}
+            boxes1 = sorted((doc1 or {}).get("boxIxs", []))
+            stray = [i for i in boxes1 if i not in hop1]
+            check("full admit: non-neighbor boxes drawn === 0 (top-20 cap held)",
+                  bool(doc1) and doc1.get("fullAdmit") and not stray
+                  and 2 <= len(boxes1) <= 21,
+                  f"stray={stray} drawn={boxes1} raw1hop={len(hop1) - 1}")
+            check("full admit: scope's named wires render (scope-incident only)",
+                  bool(doc1) and doc1.get("wires", 0) > 0 and doc1.get("docWireOk"),
+                  str({k: (doc1 or {}).get(k)
+                       for k in ("wires", "docWireOk", "docIx")}))
+            page.screenshot(path=str(ROOT / "tests" / "qa_map_doc.png"),
+                            scale="css", type="png")
+            print("artifact: tests/qa_map_doc.png")
+            # neighbor click re-scopes the document; 3D focus stays on the seed
+            pb = (doc1 or {}).get("probeBox")
+            check("full admit: probeable neighbor box", bool(pb),
+                  str((doc1 or {}).get("boxIxs")))
+            if pb:
+                page.mouse.click(bb["x"] + pb["sx"], bb["y"] + pb["sy"])
+                page.wait_for_timeout(500)   # 220ms discriminator + relayout
+                doc2 = page.evaluate("() => window.__dbg.mapInfo()")
+                seeds2 = page.evaluate("() => [...window.__dbg.focusSeeds]")
+                hop2 = raw_1hop(pb["i"]) | {pb["i"]}
+                boxes2 = sorted(doc2.get("boxIxs", []))
+                stray2 = [i for i in boxes2 if i not in hop2]
+                check("full admit: neighbor click re-scopes the document",
+                      doc2.get("docIx") == pb["i"] and not stray2
+                      and 2 <= len(boxes2) <= 21
+                      and doc2.get("docWireOk") and seeds2 == [],
+                      f"docIx={doc2.get('docIx')} want={pb['i']} stray={stray2} "
+                      f"boxes={len(boxes2)} seeds={seeds2} wires={doc2.get('wires')}")
+                page.screenshot(path=str(ROOT / "tests" / "qa_map_doc_rescope.png"),
+                                scale="css", type="png")
+                print("artifact: tests/qa_map_doc_rescope.png")
+                pb2 = doc2.get("probeBox")
+                if pb2:
+                    page.mouse.dblclick(bb["x"] + pb2["sx"], bb["y"] + pb2["sy"])
+                    page.wait_for_timeout(400)
+                    seeds3 = page.evaluate("() => [...window.__dbg.focusSeeds]")
+                    check("full admit: dblclick still refocuses the 3D",
+                          seeds3 == [pb2["i"]], f"focusSeeds={seeds3}")
+            # "+N more" pager: the scope's full 1-hop set only clears 20
+            # neighbors once tests/tools files are visible (tests chip) and
+            # the BFS depth is 1 (shallow lit stays under the connectivity
+            # cap) - docNb crosses 20 and the pager pill shows. Esc first:
+            # the dblclick test above left a scene file focused, which would
+            # hijack the doc scope (scene files have no named wires).
+            def wheel_into_doc(tries, wait=150):
+                for _ in range(tries):
+                    page.mouse.wheel(0, -120)
+                    page.wait_for_timeout(wait)
+                    if ((page.evaluate("() => window.__dbg.mapInfo()") or {})
+                            .get("fullAdmit")):
+                        return True
+                return False
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(400)
+            # subject preservation (defect-4 fix) keeps the previous doc scope
+            # alive; drop it so the latch reselects the search's top hub
+            page.evaluate("() => window.__dbg.resetDoc()")
+            page.evaluate("""() => { const c = [...document.querySelectorAll('#dirs .chip')]
+                .find(x => x.textContent.trim() === 'tests'); c.click(); }""")
+            page.wait_for_timeout(400)
+            # search the stem (not the full label): the wider match set keeps
+            # lit above the connectivity cap, which degree-sorts it and makes
+            # the top-degree hub the document scope (deterministic lit[0])
+            page.fill("#search", labels[nseed].split(".")[0])
+            page.dispatch_event("#search", "input")
+            page.wait_for_timeout(900)
+            page.evaluate("() => { const d = document.getElementById('depth');"
+                          " d.value = 1; d.dispatchEvent(new Event('input')); }")
+            page.wait_for_timeout(600)
+            wheel_into_doc(8)
+            page.wait_for_timeout(600)
+            docv = page.evaluate("() => window.__dbg.mapInfo()")
+            if (docv or {}).get("docNb", 0) <= 20:
+                print(f"SKIP map pager pill — docIx={(docv or {}).get('docIx')} "
+                      f"lit 1-hop neighbors {(docv or {}).get('docNb')} <= 20")
+            else:
+                pp = docv.get("probePill")
+                boxes0 = sorted(docv.get("boxIxs", []))
+                # tests chip is ON in this phase: membership spans every
+                # in-bounds mwires peer (wire type and path no longer gate)
+                hopv = raw_1hop(docv.get("docIx", -1), all_peers=True) | {docv.get("docIx")}
+                check("full admit: pager pill present", bool(pp),
+                      f"docIx={docv.get('docIx')} docNb={docv.get('docNb')} "
+                      f"pages={docv.get('docPages')}")
+                lbl = page.evaluate(
+                    f"() => __dbg.nodes[{docv.get('docIx')}].label")
+                check("doc header names the subject",
+                      (docv.get("docHdr") or {}).get("label") == lbl,
+                      f"docHdr={(docv.get('docHdr') or {}).get('label')} want={lbl}")
+                if pp:
+                    page.mouse.click(bb["x"] + pp["sx"], bb["y"] + pp["sy"])
+                    page.wait_for_timeout(500)
+                    docp = page.evaluate("() => window.__dbg.mapInfo()")
+                    strayp = [i for i in docp.get("boxIxs", []) if i not in hopv]
+                    check("full admit: pager pill advances a full page",
+                          docp.get("docIx") == docv.get("docIx")
+                          and docp.get("docPage", 0) == 1
+                          and docp.get("docPages", 1) > 1 and not strayp
+                          and sorted(docp.get("boxIxs", [])) != boxes0,
+                          f"page={docp.get('docPage')}/{docp.get('docPages')} "
+                          f"stray={strayp}")
+                    page.screenshot(path=str(ROOT / "tests" / "qa_map_doc_pill.png"),
+                                    scale="css", type="png")
+                    print("artifact: tests/qa_map_doc_pill.png")
+                    # pill shifts between pages ("+4 more" vs "+20 more"),
+                    # so re-derive its screen center from the new layout
+                    pp2 = docp.get("probePill") or pp
+                    page.mouse.click(bb["x"] + pp2["sx"], bb["y"] + pp2["sy"])
+                    page.wait_for_timeout(500)
+                    docp2 = page.evaluate("() => window.__dbg.mapInfo()")
+                    check("full admit: pager cycles back deterministically",
+                          docp2.get("docPage", -1) == 0
+                          and sorted(docp2.get("boxIxs", [])) == boxes0,
+                          f"page={docp2.get('docPage')} "
+                          f"same={sorted(docp2.get('boxIxs', [])) == boxes0}")
+            # restore defaults so later sections see the stock state
+            page.evaluate("""() => { const c = [...document.querySelectorAll('#dirs .chip')]
+                .find(x => x.textContent.trim() === 'tests'); c.click(); }""")
+            page.evaluate("() => { const d = document.getElementById('depth');"
+                          " d.value = 2; d.dispatchEvent(new Event('input')); }")
+            page.wait_for_timeout(400)
+            # zoom back out: the approved reduced tier returns (no doc scoping)
+            page.mouse.move(bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2)
+            for _ in range(8):
+                page.mouse.wheel(0, 120)
+            page.wait_for_timeout(500)
+            doc4 = page.evaluate("() => window.__dbg.mapInfo()")
+            check("zoom-out returns the reduced tier (document closed)",
+                  bool(doc4) and not doc4.get("fullAdmit")
+                  and doc4.get("E", 0) > 0,
+                  str({k: (doc4 or {}).get(k) for k in ("fullAdmit", "E")}))
+
             page.screenshot(path=str(ROOT / "tests" / "qa_map.png"), scale="css", type="png")
             print("artifact: tests/qa_map.png")
+            # defect-4: the document subject survives reduced <-> full roundtrip
+            wheel_into_doc(16)
+            page.wait_for_timeout(500)
+            doc5 = page.evaluate("() => window.__dbg.mapInfo()")
+            check("doc subject survives tier roundtrip",
+                  bool(doc5) and doc5.get("fullAdmit")
+                  and doc5.get("docIx") == docv.get("docIx"),
+                  f"docIx={(doc5 or {}).get('docIx')} want={docv.get('docIx')}")
+            for _ in range(8):
+                page.mouse.wheel(0, 120)
+                page.wait_for_timeout(60)
+            page.wait_for_timeout(400)
+            # defect-2: a flood search still latches a POPULATED document -
+            # neighbors come from mwires directly, not the search lit set
+            page.fill("#search", "gd")
+            page.dispatch_event("#search", "input")
+            page.wait_for_timeout(900)
+            # fresh seed: the flood path must SELECT a wired hub, not keep 566
+            page.evaluate("() => window.__dbg.resetDoc()")
+            wheel_into_doc(14)
+            page.wait_for_timeout(500)
+            doc6 = page.evaluate("() => window.__dbg.mapInfo()")
+            check("flood search latches a populated wiring document",
+                  bool(doc6) and doc6.get("fullAdmit")
+                  and (doc6.get("docNb") or 0) > 0 and bool(doc6.get("docHdr")),
+                  f"docIx={(doc6 or {}).get('docIx')} docNb={doc6.get('docNb')} "
+                  f"docHdr={(doc6 or {}).get('docHdr')}")
+            for _ in range(8):
+                page.mouse.wheel(0, 120)
+                page.wait_for_timeout(60)
+            page.wait_for_timeout(400)
+            page.fill("#search", labels[nseed].split(".")[0])
+            page.dispatch_event("#search", "input")
+            page.wait_for_timeout(500)
             page.evaluate("() => document.getElementById('bMap').click()")  # collapse pane
             page.keyboard.press("Escape")
 

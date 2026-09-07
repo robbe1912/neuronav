@@ -3231,24 +3231,27 @@ fnPickIn.addEventListener("input", () => fnPickFill(fnPickIn.value));
 fnPickIn.addEventListener("keydown", e => {
   if (e.key === "Escape") { e.stopPropagation(); fnClosePick(); }
 });
+const MAP_WORLD_W = 1100;   // world width - the pane is a window onto it
 function mapRender() {
   if (!mapVisible) return;
   const ctx = mapPane.getContext("2d");
   const cwView = mapPane.clientWidth || 440;
   const chView = mapPane.clientHeight || innerHeight;
   const dpr = mapPane.width / cwView || 1;
-  const cw = 1100;                  // world width - the pane is just a window
+  const cw = MAP_WORLD_W;           // world width - the pane is just a window
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = "#0b0f14";
   ctx.fillRect(0, 0, cwView, chView);
-  mapRects = [];
   const hint = txt => {
     ctx.fillStyle = "#546e7a";
     ctx.font = MAP_FONT(12);
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(txt, cwView / 2, chView / 2);
   };
-  if (!focusActive) { mapLayout = null; hint("focus a node to see its map"); return; }
+  // NOTE: mapRects is NOT cleared here - a cache-hit repaint below skips the
+  // rebuild and must keep the last hit-test rects; only discard/rebuild paths
+  // touch it
+  if (!focusActive) { mapLayout = null; mapRects = []; hint("focus a node to see its map"); return; }
   const litAll = [];
   for (let i = 0; i < N; i++) if (level[i] >= 0 && nodeVisible(nodes[i])) litAll.push(i);
   // cap by connectivity: keep the MAP_MAX most-connected lit files so a hub
@@ -3258,7 +3261,7 @@ function mapRender() {
   if (capNote) {
     lit = litAll.slice().sort((a, b) => (degree[b] - degree[a]) || (a - b)).slice(0, MAP_MAX);
   }
-  if (!lit.length) { mapLayout = null; hint("focus a node to see its map"); return; }
+  if (!lit.length) { mapLayout = null; mapRects = []; hint("focus a node to see its map"); return; }
   // NOTE: rosters no longer collapse on zoom-out (owner request) - the
   // expansion set is zoom-independent (seeds + user toggles + E<=12 wired).
   // zoom-tiered admission latch (same band shape as the old expand latch):
@@ -3269,6 +3272,7 @@ function mapRender() {
   if (mapZ >= 1.5) mapFullAdmit = true;
   else if (mapZ < 1.2) mapFullAdmit = false;
   if (mapFullAdmit && !wasFull) { mapDocCenter = true; mapFrozenIx = -1; }
+  else if (!mapFullAdmit && wasFull) { mapDocPage = 0; }   // subject survives the flip
   // focus signature ("focusVersion"): every input that changes the lit set
   // or the typed admission. pan/zoom never touch it (section 5).
   const sig = lit.join(",") + "|" + query + "|" + mapVarsOn + "|" +
@@ -3309,20 +3313,65 @@ function mapRender() {
   // mwires (paged top-20 by incident-wire count) + the scope's named wires.
   // Every other lit file is NOT part of the document and is not rendered at
   // all - no ghost tier, no dimming ladder.
-  let docNbTotal = 0, docPages = 1, docPageLen = 0;
+  let docNbTotal = 0, docNbPos = 0, docPages = 1, docPageLen = 0, docHdr = null;
   if (mapFullAdmit) {
     const sd = focusSeeds.values().next();
-    const seed = sd.done ? lit[0] : sd.value;
-    if (mapDocIx < 0 || !litSet.has(mapDocIx)) {
-      mapDocIx = seed; mapDocPage = 0; mapDocCenter = true;
+    let seed = sd.done ? -1 : sd.value;
+    if (seed < 0) {
+      // wiring viability: the subject needs at least one mwires peer that
+      // the node chips let through (wire-TYPE chips never gate document
+      // membership - they only gate wire drawing)
+      const hasVis = ix => {
+        for (const w of mwires) {
+          const o = w[1] === ix ? w[3] : w[3] === ix ? w[1] : -1;
+          // mwires can reference endpoints outside nodes (stale/external)
+          if (typeof o !== "number" || o === ix || !nodes[o]) continue;
+          if (nodeVisible(nodes[o])) return true;
+        }
+        return false;
+      };
+      const byDeg = [...lit].sort((a, b) => (degree[b] - degree[a]) || (a - b));
+      // a search names the subject: the top match wins over well-connected
+      // neighbors (a tiny file must not open a document on its biggest caller)
+      let pick = query ? byDeg.find(ix => level[ix] === 0 && hasVis(ix))
+        : undefined;
+      if (pick === undefined) pick = byDeg.find(hasVis);
+      seed = pick !== undefined ? pick : lit[0];
     }
-    // 1-hop neighbors, visibility-gated (var wires ride the vars chip),
-    // ranked by incident-wire count then file ix (deterministic)
+    if (seed == null || !nodes[seed]) mapFullAdmit = false;   // no wirable subject: render reduced
+    else {
+      // subject identity survives search churn and tier roundtrips - only a
+      // visibility change (chip toggle) invalidates it
+      if (mapDocIx < 0 || !nodes[mapDocIx] || !nodeVisible(nodes[mapDocIx])) {
+        mapDocIx = seed; mapDocPage = 0;
+      }
+      mapDocCenter = true;   // EVERY document rebuild centers the subject
+    }
+  }
+  if (mapFullAdmit) {
+    // positional peers: every mwires endpoint touching the subject, before
+    // any visibility gate. docNbTotal below is the chip-visible subset; the
+    // delta is node visibility chips only (tests/tools hidden by default -
+    // e.g. magicplayer.gd: 30 positional, 27 visible, 3 test files), never
+    // wire-type chips.
+    const posPeers = new Set();
+    mwires.forEach(w => {
+      const o = w[1] === mapDocIx ? w[3] : w[3] === mapDocIx ? w[1] : -1;
+      // stale/external endpoints have no node identity and cannot be placed
+      if (typeof o !== "number" || o === mapDocIx || !nodes[o]) return;
+      posPeers.add(o);
+    });
+    docNbPos = posPeers.size;
+    // 1-hop neighbors come from DATA.mwires DIRECTLY - the search lit set
+    // does not gate the document (a hub's wiring must survive a narrow
+    // query) and wire-type chips do not gate membership (they only decide
+    // which wires get drawn); node visibility chips stay the only gate
     const nbCnt = new Map();
     mwires.forEach(w => {
-      if (w[0] === "var" ? !mapVarsOn : !typeVisible(w[0])) return;
       const o = w[1] === mapDocIx ? w[3] : w[3] === mapDocIx ? w[1] : -1;
-      if (typeof o !== "number" || o === mapDocIx || !litSet.has(o)) return;
+      // mwires can reference endpoints outside nodes (stale/external)
+      if (typeof o !== "number" || o === mapDocIx || !nodes[o]) return;
+      if (!nodeVisible(nodes[o])) return;
       nbCnt.set(o, (nbCnt.get(o) || 0) + 1);
     });
     const nbAll = [...nbCnt.keys()].sort((a, b) =>
@@ -3333,6 +3382,8 @@ function mapRender() {
     const page = nbAll.slice(mapDocPage * 20, mapDocPage * 20 + 20);
     docPageLen = page.length;
     lit = [mapDocIx, ...page];             // the whole document
+    docHdr = { label: nodes[mapDocIx].label, nb: docNbTotal, pos: docNbPos,
+               page: mapDocPage + 1, pages: docPages };
     // corridors: ONLY scope-incident named pairs (top-1 wire drawn, rest as
     // bundle chips on the spine - the approved tier-2 carrier)
     const docSet = new Set(lit);
@@ -3377,7 +3428,14 @@ function mapRender() {
     (mapFullAdmit ? "d" + mapDocIx + ":" + mapDocPage : "") + "||" +
     [...expand].sort((a, b) => a - b).join(",") + "||" +
     Math.round(cwView) + "x" + Math.round(chView);
-  if (mapLayout && mapLayout.key === key) { mapPaint(ctx, dpr, cwView, chView, capNote); return; }
+  if (mapLayout && mapLayout.key === key) {
+    // tier crossings ride the cache key by design (no relayout), so the
+    // full-admit rising edge must consume mapDocCenter HERE - otherwise the
+    // first crossing never centers the subject (stuck at the pan position)
+    if (mapDocCenter) centerDocLayout(cwView, chView);
+    mapPaint(ctx, dpr, cwView, chView, capNote);
+    return;
+  }
   // ---- tier-2 named wires over the admitted corridors (section 2 [F1]) ----
   const pairSet = new Set(edges.map(l => l.s + "_" + l.t));
   const vw = [];
@@ -3417,7 +3475,8 @@ function mapRender() {
     if (!all.length) return null;
     const pin = new Set();
     byPair.forEach(arr => arr.forEach(w => {
-      if (level[w.sf] !== 0 && level[w.df] !== 0) return;   // seed-incident [F4]
+      // seed-incident [F4]; in document mode every wire is scope-incident
+      if (!mapFullAdmit && level[w.sf] !== 0 && level[w.df] !== 0) return;
       if (w.df === i) pin.add(w.dfn);
       if (w.sf === i) pin.add(w.sfn);
     }));
@@ -3456,7 +3515,13 @@ function mapRender() {
   });
   // rows by BFS level, barycenter columns (survives section 10)
   const rows = [];
-  lit.forEach(i => { (rows[level[i]] = rows[level[i]] || []).push(i); });
+  lit.forEach(i => {
+    // a pinned document subject can sit OUTSIDE the search BFS (level -1):
+    // bucket it with the matches row or the chunk placer never visits it
+    // and lit outlives place ("reading 'x'" in mapPaint)
+    const li = level[i] < 0 ? 0 : level[i];
+    (rows[li] = rows[li] || []).push(i);
+  });
   const preds = new Map();
   edges.forEach(l => {
     if (!preds.has(l.t)) preds.set(l.t, []);
@@ -3515,6 +3580,16 @@ function mapRender() {
       x += geo.get(i).w + GAPX;
     });
   });
+  // "+N more" pager pill (document mode): sits below the scope box and
+  // cycles the neighbor pages deterministically (count desc, ix asc)
+  let pill = null;
+  if (mapFullAdmit && docNbTotal > 20) {
+    const sp = place.get(mapDocIx);
+    const label = "+" + (docNbTotal - docPageLen) + " more  " +
+      (mapDocPage + 1) + "/" + docPages;
+    pill = { x: sp.x, y: sp.y + sp.h + 10, w: Math.max(64, txtW(label) + 18),
+             h: NH, label };
+  }
   // band adjacency for the reduced tier: ONE aggregate trunk per ordered
   // row pair - the overview is a layer diagram, not a wiring diagram
   const bandMap = new Map();
@@ -3806,17 +3881,25 @@ function mapRender() {
     }
     mapRects.push(rc);
   });
-  // progressive disclosure at full admit: scope to the focus seed by
-  // default - ONE file's named wiring at a time, never the whole hairball.
-  // Roster-row clicks re-scope (existing L3), toggling the row releases.
+  // document (re)center: same document, new center file - keep the zoom,
+  // aim the window at the scope box (fit-to-view stays focus-change behavior)
   if (mapFullAdmit) {
-    const sd = focusSeeds.values().next();
-    if (!sd.done) mapFrozenIx = sd.value;
+    const cp = place.get(mapDocIx);
+    if (cp && (mapDocCenter || !mapLayout)) {
+      mapPX = Math.max(0, Math.min(Math.max(0, cw - cwView / mapZ),
+        cp.x + cp.w / 2 - cwView / mapZ / 2));
+      mapPY = Math.max(0, Math.min(Math.max(0, worldH - chView / mapZ),
+        cp.y + cp.h / 2 - chView / mapZ / 2));
+      mapDocCenter = false;
+    }
   }
   mapLayout = {
     key, sig, lit, edges, E, place, geo, rects, wires, spines, underlays,
     chips, labels, rosterRows, expandedSet: expand, worldH, capNote,
     trunkGroups, bands, chunkY, chunkRowH,
+    doc: { ix: mapDocIx, nb: docNbTotal, pos: docNbPos, page: mapDocPage, pages: docPages },
+    docHdr,
+    pill,
   };
   mapPaint(ctx, dpr, cwView, chView, capNote);
 }
@@ -3825,11 +3908,20 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = "#0b0f14";
   ctx.fillRect(0, 0, cwView, chView);
-  if (capNote) {
+  if (capNote && !mapFullAdmit) {   // cap header suppressed in document mode
     ctx.fillStyle = "#546e7a";
     ctx.font = MAP_FONT(11);
     ctx.textAlign = "center"; ctx.textBaseline = "top";
     ctx.fillText("top " + MAP_MAX + " of " + capNote + " files (by connectivity)", cwView / 2, 8);
+  }
+  // wiring-document subject header: the document names its one file
+  if (L.docHdr) {
+    ctx.fillStyle = "#ffb347";
+    ctx.font = MAP_FONT(12);
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    ctx.fillText("WIRING DOCUMENT \u2014 " + L.docHdr.label +
+      " \u00b7 " + L.docHdr.nb + " wired neighbors \u00b7 page " +
+      L.docHdr.page + "/" + L.docHdr.pages, cwView / 2, 8);
   }
   // window on the world: pan/zoom = pure transform of the cached layout
   ctx.setTransform(dpr * mapZ, 0, 0, dpr * mapZ, -mapPX * dpr * mapZ, -mapPY * dpr * mapZ);
@@ -3921,12 +4013,14 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   ctx.setLineDash([]);
   L.lit.forEach(i => {
     const p = L.place.get(i), g = L.geo.get(i);
+    if (!p || !g) return;   // pinned subject can outlive the placer (belt)
     const c = mapCols(nodes[i].cluster);
     const a = dim(i);
+    const isSubject = L.doc && i === L.doc.ix;   // document subject emphasis
     ctx.globalAlpha = a;
     ctx.fillStyle = c.f;
-    ctx.strokeStyle = c.s;
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = isSubject ? "#ffb347" : c.s;
+    ctx.lineWidth = isSubject ? 3 : 1.5;
     const rad = 6;
     ctx.beginPath();
     ctx.moveTo(p.x + rad, p.y);
@@ -4062,6 +4156,23 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
       ctx.fill();
     }
   });
+  // document pager pill: click cycles neighbor pages (deterministic order)
+  if (mapFullAdmit && L.pill) {
+    const p = L.pill, nd = nodes[L.doc.ix], c = mapCols(nd ? nd.cluster : 0);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "rgba(8,12,16,.9)";
+    ctx.strokeStyle = c.s;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(p.x, p.y, p.w, p.h, 6);
+    else ctx.rect(p.x, p.y, p.w, p.h);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = c.t;
+    ctx.font = MAP_FONT(10);
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(p.label, p.x + p.w / 2, p.y + p.h / 2 + 0.5);
+  }
   ctx.globalAlpha = 1;
   // screen-space furniture: map-local vars chip [F10] + footer
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -4087,11 +4198,32 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
             mr.sig_unresolved + " unres";
   ctx.fillText(foot, 8, chView - 6);
 }
+// center the pane on the document subject; shared by the relayout path and
+// the cache-hit path (tier crossings relayout by design)
+function centerDocLayout(cwView, chView) {
+  const cp = mapLayout && mapLayout.place.get(mapDocIx);
+  if (!cp) return;
+  mapPX = Math.max(0, Math.min(Math.max(0, MAP_WORLD_W - cwView / mapZ),
+    cp.x + cp.w / 2 - cwView / mapZ / 2));
+  mapPY = Math.max(0, Math.min(Math.max(0, (mapLayout.worldH || 0) - chView / mapZ),
+    cp.y + cp.h / 2 - chView / mapZ / 2));
+  mapDocCenter = false;
+}
 // rAF dirty-flag single draw (section 5 [F7]): every caller coalesces here
 function drawMapPane() {
   if (!mapVisible || mapDirty) return;
   mapDirty = true;
-  requestAnimationFrame(() => { mapDirty = false; mapRender(); });
+  requestAnimationFrame(() => {
+    mapDirty = false;
+    try { mapRender(); }
+    catch (err) {
+      // a render throw must never strand doc state over a cleared canvas +
+      // stale layout (D2): drop the document, relayout reduced, log once
+      console.warn("map render failed; reverting document tier:", err);
+      mapFullAdmit = false; mapDocIx = -1; mapDocPage = 0;
+      try { mapRender(); } catch (e2) { /* keep last painted frame */ }
+    }
+  });
 }
 document.getElementById("bMap").onclick = () => setMapVisible(!mapVisible);
 // mapVisible drives the whole split: pane + divider visibility, info-panel
@@ -4178,16 +4310,21 @@ mapPane.addEventListener("click", e => {
   // 1. bundle chip -> pinned enumeration list (section 7)
   const ci = mapChipAt(w.x, w.y);
   if (ci >= 0) { mapOpenList(ci); return; }
-  // 2. named wire (L2): showFnInfo(target) - CALLED BY is its section
-  const wi = mapWireAt(w.x, w.y);
-  if (wi >= 0 && mapLayout) {
-    const wr = mapLayout.wires[wi];
-    if (wr.ty === "var") showInfo(wr.df);   // member target is not a fn
-    else mapShowFn(wr.df, wr.dfn);
+  // 2. document pager pill: cycle neighbor pages deterministically. Tested
+  // before wires/boxes: the pill is painted last (on top), and scope wires
+  // fan through the pill's zone below the scope box.
+  const pl = mapFullAdmit && mapLayout && mapLayout.pill;
+  if (pl && w.x >= pl.x && w.x <= pl.x + pl.w && w.y >= pl.y && w.y <= pl.y + pl.h) {
+    mapDocPage = (mapDocPage + 1) % mapLayout.doc.pages;
+    drawMapPane();
     return;
   }
-  // 3. boxes: roster row (L3) / "+N more" (picker) / header (click refocus)
-  for (const rc of mapRects) {
+  // 3. boxes: roster row (L3) / "+N more" (picker) / header (click refocus).
+  // Tested before wires: boxes paint on top of them, and the scope's wire
+  // fan crosses the whole pane. Rects iterate topmost-drawn first so an
+  // overlap resolves to the box the user actually sees.
+  for (let k = mapRects.length - 1; k >= 0; k--) {
+    const rc = mapRects[k];
     if (w.x < rc.x || w.x > rc.x + rc.w || w.y < rc.y || w.y > rc.y + rc.h) continue;
     if (rc.rows.length) {
       if (rc.more && w.y >= rc.more.y0 && w.y < rc.more.y1) { mapOpenPicker(rc); return; }
@@ -4202,12 +4339,28 @@ mapPane.addEventListener("click", e => {
     }
     const i = rc.i;   // header / collapsed box: click = refocus (220ms so a
     mapRefocusTimer = setTimeout(() => {   // dblclick can cancel into a toggle)
+      if (mapFullAdmit) {   // document mode: a neighbor click re-scopes the
+        // document to that file - same rendering, new center, 3D untouched
+        if (i !== mapDocIx) {
+          mapDocIx = i; mapDocPage = 0; mapDocCenter = true;
+          drawMapPane();
+        }
+        return;
+      }
       pushFocusState(); showInfo(i); focusSeeds.clear(); focusSeeds.add(i);
       applyVisibility(); focus(i);
     }, 220);
     return;
   }
-  // 4. void: unpin the list, close the picker, drop the freeze
+  // 4. named wire (L2): showFnInfo(target) - CALLED BY is its section
+  const wi = mapWireAt(w.x, w.y);
+  if (wi >= 0 && mapLayout) {
+    const wr = mapLayout.wires[wi];
+    if (wr.ty === "var") showInfo(wr.df);   // member target is not a fn
+    else mapShowFn(wr.df, wr.dfn);
+    return;
+  }
+  // 5. void: unpin the list, close the picker, drop the freeze
   if (mapListEl.style.display === "block" || mapFrozenIx >= 0) mapOvCloseOne();
 });
 mapPane.addEventListener("dblclick", e => {
@@ -4216,6 +4369,11 @@ mapPane.addEventListener("dblclick", e => {
   const w = mapToWorld(e);
   for (const rc of mapRects) {
     if (w.x >= rc.x && w.x <= rc.x + rc.w && w.y >= rc.y && w.y <= rc.y + rc.h) {
+      if (mapFullAdmit) {   // document mode: dblclick still refocuses the 3D
+        pushFocusState(); showInfo(rc.i); focusSeeds.clear(); focusSeeds.add(rc.i);
+        applyVisibility(); focus(rc.i);
+        return;
+      }
       const open = mapLayout && mapLayout.expandedSet.has(rc.i);
       mapExpandUser.set(rc.i, !open);
       drawMapPane();
@@ -4238,7 +4396,10 @@ mapPane.addEventListener("pointermove", e => {
   const wi = ci < 0 && mapFrozenIx < 0 ? mapWireAt(w.x, w.y) : -1;
   if (mapHover !== wi) { mapHover = wi; drawMapPane(); }
   mapHoverChip = ci;
-  mapPane.style.cursor = ci >= 0 || wi >= 0 || mapRects.some(rc =>
+  const pillHit = mapFullAdmit && mapLayout && mapLayout.pill &&
+    w.x >= mapLayout.pill.x && w.x <= mapLayout.pill.x + mapLayout.pill.w &&
+    w.y >= mapLayout.pill.y && w.y <= mapLayout.pill.y + mapLayout.pill.h;
+  mapPane.style.cursor = ci >= 0 || wi >= 0 || pillHit || mapRects.some(rc =>
     w.x >= rc.x && w.x <= rc.x + rc.w && w.y >= rc.y && w.y <= rc.y + rc.h)
     ? "pointer" : "default";
   if (wi >= 0) {   // map-local tooltip (L1)
@@ -4261,9 +4422,43 @@ const mapInfo = () => {
     const m = w0.pts[Math.floor(w0.pts.length / 2)];
     probe = { sx: (m[0] - mapPX) * mapZ, sy: (m[1] - mapPY) * mapZ };
   }
+  // wiring-document surface: scope, drawn-box file ixs, wire scoping, and
+  // screen-space probes for a visible neighbor box + the pager pill
+  let probeBox = null, probePill = null, probeScope = null;
+  if (mapFullAdmit) {
+    const cwV = mapPane.clientWidth || 440, chV = mapPane.clientHeight || innerHeight;
+    const onScreen = (x, y) => {
+      const sx = (x - mapPX) * mapZ, sy = (y - mapPY) * mapZ;
+      return sx >= -20 && sx <= cwV + 20 && sy >= -20 && sy <= chV + 20;
+    };
+    const nb = mapRects.find(rc => rc.i !== mapDocIx &&
+      (() => {   // header band center must be fully on-pane (clickable)
+        const sx = (rc.x + rc.w / 2 - mapPX) * mapZ;
+        const sy = (rc.y + 11 - mapPY) * mapZ;
+        return sx >= 30 && sx <= cwV - 30 && sy >= 20 && sy <= chV - 20;
+      })());
+    if (nb) probeBox = { i: nb.i, sx: (nb.x + nb.w / 2 - mapPX) * mapZ,
+                         sy: (nb.y + 11 - mapPY) * mapZ };
+    if (mapLayout.pill)
+      probePill = { sx: (mapLayout.pill.x + mapLayout.pill.w / 2 - mapPX) * mapZ,
+                    sy: (mapLayout.pill.y + mapLayout.pill.h / 2 - mapPY) * mapZ };
+    const sc = mapRects.find(rc => rc.i === mapDocIx);
+    if (sc) probeScope = { sx: (sc.x + sc.w / 2 - mapPX) * mapZ,
+                           sy: (sc.y + 11 - mapPY) * mapZ };
+  }
   return {
     E: mapLayout.E,
     fullAdmit: mapFullAdmit,
+    docIx: mapDocIx,
+        docNb: mapLayout.doc.nb,
+        docNbPos: mapLayout.doc.pos,
+    docPage: mapLayout.doc.page,
+    docPages: mapLayout.doc.pages,
+    docHdr: mapLayout.docHdr,
+    boxIxs: mapRects.map(r => r.i),
+    docWireOk: mapFullAdmit
+      ? mapLayout.wires.every(w => w.sf === mapDocIx || w.df === mapDocIx)
+      : null,
     namedOK: mapFullAdmit || mapLayout.E <= 12,
     wires: mapLayout.wires.length,
     labels: mapLayout.labels.length,
@@ -4282,6 +4477,9 @@ const mapInfo = () => {
       mapLayout.spines.filter(sp => !sp.con).length +
       mapLayout.wires.length,
     probeWire: probe,
+    probeBox,
+    probePill,
+    probeScope,
   };
 };
 document.getElementById("bGround").onclick = e => {
@@ -4388,6 +4586,7 @@ applySpread(1);
   if (mapVisible) document.getElementById("bMap").classList.add("on");
   // ...but its content state resets with everything else
   mapExpandUser.clear(); mapFrozenIx = -1; mapHover = -1; mapVarsOn = false;
+  mapDocIx = -1; mapDocPage = 0; mapDocCenter = false;
   mapOvCloseOne();
   frameGraph();
   buildLegend();
@@ -4825,7 +5024,8 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get paneW() { return paneW; }, setMapVisible, divider,
   get glW() { return glW(); },
   get bucketMesh() { return bucketMesh; }, linkOfSeg, raycaster, linkFiltered, typeVisible,
-  get mapLayout() { return mapLayout; } };
+  get mapLayout() { return mapLayout; },
+  resetDoc() { mapDocIx = -1; mapDocPage = 0; } };
 tick();
 </script>
 </body>
