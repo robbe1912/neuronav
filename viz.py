@@ -3458,6 +3458,24 @@ function mapRender() {
       x += geo.get(i).w + GAPX;
     });
   });
+  // band adjacency for the reduced tier: ONE aggregate trunk per ordered
+  // row pair - the overview is a layer diagram, not a wiring diagram
+  const bandMap = new Map();
+  edges.forEach(l => {
+    const a = place.get(l.s), b = place.get(l.t);
+    if (!a || !b || a.row === b.row) return;
+    const lo = Math.min(a.row, b.row), hi = Math.max(a.row, b.row);
+    const k = lo + "_" + hi;
+    const e = bandMap.get(k) || { a: lo, b: hi, n: 0, ty: {} };
+    e.n++;
+    e.ty[l.ty] = (e.ty[l.ty] || 0) + 1;
+    bandMap.set(k, e);
+  });
+  const bands = [...bandMap.values()].map(e => {
+    let dom = "call", m = 0;
+    for (const t in e.ty) if (e.ty[t] > m) { m = e.ty[t]; dom = t; }
+    return { a: e.a, b: e.b, n: e.n, ty: dom };
+  }).sort((x, y) => x.a - y.a || x.b - y.b);
   if (!mapZ) {   // focus change / first draw: fit BOTH dims, floor 1.0 [F15]
     mapZ = Math.max(1.0, Math.min(cwView / cw, chView / worldH));
     mapPX = Math.max(0, (cw - cwView / mapZ) / 2);
@@ -3734,7 +3752,7 @@ function mapRender() {
   mapLayout = {
     key, sig, lit, edges, E, place, geo, rects, wires, spines, underlays,
     chips, labels, rosterRows, expandedSet: expand, worldH, capNote,
-    trunkGroups,
+    trunkGroups, bands, chunkY, chunkRowH,
   };
   mapPaint(ctx, dpr, cwView, chView, capNote);
 }
@@ -3774,7 +3792,11 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   };
   // render order (section 9): underlays -> spines -> wires -> boxes/rosters
   // -> labels/chips/terminators. Underlay alpha 0.25 (declutter lever 5).
-  L.underlays.forEach(u => {
+  // semantic zoom: at reduced tier the map is a subsystem diagram - band
+  // trunks + pills only; the named wiring diagram fades in at full admit
+  // (or small E). Everything wire-level is gated on it.
+  const namedOK = mapFullAdmit || L.E <= 12;
+  if (namedOK) L.underlays.forEach(u => {
     seg(u, MGLYPH[u.ty0] ? MGLYPH[u.ty0].c : MGLYPH.attach.c, 1,
         MGLYPH.attach.dash, 0.25 * dim(u.s, u.t));
     // T-junction terminator: short tick across the entry, no arrow
@@ -3784,7 +3806,7 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     ctx.moveTo(u.tx - 4, u.ty); ctx.lineTo(u.tx + 4, u.ty);
     ctx.stroke();
   });
-  L.spines.forEach(sp => {
+  if (namedOK) L.spines.forEach(sp => {
     if (sp.con) return;   // consolidated twin: its ink rides the shared trunk
     const gl = sp.amber ? null : mapCols(nodes[sp.s].cluster);
     let color = "#ffb347";
@@ -3800,13 +3822,37 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     seg(sp, color, sp.trunkW ? Math.min(2 + 1.1 * (sp.trunkW - 1), 7) : 2,
         null, 0.5 * dim(sp.s, sp.t));
   });
-  // semantic zoom: at reduced tier the map is a subsystem diagram - trunks
-  // + pills only; the named wiring diagram fades in at full admit (or small E)
-  const namedOK = mapFullAdmit || L.E <= 12;
+  // semantic zoom: reduced tier draws NOTHING wire-level except the
+  // band trunks below; named wiring needs full admit (or small E)
   if (namedOK) L.wires.forEach(w => {
     const g = MGLYPH[w.ty] || MGLYPH.call;
     seg(w, g.c, 1.5, g.dash, (w.bez ? 0.25 : 0.9) * dim(w.sf, w.df));
   });
+  if (!namedOK) {
+    // layer diagram: one fat aggregate trunk per ordered row pair,
+    // staggered across the center, colored by dominant type, labeled xN
+    const nB = Math.max(1, L.bands.length);
+    let bi = 0;
+    L.bands.forEach(bd => {
+      const g = MGLYPH[bd.ty] || MGLYPH.call;
+      const x = 550 + (bi++ - (nB - 1) / 2) * 16;   // world center 1100/2
+      const y0 = L.chunkY[bd.a] + L.chunkRowH[bd.a] / 2;
+      const y1 = L.chunkY[bd.b] + L.chunkRowH[bd.b] / 2;
+      ctx.globalAlpha = 0.45;
+      ctx.strokeStyle = g.c;
+      ctx.lineWidth = Math.min(1.5 + bd.n * 0.6, 9);
+      ctx.beginPath();
+      ctx.moveTo(x, y0); ctx.lineTo(x, y1);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = g.c;
+      ctx.font = MAP_FONT(10);
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("\u00d7" + bd.n, x + 8, (y0 + y1) / 2);
+    });
+    ctx.setLineDash([]);
+  }
   // boxes + rosters
   ctx.setLineDash([]);
   L.lit.forEach(i => {
