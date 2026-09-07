@@ -1012,8 +1012,13 @@ def run_tests():
                   bool(minfo) and minfo.get("budgetOk")
                   and minfo.get("labels", 1) <= 2 * max(1, minfo.get("labelTargets", 0)),
                   str(minfo))
-            check("map labels shown", bool(minfo) and minfo.get("shownLabels", 0) > 0,
+            check("map labels shown",
+                  bool(minfo) and (minfo.get("shownLabels", 0) > 0
+                                   or not minfo.get("namedOK")),   # reduced tier hides them
                   str(minfo))
+            if minfo and not minfo.get("namedOK"):
+                check("map reduced tier hides fn labels",
+                      minfo.get("shownLabels", 0) == 0, str(minfo))
             # vars chip: off at boot, toggles via a real click on its rect
             check("map vars chip default off",
                   page.evaluate("() => !window.__dbg.mapVars"))

@@ -3087,6 +3087,7 @@ const mapDistSeg = (px, py, ax, ay, bx, by) => {
 };
 function mapWireAt(wx, wy) {
   if (!mapLayout) return -1;
+  if (!(mapFullAdmit || mapLayout.E <= 12)) return -1;   // reduced tier: trunks only
   const tol = 6 / mapZ;
   let best = -1, bd = tol;
   mapLayout.wires.forEach((w, ix) => {
@@ -3100,6 +3101,7 @@ function mapWireAt(wx, wy) {
 }
 function mapChipAt(wx, wy) {
   if (!mapLayout) return -1;
+  if (!(mapFullAdmit || mapLayout.E <= 12)) return -1;   // reduced tier: no chips
   for (let c = 0; c < mapLayout.chips.length; c++) {
     const ch = mapLayout.chips[c];
     if (wx >= ch.x && wx <= ch.x + ch.w && wy >= ch.y && wy <= ch.y + ch.h) return c;
@@ -3798,7 +3800,10 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     seg(sp, color, sp.trunkW ? Math.min(2 + 1.1 * (sp.trunkW - 1), 7) : 2,
         null, 0.5 * dim(sp.s, sp.t));
   });
-  L.wires.forEach(w => {
+  // semantic zoom: at reduced tier the map is a subsystem diagram - trunks
+  // + pills only; the named wiring diagram fades in at full admit (or small E)
+  const namedOK = mapFullAdmit || L.E <= 12;
+  if (namedOK) L.wires.forEach(w => {
     const g = MGLYPH[w.ty] || MGLYPH.call;
     seg(w, g.c, 1.5, g.dash, (w.bez ? 0.25 : 0.9) * dim(w.sf, w.df));
   });
@@ -3851,7 +3856,7 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   });
   // chips (click -> pinned enumeration list)
   ctx.font = MAP_FONT(10);
-  L.chips.forEach(ch => {
+  if (namedOK) L.chips.forEach(ch => {
     const g = MGLYPH[ch.ty] || MGLYPH.call;
     ctx.globalAlpha = dim(ch.s, ch.t);
     ctx.fillStyle = "rgba(8,12,16,.85)";
@@ -3885,7 +3890,7 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   mapShownLabels = 0;
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
-  L.labels.forEach(l => {
+  if (namedOK) L.labels.forEach(l => {
     if (!tier(l)) return;
     const w = L.wires[l.w];
     const g = MGLYPH[l.ty] || MGLYPH.call;
@@ -4120,6 +4125,8 @@ const mapInfo = () => {
   }
   return {
     E: mapLayout.E,
+    fullAdmit: mapFullAdmit,
+    namedOK: mapFullAdmit || mapLayout.E <= 12,
     wires: mapLayout.wires.length,
     labels: mapLayout.labels.length,
     shownLabels: mapShownLabels,
