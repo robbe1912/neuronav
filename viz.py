@@ -1923,6 +1923,28 @@ function tick() {
     if (fnBus) fnBus.material.opacity = 0.35 + 0.65 * lod;
     if (fnArrows) fnArrows.material.opacity = 0.9 * lod;
   }
+  // conduit width is SCREEN-CONSTANT per segment: radius ∝ each segment's own
+  // distance to the camera (~2.4px on screen at every depth, next to 1px wires)
+  if (fnBus && busPts) {
+    let dirty = false;
+    const a = fnBus.instanceMatrix.array;
+    for (let i = 0; i < busPts.length; i++) {
+      const s = busPts[i];
+      const d = Math.hypot((s.a[0]+s.b[0])/2 - camera.position.x,
+                           (s.a[1]+s.b[1])/2 - camera.position.y,
+                           (s.a[2]+s.b[2])/2 - camera.position.z);
+      const rT = Math.max(0.05, Math.min(12, d * 0.0022));
+      const f = rT / fnBusRi[i];
+      if (Math.abs(f - 1) > 0.06) {
+        const o = i * 16;
+        a[o] *= f; a[o+1] *= f; a[o+2] *= f;
+        a[o+8] *= f; a[o+9] *= f; a[o+10] *= f;
+        fnBusRi[i] = rT;
+        dirty = true;
+      }
+    }
+    if (dirty) fnBus.instanceMatrix.needsUpdate = true;
+  }
   // camera tween (focus / back-stack); a user drag cancels it
   if (camTween) {
     const u = Math.min(1, (performance.now() - camTween.t0) / camTween.dur);
@@ -2995,6 +3017,8 @@ function updateHubs() {
 let fnMesh = null, fnLines = null, fnStalks = null, fnMeta = [], fnArrows = null, fnQuiet = null;
 let fnTrunkN = 0;   // file-pair bus trunks in the current fn layer (via __dbg)
 let fnBus = null;   // trunk conduit bodies (InstancedMesh cylinders)
+let busPts = null;  // segment endpoints for per-frame screen-constant rescale
+let fnBusRi = null; // current per-segment radius (world units)
 
 // ---- focus labels: name neighboring files + function satellites on focus ----
 const flabsEl = document.getElementById("flabs");
@@ -3102,7 +3126,7 @@ function rebuildFnLayer(focusing) {
   if (fnMesh) { scene.remove(fnMesh); fnMesh.geometry.dispose(); fnMesh.dispose(); fnMesh = null; }
   if (fnLines) { scene.remove(fnLines); fnLines.geometry.dispose(); fnLines = null; }
   if (fnQuiet) { scene.remove(fnQuiet); fnQuiet.geometry.dispose(); fnQuiet = null; }
-  if (fnBus) { scene.remove(fnBus); fnBus.geometry.dispose(); fnBus = null; }
+  if (fnBus) { scene.remove(fnBus); fnBus.geometry.dispose(); fnBus = null; busPts = null; fnBusRi = null; }
   if (fnArrows) { scene.remove(fnArrows); fnArrows.geometry.dispose(); fnArrows = null; }
   if (fnStalks) { scene.remove(fnStalks); fnStalks.geometry.dispose(); fnStalks = null; }
   fnMeta = [];
@@ -3381,8 +3405,18 @@ function rebuildFnLayer(focusing) {
     const sf = +parts[0], tf = +parts[1];
     const c0 = fnCen.get(sf), c1 = fnCen.get(tf);
     if (!c0 || !c1) continue;
-    const p0 = surf(sf, [c0[0]/fnCnt.get(sf), c0[1]/fnCnt.get(sf), c0[2]/fnCnt.get(sf)]);
-    const p1 = surf(tf, [c1[0]/fnCnt.get(tf), c1[1]/fnCnt.get(tf), c1[2]/fnCnt.get(tf)]);
+    let p0 = surf(sf, [c0[0]/fnCnt.get(sf), c0[1]/fnCnt.get(sf), c0[2]/fnCnt.get(sf)]);
+    let p1 = surf(tf, [c1[0]/fnCnt.get(tf), c1[1]/fnCnt.get(tf), c1[2]/fnCnt.get(tf)]);
+    // bus stop: pull BOTH ends 16% off the sphere surfaces — the tube must
+    // terminate in open air where the tap fan lands, not melt into the sphere
+    // (the user: "bus is just straight up going into the world manager")
+    for (const p of [p0, p1]) {
+      const fi = p === p0 ? sf : tf;
+      const dx = p[0] - pos[fi*3], dy = p[1] - pos[fi*3+1], dz = p[2] - pos[fi*3+2];
+      const l = Math.hypot(dx, dy, dz) || 1;
+      const pull = sphR(fi) * 0.16;
+      p[0] += dx / l * pull; p[1] += dy / l * pull; p[2] += dz / l * pull;
+    }
     // trunk color = DESTINATION FILE's cluster color (colArr is per-file;
     // fcol is per-fn-box — indexing it by file reads garbage => black tubes)
     const tc = [colArr[tf*3], colArr[tf*3+1], colArr[tf*3+2]];
@@ -3456,7 +3490,7 @@ function rebuildFnLayer(focusing) {
       const d = bx.clone().sub(ax), len = d.length() || 1;
       Q.setFromUnitVectors(UP, d.normalize());
       V.copy(ax).addScaledVector(d, len / 2);
-      S1.set(5, len, 5);   // fat conduit: must read as a BUS at ball-fit distance
+      S1.set(4, len, 4);   // base radius — tick rescales to keep ~4px on screen
       M.compose(V, Q, S1);
       fnBus.setMatrixAt(k, M);
       fnBus.setColorAt(k, C.setRGB(s.col[0], s.col[1], s.col[2]));
@@ -3464,6 +3498,8 @@ function rebuildFnLayer(focusing) {
     fnBus.instanceMatrix.needsUpdate = true;
     if (fnBus.instanceColor) fnBus.instanceColor.needsUpdate = true;
     fnBus.frustumCulled = false;
+    busPts = busSegs;
+    fnBusRi = new Float32Array(busSegs.length).fill(4);
     scene.add(fnBus);
   }
   if (aPos.length) {
@@ -5446,7 +5482,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnLines() { return fnLines; }, get hubRing() { return hubRing; },
   get fnArrows() { return fnArrows; }, get compactBallR() { return compactBallR; },
   get fnQuiet() { return fnQuiet; }, get fnTrunkN() { return fnTrunkN; },
-  get fnBus() { return fnBus; },
+  get fnBus() { return fnBus; }, get fnBusPx() { return fnBusRi; },
   get litSet() { return compactIdx; }, get compactScale() { return compactScale; },
   get overlaps() { return compactOverlaps; },
   get camTween() { return camTween; }, get focusStack() { return focusStack; },
