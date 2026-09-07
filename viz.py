@@ -3749,6 +3749,13 @@ function mapRender() {
     }
     mapRects.push(rc);
   });
+  // progressive disclosure at full admit: scope to the focus seed by
+  // default - ONE file's named wiring at a time, never the whole hairball.
+  // Roster-row clicks re-scope (existing L3), toggling the row releases.
+  if (mapFullAdmit) {
+    const sd = focusSeeds.values().next();
+    if (!sd.done) mapFrozenIx = sd.value;
+  }
   mapLayout = {
     key, sig, lit, edges, E, place, geo, rects, wires, spines, underlays,
     chips, labels, rosterRows, expandedSet: expand, worldH, capNote,
