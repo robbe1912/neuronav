@@ -1920,6 +1920,7 @@ function tick() {
     const lod = Math.max(0, Math.min(1, (2.8 * compactBallR - cd) / (0.9 * compactBallR)));
     fnLines.material.opacity = 0.75 * lod;
     if (fnQuiet) fnQuiet.material.opacity = 0.16 * lod;
+    if (fnBus) fnBus.material.opacity = 0.35 + 0.65 * lod;
     if (fnArrows) fnArrows.material.opacity = 0.9 * lod;
   }
   // camera tween (focus / back-stack); a user drag cancels it
@@ -2993,6 +2994,7 @@ function updateHubs() {
 // ---- function-level layer (files inside the current focus) -------------------
 let fnMesh = null, fnLines = null, fnStalks = null, fnMeta = [], fnArrows = null, fnQuiet = null;
 let fnTrunkN = 0;   // file-pair bus trunks in the current fn layer (via __dbg)
+let fnBus = null;   // trunk conduit bodies (InstancedMesh cylinders)
 
 // ---- focus labels: name neighboring files + function satellites on focus ----
 const flabsEl = document.getElementById("flabs");
@@ -3100,6 +3102,7 @@ function rebuildFnLayer(focusing) {
   if (fnMesh) { scene.remove(fnMesh); fnMesh.geometry.dispose(); fnMesh.dispose(); fnMesh = null; }
   if (fnLines) { scene.remove(fnLines); fnLines.geometry.dispose(); fnLines = null; }
   if (fnQuiet) { scene.remove(fnQuiet); fnQuiet.geometry.dispose(); fnQuiet = null; }
+  if (fnBus) { scene.remove(fnBus); fnBus.geometry.dispose(); fnBus = null; }
   if (fnArrows) { scene.remove(fnArrows); fnArrows.geometry.dispose(); fnArrows = null; }
   if (fnStalks) { scene.remove(fnStalks); fnStalks.geometry.dispose(); fnStalks = null; }
   fnMeta = [];
@@ -3318,7 +3321,7 @@ function rebuildFnLayer(focusing) {
     dirB.set(b, d);
   }
   const Jof = new Map();
-  for (const [b, n] of inB) if (n >= 3) {
+  for (const [b, n] of inB) if (n >= 2) {
     const d = dirB.get(b);
     const l = Math.hypot(d[0], d[1], d[2]) || 1;
     Jof.set(b, [fpos[b*3] + d[0] / l * 14, fpos[b*3+1] + d[1] / l * 14,
@@ -3371,6 +3374,7 @@ function rebuildFnLayer(focusing) {
     return [pos[fi*3] + dx / l * r, pos[fi*3+1] + dy / l * r, pos[fi*3+2] + dz / l * r];
   };
   const trunkMid = new Map();
+  const busSegs = [];   // {a:[x,y,z], b:[x,y,z], col:[r,g,b]} conduit pieces
   fnTrunkN = 0;
   for (const k of trunked) {
     const parts = k.split(">");
@@ -3382,9 +3386,26 @@ function rebuildFnLayer(focusing) {
     const mx = (p0[0]+p1[0])/2, my = (p0[1]+p1[1])/2, mz = (p0[2]+p1[2])/2;
     emitArc(tierB, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
             fcol[tf*3], fcol[tf*3+1], fcol[tf*3+2],
-            fcol[tf*3], fcol[tf*3+1], fcol[tf*3+2], 0, 0.10, true);
-    trunkMid.set(k, [mx, my, mz]);
+            fcol[tf*3], fcol[tf*3+1], fcol[tf*3+2], 0, 0.30, true);
     fnTrunkN++;
+    // conduit body: the bus must have PHYSICAL presence — a 1px line among
+    // 1px lines reads as nothing (the user: "converges but no bus line").
+    // Lift 0.30 arcs the bus OVER the fn-box crowd around the spheres.
+    const dist = Math.hypot(p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2]) || 1;
+    const lsgn = (p0[0] + p0[1] + p0[2] <= p1[0] + p1[1] + p1[2]) ? 1 : -1;
+    const lift = 0.30 * dist * lsgn;
+    trunkMid.set(k, [mx, my + lift, mz]);
+    const qx = (p0[0]+p1[0])/2, qy = (p0[1]+p1[1])/2 + lift, qz = (p0[2]+p1[2])/2;
+    let bx2 = p0[0], by2 = p0[1], bz2 = p0[2];
+    for (let s = 1; s <= FS; s++) {
+      const t = s / FS, u = 1 - t;
+      const x = u*u*p0[0] + 2*u*t*qx + t*t*p1[0];
+      const y = u*u*p0[1] + 2*u*t*qy + t*t*p1[1];
+      const z = u*u*p0[2] + 2*u*t*qz + t*t*p1[2];
+      busSegs.push({ a: [bx2, by2, bz2], b: [x, y, z],
+                     col: [fcol[tf*3], fcol[tf*3+1], fcol[tf*3+2]] });
+      bx2 = x; by2 = y; bz2 = z;
+    }
   }
   for (let i = 0, p = 0; i < eidx.length; i += 2, p++) {
     const a = eidx[i], b = eidx[i+1];
@@ -3422,6 +3443,28 @@ function rebuildFnLayer(focusing) {
   };
   fnLines = makeWires(tierB, 0.75);
   if (tierQ.ep.length) fnQuiet = makeWires(tierQ, 0.16);
+  if (busSegs.length) {
+    const cyl = new THREE.CylinderGeometry(1, 1, 1, 6);
+    fnBus = new THREE.InstancedMesh(cyl, new THREE.MeshBasicMaterial({
+      transparent: true, opacity: 1.0 }), busSegs.length);
+    const M = new THREE.Matrix4(), Q = new THREE.Quaternion(),
+          V = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0),
+          S1 = new THREE.Vector3(), C = new THREE.Color();
+    busSegs.forEach((s, k) => {
+      const ax = new THREE.Vector3(...s.a), bx = new THREE.Vector3(...s.b);
+      const d = bx.clone().sub(ax), len = d.length() || 1;
+      Q.setFromUnitVectors(UP, d.normalize());
+      V.copy(ax).addScaledVector(d, len / 2);
+      S1.set(5, len, 5);   // fat conduit: must read as a BUS at ball-fit distance
+      M.compose(V, Q, S1);
+      fnBus.setMatrixAt(k, M);
+      fnBus.setColorAt(k, C.setRGB(s.col[0], s.col[1], s.col[2]));
+    });
+    fnBus.instanceMatrix.needsUpdate = true;
+    if (fnBus.instanceColor) fnBus.instanceColor.needsUpdate = true;
+    fnBus.frustumCulled = false;
+    scene.add(fnBus);
+  }
   if (aPos.length) {
     const arrowGeo = new THREE.ConeGeometry(2.4, 7, 6);
     const arrowMat = new THREE.MeshBasicMaterial({ transparent: true,
@@ -5402,6 +5445,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnLines() { return fnLines; }, get hubRing() { return hubRing; },
   get fnArrows() { return fnArrows; }, get compactBallR() { return compactBallR; },
   get fnQuiet() { return fnQuiet; }, get fnTrunkN() { return fnTrunkN; },
+  get fnBus() { return fnBus; },
   get litSet() { return compactIdx; }, get compactScale() { return compactScale; },
   get overlaps() { return compactOverlaps; },
   get camTween() { return camTween; }, get focusStack() { return focusStack; },
