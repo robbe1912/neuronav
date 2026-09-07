@@ -167,6 +167,93 @@ def run_tests():
         check("fn boxes orbit owner sphere", vic.get("maxOff", 99) <= 30,
               f"maxOff={vic.get('maxOff')} count={vic.get('count')}")
 
+        # 4b. hub budget: focusing the highest-degree node lights at most
+        # HUB_EDGE_BUDGET (12) links fully; every other visible link drops
+        # to ghost ink (rendered brightness <= 0.12) instead of the old
+        # wire-salad starburst. Hover bypass starts inactive (no pointer).
+        hb = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const lit = d.budgetLit ? [...d.budgetLit] : [];
+                 const bright = i => {
+                   const ib = d.bucketColIB[d.bucketOf[i]];
+                   const s = (d.hwSlot[i] >= 0 ? d.hwSlot[i] : d.slotOf[i] * 6);
+                   return Math.max(ib.array[s], ib.array[s+1], ib.array[s+2]);
+                 };
+                 let leaks = 0, worst = 0, litBright = 0;
+                 for (let i = 0; i < d.links.length; i++) {
+                   const b = bright(i);
+                   if (lit.includes(i)) { if (b > 0.12) litBright++; continue; }
+                   if (b > 0.12) leaks++;
+                   worst = Math.max(worst, b);
+                 }
+                 return { lit: lit.length, litBright, leaks, worst }; }"""
+        )
+        check("hub budget: <= 12 lit edges on focus",
+              hb and hb["lit"] <= 12 and hb["litBright"] == hb["lit"], str(hb))
+        check("hub budget: ghost links <= 0.12 brightness",
+              hb and hb["leaks"] == 0, str(hb))
+
+        # 4c. fn layer: UNCAPPED between lit files (focus-neighborhood
+        # amendment — every fn interconnection between lit files renders;
+        # HUB_FN_BUDGET retired). fnLines = LineSegments, 2 verts per wire.
+        # The focused hub also carries the additive halo ring.
+        fnb = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const wires = d.fnLines ?
+                     d.fnLines.geometry.attributes.position.count / 2 : 0;
+                 const lit = new Set();
+                 for (let i = 0; i < d.level.length; i++)
+                   if (d.level[i] >= 0 && d.level[i] <= 1) lit.add(i);
+                 let expect = 0;
+                 (d.fedges || []).forEach(e => {
+                   if (lit.has(e[0]) && lit.has(e[2]) &&
+                       d.alphaTgt[e[0]] > 0.5 && d.alphaTgt[e[2]] > 0.5) expect++; });
+                 return { wires, expect, litFiles: lit.size,
+                          ring: !!(d.hubRing && d.hubRing.visible) }; }"""
+        )
+        check("fn layer: every fn wire between lit files (no cap)",
+              fnb["wires"] == fnb["expect"] and fnb["expect"] > 0, str(fnb))
+        check("hub ring marks the focused hub", fnb["ring"], str(fnb))
+
+        # 4d. pin topology: budgeted wires attach at DISTINCT rim points —
+        # each budget wire's hub attachment bearing must deviate from the
+        # direct center-to-center bearing (Rodrigues fan, ±0.22 rad)
+        pins = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const lit = [...(d.budgetLit || [])];
+                 if (lit.length < 3) return { skip: true };
+                 const att = i => {
+                   const ib = d.bucketPosIB[d.bucketOf[i]];
+                   const s = (d.hwSlot[i] >= 0 ? d.hwSlot[i] : d.slotOf[i] * 6);
+                   return [ib.array[s], ib.array[s+1], ib.array[s+2]];
+                 };
+                 const hs = d.links[lit[0]].s;
+                 let off = 0, n = 0;
+                 for (const i of lit) {
+                   const l = d.links[i];
+                   if (l.s !== hs && l.t !== hs) continue;
+                   n++;
+                   const p = att(i);
+                   const vx = p[0] - d.pos[hs*3], vy = p[1] - d.pos[hs*3+1],
+                         vz = p[2] - d.pos[hs*3+2];
+                   const other = l.s === hs ? l.t : l.s;
+                   const dx = d.pos[other*3] - d.pos[hs*3],
+                         dy = d.pos[other*3+1] - d.pos[hs*3+1],
+                         dz = d.pos[other*3+2] - d.pos[hs*3+2];
+                   const vl = Math.sqrt(vx*vx + vy*vy + vz*vz) || 1;
+                   const dl = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
+                   const cosA = (vx*dx + vy*dy + vz*dz) / (vl * dl);
+                   if (Math.acos(Math.max(-1, Math.min(1, cosA))) > 0.02) off++;
+                 }
+                 return { n, off }; }"""
+        )
+        check("pin topology: rim attachments off direct bearing",
+              pins.get("skip") or (pins["n"] >= 1 and pins["off"] >= pins["n"] - 2),
+              str(pins))
+
+        page.screenshot(path=str(ROOT / "tests" / "qa_hubbudget.png"),
+                        scale="css", type="png")
+
         # 5. hover a fn box -> tooltip shows path :: name
         hover = page.evaluate(
             """() => { const d = window.__dbg;
@@ -1020,19 +1107,35 @@ def run_tests():
                 check("map bundle chips present",
                       bool(minfo) and minfo.get("chips", 0) > 0, str(minfo))
             else:
-                print("SKIP map bundle chips — no multi-wire pair in this index")
-            # label ladder: per-target budget 2 holds and something is shown
-            check("map label ladder budget",
-                  bool(minfo) and minfo.get("budgetOk")
-                  and minfo.get("labels", 1) <= 2 * max(1, minfo.get("labelTargets", 0)),
+                print("SKIP map bundle chips - no multi-wire pair in this index")
+            # quiet edges (addendum rule 5): no wire text fields; wires still flow
+            check("map quiet edges: label fields removed",
+                  bool(minfo) and "labels" not in minfo
+                  and "shownLabels" not in minfo
+                  and minfo.get("wires", 0) > 0,
                   str(minfo))
-            check("map labels shown",
-                  bool(minfo) and (minfo.get("shownLabels", 0) > 0
-                                   or not minfo.get("namedOK")),   # reduced tier hides them
-                  str(minfo))
-            if minfo and not minfo.get("namedOK"):
-                check("map reduced tier hides fn labels",
-                      minfo.get("shownLabels", 0) == 0, str(minfo))
+            # routed edges (addendum rule 3): no diagonal center-to-center
+            # runs - S-curves keep vertical tangents, ortho allows only the
+            # <=8px corner chamfers
+            ra = page.evaluate(
+                """() => { const L = window.__dbg.mapLayout; if (!L) return null;
+                     let bez = 0, vt = 0, diag = 0, maxCh = 0;
+                     const aud = arr => (arr || []).forEach(w => {
+                       if (w.bez) { bez++;
+                         if (w.c1 && w.c1[0] === w.pts[0][0] &&
+                             w.c2 && w.c2[0] === w.pts[1][0]) vt++;
+                       } else {
+                         for (let i = 1; i < w.pts.length; i++) {
+                           const dx = Math.abs(w.pts[i][0] - w.pts[i-1][0]);
+                           const dy = Math.abs(w.pts[i][1] - w.pts[i-1][1]);
+                           if (dx > 0.01 && dy > 0.01) { diag++;
+                             maxCh = Math.max(maxCh, Math.min(dx, dy)); } } } });
+                     aud(L.wires); aud(L.spines);
+                     return { bez, vt, diag, maxCh: +maxCh.toFixed(1) }; }""")
+            check("map routed edges: no diagonal runs",
+                  bool(ra) and ra["bez"] > 0 and ra["vt"] == ra["bez"]
+                  and ra["maxCh"] <= 8.01,
+                  str(ra))
             # vars chip: off at boot, toggles via a real click on its rect
             check("map vars chip default off",
                   page.evaluate("() => !window.__dbg.mapVars"))
@@ -1045,27 +1148,84 @@ def run_tests():
             page.mouse.click(bb["x"] + 31, bb["y"] + 34)
             page.wait_for_timeout(300)
             # L2: click the first named wire -> showFnInfo panel (CALLED BY
-            # section), full caller list, no "+N more hidden" 24-cap
-            probe = page.evaluate("() => window.__dbg.mapInfo().probeWire")
-            if probe:
-                bb = page.evaluate(
-                    "() => document.getElementById('mapPane').getBoundingClientRect()")
-                page.mouse.click(bb["x"] + probe["sx"], bb["y"] + probe["sy"])
+            # section), full caller list, no "+N more hidden" 24-cap.
+            # ONE layout is dense: wire midpoints can sit under a box or
+            # chip (they outrank wires in hit priority, and chips anchor at
+            # wire midpoints) - scan segment quarter points for one clear
+            # of both, on an orthogonal (lane-routed) wire only.
+            wpt = page.evaluate("""() => {
+                const L = window.__dbg.mapLayout; if (!L) return null;
+                const pane = document.getElementById('mapPane');
+                const pw = pane.clientWidth, ph = pane.clientHeight;
+                const px = window.__dbg.mapPX, py = window.__dbg.mapPY,
+                      z = window.__dbg.mapZ;
+                const covered = (sx, sy) =>
+                    // rects are x0/x1/y0/y1 world bands (L3567), not x/y/w/h
+                    L.rects.some(r => sx > (r.x0 - px) * z && sx < (r.x1 - px) * z
+                                  && sy > (r.y0 - py) * z && sy < (r.y1 - py) * z)
+                    || (L.chips || []).some(c =>
+                        sx > (c.x - px) * z && sx < (c.x + c.w - px) * z
+                        && sy > (c.y - py) * z && sy < (c.y + c.h - py) * z);
+                for (const w of L.wires) {
+                    if (w.bez) continue;
+                    // var wires open the FILE panel by design (member target
+                    // is not a fn) - probe only fn-bearing wires
+                    if (w.ty === 'var') continue;
+                    for (let k = 1; k < w.pts.length; k++) {
+                        for (const t of [0.5, 0.25, 0.75]) {
+                            const wx = w.pts[k-1][0] + (w.pts[k][0] - w.pts[k-1][0]) * t;
+                            const wy = w.pts[k-1][1] + (w.pts[k][1] - w.pts[k-1][1]) * t;
+                            const sx = (wx - px) * z, sy = (wy - py) * z;
+                            if (sx > 4 && sy > 4 && sx < pw - 4 && sy < ph - 4
+                                && !covered(sx, sy)) {
+                                // diag: replica of product mapWireAt (6px
+                                // screen tol, bez cubics sampled) at this aim
+                                const tol = 6 / z, near = [];
+                                const segd = (ax, ay, bx, by) => {
+                                    const dx = bx - ax, dy = by - ay, L2 = dx*dx + dy*dy || 1;
+                                    const tt = Math.max(0, Math.min(1, ((wx-ax)*dx + (wy-ay)*dy) / L2));
+                                    return Math.hypot(wx - ax - tt*dx, wy - ay - tt*dy); };
+                                L.wires.forEach((nw, nix) => {
+                                    let bd = 1e9;
+                                    if (nw.bez) {
+                                        if (!nw.c1 || !nw.c2) return;
+                                        for (let s = 0; s <= 24; s++) {
+                                            const u = s / 24, iu = 1 - u;
+                                            const x = iu*iu*iu*nw.pts[0][0] + 3*iu*iu*u*nw.c1[0] + 3*iu*u*u*nw.c2[0] + u*u*u*nw.pts[1][0];
+                                            const y = iu*iu*iu*nw.pts[0][1] + 3*iu*iu*u*nw.c1[1] + 3*iu*u*u*nw.c2[1] + u*u*u*nw.pts[1][1];
+                                            bd = Math.min(bd, Math.hypot(wx - x, wy - y));
+                                        }
+                                    } else {
+                                        for (let q = 1; q < nw.pts.length; q++)
+                                            bd = Math.min(bd, segd(nw.pts[q-1][0], nw.pts[q-1][1], nw.pts[q][0], nw.pts[q][1]));
+                                    }
+                                    if (bd <= tol) near.push({ ix: nix, ty: nw.ty, tyT: typeof nw.ty, dfn: nw.dfn, d: +bd.toFixed(2) });
+                                });
+                                near.sort((a, b) => a.d - b.d);
+                                return { sx, sy, near: near.slice(0, 6) };
+                            }
+                        }
+                    }
+                }
+                return null; }""")
+            if wpt:
+                page.mouse.click(bb["x"] + wpt["sx"], bb["y"] + wpt["sy"])
                 page.wait_for_timeout(300)
                 fn_info = page.evaluate(
                     """() => ({ open: document.getElementById('info').style.display === 'block',
                          title: document.getElementById('iTitle').textContent })""")
                 check("map wire click opens fn panel",
-                      fn_info["open"] and fn_info["title"].endswith("()"), str(fn_info))
+                      fn_info["open"] and fn_info["title"].endswith("()"),
+                      str(fn_info) + " aim=" + str(wpt))
                 check("fn panel lists all callers (no 24-cap)",
                       page.locator("#iUsedBy li.more").count() == 0)
             else:
-                print("SKIP map wire click — no probeable wire")
+                print("SKIP map wire click - no clear wire point")
             # corridor trunk consolidation (declutter): corridors spanning
-            # the same chunk-row hop share one trunk — distinct stroked
+            # the same chunk-row hop share one trunk - distinct stroked
             # corridor polylines must drop below the admitted corridor
             # count. Data-gated: E>12 AND same-hop groups present in this
-            # index/focus (fit layout, after the probe above — a wire
+            # index/focus (fit layout, after the probe above - a wire
             # click opens the info panel without relayout).
             zinfo = page.evaluate("() => window.__dbg.mapInfo()")
             if zinfo and zinfo.get("E", 0) > 12 and zinfo.get("trunkGroups", 0) > 0:
@@ -1075,229 +1235,96 @@ def run_tests():
                           zinfo.get("spineTotal", 0) + zinfo.get("wires", 0),
                       str(zinfo))
             else:
-                print(f"SKIP map trunk consolidation — {zinfo}")
+                print(f"SKIP map trunk consolidation - {zinfo}")
 
-            # 8b. wiring document (full admit): EXACTLY ONE file's wiring —
-            # scope box + paged 1-hop neighbors drawn, all other boxes absent,
-            # only scope-incident named wires; neighbor click re-scopes the
-            # document, dblclick still refocuses the 3D. Non-neighbor claims
-            # are recomputed in Python from mwires RAW 1-hop sets mirrored to
-            # the renderer gate: endpoints must exist in nodes and pass the
-            # node chips (defaults hide tests/ + tools/); wire-type chips do
-            # NOT gate document membership, only wire drawing.
-            paths = page.evaluate("() => window.__dbg.nodes.map(n => n.path)")
-
-            def is_doc_visible(j):
-                p = paths[j]
-                return not (p.startswith("tests/") or p.startswith("tools/")
-                            or p[p.rfind("/") + 1:].startswith("test_"))
-
-            def raw_1hop(ix, all_peers=False):
-                s = set()
-                for w in mw:
-                    for a, b in ((w[1], w[3]), (w[3], w[1])):
-                        if a == ix and b != ix and 0 <= b < len(paths) \
-                                and (all_peers or is_doc_visible(b)):
-                            s.add(b)
-                return s
-            bb = page.evaluate(
+            # 8b. ONE layout at every zoom (tier system deleted): the wiring
+            # diagram above is THE layout - zooming out must NEVER collapse
+            # it into band trunks, zooming in must never re-scope or
+            # rearrange it, and drag = pan must hold at every zoom.
+            mbb = page.evaluate(
                 "() => document.getElementById('mapPane').getBoundingClientRect()")
-            # scope file: the unique-labeled file with the most incident named
-            # wires (a scene file high in inst edges has none - empty document)
-            labels = page.evaluate("() => window.__dbg.nodes.map(n => n.label)")
-            cnt = {}
-            for w in mw:
-                for j in (w[1], w[3]):
-                    cnt[j] = cnt.get(j, 0) + 1
-            nseed = max(cnt, key=lambda j: (cnt[j]
-                        if labels.count(labels[j]) == 1 else -1, -j))
-            page.fill("#search", labels[nseed])
-            page.dispatch_event("#search", "input")
-            page.wait_for_timeout(900)
-            page.mouse.move(bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2)
-            for _ in range(6):   # ~1.0 * 1.15^6 ≈ 2.3 → full-admit latch
+            mcx, mcy = mbb["x"] + mbb["width"] / 2, mbb["y"] + mbb["height"] / 2
+
+            def mstruct():
+                return page.evaluate("""() => { const m = window.__dbg.mapInfo() || {};
+                    return { E: m.E, wires: m.wires, chips: m.chips,
+                             boxIxs: m.boxIxs, rosterRows: m.rosterRows,
+                             probe: m.probeWire }; }""")
+
+            mkeys = ("E", "wires", "chips", "boxIxs", "rosterRows")
+            mbase = mstruct()
+            # zoom in far: same structure, just scaled
+            page.mouse.move(mcx, mcy)
+            for _ in range(10):
                 page.mouse.wheel(0, -120)
-            page.wait_for_timeout(600)
-            doc1 = page.evaluate("() => window.__dbg.mapInfo()")
-            check("full admit engages as a wiring document",
-                  bool(doc1) and doc1.get("fullAdmit") and doc1.get("docIx") == nseed,
-                  str({k: (doc1 or {}).get(k)
-                       for k in ("fullAdmit", "docIx")} | {"want": nseed}))
-            hop1 = raw_1hop(nseed) | {nseed}
-            boxes1 = sorted((doc1 or {}).get("boxIxs", []))
-            stray = [i for i in boxes1 if i not in hop1]
-            check("full admit: non-neighbor boxes drawn === 0 (top-20 cap held)",
-                  bool(doc1) and doc1.get("fullAdmit") and not stray
-                  and 2 <= len(boxes1) <= 21,
-                  f"stray={stray} drawn={boxes1} raw1hop={len(hop1) - 1}")
-            check("full admit: scope's named wires render (scope-incident only)",
-                  bool(doc1) and doc1.get("wires", 0) > 0 and doc1.get("docWireOk"),
-                  str({k: (doc1 or {}).get(k)
-                       for k in ("wires", "docWireOk", "docIx")}))
-            page.screenshot(path=str(ROOT / "tests" / "qa_map_doc.png"),
+                page.wait_for_timeout(60)
+            page.wait_for_timeout(500)
+            zin = mstruct()
+            check("zoom-in keeps the ONE layout (no re-scope, no relayout)",
+                  all(zin[k] == mbase[k] for k in mkeys), f"{mbase} -> {zin}")
+            page.screenshot(path=str(ROOT / "tests" / "qa_map_zoomin.png"),
                             scale="css", type="png")
-            print("artifact: tests/qa_map_doc.png")
-            # neighbor click re-scopes the document; 3D focus stays on the seed
-            pb = (doc1 or {}).get("probeBox")
-            check("full admit: probeable neighbor box", bool(pb),
-                  str((doc1 or {}).get("boxIxs")))
-            if pb:
-                page.mouse.click(bb["x"] + pb["sx"], bb["y"] + pb["sy"])
-                page.wait_for_timeout(500)   # 220ms discriminator + relayout
-                doc2 = page.evaluate("() => window.__dbg.mapInfo()")
-                seeds2 = page.evaluate("() => [...window.__dbg.focusSeeds]")
-                hop2 = raw_1hop(pb["i"]) | {pb["i"]}
-                boxes2 = sorted(doc2.get("boxIxs", []))
-                stray2 = [i for i in boxes2 if i not in hop2]
-                check("full admit: neighbor click re-scopes the document",
-                      doc2.get("docIx") == pb["i"] and not stray2
-                      and 2 <= len(boxes2) <= 21
-                      and doc2.get("docWireOk") and seeds2 == [],
-                      f"docIx={doc2.get('docIx')} want={pb['i']} stray={stray2} "
-                      f"boxes={len(boxes2)} seeds={seeds2} wires={doc2.get('wires')}")
-                page.screenshot(path=str(ROOT / "tests" / "qa_map_doc_rescope.png"),
-                                scale="css", type="png")
-                print("artifact: tests/qa_map_doc_rescope.png")
-                pb2 = doc2.get("probeBox")
-                if pb2:
-                    page.mouse.dblclick(bb["x"] + pb2["sx"], bb["y"] + pb2["sy"])
-                    page.wait_for_timeout(400)
-                    seeds3 = page.evaluate("() => [...window.__dbg.focusSeeds]")
-                    check("full admit: dblclick still refocuses the 3D",
-                          seeds3 == [pb2["i"]], f"focusSeeds={seeds3}")
-            # "+N more" pager: the scope's full 1-hop set only clears 20
-            # neighbors once tests/tools files are visible (tests chip) and
-            # the BFS depth is 1 (shallow lit stays under the connectivity
-            # cap) - docNb crosses 20 and the pager pill shows. Esc first:
-            # the dblclick test above left a scene file focused, which would
-            # hijack the doc scope (scene files have no named wires).
-            def wheel_into_doc(tries, wait=150):
-                for _ in range(tries):
-                    page.mouse.wheel(0, -120)
-                    page.wait_for_timeout(wait)
-                    if ((page.evaluate("() => window.__dbg.mapInfo()") or {})
-                            .get("fullAdmit")):
-                        return True
-                return False
-            page.keyboard.press("Escape")
-            page.wait_for_timeout(400)
-            # subject preservation (defect-4 fix) keeps the previous doc scope
-            # alive; drop it so the latch reselects the search's top hub
-            page.evaluate("() => window.__dbg.resetDoc()")
-            page.evaluate("""() => { const c = [...document.querySelectorAll('#dirs .chip')]
-                .find(x => x.textContent.trim() === 'tests'); c.click(); }""")
-            page.wait_for_timeout(400)
-            # search the stem (not the full label): the wider match set keeps
-            # lit above the connectivity cap, which degree-sorts it and makes
-            # the top-degree hub the document scope (deterministic lit[0])
-            page.fill("#search", labels[nseed].split(".")[0])
-            page.dispatch_event("#search", "input")
-            page.wait_for_timeout(900)
-            page.evaluate("() => { const d = document.getElementById('depth');"
-                          " d.value = 1; d.dispatchEvent(new Event('input')); }")
+            print("artifact: tests/qa_map_zoomin.png")
+            # drag = pan zoomed in far: content follows the cursor 1:1 and
+            # HOLDS (the old doc re-center snap-back is gone)
+            page.mouse.move(mcx, mcy)
+            page.mouse.down()
+            page.mouse.move(mcx - 200, mcy - 150, steps=8)
+            page.mouse.up()
+            page.wait_for_timeout(120)
+            pan_mid = mstruct()
             page.wait_for_timeout(600)
-            wheel_into_doc(8)
-            page.wait_for_timeout(600)
-            docv = page.evaluate("() => window.__dbg.mapInfo()")
-            if (docv or {}).get("docNb", 0) <= 20:
-                print(f"SKIP map pager pill — docIx={(docv or {}).get('docIx')} "
-                      f"lit 1-hop neighbors {(docv or {}).get('docNb')} <= 20")
-            else:
-                pp = docv.get("probePill")
-                boxes0 = sorted(docv.get("boxIxs", []))
-                # tests chip is ON in this phase: membership spans every
-                # in-bounds mwires peer (wire type and path no longer gate)
-                hopv = raw_1hop(docv.get("docIx", -1), all_peers=True) | {docv.get("docIx")}
-                check("full admit: pager pill present", bool(pp),
-                      f"docIx={docv.get('docIx')} docNb={docv.get('docNb')} "
-                      f"pages={docv.get('docPages')}")
-                lbl = page.evaluate(
-                    f"() => __dbg.nodes[{docv.get('docIx')}].label")
-                check("doc header names the subject",
-                      (docv.get("docHdr") or {}).get("label") == lbl,
-                      f"docHdr={(docv.get('docHdr') or {}).get('label')} want={lbl}")
-                if pp:
-                    page.mouse.click(bb["x"] + pp["sx"], bb["y"] + pp["sy"])
-                    page.wait_for_timeout(500)
-                    docp = page.evaluate("() => window.__dbg.mapInfo()")
-                    strayp = [i for i in docp.get("boxIxs", []) if i not in hopv]
-                    check("full admit: pager pill advances a full page",
-                          docp.get("docIx") == docv.get("docIx")
-                          and docp.get("docPage", 0) == 1
-                          and docp.get("docPages", 1) > 1 and not strayp
-                          and sorted(docp.get("boxIxs", [])) != boxes0,
-                          f"page={docp.get('docPage')}/{docp.get('docPages')} "
-                          f"stray={strayp}")
-                    page.screenshot(path=str(ROOT / "tests" / "qa_map_doc_pill.png"),
-                                    scale="css", type="png")
-                    print("artifact: tests/qa_map_doc_pill.png")
-                    # pill shifts between pages ("+4 more" vs "+20 more"),
-                    # so re-derive its screen center from the new layout
-                    pp2 = docp.get("probePill") or pp
-                    page.mouse.click(bb["x"] + pp2["sx"], bb["y"] + pp2["sy"])
-                    page.wait_for_timeout(500)
-                    docp2 = page.evaluate("() => window.__dbg.mapInfo()")
-                    check("full admit: pager cycles back deterministically",
-                          docp2.get("docPage", -1) == 0
-                          and sorted(docp2.get("boxIxs", [])) == boxes0,
-                          f"page={docp2.get('docPage')} "
-                          f"same={sorted(docp2.get('boxIxs', [])) == boxes0}")
+            pan = mstruct()
+            pr0, pr1 = zin["probe"], pan["probe"]
+            moved = pr0 and pr1 and abs(pr1["sx"] - pr0["sx"] + 200) < 30 \
+                and abs(pr1["sy"] - pr0["sy"] + 150) < 30
+            check("drag pans content zoomed-in (cursor-following)", moved,
+                  f"{pr0} -> {pr1}")
+            check("pan holds zoomed-in (no snap-back)",
+                  pan_mid["probe"] == pan["probe"],
+                  f"{pan_mid['probe']} vs {pan['probe']}")
+            check("pan does not change the layout",
+                  all(pan[k] == mbase[k] for k in mkeys), "")
+            page.screenshot(path=str(ROOT / "tests" / "qa_map_panned.png"),
+                            scale="css", type="png")
+            print("artifact: tests/qa_map_panned.png")
+            # zoom far out: SAME layout scaled - nothing collapses into
+            # band trunks, no doc re-scoping, boxes keep their rosters
+            page.mouse.move(mcx, mcy)
+            for _ in range(14):
+                page.mouse.wheel(0, 120)
+                page.wait_for_timeout(60)
+            page.wait_for_timeout(500)
+            zout = mstruct()
+            check("zoom-out keeps the ONE layout (no band-trunk collapse)",
+                  all(zout[k] == mbase[k] for k in mkeys), f"{mbase} -> {zout}")
+            check("zoom-out moved the view (scaled, not frozen)",
+                  zout["probe"] != zin["probe"], "")
+            page.screenshot(path=str(ROOT / "tests" / "qa_map_zoomout.png"),
+                            scale="css", type="png")
+            print("artifact: tests/qa_map_zoomout.png")
+            # a wild pan must clamp the window inside the world, never
+            # strand the layout off-screen
+            page.mouse.move(mcx, mcy)
+            page.mouse.down()
+            page.mouse.move(mcx - 2000, mcy - 2000, steps=8)
+            page.mouse.up()
+            page.wait_for_timeout(400)
+            vw = page.evaluate("""() => ({ px: window.__dbg.mapPX,
+                py: window.__dbg.mapPY, z: window.__dbg.mapZ })""")
+            check("pan clamps the window inside the world",
+                  vw["px"] >= 0 and vw["py"] >= 0, str(vw))
             # restore defaults so later sections see the stock state
             page.evaluate("""() => { const c = [...document.querySelectorAll('#dirs .chip')]
                 .find(x => x.textContent.trim() === 'tests'); c.click(); }""")
             page.evaluate("() => { const d = document.getElementById('depth');"
                           " d.value = 2; d.dispatchEvent(new Event('input')); }")
             page.wait_for_timeout(400)
-            # zoom back out: the approved reduced tier returns (no doc scoping)
-            page.mouse.move(bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2)
-            for _ in range(8):
-                page.mouse.wheel(0, 120)
-            page.wait_for_timeout(500)
-            doc4 = page.evaluate("() => window.__dbg.mapInfo()")
-            check("zoom-out returns the reduced tier (document closed)",
-                  bool(doc4) and not doc4.get("fullAdmit")
-                  and doc4.get("E", 0) > 0,
-                  str({k: (doc4 or {}).get(k) for k in ("fullAdmit", "E")}))
-
-            page.screenshot(path=str(ROOT / "tests" / "qa_map.png"), scale="css", type="png")
-            print("artifact: tests/qa_map.png")
-            # defect-4: the document subject survives reduced <-> full roundtrip
-            wheel_into_doc(16)
-            page.wait_for_timeout(500)
-            doc5 = page.evaluate("() => window.__dbg.mapInfo()")
-            check("doc subject survives tier roundtrip",
-                  bool(doc5) and doc5.get("fullAdmit")
-                  and doc5.get("docIx") == docv.get("docIx"),
-                  f"docIx={(doc5 or {}).get('docIx')} want={docv.get('docIx')}")
-            for _ in range(8):
-                page.mouse.wheel(0, 120)
-                page.wait_for_timeout(60)
-            page.wait_for_timeout(400)
-            # defect-2: a flood search still latches a POPULATED document -
-            # neighbors come from mwires directly, not the search lit set
-            page.fill("#search", "gd")
-            page.dispatch_event("#search", "input")
-            page.wait_for_timeout(900)
-            # fresh seed: the flood path must SELECT a wired hub, not keep 566
-            page.evaluate("() => window.__dbg.resetDoc()")
-            wheel_into_doc(14)
-            page.wait_for_timeout(500)
-            doc6 = page.evaluate("() => window.__dbg.mapInfo()")
-            check("flood search latches a populated wiring document",
-                  bool(doc6) and doc6.get("fullAdmit")
-                  and (doc6.get("docNb") or 0) > 0 and bool(doc6.get("docHdr")),
-                  f"docIx={(doc6 or {}).get('docIx')} docNb={doc6.get('docNb')} "
-                  f"docHdr={(doc6 or {}).get('docHdr')}")
-            for _ in range(8):
-                page.mouse.wheel(0, 120)
-                page.wait_for_timeout(60)
-            page.wait_for_timeout(400)
-            page.fill("#search", labels[nseed].split(".")[0])
+            page.fill("#search", tok)
             page.dispatch_event("#search", "input")
             page.wait_for_timeout(500)
             page.evaluate("() => document.getElementById('bMap').click()")  # collapse pane
             page.keyboard.press("Escape")
-
         # artifact: screenshot of the focused fn-layer state
         page.screenshot(path=str(ROOT / "tests" / "last_run.png"), scale="css", type="png")
         print("artifact: tests/last_run.png")

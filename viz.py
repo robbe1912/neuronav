@@ -1110,8 +1110,8 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <input id="search" placeholder="search file / class…">
   <div id="depthRow">
     <span>depth</span>
-<input id="depth" type="range" min="1" max="3" value="2">
-<span id="depthVal">2</span>
+<input id="depth" type="range" min="1" max="3" value="1">
+<span id="depthVal">1</span>
 <span style="margin-left:10px">spread</span>
 <input id="spread" type="range" min="60" max="260" value="100" title="stretch the whole layout apart (scales from the centroid)">
 <span id="spreadVal">1.0</span>
@@ -1657,6 +1657,17 @@ links.forEach((l, i) => {
 // baked highway arc points by link index — syncEdgePos is the SINGLE
 // geometry owner for arcs (collapse + restore + spread attachment)
 const hwPts = new Map(hw);
+// hub-budget state lives here (above syncEdgePos, whose boot call reads
+// budgetLit for the pin-topology attachment — a later let would be TDZ)
+let budgetLit = null;   // link indices allowed to render lit this focus
+let hoverEdgeLi = -1;   // wire-hover budget bypass (hovered ghost wire)
+// focus-neighborhood compaction state (lit set = focus + 1-hop)
+let posSaved = null;      // frozen-layout snapshot taken at focus entry
+let compactTgt = null;    // compacted targets (Float32Array 3N) or null
+let compactIdx = [];      // lit-set node indices the ease animates
+let compactAnim = null;   // { t0, dur } while the ease runs, else null
+let compactScale = 1;     // exact-scale finisher factor (via __dbg)
+let compactOverlaps = 0;  // residual violations after the pass (must be 0)
 // attachment trim at node i's CURRENT body: its own sphere (world radius
 // sizes*1.1*sqrt(spread) + 2 margin), or the supernode (4 + sqrt(members)
 // + 2) when i's cluster is collapsed
@@ -1775,8 +1786,29 @@ function syncEdgePos() {
       return;
     }
     const ndx = ex / el, ndy = ey / el, ndz = ez / el;
-    a[o]   = dpos[s] + ndx * trimS + ox; a[o+1] = dpos[s+1] + ndy * trimS + oy; a[o+2] = dpos[s+2] + ndz * trimS;
-    a[o+3] = dpos[t] - ndx * trimT + ox; a[o+4] = dpos[t+1] - ndy * trimT + oy; a[o+5] = dpos[t+2] - ndz * trimT;
+    // pin topology (focus): budgeted lit wires attach at distinct points
+    // around the sphere rim — rotate the attachment bearing by a small
+    // deterministic per-link angle (Rodrigues around an axis perpendicular
+    // to the strand) so wires leaving a hub land at visibly separate pins
+    // instead of stacking on one bearing line. Rotation slides the trim
+    // point ALONG the surface, so the endpoint always sits on-rim.
+    // Overview and ghost edges keep the exact center-to-center bearing.
+    // budgetLit !== null only while a focus is active.
+    let rx = ndx, ry = ndy, rz = ndz;
+    if (budgetLit && budgetLit.has(i)) {
+      const spin = ((i % 9) - 4) * 0.055;   // ±0.22 rad deterministic fan
+      if (spin !== 0) {
+        let ax = ndy, ay = -ndx, az = 0;    // n × Z
+        if (ndx * ndx + ndy * ndy < 1e-6) { ax = 0; ay = ndz; az = -ndy; }  // n × X
+        const al = Math.sqrt(ax * ax + ay * ay + az * az) || 1;
+        ax /= al; ay /= al; az /= al;
+        const cs = Math.cos(spin), sn = Math.sin(spin);
+        const wx = ay * ndz - az * ndy, wy = az * ndx - ax * ndz, wz = ax * ndy - ay * ndx;
+        rx = ndx * cs + wx * sn; ry = ndy * cs + wy * sn; rz = ndz * cs + wz * sn;
+      }
+    }
+    a[o]   = dpos[s] + rx * trimS + ox; a[o+1] = dpos[s+1] + ry * trimS + oy; a[o+2] = dpos[s+2] + rz * trimS;
+    a[o+3] = dpos[t] - rx * trimT + ox; a[o+4] = dpos[t+1] - ry * trimT + oy; a[o+5] = dpos[t+2] - rz * trimT;
   });
   bucketPosIB.forEach(ib => { ib.needsUpdate = true; });
   // Line2 raycast short-circuits on geometry.boundingSphere AND
@@ -1866,6 +1898,25 @@ function tick() {
     camera.position.lerpVectors(camTween.fromC, camTween.toC, e);
     if (u >= 1) camTween = null;
   }
+  // focus-neighborhood compaction ease: pos walks from the saved layout to
+  // the compacted targets (cubic ease-out); syncEdgePos re-derives the fan
+  // per frame so wires stay attached while the set pulls together
+  if (compactAnim) {
+    const u = Math.min(1, (performance.now() - compactAnim.t0) / compactAnim.dur);
+    const e = 1 - Math.pow(1 - u, 3);
+    for (const i of compactIdx) {
+      pos[i*3]   = posSaved[i*3]   + (compactTgt[i*3]   - posSaved[i*3])   * e;
+      pos[i*3+1] = posSaved[i*3+1] + (compactTgt[i*3+1] - posSaved[i*3+1]) * e;
+      pos[i*3+2] = posSaved[i*3+2] + (compactTgt[i*3+2] - posSaved[i*3+2]) * e;
+    }
+    syncEdgePos();
+    // fn boxes orbit owner spheres — park the layer while the spheres
+    // travel, then rebuild it on the settled layout
+    if (fnMesh) fnMesh.visible = false;
+    if (fnStalks) fnStalks.visible = false;
+    if (fnLines) fnLines.visible = false;
+    if (u >= 1) { compactAnim = null; applyVisibility(); }
+  }
   // node alpha eases toward its target so filter/focus changes fade in
   // (visibility decisions read alphaTgt, so the fade is purely visual)
   for (let i = 0; i < N; i++) {
@@ -1885,6 +1936,33 @@ function tick() {
   updateEdgeLabels();
   updateXtLabels();
   updateFocusLabels();
+  // hub ring: marks the focused node so the budgeted wire fan reads as
+  // radiating from ONE subject; hidden in overview. Search focus fills
+  // query, not focusSeeds — fall back to the strongest level-0 node.
+  let ringHi = -1;
+  if (focusActive) {
+    if (focusSeeds.size) ringHi = focusSeeds.values().next().value;
+    else
+      for (let i = 0; i < N; i++)
+        if (level[i] === 0 && !supMem[i] &&
+            (ringHi < 0 || degree[i] > degree[ringHi])) ringHi = i;
+  }
+  if (ringHi >= 0) {
+    if (!hubRing) {
+      hubRing = new THREE.Mesh(
+        new THREE.RingGeometry(1, 1.12, 48),
+        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true,
+          opacity: 0.28, side: THREE.DoubleSide, depthWrite: false,
+          blending: THREE.AdditiveBlending }));
+      hubRing.renderOrder = 2;
+      scene.add(hubRing);
+    }
+    hubRing.scale.setScalar(sizes[ringHi] * 1.1 * Math.sqrt(spread) + 4);
+    hubRing.position.set(pos[ringHi*3], pos[ringHi*3+1], pos[ringHi*3+2]);
+    hubRing.visible = true;
+  } else if (hubRing) hubRing.visible = false;
+  // hub ring billboards toward the camera every frame
+  if (hubRing && hubRing.visible) hubRing.quaternion.copy(camera.quaternion);
   renderer.render(scene, camera);
   requestAnimationFrame(tick);
 }
@@ -2115,10 +2193,11 @@ const _pickV = new THREE.Vector3();   // scratch for screen-space pick accuracy
   // focusActive mirrors applyVisibility's focusing so focus mode owns the
   // scene and hover must not fight its BFS dimming.
   let hoverGreyIdx = -1, focusActive = false;
+let hubRing = null;   // additive halo marking the focused hub (budget fan origin)
 let deadOnly = false, query = "";
 let mutOnly = false;   // fn layer: show only functions that write state
 const activeClusters = new Set();   // multi-select cluster filter (legend chips)
-let showInst = false, showCalls = true, showSignals = true, showVar = false, depth = 2, fnMode = false;
+let showInst = false, showCalls = true, showSignals = true, showVar = false, depth = 1, fnMode = false;
 // focus roots: single click replaces, shift-click stacks (BFS is multi-seed)
 const focusSeeds = new Set();
 // direction mode: 0 = both, 1 = out (downstream impact), 2 = in (upstream deps)
@@ -2131,6 +2210,16 @@ let dirMode = 0;
 // (zoom threshold maintained by the controls 'change' listener below)
 let lodClose = false, lodDist = 1e9;
 const level = new Int16Array(N).fill(-1);
+// hub edge budget: a focus used to light EVERY link in the lit subgraph —
+// a 150-wire hub rendered as a radial starburst ('wire salad', unreadable).
+// The budget keeps only the top HUB_EDGE_BUDGET links by weight (call
+// count) fully lit; the rest drop to ghost ink: GHOST_K × the focus bucket
+// opacity (0.75) ≈ alpha 0.06. Hovering a budgeted wire re-lights it
+// (hoverEdgeLi) — detail on demand. The fn layer is UNCAPPED between lit
+// files (amendment: the focus neighborhood is small + compacted, so every
+// fn interconnection renders; HUB_FN_BUDGET is retired).
+const HUB_EDGE_BUDGET = 12;
+const GHOST_K = 0.08;
 
 // BFS from search seeds (path/class/fn-name matches + clicked seeds) up to
 // `depth`; the direction mode picks which adjacency half the walk follows
@@ -2173,8 +2262,160 @@ function typeVisible(ty) {
   if (ty === "var") return showVar;   // member-var refs: dense, opt-in via the var toggle
   return true;
 }
+// focus-neighborhood compaction targets (see applyVisibility's hook): the
+// lit set lerps 0.6 toward its centroid, then the Python layout's
+// non-overlap guarantees are re-established deterministically
+function compactLitSet() {
+  window.__clsRan = (window.__clsRan||0)+1;
+  const lit = [];
+  for (let i = 0; i < N; i++)
+    if (level[i] >= 0 && level[i] <= 1 && nodeVisible(nodes[i]) && !supMem[i]) lit.push(i);
+  compactIdx = lit;
+  compactScale = 1; compactOverlaps = 0;
+  if (!lit.length) { compactTgt = null; return; }
+  // Always compute from the pristine saved base (not live pos): the
+  // anim-end applyVisibility re-run and mid-focus filter changes must
+  // land on the SAME settled layout, not compound the centroid lerp.
+  const work = new Float32Array(N * 3);
+  work.set(posSaved || pos);
+  const sp = Math.sqrt(spread);
+  const rad = i => sizes[i] * 1.1 * sp;
+  const CLR = 8;   // wire clearance (fn arcs ride at +14)
+  const minD = (a, b) => rad(a) + rad(b) + CLR;
+  // COMPACT BALL: center = focus seed; neighbors on a golden-spiral shell
+  // sized so adjacent points start above min spacing - the depenetration +
+  // exact-scale passes below guarantee the final no-overlap state.
+  const fi = lit.find(i => level[i] === 0) ?? lit[0];
+  const cx = work[fi*3], cy = work[fi*3+1], cz = work[fi*3+2];
+  let maxRad = 0;
+  for (const i of lit) maxRad = Math.max(maxRad, rad(i));
+  const others = lit.filter(i => i !== fi);
+  const SP = 2 * maxRad + CLR + 6;
+  const R = Math.max(rad(fi) + maxRad + CLR + SP * 0.5,
+                     Math.sqrt(others.length || 1) * SP * 0.62);
+  const GA = Math.PI * (3 - Math.sqrt(5));
+  others.forEach((i, k) => {
+    const y = 1 - (2 * (k + 0.5)) / others.length;
+    const rr = Math.sqrt(Math.max(0, 1 - y * y));
+    const th = GA * k;
+    work[i*3]   = cx + Math.cos(th) * rr * R;
+    work[i*3+1] = cy + y * R * 0.55;
+    work[i*3+2] = cz + Math.sin(th) * rr * R;
+  });
+  work[fi*3] = cx; work[fi*3+1] = cy; work[fi*3+2] = cz;
+  // depenetrate fused pairs on the deterministic hash axis (_layout parity)
+  for (let sweep = 0; sweep < 8; sweep++) {
+    let fused = 0;
+    for (let x = 0; x < lit.length; x++) for (let y = x + 1; y < lit.length; y++) {
+      const a = lit[x], b = lit[y];
+      const dx = work[a*3] - work[b*3], dy = work[a*3+1] - work[b*3+1],
+            dz = work[a*3+2] - work[b*3+2];
+      if (Math.sqrt(dx*dx + dy*dy + dz*dz) >= minD(a, b) * 0.4) continue;
+      const h = (a * 2654435761 + b * 40503) % 9973;
+      const ang = h / 9973.0 * 6.2831853;
+      let ax = Math.cos(ang), ay = 0.35 * Math.sin(ang * 1.7), az = Math.sin(ang);
+      const al = Math.sqrt(ax*ax + ay*ay + az*az) || 1;
+      ax /= al; ay /= al; az /= al;
+      const sep = minD(a, b) * 1.2;
+      const mx = (work[a*3] + work[b*3]) / 2, my = (work[a*3+1] + work[b*3+1]) / 2,
+            mz = (work[a*3+2] + work[b*3+2]) / 2;
+      work[a*3] = mx - ax * sep * 0.5; work[a*3+1] = my - ay * sep * 0.5;
+      work[a*3+2] = mz - az * sep * 0.5;
+      work[b*3] = mx + ax * sep * 0.5; work[b*3+1] = my + ay * sep * 0.5;
+      work[b*3+2] = mz + az * sep * 0.5;
+      fused++;
+    }
+    if (!fused) break;
+  }
+  // exact-scale finisher about the centroid: scaling is linear in the
+  // offsets, so one multiply clears every lit pair. Alternating with the
+  // wire clamp: a clamp push can shrink a pair below minD and a scale can
+  // re-pierce a wire, so the two passes converge together (bounded rounds).
+  let s = 1;   // cumulative exact-scale factor (reported via __dbg)
+  const scalePass = () => {
+    let s2 = 1;
+    for (let x = 0; x < lit.length; x++) for (let y = x + 1; y < lit.length; y++) {
+      const a = lit[x], b = lit[y];
+      const dx = work[a*3] - work[b*3], dy = work[a*3+1] - work[b*3+1],
+            dz = work[a*3+2] - work[b*3+2];
+      const d = Math.sqrt(dx*dx + dy*dy + dz*dz);
+      if (d > 1e-3) s2 = Math.max(s2, minD(a, b) / d);
+    }
+    if (s2 > 1) {
+      for (const i of lit) {
+        work[i*3]   = cx + (work[i*3]   - cx) * s2 * 1.01;
+        work[i*3+1] = cy + (work[i*3+1] - cy) * s2 * 1.01;
+        work[i*3+2] = cz + (work[i*3+2] - cz) * s2 * 1.01;
+      }
+      s *= s2 * 1.01;
+    }
+  };
+  scalePass();
+  // node-vs-wire clamp: push a lit sphere off any lit wire it pierces
+  const seg = [];
+  links.forEach(l => {
+    if (level[l.s] < 0 || level[l.s] > 1 || level[l.t] < 0 || level[l.t] > 1) return;
+    if (supMem[l.s] || supMem[l.t]) return;
+    if (!typeVisible(l.ty) || nodeFiltered(nodes[l.s]) || nodeFiltered(nodes[l.t])) return;
+    seg.push([l.s, l.t]);
+  });
+  const segD = (px, py, pz, a, b) => {
+    const abx = work[b*3] - work[a*3], aby = work[b*3+1] - work[a*3+1],
+          abz = work[b*3+2] - work[a*3+2];
+    const apx = px - work[a*3], apy = py - work[a*3+1], apz = pz - work[a*3+2];
+    const L = abx*abx + aby*aby + abz*abz;
+    const t = L > 1e-6 ? Math.min(1, Math.max(0, (apx*abx + apy*aby + apz*abz) / L)) : 0;
+    const qx = work[a*3] + abx*t, qy = work[a*3+1] + aby*t, qz = work[a*3+2] + abz*t;
+    const dx = px - qx, dy = py - qy, dz = pz - qz;
+    return { d: Math.sqrt(dx*dx + dy*dy + dz*dz), qx, qy, qz,
+             ex: dx, ey: dy, ez: dz };
+  };
+  const clampPass = () => {
+    let pushed = 0;
+    for (const i of lit) for (const [a, b] of seg) {
+      if (i === a || i === b) continue;
+      const hit = segD(work[i*3], work[i*3+1], work[i*3+2], a, b);
+      const need = (rad(i) + CLR) * 1.05;
+      if (hit.d >= need) continue;
+      // push along the TRUE perpendicular (node minus closest point) — a
+      // midpoint-direction push is near-parallel to the wire for grazing
+      // nodes and slides them along it without clearing
+      let ex = hit.ex, ey = hit.ey, ez = hit.ez;
+      const el = Math.sqrt(ex*ex + ey*ey + ez*ez);
+      if (el < 1e-3) {
+        const h = (i * 2654435761 + a * 40503) % 9973;
+        const ang = h / 9973.0 * 6.2831853;
+        ex = Math.cos(ang); ey = 0.35 * Math.sin(ang * 1.7); ez = Math.sin(ang);
+      } else { ex /= el; ey /= el; ez /= el; }
+      const push = need - hit.d;
+      work[i*3] += ex * push; work[i*3+1] += ey * push; work[i*3+2] += ez * push;
+      pushed++;
+    }
+    return pushed;
+  };
+  for (let round = 0; round < 8; round++) {
+    scalePass();
+    if (!clampPass()) break;
+  }
+  // residual violations (target 0): pairwise + sphere-vs-wire
+  let bad = 0;
+  for (let x = 0; x < lit.length; x++) for (let y = x + 1; y < lit.length; y++) {
+    const a = lit[x], b = lit[y];
+    const dx = work[a*3] - work[b*3], dy = work[a*3+1] - work[b*3+1],
+          dz = work[a*3+2] - work[b*3+2];
+    if (Math.sqrt(dx*dx + dy*dy + dz*dz) < minD(a, b)) bad++;
+  }
+  for (const i of lit) for (const [a, b] of seg) {
+    if (i === a || i === b) continue;
+    if (segD(work[i*3], work[i*3+1], work[i*3+2], a, b).d < rad(i) + CLR) bad++;
+  }
+  compactOverlaps = bad;
+  compactScale = +s.toFixed(4);   // honest cumulative factor (margin already inside s)
+  compactTgt = work;
+}
 function applyVisibility() {
   const focusing = computeLevels();
+  window.__avCalls = (window.__avCalls||0)+1; window.__avFocus = (window.__avFocus||0)+(focusing?1:0);
   focusActive = focusing;   // hover greyout defers to focus mode
   edgeFlowOn = focusing;   // tick's dash-flow pass reads this
   // edges are a quiet layer at overview (per-bucket caps) and open up when
@@ -2187,13 +2428,38 @@ function applyVisibility() {
   for (let i = 0; i < N; i++) {
     let a;
     if (!nodeVisible(nodes[i])) a = 0.0;   // size-0 gate = true disable
-    else if (focusing) a = level[i] < 0 ? 0.0 : (level[i] === 0 ? 1 : Math.max(0.16, 0.7 - level[i] * 0.18));
+    else if (focusing) a = level[i] < 0 ? 0.0 : (level[i] <= 1 ? 1 : 0.04);   // lit set = focus + 1-hop; deeper strata ghost near-zero (0.04 < the 0.05 ghost kill, so their deep-deep wires collapse outright)
     else a = 1;
     alphaTgt[i] = a;
     if (a > 0.5) {
       const c = colorOf(nodes[i]);
       colArr[i*3] = c.r; colArr[i*3+1] = c.g; colArr[i*3+2] = c.b;
     }
+  }
+  // focus-neighborhood compaction: pull the lit set toward its centroid,
+  // then mirror the Python layout's guarantees — deterministic hash-axis
+  // depenetration for fused pairs, an exact-scale finisher about the
+  // centroid (linear in the offsets: one multiply clears every pair), and
+  // a node-vs-wire clamp so no lit wire pierces a lit sphere. pos is
+  // mutated in place (picks, labels, fn arcs and the hub ring all read
+  // pos); posSaved restores the frozen layout on unfocus.
+  if (focusing) {
+    window.__hookRan = (window.__hookRan||0)+1;
+    if (!posSaved) {
+      posSaved = pos.slice();
+      compactLitSet();
+      if (compactTgt) compactAnim = { t0: performance.now(), dur: 450 };
+    } else if (!compactAnim) {
+      // filters changed mid-focus: recompute deterministically from the
+      // saved base (the running ease keeps ownership until it lands)
+      compactLitSet();
+      if (compactTgt) for (const i of compactIdx) {
+        pos[i*3] = compactTgt[i*3]; pos[i*3+1] = compactTgt[i*3+1]; pos[i*3+2] = compactTgt[i*3+2];
+      }
+    }
+  } else if (posSaved) {
+    pos.set(posSaved); posSaved = null; compactTgt = null;
+    compactIdx = []; compactAnim = null; compactScale = 1; compactOverlaps = 0;
   }
   // collapse pass: re-derives dpos + the supernode set from the targets
   // just computed; zeroes member alphaTgt (existing hide path fades the
@@ -2205,6 +2471,29 @@ function applyVisibility() {
   // Overview palette: edge-type hues are demoted to weight-tinted gray so
   // cluster colors carry the overview; full type colors return on focus.
     const grayMix = focusing ? 0 : 0.6;
+  // hub edge budget: rank the focus-lit links by weight desc; only the top
+  // HUB_EDGE_BUDGET render lit, the rest ghost down. Candidates mirror the
+  // lit branch below exactly — edges that would render k=0 (fn wire mode),
+  // k=0.012 (dead-end dim) or k=0 (ghost/filtered) must not consume budget
+  // slots. A hovered wire (hoverEdgeLi) is force-admitted: hover = reveal.
+  if (focusing) {
+    const deadEnd = j => alphaTgt[j] <= 0.5 && !supMem[j];
+    const cand = [];
+    links.forEach((l, i) => {
+      if (!typeVisible(l.ty)) return;
+      if (nodeFiltered(nodes[l.s]) || nodeFiltered(nodes[l.t])) return;
+      if (alphaTgt[l.s] < 0.05 && alphaTgt[l.t] < 0.05) return;
+      if (deadEnd(l.s) || deadEnd(l.t)) return;
+      if (fnMode && l.ty === "call" && level[l.s] >= 0 && level[l.t] >= 0) return;
+      cand.push([i, l.w]);
+    });
+    cand.sort((a, b) => b[1] - a[1] || a[0] - b[0]);
+    budgetLit = new Set(cand.slice(0, HUB_EDGE_BUDGET).map(c => c[0]));
+    if (hoverEdgeLi >= 0) budgetLit.add(hoverEdgeLi);
+  } else {
+    budgetLit = null;
+    hoverEdgeLi = -1;
+  }
   const touched = [false, false, false];
   links.forEach((l, i) => {
     let k;
@@ -2222,7 +2511,8 @@ function applyVisibility() {
     else if (!typeVisible(l.ty) ||
       ((alphaTgt[l.s] <= 0.5 && !supMem[l.s]) || (alphaTgt[l.t] <= 0.5 && !supMem[l.t]))) k = 0.012;
     else if (fnMode && focusing && l.ty === "call" && level[l.s] >= 0 && level[l.t] >= 0) k = 0; // wire mode: fn wires replace the aggregate call line; geometry collapse (k===0 branch) handles invisibility — a ghost 0.04 double-draws under the additive fn wires
-    else if (focusing) k = Math.max(0.34, 1 - 0.18 * Math.max(level[l.s], level[l.t]));
+    else if (focusing) k = budgetLit && !budgetLit.has(i) ? GHOST_K
+      : Math.max(0.34, 1 - 0.18 * Math.max(level[l.s], level[l.t]));
     else {
       // overview edge budget: single-ref wires are noise at full extent
       // (1530 lines summing to white over the core under additive blending)
@@ -2299,7 +2589,7 @@ function applyVisibility() {
   hoverGreyIdx = -1;   // baseline rebuilt — next hover re-greys from here
   if (focusing) {
     let lit = 0;
-    for (let i = 0; i < N; i++) if (level[i] >= 0 && nodeVisible(nodes[i])) lit++;
+    for (let i = 0; i < N; i++) if (level[i] >= 0 && level[i] <= 1 && nodeVisible(nodes[i])) lit++;
     const first = focusSeeds.values().next().value;
     const label = !focusSeeds.size ? "“" + esc(query) + "”"
       : focusSeeds.size === 1 ? esc(nodes[first].label)
@@ -2373,6 +2663,7 @@ function rebuildEdgeLabels(focusing) {
   const cand = [];
   links.forEach((l, i) => {
     if (!typeVisible(l.ty) || level[l.s] < 0 || level[l.t] < 0) return;
+    if (budgetLit && !budgetLit.has(i)) return;   // ghost wires carry no label
     cand.push({ i, w: l.w });
   });
   cand.sort((a, b) => b.w - a.w);
@@ -2695,6 +2986,18 @@ function rebuildFnLayer(focusing) {
     if (alphaTgt[sf] <= 0.5 || alphaTgt[df] <= 0.5) return;
     visEdges.push(e);
   });
+  // fn-layer scope: rank wires deterministically (file-pair link weight,
+  // then name/line) so eidx order is stable across reloads. No cap — every
+  // fn interconnection between lit files renders (amendment).
+  const lw = new Map();
+  links.forEach(l => lw.set(l.s + ":" + l.t, l.w));
+  const eW = e => lw.get(e[0] + ":" + e[2]) || 0;
+  visEdges.sort((a, b) => (eW(b) - eW(a)) || (a[0] - b[0]) ||
+    (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0) || (a[2] - b[2]) ||
+    (a[3] < b[3] ? -1 : a[3] > b[3] ? 1 : 0) || (a[4] - b[4]));
+  // amendment: every fn interconnection between lit files renders — no
+  // budget cap at fn grain (the lit set is 1-hop + compacted; AGG_MAX
+  // still declutters per-file box rings, but wires stay complete)
   if (!visEdges.length) return;
   const fIdx = new Map(), fpos = [], fcol = [], eidx = [];
   // mutators-only filter: when on, fn satellites for functions with no
@@ -3021,18 +3324,12 @@ let mapZ = 0, mapPX = 0, mapPY = 0;      // view: zoom + pan over the world
 let mapDrag = null, mapDragged = false;
 let mapRects = [];             // last drawn node rects (click hit-testing)
 let mapVarsOn = false;         // var wires OFF by default, map-local chip [F10]
-let mapFullAdmit = false;      // zoom-tiered admission latch: full >=1.5, w>=3 <1.2
 const mapExpandUser = new Map();   // file ix -> bool override (dblclick)
 let mapHover = -1;             // hovered named-wire ix (L1 disclosure)
 let mapHoverChip = -1;         // hovered bundle chip ix (cursor affordance)
 let mapFrozenIx = -1;          // L3 roster-row pick: local dim 0.08, rows frozen
 let mapLayout = null;          // layout cache - keyed (focus, expansion, size)
-// wiring-document scope (full admit): the pane is a document for EXACTLY ONE
-// file - mapDocIx + the visible neighbor page; mapDocCenter flags a scope
-// change that must re-aim the window at the scope box
-let mapDocIx = -1, mapDocPage = 0, mapDocCenter = false;
 let mapDirty = false;          // rAF dirty flag: one draw per frame [F7]
-let mapShownLabels = 0;        // labels that passed the zoom tier (last paint)
 let mapRefocusTimer = 0;       // click-vs-dblclick discriminator on headers
 let mapVarsChipRect = null;    // screen-space vars chip rect (click hit)
 function sizeMapPane() {
@@ -3091,10 +3388,25 @@ const mapDistSeg = (px, py, ax, ay, bx, by) => {
 };
 function mapWireAt(wx, wy) {
   if (!mapLayout) return -1;
-  if (!(mapFullAdmit || mapLayout.E <= 12)) return -1;   // reduced tier: trunks only
   const tol = 6 / mapZ;
   let best = -1, bd = tol;
   mapLayout.wires.forEach((w, ix) => {
+    if (w.bez) {   // S-curve: sample the cubic pin-to-pin
+      const x0 = w.pts[0][0], y0 = w.pts[0][1],
+            x1 = w.pts[1][0], y1 = w.pts[1][1];
+      let qx = x0, qy = y0;
+      for (let k = 1; k <= 24; k++) {
+        const t = k / 24, mt = 1 - t;
+        const bx = mt * mt * mt * x0 + 3 * mt * mt * t * w.c1[0] +
+                   3 * mt * t * t * w.c2[0] + t * t * t * x1;
+        const by = mt * mt * mt * y0 + 3 * mt * mt * t * w.c1[1] +
+                   3 * mt * t * t * w.c2[1] + t * t * t * y1;
+        const d = mapDistSeg(wx, wy, qx, qy, bx, by);
+        if (d < bd) { bd = d; best = ix; }
+        qx = bx; qy = by;
+      }
+      return;
+    }
     for (let s = 0; s < w.pts.length - 1; s++) {
       const d = mapDistSeg(wx, wy, w.pts[s][0], w.pts[s][1],
                            w.pts[s + 1][0], w.pts[s + 1][1]);
@@ -3105,7 +3417,6 @@ function mapWireAt(wx, wy) {
 }
 function mapChipAt(wx, wy) {
   if (!mapLayout) return -1;
-  if (!(mapFullAdmit || mapLayout.E <= 12)) return -1;   // reduced tier: no chips
   for (let c = 0; c < mapLayout.chips.length; c++) {
     const ch = mapLayout.chips[c];
     if (wx >= ch.x && wx <= ch.x + ch.w && wy >= ch.y && wy <= ch.y + ch.h) return c;
@@ -3262,17 +3573,9 @@ function mapRender() {
     lit = litAll.slice().sort((a, b) => (degree[b] - degree[a]) || (a - b)).slice(0, MAP_MAX);
   }
   if (!lit.length) { mapLayout = null; mapRects = []; hint("focus a node to see its map"); return; }
-  // NOTE: rosters no longer collapse on zoom-out (owner request) - the
-  // expansion set is zoom-independent (seeds + user toggles + E<=12 wired).
-  // zoom-tiered admission latch (same band shape as the old expand latch):
-  // z >= 1.5 restores the full tier-1 rank, z < 1.2 keeps only w>=3
-  // corridors + chip-worthy pairs. Relayouts fire on threshold crossings
-  // only - never per wheel tick (layout cache keyed via the key below).
-  const wasFull = mapFullAdmit;
-  if (mapZ >= 1.5) mapFullAdmit = true;
-  else if (mapZ < 1.2) mapFullAdmit = false;
-  if (mapFullAdmit && !wasFull) { mapDocCenter = true; mapFrozenIx = -1; }
-  else if (!mapFullAdmit && wasFull) { mapDocPage = 0; }   // subject survives the flip
+  // ONE layout at every zoom (owner mandate): no admission tiers, no doc
+  // scoping - the wiring diagram below is zoom-independent. Relayouts fire
+  // only on focus/visibility/expansion changes (cache key below).
   // focus signature ("focusVersion"): every input that changes the lit set
   // or the typed admission. pan/zoom never touch it (section 5).
   const sig = lit.join(",") + "|" + query + "|" + mapVarsOn + "|" +
@@ -3291,120 +3594,12 @@ function mapRender() {
   });
   const top8 = new Set([...lit].sort((a, b) => degree[b] - degree[a] || a - b).slice(0, 8));
   cand.sort((a, b) => (b.w || 1) - (a.w || 1) || a.s - b.s || a.t - b.t);
-  // pairs carrying 2+ named (non-var) wires stay admitted even at fit zoom:
-  // their corridor spine carries the bundle chips (section 7 click targets)
-  const pairNamed = new Map();
-  mwires.forEach(w => {
-    if (w[0] === "var") return;
-    const k = w[1] + "_" + w[3];
-    pairNamed.set(k, (pairNamed.get(k) || 0) + 1);
-  });
-  let edges = cand.filter((l, i) => {
-    if (!mapFullAdmit) {  // fit / low zoom: heavy corridors + chip-worthy pairs;
-      // same-row detours with a single ref are the bottom-loop spaghetti
-      if (level[l.s] === level[l.t] && (l.w || 1) < 2 &&
-          (pairNamed.get(l.s + "_" + l.t) || 0) < 2) return false;
-      return (l.w || 1) >= 3 || (pairNamed.get(l.s + "_" + l.t) || 0) >= 2;
-    }
-    return (l.w || 1) >= 2 || i < 120 || top8.has(l.s) || top8.has(l.t);
-  }).slice(0, 160);
-  // ---- WIRING DOCUMENT (full admit): scope the pane to EXACTLY ONE file ----
-  // The scope box (expanded roster) + its DIRECT 1-hop wire neighbors from
-  // mwires (paged top-20 by incident-wire count) + the scope's named wires.
-  // Every other lit file is NOT part of the document and is not rendered at
-  // all - no ghost tier, no dimming ladder.
-  let docNbTotal = 0, docNbPos = 0, docPages = 1, docPageLen = 0, docHdr = null;
-  if (mapFullAdmit) {
-    const sd = focusSeeds.values().next();
-    let seed = sd.done ? -1 : sd.value;
-    if (seed < 0) {
-      // wiring viability: the subject needs at least one mwires peer that
-      // the node chips let through (wire-TYPE chips never gate document
-      // membership - they only gate wire drawing)
-      const hasVis = ix => {
-        for (const w of mwires) {
-          const o = w[1] === ix ? w[3] : w[3] === ix ? w[1] : -1;
-          // mwires can reference endpoints outside nodes (stale/external)
-          if (typeof o !== "number" || o === ix || !nodes[o]) continue;
-          if (nodeVisible(nodes[o])) return true;
-        }
-        return false;
-      };
-      const byDeg = [...lit].sort((a, b) => (degree[b] - degree[a]) || (a - b));
-      // a search names the subject: the top match wins over well-connected
-      // neighbors (a tiny file must not open a document on its biggest caller)
-      let pick = query ? byDeg.find(ix => level[ix] === 0 && hasVis(ix))
-        : undefined;
-      if (pick === undefined) pick = byDeg.find(hasVis);
-      seed = pick !== undefined ? pick : lit[0];
-    }
-    if (seed == null || !nodes[seed]) mapFullAdmit = false;   // no wirable subject: render reduced
-    else {
-      // subject identity survives search churn and tier roundtrips - only a
-      // visibility change (chip toggle) invalidates it
-      if (mapDocIx < 0 || !nodes[mapDocIx] || !nodeVisible(nodes[mapDocIx])) {
-        mapDocIx = seed; mapDocPage = 0;
-      }
-      mapDocCenter = true;   // EVERY document rebuild centers the subject
-    }
-  }
-  if (mapFullAdmit) {
-    // positional peers: every mwires endpoint touching the subject, before
-    // any visibility gate. docNbTotal below is the chip-visible subset; the
-    // delta is node visibility chips only (tests/tools hidden by default -
-    // e.g. magicplayer.gd: 30 positional, 27 visible, 3 test files), never
-    // wire-type chips.
-    const posPeers = new Set();
-    mwires.forEach(w => {
-      const o = w[1] === mapDocIx ? w[3] : w[3] === mapDocIx ? w[1] : -1;
-      // stale/external endpoints have no node identity and cannot be placed
-      if (typeof o !== "number" || o === mapDocIx || !nodes[o]) return;
-      posPeers.add(o);
-    });
-    docNbPos = posPeers.size;
-    // 1-hop neighbors come from DATA.mwires DIRECTLY - the search lit set
-    // does not gate the document (a hub's wiring must survive a narrow
-    // query) and wire-type chips do not gate membership (they only decide
-    // which wires get drawn); node visibility chips stay the only gate
-    const nbCnt = new Map();
-    mwires.forEach(w => {
-      const o = w[1] === mapDocIx ? w[3] : w[3] === mapDocIx ? w[1] : -1;
-      // mwires can reference endpoints outside nodes (stale/external)
-      if (typeof o !== "number" || o === mapDocIx || !nodes[o]) return;
-      if (!nodeVisible(nodes[o])) return;
-      nbCnt.set(o, (nbCnt.get(o) || 0) + 1);
-    });
-    const nbAll = [...nbCnt.keys()].sort((a, b) =>
-      (nbCnt.get(b) - nbCnt.get(a)) || (a - b));
-    docNbTotal = nbAll.length;
-    docPages = Math.max(1, Math.ceil(nbAll.length / 20));
-    if (mapDocPage >= docPages) mapDocPage = 0;
-    const page = nbAll.slice(mapDocPage * 20, mapDocPage * 20 + 20);
-    docPageLen = page.length;
-    lit = [mapDocIx, ...page];             // the whole document
-    docHdr = { label: nodes[mapDocIx].label, nb: docNbTotal, pos: docNbPos,
-               page: mapDocPage + 1, pages: docPages };
-    // corridors: ONLY scope-incident named pairs (top-1 wire drawn, rest as
-    // bundle chips on the spine - the approved tier-2 carrier)
-    const docSet = new Set(lit);
-    const pairW = new Map();
-    mwires.forEach(w => {
-      if (w[0] === "var" ? !mapVarsOn : !typeVisible(w[0])) return;
-      const a = w[1], b = w[3];
-      if (!docSet.has(a) || !docSet.has(b) ||
-          (a !== mapDocIx && b !== mapDocIx)) return;
-      const k = a + "_" + b;
-      if (!pairW.has(k)) pairW.set(k, []);
-      pairW.get(k).push(w);
-    });
-    edges = [...pairW.keys()].sort().map(k => {
-      const pr = k.split("_");
-      return { s: +pr[0], t: +pr[1], ty: "call", w: pairW.get(k).length };
-    });
-  }
+  let edges = cand.filter((l, i) =>
+    (l.w || 1) >= 2 || i < 120 || top8.has(l.s) || top8.has(l.t)).slice(0, 160);
   const E = edges.length;
-  // expansion set (sections 4/5): user dblclick override > seeds open at L0 >
-  // E<=12 wired boxes open at any zoom [F9] > zoom-latch wired boxes [F7]
+  // expansion set: user dblclick override > every wired box opens (roster
+  // rows are THE layout - named wires terminate on fn rows) > seeds open
+  // at L0. Zoom-independent: structure never changes with zoom.
   const wireInc = new Map();
   edges.forEach(l => {
     wireInc.set(l.s, (wireInc.get(l.s) || 0) + 1);
@@ -3415,24 +3610,14 @@ function mapRender() {
     const u = mapExpandUser.get(i);
     const wired = (wireInc.get(i) || 0) >= 1;
     // seed = BFS level 0 (click seeds AND query matches): roster open at L0
-    if (u !== undefined ? u : (level[i] === 0 || wired && E <= 12))
+    if (u !== undefined ? u : (wired || level[i] === 0))
       expand.add(i);
   });
-  // document boxes open unconditionally: wires must land on their fn rows
-  if (mapFullAdmit) lit.forEach(i => expand.add(i));
-  // layout cache (section 5 [F7]): hit = pure repaint under pan/zoom. The
-  // admission tier rides the KEY (not the refit sig) so a threshold
-  // crossing relayouts without resetting zoom/pan - and so does the doc
-  // scope + neighbor page (a re-scope relayouts and re-centers).
-  const key = sig + "|" + (mapFullAdmit ? "A1" : "A0") + "|" +
-    (mapFullAdmit ? "d" + mapDocIx + ":" + mapDocPage : "") + "||" +
+  // layout cache (section 5 [F7]): hit = pure repaint under pan/zoom
+  const key = sig + "||" +
     [...expand].sort((a, b) => a - b).join(",") + "||" +
     Math.round(cwView) + "x" + Math.round(chView);
   if (mapLayout && mapLayout.key === key) {
-    // tier crossings ride the cache key by design (no relayout), so the
-    // full-admit rising edge must consume mapDocCenter HERE - otherwise the
-    // first crossing never centers the subject (stuck at the pan position)
-    if (mapDocCenter) centerDocLayout(cwView, chView);
     mapPaint(ctx, dpr, cwView, chView, capNote);
     return;
   }
@@ -3474,9 +3659,7 @@ function mapRender() {
     const all = (mfns[nodes[i].path] || []).slice();   // complete roster
     if (!all.length) return null;
     const pin = new Set();
-    byPair.forEach(arr => arr.forEach(w => {
-      // seed-incident [F4]; in document mode every wire is scope-incident
-      if (!mapFullAdmit && level[w.sf] !== 0 && level[w.df] !== 0) return;
+    byPair.forEach(arr => arr.forEach(w => {   // every named wire pins its rows
       if (w.df === i) pin.add(w.dfn);
       if (w.sf === i) pin.add(w.sfn);
     }));
@@ -3580,34 +3763,6 @@ function mapRender() {
       x += geo.get(i).w + GAPX;
     });
   });
-  // "+N more" pager pill (document mode): sits below the scope box and
-  // cycles the neighbor pages deterministically (count desc, ix asc)
-  let pill = null;
-  if (mapFullAdmit && docNbTotal > 20) {
-    const sp = place.get(mapDocIx);
-    const label = "+" + (docNbTotal - docPageLen) + " more  " +
-      (mapDocPage + 1) + "/" + docPages;
-    pill = { x: sp.x, y: sp.y + sp.h + 10, w: Math.max(64, txtW(label) + 18),
-             h: NH, label };
-  }
-  // band adjacency for the reduced tier: ONE aggregate trunk per ordered
-  // row pair - the overview is a layer diagram, not a wiring diagram
-  const bandMap = new Map();
-  edges.forEach(l => {
-    const a = place.get(l.s), b = place.get(l.t);
-    if (!a || !b || a.row === b.row) return;
-    const lo = Math.min(a.row, b.row), hi = Math.max(a.row, b.row);
-    const k = lo + "_" + hi;
-    const e = bandMap.get(k) || { a: lo, b: hi, n: 0, ty: {} };
-    e.n++;
-    e.ty[l.ty] = (e.ty[l.ty] || 0) + 1;
-    bandMap.set(k, e);
-  });
-  const bands = [...bandMap.values()].map(e => {
-    let dom = "call", m = 0;
-    for (const t in e.ty) if (e.ty[t] > m) { m = e.ty[t]; dom = t; }
-    return { a: e.a, b: e.b, n: e.n, ty: dom };
-  }).sort((x, y) => x.a - y.a || x.b - y.b);
   if (!mapZ) {   // focus change / first draw: fit BOTH dims, floor 1.0 [F15]
     mapZ = Math.max(1.0, Math.min(cwView / cw, chView / worldH));
     mapPX = Math.max(0, (cw - cwView / mapZ) / 2);
@@ -3680,7 +3835,6 @@ function mapRender() {
     else rowTotIn.set(w.df + "_" + dr, (rowTotIn.get(w.df + "_" + dr) || 0) + 1);
   });
   const underlays = [], spines = [], wires = [];
-  let routeSeq = 0;   // deterministic bezier bow variation
   const routeOrtho = (A, B, sy, ty, sameRow, sx0, tx0, claim) => {
     const bands = sameRow ? crossedBands(sy, sy + 1) : crossedBands(ty - 1, ty);
     const lastBand = bands.length ? gapY[bands[bands.length - 1]] : null;
@@ -3696,13 +3850,15 @@ function mapRender() {
     const tx = Math.max(B.x + 2, Math.min(B.x + B.w - 2, fx2.x));
     if (fx2.ok) claimLane(tx, yCh, ty);
     if (!(fx.ok && fx2.ok && yc.ok)) {
-      // lanes exhausted: translucent bezier overlay, no lane claims (F6)
-      routeSeq++;
+      // lanes exhausted: consistent S-curve, no lane claims - vertical
+      // tangents pin-to-pin, never a diagonal center-to-center line
+      const dn = ty >= sy ? 1 : -1;
+      const bow = Math.max(40, Math.abs(ty - sy) * 0.45);
       return {
         pts: [[sx0, sy], [tx0, ty]], bez: true,
-        cx: (sx0 + tx0) / 2 + (routeSeq % 2 ? 26 : -26),
-        cy: (sy + ty) / 2 - 22 - (routeSeq % 3) * 12,
+        c1: [sx0, sy + dn * bow], c2: [tx0, ty - dn * bow],
         tx: tx0, ty,
+        back: !sameRow && ty < sy,
       };
     }
     const dir = tx >= sx ? 1 : -1;
@@ -3712,6 +3868,7 @@ function mapRender() {
       pts: [[sx0, sy], [sx, sy], [sx, yCh - ch], [sx + dir * ch, yCh],
             [tx - dir * ch, yCh], [tx, sameRow ? yCh - ch : yCh + ch], [tx, ty]],
       bez: false, tx, ty,
+      back: !sameRow && ty < sy,
     };
   };
   // 1) attach/inst underlays: anonymous + demoted (section 1) - 1px, alpha
@@ -3808,29 +3965,8 @@ function mapRender() {
       up: sameRow, pair: w.sf + "_" + w.df,
     }, routeOrtho(A, B, sy, ty, sameRow, sx0, tx0)));
   });
-  // ---- labels (section 6 [F2]): entry micro-label at the arrowhead, greedy
-  // dy ladder, first-fit, hide-if-no-fit (hub-label pattern), budget 2/target
-  const LAD = [0, -9, -18, 9, 18, -27, 27, -36, 36];
-  const labels = [];
-  const placed = [];
-  const budget = new Map();
-  wires.forEach((w, ix) => {
-    const b = budget.get(w.df) || 0;
-    if (b >= (mapZ < 1.3 ? 1 : 2)) return;   // fit zoom: 1 label per target
-    const txt = w.ty === "signal" ? w.sfn : w.dfn;   // NAME per section 1
-    const tw = txtW(txt) + 2;
-    for (const dy of LAD) {
-      const lx = w.tx + 5, ly = w.ty + dy;   // +4px offset at the arrowhead
-      if (lx + tw > cw - 4) continue;
-      const r = { x0: lx, y0: ly - 10, x1: lx + tw, y1: ly + 2 };
-      if (placed.some(p => !(r.x1 < p.x0 - 1 || p.x1 < r.x0 - 1 ||
-                             r.y1 < p.y0 - 1 || p.y1 < r.y0 - 1))) continue;
-      placed.push(r);
-      labels.push({ w: ix, x: lx, y: ly, text: txt, ty: w.ty });
-      budget.set(w.df, b + 1);
-      return;
-    }
-  });
+  // quiet edges (addendum rule 5): no wire text by default - identity is
+  // the pin a wire leaves from + the hover tooltip; chips carry bundles
   // ---- bundle chips (section 7 [F3]): typed "xN" micro-chips on the spine
   const chipAnchor = pts => {
     let tot = 0;
@@ -3881,25 +4017,10 @@ function mapRender() {
     }
     mapRects.push(rc);
   });
-  // document (re)center: same document, new center file - keep the zoom,
-  // aim the window at the scope box (fit-to-view stays focus-change behavior)
-  if (mapFullAdmit) {
-    const cp = place.get(mapDocIx);
-    if (cp && (mapDocCenter || !mapLayout)) {
-      mapPX = Math.max(0, Math.min(Math.max(0, cw - cwView / mapZ),
-        cp.x + cp.w / 2 - cwView / mapZ / 2));
-      mapPY = Math.max(0, Math.min(Math.max(0, worldH - chView / mapZ),
-        cp.y + cp.h / 2 - chView / mapZ / 2));
-      mapDocCenter = false;
-    }
-  }
   mapLayout = {
     key, sig, lit, edges, E, place, geo, rects, wires, spines, underlays,
-    chips, labels, rosterRows, expandedSet: expand, worldH, capNote,
-    trunkGroups, bands, chunkY, chunkRowH,
-    doc: { ix: mapDocIx, nb: docNbTotal, pos: docNbPos, page: mapDocPage, pages: docPages },
-    docHdr,
-    pill,
+    chips, rosterRows, expandedSet: expand, worldH, capNote,
+    trunkGroups, chunkY, chunkRowH,
   };
   mapPaint(ctx, dpr, cwView, chView, capNote);
 }
@@ -3908,20 +4029,11 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = "#0b0f14";
   ctx.fillRect(0, 0, cwView, chView);
-  if (capNote && !mapFullAdmit) {   // cap header suppressed in document mode
+  if (capNote) {
     ctx.fillStyle = "#546e7a";
     ctx.font = MAP_FONT(11);
     ctx.textAlign = "center"; ctx.textBaseline = "top";
     ctx.fillText("top " + MAP_MAX + " of " + capNote + " files (by connectivity)", cwView / 2, 8);
-  }
-  // wiring-document subject header: the document names its one file
-  if (L.docHdr) {
-    ctx.fillStyle = "#ffb347";
-    ctx.font = MAP_FONT(12);
-    ctx.textAlign = "center"; ctx.textBaseline = "top";
-    ctx.fillText("WIRING DOCUMENT \u2014 " + L.docHdr.label +
-      " \u00b7 " + L.docHdr.nb + " wired neighbors \u00b7 page " +
-      L.docHdr.page + "/" + L.docHdr.pages, cwView / 2, 8);
   }
   // window on the world: pan/zoom = pure transform of the cached layout
   ctx.setTransform(dpr * mapZ, 0, 0, dpr * mapZ, -mapPX * dpr * mapZ, -mapPY * dpr * mapZ);
@@ -3940,7 +4052,8 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     ctx.beginPath();
     if (rec.bez) {
       ctx.moveTo(rec.pts[0][0], rec.pts[0][1]);
-      ctx.quadraticCurveTo(rec.cx, rec.cy, rec.pts[1][0], rec.pts[1][1]);
+      ctx.bezierCurveTo(rec.c1[0], rec.c1[1], rec.c2[0], rec.c2[1],
+                        rec.pts[1][0], rec.pts[1][1]);
     } else {
       rec.pts.forEach((p, k) => k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
     }
@@ -3948,11 +4061,9 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   };
   // render order (section 9): underlays -> spines -> wires -> boxes/rosters
   // -> labels/chips/terminators. Underlay alpha 0.25 (declutter lever 5).
-  // semantic zoom: at reduced tier the map is a subsystem diagram - band
-  // trunks + pills only; the named wiring diagram fades in at full admit
-  // (or small E). Everything wire-level is gated on it.
-  const namedOK = mapFullAdmit || L.E <= 12;
-  if (namedOK) L.underlays.forEach(u => {
+  // ONE mode: the full wiring diagram paints at every zoom - nothing is
+  // gated on zoom level (owner mandate).
+  L.underlays.forEach(u => {
     seg(u, MGLYPH[u.ty0] ? MGLYPH[u.ty0].c : MGLYPH.attach.c, 1,
         MGLYPH.attach.dash, 0.25 * dim(u.s, u.t));
     // T-junction terminator: short tick across the entry, no arrow
@@ -3962,7 +4073,7 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     ctx.moveTo(u.tx - 4, u.ty); ctx.lineTo(u.tx + 4, u.ty);
     ctx.stroke();
   });
-  if (namedOK) L.spines.forEach(sp => {
+  L.spines.forEach(sp => {
     if (sp.con) return;   // consolidated twin: its ink rides the shared trunk
     const gl = sp.amber ? null : mapCols(nodes[sp.s].cluster);
     let color = "#ffb347";
@@ -3976,39 +4087,13 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     }
     // trunk leader: combined-width stroke for every corridor riding it
     seg(sp, color, sp.trunkW ? Math.min(2 + 1.1 * (sp.trunkW - 1), 7) : 2,
-        null, 0.5 * dim(sp.s, sp.t));
+        sp.back ? [2, 3] : null, 0.5 * dim(sp.s, sp.t));
   });
-  // semantic zoom: reduced tier draws NOTHING wire-level except the
-  // band trunks below; named wiring needs full admit (or small E)
-  if (namedOK) L.wires.forEach(w => {
+  L.wires.forEach(w => {
     const g = MGLYPH[w.ty] || MGLYPH.call;
-    seg(w, g.c, 1.5, g.dash, (w.bez ? 0.25 : 0.9) * dim(w.sf, w.df));
+    // backward edges (against flow gravity) read as dashed; type color kept
+    seg(w, g.c, 1.5, w.back ? [2, 3] : g.dash, 0.9 * dim(w.sf, w.df));
   });
-  if (!namedOK) {
-    // layer diagram: one fat aggregate trunk per ordered row pair,
-    // staggered across the center, colored by dominant type, labeled xN
-    const nB = Math.max(1, L.bands.length);
-    let bi = 0;
-    L.bands.forEach(bd => {
-      const g = MGLYPH[bd.ty] || MGLYPH.call;
-      const x = 550 + (bi++ - (nB - 1) / 2) * 16;   // world center 1100/2
-      const y0 = L.chunkY[bd.a] + L.chunkRowH[bd.a] / 2;
-      const y1 = L.chunkY[bd.b] + L.chunkRowH[bd.b] / 2;
-      ctx.globalAlpha = 0.45;
-      ctx.strokeStyle = g.c;
-      ctx.lineWidth = Math.min(1.5 + bd.n * 0.6, 9);
-      ctx.beginPath();
-      ctx.moveTo(x, y0); ctx.lineTo(x, y1);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.globalAlpha = 0.9;
-      ctx.fillStyle = g.c;
-      ctx.font = MAP_FONT(10);
-      ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.fillText("\u00d7" + bd.n, x + 8, (y0 + y1) / 2);
-    });
-    ctx.setLineDash([]);
-  }
   // boxes + rosters
   ctx.setLineDash([]);
   L.lit.forEach(i => {
@@ -4016,11 +4101,11 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     if (!p || !g) return;   // pinned subject can outlive the placer (belt)
     const c = mapCols(nodes[i].cluster);
     const a = dim(i);
-    const isSubject = L.doc && i === L.doc.ix;   // document subject emphasis
+    const isSel = i === mapFrozenIx;   // amber = selection emphasis (L3 freeze)
     ctx.globalAlpha = a;
     ctx.fillStyle = c.f;
-    ctx.strokeStyle = isSubject ? "#ffb347" : c.s;
-    ctx.lineWidth = isSubject ? 3 : 1.5;
+    ctx.strokeStyle = isSel ? "#ffb347" : c.s;
+    ctx.lineWidth = isSel ? 3 : 1.5;
     const rad = 6;
     ctx.beginPath();
     ctx.moveTo(p.x + rad, p.y);
@@ -4081,7 +4166,7 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     return sx >= -30 && sx <= cwView + 30 && sy >= -10 && sy <= chView + 10;
   };
   ctx.font = MAP_FONT(10);
-  if (namedOK) L.chips.forEach(ch => {
+  L.chips.forEach(ch => {
     const g = MGLYPH[ch.ty] || MGLYPH.call;
     const sw = ch.w * mapZ, sh = ch.h * mapZ;
     const a = m2s(ch.x + ch.w / 2, ch.y + ch.h / 2);
@@ -4101,39 +4186,6 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     ctx.fillStyle = g.c;
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText("\u00d7" + ch.n, ch.x + ch.w / 2, ch.y + dyW + ch.h / 2 + 0.5);
-  });
-  // labels: zoom tiers only when E>12 (section 6); E<=12 -> ALL. Label
-  // pressure at z<0.9 (declutter lever 4): ONLY the 12 highest-degree
-  // targets keep labels (hidden otherwise, never faded), deterministic
-  // by degree then index.
-  let tier;
-  if (L.E <= 12) tier = () => true;
-  else if (mapZ < 0.9) {
-    const t12 = new Set([...L.lit].sort((a, b) =>
-      degree[b] - degree[a] || a - b).slice(0, 12));
-    tier = l => t12.has(L.wires[l.w].df);
-  } else if (mapZ >= 1.5) tier = l => inView(l.x, l.y);
-  else tier = () => true;
-  mapShownLabels = 0;
-  ctx.textAlign = "left";
-  ctx.textBaseline = "alphabetic";
-  if (namedOK) L.labels.forEach(l => {
-    if (!tier(l)) return;
-    const w = L.wires[l.w];
-    const g = MGLYPH[l.ty] || MGLYPH.call;
-    let txt = l.text;
-    ctx.font = l.ty === "signal" ? "italic " + MAP_FONT(10) : MAP_FONT(10);
-    if (ctx.measureText(txt).width * mapZ > 90)
-      txt = txt.slice(0, 9) + "\u2026";   // truncate 9 chars when narrow
-    // collision ladder: slide down / hide rather than print on text
-    const tw = ctx.measureText(txt).width;
-    const a = m2s(l.x + tw / 2, l.y - 6);
-    const dy = place2(a.x, a.y, tw * mapZ + 2, 12 * mapZ);
-    if (dy === null) return;
-    ctx.globalAlpha = dim(w.sf, w.df);
-    ctx.fillStyle = g.c;
-    ctx.fillText(txt, l.x, l.y + dy / mapZ);
-    mapShownLabels++;
   });
   // terminators last so arrowheads/dots sit on the box edges (section 9)
   ctx.setLineDash([]);
@@ -4156,23 +4208,6 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
       ctx.fill();
     }
   });
-  // document pager pill: click cycles neighbor pages (deterministic order)
-  if (mapFullAdmit && L.pill) {
-    const p = L.pill, nd = nodes[L.doc.ix], c = mapCols(nd ? nd.cluster : 0);
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = "rgba(8,12,16,.9)";
-    ctx.strokeStyle = c.s;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    if (ctx.roundRect) ctx.roundRect(p.x, p.y, p.w, p.h, 6);
-    else ctx.rect(p.x, p.y, p.w, p.h);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = c.t;
-    ctx.font = MAP_FONT(10);
-    ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText(p.label, p.x + p.w / 2, p.y + p.h / 2 + 0.5);
-  }
   ctx.globalAlpha = 1;
   // screen-space furniture: map-local vars chip [F10] + footer
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -4198,16 +4233,13 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
             mr.sig_unresolved + " unres";
   ctx.fillText(foot, 8, chView - 6);
 }
-// center the pane on the document subject; shared by the relayout path and
-// the cache-hit path (tier crossings relayout by design)
-function centerDocLayout(cwView, chView) {
-  const cp = mapLayout && mapLayout.place.get(mapDocIx);
-  if (!cp) return;
-  mapPX = Math.max(0, Math.min(Math.max(0, MAP_WORLD_W - cwView / mapZ),
-    cp.x + cp.w / 2 - cwView / mapZ / 2));
-  mapPY = Math.max(0, Math.min(Math.max(0, (mapLayout.worldH || 0) - chView / mapZ),
-    cp.y + cp.h / 2 - chView / mapZ / 2));
-  mapDocCenter = false;
+// keep the window inside the world: pan/zoom can never strand the layout
+// off-screen (drag = pan must stay recoverable at every zoom)
+function mapClampView() {
+  if (!mapLayout) return;
+  const cwView = mapPane.clientWidth || 440, chView = mapPane.clientHeight || innerHeight;
+  mapPX = Math.max(0, Math.min(Math.max(0, MAP_WORLD_W - cwView / mapZ), mapPX));
+  mapPY = Math.max(0, Math.min(Math.max(0, (mapLayout.worldH || 0) - chView / mapZ), mapPY));
 }
 // rAF dirty-flag single draw (section 5 [F7]): every caller coalesces here
 function drawMapPane() {
@@ -4216,13 +4248,7 @@ function drawMapPane() {
   requestAnimationFrame(() => {
     mapDirty = false;
     try { mapRender(); }
-    catch (err) {
-      // a render throw must never strand doc state over a cleared canvas +
-      // stale layout (D2): drop the document, relayout reduced, log once
-      console.warn("map render failed; reverting document tier:", err);
-      mapFullAdmit = false; mapDocIx = -1; mapDocPage = 0;
-      try { mapRender(); } catch (e2) { /* keep last painted frame */ }
-    }
+    catch (err) { console.warn("map render failed:", err); }
   });
 }
 document.getElementById("bMap").onclick = () => setMapVisible(!mapVisible);
@@ -4283,6 +4309,7 @@ mapPane.addEventListener("wheel", e => {
   mapZ = Math.max(0.2, Math.min(3, mapZ * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
   mapPX = wx - cx / mapZ;
   mapPY = wy - cy / mapZ;
+  mapClampView();
   drawMapPane();
 }, { passive: false });
 mapPane.addEventListener("pointerdown", e => {
@@ -4310,19 +4337,31 @@ mapPane.addEventListener("click", e => {
   // 1. bundle chip -> pinned enumeration list (section 7)
   const ci = mapChipAt(w.x, w.y);
   if (ci >= 0) { mapOpenList(ci); return; }
-  // 2. document pager pill: cycle neighbor pages deterministically. Tested
-  // before wires/boxes: the pill is painted last (on top), and scope wires
-  // fan through the pill's zone below the scope box.
-  const pl = mapFullAdmit && mapLayout && mapLayout.pill;
-  if (pl && w.x >= pl.x && w.x <= pl.x + pl.w && w.y >= pl.y && w.y <= pl.y + pl.h) {
-    mapDocPage = (mapDocPage + 1) % mapLayout.doc.pages;
-    drawMapPane();
-    return;
+  // named wire vs boxes (L2): a wire within the 6px screen tolerance wins
+  // over box-header refocus - wires visibly ride box borders (the failing
+  // aim sat exactly ON a box's bottom edge) - unless the click genuinely
+  // lands inside the header band (title strip = top NH px; a roster-less
+  // box is all header). Row/picker zones yield to the wire too: the
+  // tolerance is screen-fine and wires terminate at row pins on borders.
+  const wi = mapWireAt(w.x, w.y);
+  if (wi >= 0 && mapLayout) {
+    let inHeader = false;
+    for (let k = mapRects.length - 1; k >= 0; k--) {
+      const rc = mapRects[k];
+      if (w.x < rc.x || w.x > rc.x + rc.w || w.y < rc.y || w.y > rc.y + rc.h) continue;
+      inHeader = w.y < rc.y + ((rc.rows.length || rc.more) ? NH : rc.h);
+      break;
+    }
+    if (!inHeader) {
+      const wr = mapLayout.wires[wi];
+      if (wr.ty === "var") showInfo(wr.df);   // member target is not a fn
+      else mapShowFn(wr.df, wr.dfn);
+      return;
+    }
   }
-  // 3. boxes: roster row (L3) / "+N more" (picker) / header (click refocus).
-  // Tested before wires: boxes paint on top of them, and the scope's wire
-  // fan crosses the whole pane. Rects iterate topmost-drawn first so an
-  // overlap resolves to the box the user actually sees.
+  // 2. boxes: roster row (L3) / "+N more" (picker) / header (click refocus).
+  // Tested before wires: boxes paint on top of them. Rects iterate
+  // topmost-drawn first so an overlap resolves to the box the user sees.
   for (let k = mapRects.length - 1; k >= 0; k--) {
     const rc = mapRects[k];
     if (w.x < rc.x || w.x > rc.x + rc.w || w.y < rc.y || w.y > rc.y + rc.h) continue;
@@ -4337,30 +4376,14 @@ mapPane.addEventListener("click", e => {
         }
       }
     }
-    const i = rc.i;   // header / collapsed box: click = refocus (220ms so a
-    mapRefocusTimer = setTimeout(() => {   // dblclick can cancel into a toggle)
-      if (mapFullAdmit) {   // document mode: a neighbor click re-scopes the
-        // document to that file - same rendering, new center, 3D untouched
-        if (i !== mapDocIx) {
-          mapDocIx = i; mapDocPage = 0; mapDocCenter = true;
-          drawMapPane();
-        }
-        return;
-      }
+    const i = rc.i;   // header click = refocus (220ms so a dblclick can
+    mapRefocusTimer = setTimeout(() => {   // cancel into an expand toggle)
       pushFocusState(); showInfo(i); focusSeeds.clear(); focusSeeds.add(i);
       applyVisibility(); focus(i);
     }, 220);
     return;
   }
-  // 4. named wire (L2): showFnInfo(target) - CALLED BY is its section
-  const wi = mapWireAt(w.x, w.y);
-  if (wi >= 0 && mapLayout) {
-    const wr = mapLayout.wires[wi];
-    if (wr.ty === "var") showInfo(wr.df);   // member target is not a fn
-    else mapShowFn(wr.df, wr.dfn);
-    return;
-  }
-  // 5. void: unpin the list, close the picker, drop the freeze
+  // void: unpin the list, close the picker, drop the freeze
   if (mapListEl.style.display === "block" || mapFrozenIx >= 0) mapOvCloseOne();
 });
 mapPane.addEventListener("dblclick", e => {
@@ -4369,11 +4392,6 @@ mapPane.addEventListener("dblclick", e => {
   const w = mapToWorld(e);
   for (const rc of mapRects) {
     if (w.x >= rc.x && w.x <= rc.x + rc.w && w.y >= rc.y && w.y <= rc.y + rc.h) {
-      if (mapFullAdmit) {   // document mode: dblclick still refocuses the 3D
-        pushFocusState(); showInfo(rc.i); focusSeeds.clear(); focusSeeds.add(rc.i);
-        applyVisibility(); focus(rc.i);
-        return;
-      }
       const open = mapLayout && mapLayout.expandedSet.has(rc.i);
       mapExpandUser.set(rc.i, !open);
       drawMapPane();
@@ -4388,6 +4406,7 @@ mapPane.addEventListener("pointermove", e => {
     if (Math.hypot(dx, dy) > 4) mapDrag.moved = true;
     mapPX = mapDrag.px - dx / mapZ;
     mapPY = mapDrag.py - dy / mapZ;
+    mapClampView();
     drawMapPane();
     return;
   }
@@ -4396,10 +4415,7 @@ mapPane.addEventListener("pointermove", e => {
   const wi = ci < 0 && mapFrozenIx < 0 ? mapWireAt(w.x, w.y) : -1;
   if (mapHover !== wi) { mapHover = wi; drawMapPane(); }
   mapHoverChip = ci;
-  const pillHit = mapFullAdmit && mapLayout && mapLayout.pill &&
-    w.x >= mapLayout.pill.x && w.x <= mapLayout.pill.x + mapLayout.pill.w &&
-    w.y >= mapLayout.pill.y && w.y <= mapLayout.pill.y + mapLayout.pill.h;
-  mapPane.style.cursor = ci >= 0 || wi >= 0 || pillHit || mapRects.some(rc =>
+  mapPane.style.cursor = ci >= 0 || wi >= 0 || mapRects.some(rc =>
     w.x >= rc.x && w.x <= rc.x + rc.w && w.y >= rc.y && w.y <= rc.y + rc.h)
     ? "pointer" : "default";
   if (wi >= 0) {   // map-local tooltip (L1)
@@ -4415,56 +4431,16 @@ addEventListener("resize", () => { if (mapVisible) { sizeMapPane(); drawMapPane(
 // test/debug surface: named-wire map introspection (harness contract)
 const mapInfo = () => {
   if (!mapLayout) return null;
-  const tg = new Set(mapLayout.labels.map(l => mapLayout.wires[l.w].df));
   const w0 = mapLayout.wires[0];
   let probe = null;
-  if (w0 && (mapFullAdmit || mapLayout.E <= 12)) {   // reduced tier: wires not clickable
+  if (w0) {   // midpoint of wire 0 in screen space (click-target probe)
     const m = w0.pts[Math.floor(w0.pts.length / 2)];
     probe = { sx: (m[0] - mapPX) * mapZ, sy: (m[1] - mapPY) * mapZ };
   }
-  // wiring-document surface: scope, drawn-box file ixs, wire scoping, and
-  // screen-space probes for a visible neighbor box + the pager pill
-  let probeBox = null, probePill = null, probeScope = null;
-  if (mapFullAdmit) {
-    const cwV = mapPane.clientWidth || 440, chV = mapPane.clientHeight || innerHeight;
-    const onScreen = (x, y) => {
-      const sx = (x - mapPX) * mapZ, sy = (y - mapPY) * mapZ;
-      return sx >= -20 && sx <= cwV + 20 && sy >= -20 && sy <= chV + 20;
-    };
-    const nb = mapRects.find(rc => rc.i !== mapDocIx &&
-      (() => {   // header band center must be fully on-pane (clickable)
-        const sx = (rc.x + rc.w / 2 - mapPX) * mapZ;
-        const sy = (rc.y + 11 - mapPY) * mapZ;
-        return sx >= 30 && sx <= cwV - 30 && sy >= 20 && sy <= chV - 20;
-      })());
-    if (nb) probeBox = { i: nb.i, sx: (nb.x + nb.w / 2 - mapPX) * mapZ,
-                         sy: (nb.y + 11 - mapPY) * mapZ };
-    if (mapLayout.pill)
-      probePill = { sx: (mapLayout.pill.x + mapLayout.pill.w / 2 - mapPX) * mapZ,
-                    sy: (mapLayout.pill.y + mapLayout.pill.h / 2 - mapPY) * mapZ };
-    const sc = mapRects.find(rc => rc.i === mapDocIx);
-    if (sc) probeScope = { sx: (sc.x + sc.w / 2 - mapPX) * mapZ,
-                           sy: (sc.y + 11 - mapPY) * mapZ };
-  }
   return {
     E: mapLayout.E,
-    fullAdmit: mapFullAdmit,
-    docIx: mapDocIx,
-        docNb: mapLayout.doc.nb,
-        docNbPos: mapLayout.doc.pos,
-    docPage: mapLayout.doc.page,
-    docPages: mapLayout.doc.pages,
-    docHdr: mapLayout.docHdr,
     boxIxs: mapRects.map(r => r.i),
-    docWireOk: mapFullAdmit
-      ? mapLayout.wires.every(w => w.sf === mapDocIx || w.df === mapDocIx)
-      : null,
-    namedOK: mapFullAdmit || mapLayout.E <= 12,
     wires: mapLayout.wires.length,
-    labels: mapLayout.labels.length,
-    shownLabels: mapShownLabels,
-    labelTargets: tg.size,
-    budgetOk: mapLayout.labels.length <= 2 * tg.size,
     chips: mapLayout.chips.length,
     rosterRows: mapLayout.rosterRows,
     expanded: mapLayout.expandedSet.size,
@@ -4477,9 +4453,6 @@ const mapInfo = () => {
       mapLayout.spines.filter(sp => !sp.con).length +
       mapLayout.wires.length,
     probeWire: probe,
-    probeBox,
-    probePill,
-    probeScope,
   };
 };
 document.getElementById("bGround").onclick = e => {
@@ -4566,8 +4539,8 @@ function resetAll() {
   showInst = false; showCalls = true; showTests = false;
   groupsMode = false;   // coloring level is view state — reset to fine clusters
   collapsed = false; fnWasOn = false;   // supernode collapse off — resetAll's button wipe clears its .on
-  searchEl.value = ""; depthEl.value = 2;
-  document.getElementById("depthVal").textContent = "2";
+  searchEl.value = ""; depthEl.value = 1;
+  document.getElementById("depthVal").textContent = "1";
 document.getElementById("spread").value = 100;
 document.getElementById("spreadVal").textContent = "1.0";
 applySpread(1);
@@ -4586,7 +4559,6 @@ applySpread(1);
   if (mapVisible) document.getElementById("bMap").classList.add("on");
   // ...but its content state resets with everything else
   mapExpandUser.clear(); mapFrozenIx = -1; mapHover = -1; mapVarsOn = false;
-  mapDocIx = -1; mapDocPage = 0; mapDocCenter = false;
   mapOvCloseOne();
   frameGraph();
   buildLegend();
@@ -4873,15 +4845,19 @@ renderer.domElement.addEventListener("pointermove", e => {
   }
   // wire hover: no node under the cursor -> raycast the edge buckets and
   // name the strongest named wire on that file pair ('A::sfn -> B::dfn').
-  // Suppressed while focus mode is active (its tooltips + dash-flow own the
-  // scene) and while dragging. Filtered/ghost edges never match.
-  if (!txt && !focusActive && !pointerDown && mwires.length) {
+  // Enabled during focus too: the hub edge budget ghosts most wires, so
+  // hover is the on-demand reveal — the hovered wire re-lights (budget
+  // bypass) AND shows its tooltip. Suppressed while dragging. Filtered/
+  // ghost edges never match.
+  if (!txt && !pointerDown && mwires.length) {
+    let hitLi = -1;
     for (const h of raycaster.intersectObjects(bucketMesh)) {
       const li = linkOfSeg(bucketMesh.indexOf(h.object), h.faceIndex);
       if (li < 0) continue;
       const l = links[li];
       if (linkFiltered(l) || !typeVisible(l.ty) ||
           (alphaTgt[l.s] < 0.05 && alphaTgt[l.t] < 0.05)) continue;
+      hitLi = li;
       const pair = [];
       mwires.forEach(w => {
         if ((w[1] === l.s && w[3] === l.t) || (w[1] === l.t && w[3] === l.s)) pair.push(w);
@@ -4899,6 +4875,10 @@ renderer.domElement.addEventListener("pointermove", e => {
           " → " + nodes[pair[0][3]].label + "::" + pair[0][4];
       }
       break;
+    }
+    if (focusActive && hitLi !== hoverEdgeLi) {
+      hoverEdgeLi = hitLi;
+      applyVisibility();   // re-runs the budget pass with the hover bypass
     }
   }
   if (txt) {
@@ -5007,6 +4987,10 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   fns: DATA.fns || {},
   alpha: alphaArr, alphaTgt, hoverScale, hot, bucketMat, bucketOf, hwSlot, bucketPosIB, bucketColIB, slotOf,
   adjOut, adjIn, adj, outDeg, inDeg, get dirMode() { return dirMode; }, focusSeeds, level,
+  get budgetLit() { return budgetLit; }, get hoverEdgeLi() { return hoverEdgeLi; },
+  get fnLines() { return fnLines; }, get hubRing() { return hubRing; },
+  get litSet() { return compactIdx; }, get compactScale() { return compactScale; },
+  get overlaps() { return compactOverlaps; },
   get camTween() { return camTween; }, get focusStack() { return focusStack; },
   get fileMesh() { return fileMesh; }, get fnMesh() { return fnMesh; },
   get controls() { return controls; },
@@ -5021,11 +5005,12 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   syncFileMesh,
   mapPane: { canvas: mapPane, draw: drawMapPane },
   mwires, mapInfo, get mapVars() { return mapVarsOn; }, mapExpandUser,
+  get mapZ() { return mapZ; }, get mapPX() { return mapPX; },
+  get mapPY() { return mapPY; }, mapClampView,
   get paneW() { return paneW; }, setMapVisible, divider,
   get glW() { return glW(); },
   get bucketMesh() { return bucketMesh; }, linkOfSeg, raycaster, linkFiltered, typeVisible,
-  get mapLayout() { return mapLayout; },
-  resetDoc() { mapDocIx = -1; mapDocPage = 0; } };
+  get mapLayout() { return mapLayout; } };
 tick();
 </script>
 </body>
