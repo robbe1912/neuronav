@@ -3383,10 +3383,12 @@ function rebuildFnLayer(focusing) {
     if (!c0 || !c1) continue;
     const p0 = surf(sf, [c0[0]/fnCnt.get(sf), c0[1]/fnCnt.get(sf), c0[2]/fnCnt.get(sf)]);
     const p1 = surf(tf, [c1[0]/fnCnt.get(tf), c1[1]/fnCnt.get(tf), c1[2]/fnCnt.get(tf)]);
+    // trunk color = DESTINATION FILE's cluster color (colArr is per-file;
+    // fcol is per-fn-box — indexing it by file reads garbage => black tubes)
+    const tc = [colArr[tf*3], colArr[tf*3+1], colArr[tf*3+2]];
     const mx = (p0[0]+p1[0])/2, my = (p0[1]+p1[1])/2, mz = (p0[2]+p1[2])/2;
     emitArc(tierB, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
-            fcol[tf*3], fcol[tf*3+1], fcol[tf*3+2],
-            fcol[tf*3], fcol[tf*3+1], fcol[tf*3+2], 0, 0.30, true);
+            tc[0], tc[1], tc[2], tc[0], tc[1], tc[2], 0, 0.30, true);
     fnTrunkN++;
     // conduit body: the bus must have PHYSICAL presence — a 1px line among
     // 1px lines reads as nothing (the user: "converges but no bus line").
@@ -3402,8 +3404,7 @@ function rebuildFnLayer(focusing) {
       const x = u*u*p0[0] + 2*u*t*qx + t*t*p1[0];
       const y = u*u*p0[1] + 2*u*t*qy + t*t*p1[1];
       const z = u*u*p0[2] + 2*u*t*qz + t*t*p1[2];
-      busSegs.push({ a: [bx2, by2, bz2], b: [x, y, z],
-                     col: [fcol[tf*3], fcol[tf*3+1], fcol[tf*3+2]] });
+      busSegs.push({ a: [bx2, by2, bz2], b: [x, y, z], col: tc });
       bx2 = x; by2 = y; bz2 = z;
     }
   }
