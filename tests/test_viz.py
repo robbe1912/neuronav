@@ -221,21 +221,27 @@ def run_tests():
                    if (d.level[i] >= 0 && d.level[i] <= 1) lit.add(i);
                    if (d.level[i] === 0 && hub < 0) hub = i;
                  }
-                 let bright = 0, silent = 0;
+                 let bright = 0, silent = 0, trunks = 0;
+                 const inB = {};
                  (d.fedges || []).forEach(e => {
                    if (lit.has(e[0]) && lit.has(e[2]) &&
                        d.alphaTgt[e[0]] > 0.5 && d.alphaTgt[e[2]] > 0.5) {
                      // render rule: either endpoint a focus subject (level 0)
-                     if (d.level[e[0]] === 0 || d.level[e[2]] === 0) bright++;
-                     else silent++;
+                     if (d.level[e[0]] === 0 || d.level[e[2]] === 0) {
+                       bright++;
+                       const k = e[2] + "::" + e[3];
+                       inB[k] = (inB[k] || 0) + 1;
+                     } else silent++;
                    } });
-                 return { wires, quiet, bright, silent,
+                 for (const k in inB) if (inB[k] >= 3) trunks++;
+                 return { wires, quiet, bright, silent, trunks,
                           litFiles: lit.size, hub,
                           ring: !!(d.hubRing && d.hubRing.visible) }; }"""
         )
         check("fn layer: hub wires bright, neighbors quiet, none dropped",
-              fnb["wires"] == fnb["bright"] and fnb["quiet"] == fnb["silent"]
-              and fnb["bright"] + fnb["silent"] > 0, str(fnb))
+              fnb["wires"] == fnb["bright"] + fnb["trunks"] and
+              fnb["quiet"] == fnb["silent"] and
+              fnb["bright"] + fnb["silent"] > 0, str(fnb))
         check("hub ring marks the focused hub", fnb["ring"], str(fnb))
 
         # 4d. pin topology: budgeted wires attach at DISTINCT rim points —

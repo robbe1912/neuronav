@@ -3283,11 +3283,36 @@ function rebuildFnLayer(focusing) {
   const tierB = mk(), tierQ = mk();
   const aPos = [], aDir = [], aCol = [];
   const cA = new THREE.Color(), cB = new THREE.Color();
+  // BUS pass: bright wires converging on ONE fn merge at a junction point
+  // (an onramp) short of the box — the shared trunk carries one arrow into
+  // the fn. Buses form by SHARED DESTINATION only (>=3 wires): blind
+  // bundling hurts path tracing (McGee & Dingliana 2012), destination
+  // bundling matches the "many feeders, one pin" mental model.
+  const inB = new Map(), dirB = new Map();
+  for (let i = 0; i < eidx.length; i += 2) {
+    const a = eidx[i], b = eidx[i+1];
+    if (level[fnMeta[a].file] !== 0 && level[fnMeta[b].file] !== 0) continue;
+    inB.set(b, (inB.get(b) || 0) + 1);
+    const dx = fpos[b*3] - fpos[a*3], dy = fpos[b*3+1] - fpos[a*3+1],
+          dz = fpos[b*3+2] - fpos[a*3+2];
+    const l = Math.hypot(dx, dy, dz) || 1;
+    const d = dirB.get(b) || [0, 0, 0];
+    d[0] += dx / l; d[1] += dy / l; d[2] += dz / l;
+    dirB.set(b, d);
+  }
+  const Jof = new Map();
+  for (const [b, n] of inB) if (n >= 3) {
+    const d = dirB.get(b);
+    const l = Math.hypot(d[0], d[1], d[2]) || 1;
+    Jof.set(b, [fpos[b*3] + d[0] / l * 14, fpos[b*3+1] + d[1] / l * 14,
+                fpos[b*3+2] + d[2] / l * 14]);
+  }
   for (let i = 0; i < eidx.length; i += 2) {
     const a = eidx[i], b = eidx[i+1];
     const T = (level[fnMeta[a].file] === 0 || level[fnMeta[b].file] === 0) ? tierB : tierQ;
     const ax = fpos[a*3], ay = fpos[a*3+1], az = fpos[a*3+2];
-    const bx = fpos[b*3], by = fpos[b*3+1], bz = fpos[b*3+2];
+    const J = T === tierB ? Jof.get(b) : null;
+    const bx = J ? J[0] : fpos[b*3], by = J ? J[1] : fpos[b*3+1], bz = J ? J[2] : fpos[b*3+2];
     const dist = Math.hypot(bx-ax, by-ay, bz-az) || 1;
     const h = ((i + 1) * 2654435761 >>> 0) % 97 / 97;
     const lift = (0.08 + 0.10 * h) * dist * (i % 2 ? 1 : -1);
@@ -3321,6 +3346,29 @@ function rebuildFnLayer(focusing) {
       px = x; py = y; pz = z; pd = dd;
     }
   }
+  // bus trunks: junction -> box, straight 8-segment run, one arrowhead at
+  // the fn (the pin), colored by the target box
+  Jof.forEach((J, b) => {
+    const len = Math.hypot(fpos[b*3]-J[0], fpos[b*3+1]-J[1], fpos[b*3+2]-J[2]) || 1;
+    const dx = (fpos[b*3]-J[0]) / len, dy = (fpos[b*3+1]-J[1]) / len,
+          dz = (fpos[b*3+2]-J[2]) / len;
+    let px = J[0], py = J[1], pz = J[2], pd = 0;
+    for (let s = 1; s <= FS; s++) {
+      const t = s / FS;
+      const x = J[0] + (fpos[b*3]-J[0]) * t;
+      const y = J[1] + (fpos[b*3+1]-J[1]) * t;
+      const z = J[2] + (fpos[b*3+2]-J[2]) * t;
+      pd += Math.hypot(x-px, y-py, z-pz);
+      tierB.ep.push(px, py, pz, x, y, z);
+      tierB.ec.push(fcol[b*3], fcol[b*3+1], fcol[b*3+2],
+                    fcol[b*3], fcol[b*3+1], fcol[b*3+2]);
+      tierB.ed.push(0, pd);
+      px = x; py = y; pz = z;
+    }
+    aPos.push(fpos[b*3] - dx * 4, fpos[b*3+1] - dy * 4, fpos[b*3+2] - dz * 4);
+    aDir.push(dx, dy, dz);
+    aCol.push(fcol[b*3], fcol[b*3+1], fcol[b*3+2]);
+  });
   const makeWires = (T, op) => {
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(T.ep), 3));
@@ -4036,8 +4084,8 @@ function mapRender() {
     y >= r.y0 && y <= r.y1 && x1 >= r.x0 && x0 <= r.x1);
   const nextY = (x0, x1, startY, limitY) => {
     let y = startY;
-    while ((usedY.some(u => Math.abs(u - y) < 5) ||
-            spanHits(Math.min(x0, x1), Math.max(x0, x1), y)) && y < limitY) y += 5;
+    while ((usedY.some(u => Math.abs(u - y) < 7) ||
+            spanHits(Math.min(x0, x1), Math.max(x0, x1), y)) && y < limitY) y += 7;
     usedY.push(y);
     // channels live in the box-free gap bands: a crowded channel bundles
     // horizontals — it must never fail into a bezier
@@ -4184,7 +4232,25 @@ function mapRender() {
     const ty = dRow === undefined
       ? (sameRow ? B.y + B.h : B.y)
       : (sameRow ? B.y + NH + (dRow + 1) * RH : B.y + NH + dRow * RH);
-    const wr = routeOrtho(A, B, sy, ty, sameRow, sx0, tx0);
+    // cardinal routing: two boxes side by side on the SAME row with a clear
+    // corridor connect STRAIGHT ACROSS — exit one side edge, enter the other
+    // (Unreal/Mermaid law: no dip-down-up detour for a horizontal neighbor).
+    // A box standing between the pair blocks the corridor -> dip route.
+    let wr;
+    const side = B.x >= A.x + A.w ? 1 : (B.x + B.w <= A.x ? -1 : 0);
+    const gapL = Math.min(A.x + A.w, B.x + B.w);
+    const gapR = Math.max(A.x, B.x);
+    const blocked = !side || rects.some(r =>
+      r !== A && r !== B && sy >= r.y0 && sy <= r.y1 &&
+      r.x1 > gapL && r.x0 < gapR);
+    if (!blocked) {
+      const x0 = side > 0 ? A.x + A.w : A.x;
+      const x1 = side > 0 ? B.x : B.x + B.w;
+      const ch2 = Math.max(0, Math.min(8, Math.abs(x1 - x0) / 2));
+      wr = { pts: [[sx0, sy], [x0 + side * ch2, sy],
+                   [x1 - side * ch2, sy], [tx0, sy]],
+             bez: false, tx: tx0, ty: sy, back: false };
+    } else wr = routeOrtho(A, B, sy, ty, sameRow, sx0, tx0);
     wr.flow = sameRow ? "same" : (ty > sy ? "down" : "up");
     wires.push(Object.assign({
       sf: w.sf, sfn: w.sfn, df: w.df, dfn: w.dfn, ty: w.ty, line: w.line,
@@ -4432,12 +4498,24 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     ctx.arc(w.pts[0][0], w.pts[0][1], 2.2, 0, Math.PI * 2);
     ctx.fillStyle = g.c;
     ctx.fill();
-    const off = w.up ? 8 : -8;
+    // arrowhead points along the FINAL segment's cardinal direction —
+    // horizontal entries get side arrows, drops get up/down arrows
+    const pv = w.pts[w.pts.length - 2];
+    const adx = w.tx - pv[0], ady = w.ty - pv[1];
+    const horiz = Math.abs(adx) > Math.abs(ady);
     if (g.term === "tri" || g.term === "hollow") {
       ctx.beginPath();
-      ctx.moveTo(w.tx, w.ty);
-      ctx.lineTo(w.tx - 4.5, w.ty + off);
-      ctx.lineTo(w.tx + 4.5, w.ty + off);
+      if (horiz) {
+        const s = adx > 0 ? 1 : -1;
+        ctx.moveTo(w.tx, w.ty);
+        ctx.lineTo(w.tx - s * 8, w.ty - 4.5);
+        ctx.lineTo(w.tx - s * 8, w.ty + 4.5);
+      } else {
+        const off = ady > 0 ? -8 : 8;   // arriving from above -> points down
+        ctx.moveTo(w.tx, w.ty);
+        ctx.lineTo(w.tx - 4.5, w.ty + off);
+        ctx.lineTo(w.tx + 4.5, w.ty + off);
+      }
       ctx.closePath();
       if (g.term === "tri") { ctx.fillStyle = g.c; ctx.fill(); }
       else { ctx.strokeStyle = g.c; ctx.lineWidth = 1.5; ctx.stroke(); }
