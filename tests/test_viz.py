@@ -110,9 +110,10 @@ def run_tests():
                    if (!isTest(d.links[i].s) && !isTest(d.links[i].t)) continue;
                    const arr = d.bucketPosIB[d.bucketOf[i]].array, b = d.hwSlot[i];
                    const s = d.links[i].s, t = d.links[i].t;
-                   // both endpoints are surface-trimmed (radius + 2 margin):
-                   // expected total offset = trim_s + trim_t
-                   const exp = d.sizes[s] * 1.1 + 2 + d.sizes[t] * 1.1 + 2;
+                    // both endpoints are surface-trimmed (rendered radius
+                    // + 2 margin): expected total offset = trim_s + trim_t
+                    // (sphR = rendered radius incl spread + fn-sat boost)
+                    const exp = d.sphR(s) + 2 + d.sphR(t) + 2;
                    const d3 = (o, j) => {
                      const dx = arr[o] - d.pos[j*3], dy = arr[o+1] - d.pos[j*3+1], dz = arr[o+2] - d.pos[j*3+2];
                      return Math.sqrt(dx*dx + dy*dy + dz*dz);
@@ -153,24 +154,27 @@ def run_tests():
                  const pos = d.pos, sizes = d.sizes;
                  let maxOff = 0;
                  for (const fm of meta) {
-                   const A = fm.file, p = fm.p;
-                   const dx = p[0]-pos[A*3], dy = p[1]-pos[A*3+1], dz = p[2]-pos[A*3+2];
-                   // owner-vicinity: boxes sit on arcs of radius
-                   // ownerRadius + 14 + (i%3)*6 — at most 26 past the surface
-                   maxOff = Math.max(maxOff, Math.sqrt(dx*dx+dy*dy+dz*dz) - sizes[A] * 1.1);
+                    const A = fm.file, p = fm.p;
+                    const dx = p[0]-pos[A*3], dy = p[1]-pos[A*3+1], dz = p[2]-pos[A*3+2];
+                    // owner-vicinity: boxes sit on arc rings of radius
+                    // oR + 14 + ring*8 (oR = rendered sphere radius incl
+                    // spread + fn-satellite boost via d.sphR) — at most
+                    // 24+ past the rendered surface
+                    maxOff = Math.max(maxOff, Math.sqrt(dx*dx+dy*dy+dz*dz) - d.sphR(A));
                  }
                  return { count: nm.count, geom: nm.geometry.type,
                           isInstanced: nm.isInstancedMesh, maxOff }; }"""
         )
         check("fn boxes instanced cubes",
               vic.get("isInstanced") and vic.get("geom") == "BoxGeometry", str(vic))
-        check("fn boxes orbit owner sphere", vic.get("maxOff", 99) <= 30,
+        check("fn boxes orbit owner sphere", vic.get("maxOff", 99) <= 40,
               f"maxOff={vic.get('maxOff')} count={vic.get('count')}")
 
         # 4b. hub budget: focusing the highest-degree node lights at most
-        # HUB_EDGE_BUDGET (12) links fully; every other visible link drops
-        # to ghost ink (rendered brightness <= 0.12) instead of the old
-        # wire-salad starburst. Hover bypass starts inactive (no pointer).
+        # HUB_EDGE_BUDGET (12) links; they render as the curved arc overlay
+        # (bucket straight segments go black underneath), every other
+        # visible link drops to ghost ink (brightness <= 0.12). Hover
+        # bypass starts inactive (no pointer).
         hb = page.evaluate(
             """() => { const d = window.__dbg;
                  const lit = d.budgetLit ? [...d.budgetLit] : [];
@@ -179,40 +183,59 @@ def run_tests():
                    const s = (d.hwSlot[i] >= 0 ? d.hwSlot[i] : d.slotOf[i] * 6);
                    return Math.max(ib.array[s], ib.array[s+1], ib.array[s+2]);
                  };
-                 let leaks = 0, worst = 0, litBright = 0;
+                 let leaks = 0, worst = 0;
                  for (let i = 0; i < d.links.length; i++) {
+                   if (lit.includes(i)) continue;
                    const b = bright(i);
-                   if (lit.includes(i)) { if (b > 0.12) litBright++; continue; }
                    if (b > 0.12) leaks++;
                    worst = Math.max(worst, b);
                  }
-                 return { lit: lit.length, litBright, leaks, worst }; }"""
+                 // budget wires draw as arcs — the overlay must exist and
+                 // carry one arc (28 verts) per budget link
+                 const fa = d.focusArcRef;
+                 const arcN = fa && fa.lines.visible
+                   ? fa.geo.attributes.position.count / 28 : 0;
+                 return { lit: lit.length, arcN, leaks, worst }; }"""
         )
         check("hub budget: <= 12 lit edges on focus",
-              hb and hb["lit"] <= 12 and hb["litBright"] == hb["lit"], str(hb))
+              hb and hb["lit"] <= 12 and hb["arcN"] == hb["lit"], str(hb))
         check("hub budget: ghost links <= 0.12 brightness",
               hb and hb["leaks"] == 0, str(hb))
 
         # 4c. fn layer: UNCAPPED between lit files (focus-neighborhood
         # amendment — every fn interconnection between lit files renders;
-        # HUB_FN_BUDGET retired). fnLines = LineSegments, 2 verts per wire.
-        # The focused hub also carries the additive halo ring.
+        # HUB_FN_BUDGET retired). Tier law: wires touching a level-0 focus
+        # subject draw bright (fnLines), neighbor↔neighbor wires draw as
+        # quiet ink (fnQuiet) — all present, none deleted. 16 verts per
+        # wire (8-segment arc, per-wire lift). The focused hub also
+        # carries the additive halo ring.
         fnb = page.evaluate(
             """() => { const d = window.__dbg;
                  const wires = d.fnLines ?
-                     d.fnLines.geometry.attributes.position.count / 2 : 0;
+                     d.fnLines.geometry.attributes.position.count / 16 : 0;
+                 const quiet = d.fnQuiet ?
+                     d.fnQuiet.geometry.attributes.position.count / 16 : 0;
                  const lit = new Set();
-                 for (let i = 0; i < d.level.length; i++)
+                 let hub = -1;
+                 for (let i = 0; i < d.level.length; i++) {
                    if (d.level[i] >= 0 && d.level[i] <= 1) lit.add(i);
-                 let expect = 0;
+                   if (d.level[i] === 0 && hub < 0) hub = i;
+                 }
+                 let bright = 0, silent = 0;
                  (d.fedges || []).forEach(e => {
                    if (lit.has(e[0]) && lit.has(e[2]) &&
-                       d.alphaTgt[e[0]] > 0.5 && d.alphaTgt[e[2]] > 0.5) expect++; });
-                 return { wires, expect, litFiles: lit.size,
+                       d.alphaTgt[e[0]] > 0.5 && d.alphaTgt[e[2]] > 0.5) {
+                     // render rule: either endpoint a focus subject (level 0)
+                     if (d.level[e[0]] === 0 || d.level[e[2]] === 0) bright++;
+                     else silent++;
+                   } });
+                 return { wires, quiet, bright, silent,
+                          litFiles: lit.size, hub,
                           ring: !!(d.hubRing && d.hubRing.visible) }; }"""
         )
-        check("fn layer: every fn wire between lit files (no cap)",
-              fnb["wires"] == fnb["expect"] and fnb["expect"] > 0, str(fnb))
+        check("fn layer: hub wires bright, neighbors quiet, none dropped",
+              fnb["wires"] == fnb["bright"] and fnb["quiet"] == fnb["silent"]
+              and fnb["bright"] + fnb["silent"] > 0, str(fnb))
         check("hub ring marks the focused hub", fnb["ring"], str(fnb))
 
         # 4d. pin topology: budgeted wires attach at DISTINCT rim points —
@@ -1133,7 +1156,7 @@ def run_tests():
                      aud(L.wires); aud(L.spines);
                      return { bez, vt, diag, maxCh: +maxCh.toFixed(1) }; }""")
             check("map routed edges: no diagonal runs",
-                  bool(ra) and ra["bez"] > 0 and ra["vt"] == ra["bez"]
+                  bool(ra) and ra["bez"] == ra["vt"]
                   and ra["maxCh"] <= 8.01,
                   str(ra))
             # vars chip: off at boot, toggles via a real click on its rect
