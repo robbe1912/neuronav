@@ -3016,6 +3016,7 @@ function updateHubs() {
 // ---- function-level layer (files inside the current focus) -------------------
 let fnMesh = null, fnLines = null, fnStalks = null, fnMeta = [], fnArrows = null, fnQuiet = null;
 let fnTrunkN = 0;   // file-pair bus trunks in the current fn layer (via __dbg)
+let fnTrunkW = 0;   // wires riding trunks (each emits entry+exit ramps)
 let fnBus = null;   // trunk conduit bodies (InstancedMesh cylinders)
 let busPts = null;  // segment endpoints for per-frame screen-constant rescale
 let fnBusRi = null; // current per-segment radius (world units)
@@ -3397,9 +3398,10 @@ function rebuildFnLayer(focusing) {
     const r = sphR(fi);
     return [pos[fi*3] + dx / l * r, pos[fi*3+1] + dy / l * r, pos[fi*3+2] + dz / l * r];
   };
-  const trunkMid = new Map();
+  const trunkEnds = new Map();  // reroute junctions: {e: entry, x: exit, c: color}
   const busSegs = [];   // {a:[x,y,z], b:[x,y,z], col:[r,g,b]} conduit pieces
   fnTrunkN = 0;
+  fnTrunkW = 0;
   for (const k of trunked) {
     const parts = k.split(">");
     const sf = +parts[0], tf = +parts[1];
@@ -3407,9 +3409,9 @@ function rebuildFnLayer(focusing) {
     if (!c0 || !c1) continue;
     let p0 = surf(sf, [c0[0]/fnCnt.get(sf), c0[1]/fnCnt.get(sf), c0[2]/fnCnt.get(sf)]);
     let p1 = surf(tf, [c1[0]/fnCnt.get(tf), c1[1]/fnCnt.get(tf), c1[2]/fnCnt.get(tf)]);
-    // bus stop: pull BOTH ends 16% off the sphere surfaces — the tube must
-    // terminate in open air where the tap fan lands, not melt into the sphere
-    // (the user: "bus is just straight up going into the world manager")
+    // bus stop: pull BOTH ends 16% off the sphere surfaces — these are the
+    // REROUTE JUNCTIONS where fn wires merge in and fan out (Blueprint
+    // reroute node: many in, one corridor, all arrive at the same end)
     for (const p of [p0, p1]) {
       const fi = p === p0 ? sf : tf;
       const dx = p[0] - pos[fi*3], dy = p[1] - pos[fi*3+1], dz = p[2] - pos[fi*3+2];
@@ -3420,17 +3422,16 @@ function rebuildFnLayer(focusing) {
     // trunk color = DESTINATION FILE's cluster color (colArr is per-file;
     // fcol is per-fn-box — indexing it by file reads garbage => black tubes)
     const tc = [colArr[tf*3], colArr[tf*3+1], colArr[tf*3+2]];
-    const mx = (p0[0]+p1[0])/2, my = (p0[1]+p1[1])/2, mz = (p0[2]+p1[2])/2;
     emitArc(tierB, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
             tc[0], tc[1], tc[2], tc[0], tc[1], tc[2], 0, 0.30, true);
     fnTrunkN++;
+    trunkEnds.set(k, { e: p0, x: p1, c: tc });
     // conduit body: the bus must have PHYSICAL presence — a 1px line among
     // 1px lines reads as nothing (the user: "converges but no bus line").
     // Lift 0.30 arcs the bus OVER the fn-box crowd around the spheres.
     const dist = Math.hypot(p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2]) || 1;
     const lsgn = (p0[0] + p0[1] + p0[2] <= p1[0] + p1[1] + p1[2]) ? 1 : -1;
     const lift = 0.30 * dist * lsgn;
-    trunkMid.set(k, [mx, my + lift, mz]);
     const qx = (p0[0]+p1[0])/2, qy = (p0[1]+p1[1])/2 + lift, qz = (p0[2]+p1[2])/2;
     let bx2 = p0[0], by2 = p0[1], bz2 = p0[2];
     for (let s = 1; s <= FS; s++) {
@@ -3446,23 +3447,37 @@ function rebuildFnLayer(focusing) {
     const a = eidx[i], b = eidx[i+1];
     const T = wireTier[p] ? tierB : tierQ;
     const ax = fpos[a*3], ay = fpos[a*3+1], az = fpos[a*3+2];
-    let bx = fpos[b*3], by = fpos[b*3+1], bz = fpos[b*3+2];
-    let arrow = T === tierB;
-    if (T === tierB) {
-      const tk = fnMeta[a].file + ">" + fnMeta[b].file;
-      if (trunked.has(tk)) {
-        const tm = trunkMid.get(tk);
-        if (tm) { bx = tm[0]; by = tm[1]; bz = tm[2]; arrow = false; }  // tap: feeds the bus
-      } else {
-        const J = Jof.get(b);
-        if (J) { bx = J[0]; by = J[1]; bz = J[2]; }
-      }
-    }
+    const bx = fpos[b*3], by = fpos[b*3+1], bz = fpos[b*3+2];
     cA.setRGB(fcol[a*3], fcol[a*3+1], fcol[a*3+2]);
     cB.setRGB(fcol[b*3], fcol[b*3+1], fcol[b*3+2]);
     const phase = ((i + 1) * 2654435761 >>> 3) % 911 / 911 * 13;
-    emitArc(T, ax, ay, az, bx, by, bz,
-            cA.r, cA.g, cA.b, cB.r, cB.g, cB.b, phase, 0.08 + 0.10 * (((i + 1) * 2654435761 >>> 0) % 97) / 97, arrow);
+    let done = false;
+    if (T === tierB) {
+      const tk = fnMeta[a].file + ">" + fnMeta[b].file;
+      const ends = trunked.has(tk) ? trunkEnds.get(tk) : null;
+      if (ends) {
+        // Blueprint reroute node: the wire leaves its fn, merges at the bus
+        // ENTRY junction, rides the trunk, and leaves at the shared EXIT —
+        // every wire of the pair arrives at the same end
+        done = true;
+        fnTrunkW++;
+        emitArc(T, ax, ay, az, ends.e[0], ends.e[1], ends.e[2],
+                cA.r, cA.g, cA.b, ends.c[0], ends.c[1], ends.c[2], phase, 0.10, false);
+        emitArc(T, ends.x[0], ends.x[1], ends.x[2], bx, by, bz,
+                ends.c[0], ends.c[1], ends.c[2], cB.r, cB.g, cB.b, phase + 2.5, 0.10, true);
+      } else {
+        const J = Jof.get(b);
+        if (J) {
+          emitArc(T, ax, ay, az, J[0], J[1], J[2],
+                  cA.r, cA.g, cA.b, cB.r, cB.g, cB.b, phase, 0.10, true);
+          done = true;
+        }
+      }
+    }
+    if (!done) emitArc(T, ax, ay, az, bx, by, bz,
+                       cA.r, cA.g, cA.b, cB.r, cB.g, cB.b, phase,
+                       0.08 + 0.10 * (((i + 1) * 2654435761 >>> 0) % 97) / 97,
+                       T === tierB);
   }
   const makeWires = (T, op) => {
     const g = new THREE.BufferGeometry();
@@ -5483,6 +5498,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnArrows() { return fnArrows; }, get compactBallR() { return compactBallR; },
   get fnQuiet() { return fnQuiet; }, get fnTrunkN() { return fnTrunkN; },
   get fnBus() { return fnBus; }, get fnBusPx() { return fnBusRi; },
+  get fnTrunkW() { return fnTrunkW; },
   get litSet() { return compactIdx; }, get compactScale() { return compactScale; },
   get overlaps() { return compactOverlaps; },
   get camTween() { return camTween; }, get focusStack() { return focusStack; },
