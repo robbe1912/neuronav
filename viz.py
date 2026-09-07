@@ -2994,7 +2994,7 @@ document.getElementById("bVar").onclick = e => {
 
 const mapPane = document.getElementById("mapPane");
 const MAP_MAX = 40;            // lit-node cap: past this the pane refuses
-const FN_PORT_MAX = 12;        // roster rows per expanded box, then "+N more"
+const FN_PORT_MAX = 6;          // roster rows per expanded box, then "+N more"
 const NH = 22, RH = 14, GAPX = 14, TOP = 46;   // header / row / gap / first-row Y
 const MAP_FONT = sz => sz + "px ui-monospace, Menlo, Consolas, monospace";
 // type glyphs (spec section 3): stroke color / dash pattern / terminator.
@@ -3288,8 +3288,12 @@ function mapRender() {
     pairNamed.set(k, (pairNamed.get(k) || 0) + 1);
   });
   const edges = cand.filter((l, i) => {
-    if (!mapFullAdmit)   // fit / low zoom: heavy corridors + chip-worthy pairs
+    if (!mapFullAdmit) {  // fit / low zoom: heavy corridors + chip-worthy pairs;
+      // same-row detours with a single ref are the bottom-loop spaghetti
+      if (level[l.s] === level[l.t] && (l.w || 1) < 2 &&
+          (pairNamed.get(l.s + "_" + l.t) || 0) < 2) return false;
       return (l.w || 1) >= 3 || (pairNamed.get(l.s + "_" + l.t) || 0) >= 2;
+    }
     return (l.w || 1) >= 2 || i < 120 || top8.has(l.s) || top8.has(l.t);
   }).slice(0, 160);
   const E = edges.length;
@@ -3660,7 +3664,7 @@ function mapRender() {
   const budget = new Map();
   wires.forEach((w, ix) => {
     const b = budget.get(w.df) || 0;
-    if (b >= 2) return;
+    if (b >= (mapZ < 1.3 ? 1 : 2)) return;   // fit zoom: 1 label per target
     const txt = w.ty === "signal" ? w.sfn : w.dfn;   // NAME per section 1
     const tw = txtW(txt) + 2;
     for (const dy of LAD) {
