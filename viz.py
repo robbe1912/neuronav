@@ -3027,6 +3027,10 @@ let mapHover = -1;             // hovered named-wire ix (L1 disclosure)
 let mapHoverChip = -1;         // hovered bundle chip ix (cursor affordance)
 let mapFrozenIx = -1;          // L3 roster-row pick: local dim 0.08, rows frozen
 let mapLayout = null;          // layout cache - keyed (focus, expansion, size)
+// wiring-document scope (full admit): the pane is a document for EXACTLY ONE
+// file - mapDocIx + the visible neighbor page; mapDocCenter flags a scope
+// change that must re-aim the window at the scope box
+let mapDocIx = -1, mapDocPage = 0, mapDocCenter = false;
 let mapDirty = false;          // rAF dirty flag: one draw per frame [F7]
 let mapShownLabels = 0;        // labels that passed the zoom tier (last paint)
 let mapRefocusTimer = 0;       // click-vs-dblclick discriminator on headers
@@ -3261,8 +3265,10 @@ function mapRender() {
   // z >= 1.5 restores the full tier-1 rank, z < 1.2 keeps only w>=3
   // corridors + chip-worthy pairs. Relayouts fire on threshold crossings
   // only - never per wheel tick (layout cache keyed via the key below).
+  const wasFull = mapFullAdmit;
   if (mapZ >= 1.5) mapFullAdmit = true;
   else if (mapZ < 1.2) mapFullAdmit = false;
+  if (mapFullAdmit && !wasFull) { mapDocCenter = true; mapFrozenIx = -1; }
   // focus signature ("focusVersion"): every input that changes the lit set
   // or the typed admission. pan/zoom never touch it (section 5).
   const sig = lit.join(",") + "|" + query + "|" + mapVarsOn + "|" +
@@ -3289,7 +3295,7 @@ function mapRender() {
     const k = w[1] + "_" + w[3];
     pairNamed.set(k, (pairNamed.get(k) || 0) + 1);
   });
-  const edges = cand.filter((l, i) => {
+  let edges = cand.filter((l, i) => {
     if (!mapFullAdmit) {  // fit / low zoom: heavy corridors + chip-worthy pairs;
       // same-row detours with a single ref are the bottom-loop spaghetti
       if (level[l.s] === level[l.t] && (l.w || 1) < 2 &&
@@ -3298,6 +3304,53 @@ function mapRender() {
     }
     return (l.w || 1) >= 2 || i < 120 || top8.has(l.s) || top8.has(l.t);
   }).slice(0, 160);
+  // ---- WIRING DOCUMENT (full admit): scope the pane to EXACTLY ONE file ----
+  // The scope box (expanded roster) + its DIRECT 1-hop wire neighbors from
+  // mwires (paged top-20 by incident-wire count) + the scope's named wires.
+  // Every other lit file is NOT part of the document and is not rendered at
+  // all - no ghost tier, no dimming ladder.
+  let docNbTotal = 0, docPages = 1, docPageLen = 0;
+  if (mapFullAdmit) {
+    const sd = focusSeeds.values().next();
+    const seed = sd.done ? lit[0] : sd.value;
+    if (mapDocIx < 0 || !litSet.has(mapDocIx)) {
+      mapDocIx = seed; mapDocPage = 0; mapDocCenter = true;
+    }
+    // 1-hop neighbors, visibility-gated (var wires ride the vars chip),
+    // ranked by incident-wire count then file ix (deterministic)
+    const nbCnt = new Map();
+    mwires.forEach(w => {
+      if (w[0] === "var" ? !mapVarsOn : !typeVisible(w[0])) return;
+      const o = w[1] === mapDocIx ? w[3] : w[3] === mapDocIx ? w[1] : -1;
+      if (typeof o !== "number" || o === mapDocIx || !litSet.has(o)) return;
+      nbCnt.set(o, (nbCnt.get(o) || 0) + 1);
+    });
+    const nbAll = [...nbCnt.keys()].sort((a, b) =>
+      (nbCnt.get(b) - nbCnt.get(a)) || (a - b));
+    docNbTotal = nbAll.length;
+    docPages = Math.max(1, Math.ceil(nbAll.length / 20));
+    if (mapDocPage >= docPages) mapDocPage = 0;
+    const page = nbAll.slice(mapDocPage * 20, mapDocPage * 20 + 20);
+    docPageLen = page.length;
+    lit = [mapDocIx, ...page];             // the whole document
+    // corridors: ONLY scope-incident named pairs (top-1 wire drawn, rest as
+    // bundle chips on the spine - the approved tier-2 carrier)
+    const docSet = new Set(lit);
+    const pairW = new Map();
+    mwires.forEach(w => {
+      if (w[0] === "var" ? !mapVarsOn : !typeVisible(w[0])) return;
+      const a = w[1], b = w[3];
+      if (!docSet.has(a) || !docSet.has(b) ||
+          (a !== mapDocIx && b !== mapDocIx)) return;
+      const k = a + "_" + b;
+      if (!pairW.has(k)) pairW.set(k, []);
+      pairW.get(k).push(w);
+    });
+    edges = [...pairW.keys()].sort().map(k => {
+      const pr = k.split("_");
+      return { s: +pr[0], t: +pr[1], ty: "call", w: pairW.get(k).length };
+    });
+  }
   const E = edges.length;
   // expansion set (sections 4/5): user dblclick override > seeds open at L0 >
   // E<=12 wired boxes open at any zoom [F9] > zoom-latch wired boxes [F7]
@@ -3314,10 +3367,14 @@ function mapRender() {
     if (u !== undefined ? u : (level[i] === 0 || wired && E <= 12))
       expand.add(i);
   });
+  // document boxes open unconditionally: wires must land on their fn rows
+  if (mapFullAdmit) lit.forEach(i => expand.add(i));
   // layout cache (section 5 [F7]): hit = pure repaint under pan/zoom. The
   // admission tier rides the KEY (not the refit sig) so a threshold
-  // crossing relayouts without resetting zoom/pan.
-  const key = sig + "|" + (mapFullAdmit ? "A1" : "A0") + "||" +
+  // crossing relayouts without resetting zoom/pan - and so does the doc
+  // scope + neighbor page (a re-scope relayouts and re-centers).
+  const key = sig + "|" + (mapFullAdmit ? "A1" : "A0") + "|" +
+    (mapFullAdmit ? "d" + mapDocIx + ":" + mapDocPage : "") + "||" +
     [...expand].sort((a, b) => a - b).join(",") + "||" +
     Math.round(cwView) + "x" + Math.round(chView);
   if (mapLayout && mapLayout.key === key) { mapPaint(ctx, dpr, cwView, chView, capNote); return; }
@@ -3925,6 +3982,10 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     }
     return null;   // no room: hide rather than stack
   };
+  const inView = (x, y) => {
+    const sx = (x - mapPX) * mapZ, sy = (y - mapPY) * mapZ;
+    return sx >= -30 && sx <= cwView + 30 && sy >= -10 && sy <= chView + 10;
+  };
   ctx.font = MAP_FONT(10);
   if (namedOK) L.chips.forEach(ch => {
     const g = MGLYPH[ch.ty] || MGLYPH.call;
@@ -3951,10 +4012,6 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   // pressure at z<0.9 (declutter lever 4): ONLY the 12 highest-degree
   // targets keep labels (hidden otherwise, never faded), deterministic
   // by degree then index.
-  const inView = (x, y) => {
-    const sx = (x - mapPX) * mapZ, sy = (y - mapPY) * mapZ;
-    return sx >= -30 && sx <= cwView + 30 && sy >= -10 && sy <= chView + 10;
-  };
   let tier;
   if (L.E <= 12) tier = () => true;
   else if (mapZ < 0.9) {
