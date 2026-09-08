@@ -2007,7 +2007,7 @@ function tick() {
       const d = Math.hypot(fnJDotPos[i*3] - camera.position.x,
                            fnJDotPos[i*3+1] - camera.position.y,
                            fnJDotPos[i*3+2] - camera.position.z);
-      const rT = Math.max(5.5, Math.min(20, d * 0.012));
+      const rT = Math.max(4, Math.min(8, d * 0.006));
       const f = rT / fnJDotR[i];
       if (Math.abs(f - 1) > 0.06) {
         const o = i * 16;
