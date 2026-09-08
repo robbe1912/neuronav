@@ -4798,7 +4798,8 @@ function mapRender() {
     sr.flow = sameRow ? "same" : (ty > sy ? "down" : "up");
     spines.push(Object.assign(
       { s: l.s, t: l.t, ty: l.ty, pair: l.s + "_" + l.t, amber, sRow: A.row,
-        tRow: B.row, xb: sameRow ? [] : crossedBands(sy, ty) }, sr));
+        tRow: B.row, xb: sameRow ? [] : crossedBands(sy, ty),
+        flowSum: l.w || 1 }, sr));
   });
   // band consolidation: corridors spanning the same chunk-row hop (source
   // row -> target row) share ONE trunk - the highest-ranked member's route,
@@ -4820,12 +4821,17 @@ function mapRender() {
     if (a.length < 2) return;
     trunkGroups++;
     a[0].trunkW = a.length;               // leader strokes at combined width
+    a[0].flowSum = a.reduce((s, x) => s + x.flowSum, 0);   // honest flow
     for (let j = 1; j < a.length; j++) {
       a[j].con = true;                    // twin: chip carrier, no stroke
       a[j].gLeader = a[0];
       a[j].gIx = j;
     }
   });
+  // stroked-pair -> honest flow: the width driver mapPaint reads. Twins are
+  // excluded - they stroke nothing, their ink rides the leader.
+  const pairW = new Map();
+  spines.forEach(sp => { if (!sp.con) pairW.set(sp.pair, sp.flowSum); });
   // 3) individual named wires (tier-2 top-1/pair): terminate ON their fn rows
   // Blueprint-reroute buses (2D twin of the 3D bus law): named wires of the
   // same type converging on ONE fn row (>=2) merge at a junction dot parked
@@ -5028,7 +5034,7 @@ function mapRender() {
   mapLayout = {
     key, sig, lit, edges, E, place, geo, rects, wires, spines, underlays,
     chips, rosterRows, expandedSet: expand, worldH, capNote,
-    trunkGroups, chunkY, chunkRowH, audit, buses,
+    trunkGroups, pairW, chunkY, chunkRowH, audit, buses,
   };
   window.routeAudit = mapLayout.audit;
   mapPaint(ctx, dpr, cwView, chView, capNote);
@@ -5087,11 +5093,11 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     // wire color = TYPE (Blueprint law): the cluster gradient read as
     // decoration; type answers "what kind of wire is this?" at a glance
     const color = sp.amber ? "#ffb347" : (MGLYPH[sp.ty] || MGLYPH.call).c;
-    // trunk leader: combined-width stroke for every corridor riding it;
-    // metro corridors add a modest width bump per rider (stays a rail yard
-    // of distinct strokes, not one merged cable)
-    const cn = Math.max(sp.trunkW || 1, sp.corridorN || 1);
-    seg(sp, color, cn > 1 ? Math.min(2 + 1.1 * (cn - 1), 7) : 2,
+    // ONE flow law for single spines AND trunk leaders: width reads the
+    // summed admitted weight riding the stroke (own l.w, or the trunk's
+    // rolled-up flowSum), log2 so heavy trunks taper. Cap 5.5: channels sit
+    // at the band floor y0+3, a 7px stroke bled onto the box tops.
+    seg(sp, color, Math.min(2 + 0.85 * Math.log2(sp.flowSum), 5.5),
         sp.back ? [2, 3] : null, 0.5 * dim(sp.s, sp.t));
   });
   L.wires.forEach(w => {
