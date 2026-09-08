@@ -4188,6 +4188,12 @@ function mapChipAt(wx, wy) {
 // signature/writes/mutates; signal = scene > sig > B::handler [F5]
 function mapTipText(w) {
   const A = nodes[w.sf], B = nodes[w.df];
+  if (w.stub) {   // bus delivery: destination + member roster
+    let t = "\uD83D\uDE8C bus \u2192 " + B.label + "::" + w.dfn +
+      " (" + w.busN + " wires)";
+    (w.mates || []).forEach(mn => { t += "\n  \u00b7 " + mn; });
+    return t;
+  }
   if (w.ty === "signal")
     return A.label + " > " + w.sfn + " > " + B.label + "::" + w.dfn;
   let t = A.label + "::" + w.sfn + "() \u2192 " + B.label + "::" + w.dfn + "()";
@@ -4707,6 +4713,48 @@ function mapRender() {
     }
   });
   // 3) individual named wires (tier-2 top-1/pair): terminate ON their fn rows
+  // Blueprint-reroute buses (2D twin of the 3D bus law): named wires of the
+  // same type converging on ONE fn row (>=2) merge at a junction dot parked
+  // in open air beside the destination box; members route to the junction
+  // (arrowless), ONE shared stub delivers the whole bus into the fn row with
+  // a single arrowhead. Shared-destination only (McGee & Dingliana 2012).
+  const busGroups = new Map();
+  indiv.forEach(w => {
+    if (w.ty === "var") return;         // var wires keep their own dot terminus
+    const k = w.df + "\x00" + w.dfn + "\x00" + w.ty;
+    let a = busGroups.get(k);
+    if (!a) busGroups.set(k, a = []);
+    a.push(w);
+  });
+  const busOf = new Map();               // wire record -> its bus
+  const buses = [];                      // junction records for paint + audit
+  busGroups.forEach(a => {
+    if (a.length < 2) return;
+    const B = place.get(a[0].df);
+    if (!B) return;
+    const dRow = rowOf.get(a[0].df + "\x00" + a[0].dfn);
+    if (dRow === undefined) return;      // row-less dests keep individual routes
+    // approach side: count source boxes left vs right of the destination
+    let Lc = 0, Rc = 0;
+    a.forEach(w => {
+      const A0 = place.get(w.sf);
+      if (!A0) return;
+      if (A0.x + A0.w <= B.x) Lc++;
+      else if (A0.x >= B.x + B.w) Rc++;
+    });
+    const side = Lc >= Rc ? -1 : 1;
+    const jy = B.y + NH + dRow * RH + RH / 2;      // destination row centre
+    // junction must sit in open air: nudge outward once, else fall back
+    const jHit = x => rects.some(r =>
+      x > r.x0 - 4 && x < r.x1 + 4 && jy > r.y0 - 3 && jy < r.y1 + 3);
+    let jx = side < 0 ? B.x - 14 : B.x + B.w + 14;
+    if (jHit(jx)) jx = side < 0 ? jx - 10 : jx + 10;
+    if (jHit(jx)) return;
+    const bus = { df: a[0].df, dfn: a[0].dfn, ty: a[0].ty,
+                  x: jx, y: jy, n: a.length, wires: a };
+    buses.push(bus);
+    a.forEach(w => busOf.set(w, bus));
+  });
   indiv.forEach(w => {
     const A = place.get(w.sf), B = place.get(w.df);
     if (!A || !B) return;
@@ -4722,6 +4770,21 @@ function mapRender() {
       const sIx = rowIxOut.get(kk) || 0; rowIxOut.set(kk, sIx + 1);
       sx0 = A.x + A.w * (sIx + 1) / ((rowTotOut.get(kk) || 1) + 1);
     }
+    const sy = sRow === undefined ? A.y + A.h : A.y + NH + (sRow + 1) * RH;
+    const bus = busOf.get(w);
+    if (bus) {
+      // reroute member: source port -> junction dot. A 2px virtual box at
+      // the junction keeps routeOrtho's lane/claim machinery authoritative.
+      const JB = { x: bus.x - 1, w: 2, y: bus.y - 1, h: 2 };
+      const wr = routeOrtho(A, JB, sy, bus.y, false, sx0, bus.x);
+      wr.flow = bus.y > sy ? "down" : "up";
+      wr.noArr = true;                   // the junction dot is the terminus
+      wires.push(Object.assign({
+        sf: w.sf, sfn: w.sfn, df: w.df, dfn: w.dfn, ty: w.ty, line: w.line,
+        up: false, pair: w.sf + "_" + w.df,
+      }, wr));
+      return;
+    }
     let tx0;
     if (dRow === undefined) {
       const tIx = inIx.get(w.df) || 0; inIx.set(w.df, tIx + 1);
@@ -4731,7 +4794,6 @@ function mapRender() {
       const tIx = rowIxIn.get(kk) || 0; rowIxIn.set(kk, tIx + 1);
       tx0 = B.x + B.w * (tIx + 1) / ((rowTotIn.get(kk) || 1) + 1);
     }
-    const sy = sRow === undefined ? A.y + A.h : A.y + NH + (sRow + 1) * RH;
     const ty = dRow === undefined
       ? (sameRow ? B.y + B.h : B.y)
       : (sameRow ? B.y + NH + (dRow + 1) * RH : B.y + NH + dRow * RH);
@@ -4759,6 +4821,24 @@ function mapRender() {
       sf: w.sf, sfn: w.sfn, df: w.df, dfn: w.dfn, ty: w.ty, line: w.line,
       up: sameRow, pair: w.sf + "_" + w.df,
     }, wr));
+  });
+  // bus delivery stubs: one shared arrival per junction (Blueprint reroute
+  // law: many in, one corridor, all arrive at the same end)
+  buses.forEach(bus => {
+    const B = place.get(bus.df);
+    if (!B) return;
+    const dRow = rowOf.get(bus.df + "\x00" + bus.dfn);
+    if (dRow === undefined) return;
+    const ty = B.y + NH + dRow * RH;            // fn-row top = delivery port
+    const tx0 = B.x + B.w / 2;
+    wires.push({
+      sf: bus.df, sfn: bus.dfn, df: bus.df, dfn: bus.dfn, ty: bus.ty,
+      line: -1, up: false, pair: bus.df + "_bus", stub: true, busN: bus.n,
+      mates: bus.wires.map(m =>
+        nodes[m.sf].label + "::" + m.sfn + " \u2192 @" + m.line),
+      pts: [[bus.x, bus.y], [bus.x, ty], [tx0, ty]],
+      bez: false, tx: tx0, ty, back: false, flow: "down",
+    });
   });
   // quiet edges (addendum rule 5): no wire text by default - identity is
   // the pin a wire leaves from + the hover tooltip; chips carry bundles
@@ -4817,7 +4897,9 @@ function mapRender() {
   // keep the last build's numbers — they describe the same layout.
   const audit = { named: vw.length, indiv: indiv.length, admitted: E,
     spines: 0, underlays: underlays.length, wires: wires.length,
-    trunkGroups, bez: 0, back: 0, down: 0, up: 0, sameRow: 0 };
+    trunkGroups, buses: buses.length,
+    busW: buses.reduce((s, b) => s + b.n, 0),
+    bez: 0, back: 0, down: 0, up: 0, sameRow: 0 };
   spines.forEach(sp => { if (!sp.con) audit.spines++; });   // twins ride the leader
   [underlays, spines, wires].forEach(arr => arr.forEach(rec => {
     if (rec.bez) audit.bez++;
@@ -4828,7 +4910,7 @@ function mapRender() {
   mapLayout = {
     key, sig, lit, edges, E, place, geo, rects, wires, spines, underlays,
     chips, rosterRows, expandedSet: expand, worldH, capNote,
-    trunkGroups, chunkY, chunkRowH, audit,
+    trunkGroups, chunkY, chunkRowH, audit, buses,
   };
   window.routeAudit = mapLayout.audit;
   mapPaint(ctx, dpr, cwView, chView, capNote);
@@ -4995,12 +5077,16 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     const g = MGLYPH[w.ty] || MGLYPH.call;
     ctx.globalAlpha = dim(w.sf, w.df);
     // port dot: the wire leaves from a NAMED row — pin the origin (the
-    // arrowhead marks the destination; the dot marks where it starts)
+    // arrowhead marks the destination; the dot marks where it starts).
+    // Bus stubs start at the junction dot — no port dot there.
     ctx.setLineDash([]);
-    ctx.beginPath();
-    ctx.arc(w.pts[0][0], w.pts[0][1], 2.2, 0, Math.PI * 2);
-    ctx.fillStyle = g.c;
-    ctx.fill();
+    if (!w.stub) {
+      ctx.beginPath();
+      ctx.arc(w.pts[0][0], w.pts[0][1], 2.2, 0, Math.PI * 2);
+      ctx.fillStyle = g.c;
+      ctx.fill();
+    }
+    if (w.noArr) return;   // bus member: the junction dot is the terminus
     // arrowhead points along the FINAL segment's cardinal direction —
     // horizontal entries get side arrows, drops get up/down arrows
     const pv = w.pts[w.pts.length - 2];
@@ -5028,6 +5114,19 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
       ctx.fillStyle = g.c;
       ctx.fill();
     }
+  });
+  // bus junction dots (Blueprint reroute nodes): drawn after wires so the
+  // converging lanes visually terminate ON the marker
+  (L.buses || []).forEach(bs => {
+    const g = MGLYPH[bs.ty] || MGLYPH.call;
+    ctx.globalAlpha = 0.95;
+    ctx.beginPath();
+    ctx.arc(bs.x, bs.y, 3.2, 0, Math.PI * 2);
+    ctx.fillStyle = g.c;
+    ctx.fill();
+    ctx.strokeStyle = "#0a0e12";
+    ctx.lineWidth = 1;
+    ctx.stroke();
   });
   ctx.globalAlpha = 1;
   // screen-space furniture: map-local vars chip [F10] + footer
