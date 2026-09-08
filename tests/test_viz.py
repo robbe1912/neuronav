@@ -899,35 +899,19 @@ def run_tests():
                        { clientX: s.sx, clientY: s.sy, bubbles: true })); }""",
                 wtip)
             page.wait_for_timeout(300)
-            # expectation: whichever edge the raycast resolves FIRST (dense
-            # scenes have parallel strands under the cursor), and the top
-            # named wire on that pair
+            # expectation: the product's own picker + strongest-wire sort —
+            # the oracle must be the same semantics the handler uses, not a
+            # re-derivation (the old raycast-first-hit + deg-only sort could
+            # drift from nearest-chord + full tiebreaks)
             wres = page.evaluate(
                 """(s) => { const d = window.__dbg, tip = document.getElementById('tip');
-                     const rc = d.raycaster;
-                     const cr = d.renderer.domElement.getBoundingClientRect();
-                     rc.setFromCamera(new d.THREE.Vector2((s.sx/cr.width)*2-1,
-                       -(s.sy/cr.height)*2+1), d.camera);
+                     const m = d.pickWireMeta({ clientX: s.sx, clientY: s.sy });
                      let want = null;
-                     for (const h of rc.intersectObjects(d.bucketMesh)) {
-                       const li = d.linkOfSeg(d.bucketMesh.indexOf(h.object), h.faceIndex);
-                       if (li < 0) continue;
-                       const l = d.links[li];
-                       if (d.linkFiltered(l) || !d.typeVisible(l.ty) ||
-                           (d.alphaTgt[l.s] < 0.05 && d.alphaTgt[l.t] < 0.05)) continue;
-                       const pair = (d.mwires || []).filter(w =>
-                         (w[1] === l.s && w[3] === l.t) || (w[1] === l.t && w[3] === l.s));
-                        if (pair.length) {
-                          const deg = new Map();          // GLOBAL callee in-degree (handler parity)
-                          (d.mwires || []).forEach(w =>
-                            deg.set(w[3] + '::' + w[4], (deg.get(w[3] + '::' + w[4]) || 0) + 1));
-                          pair.sort((a, b) => (deg.get(b[3] + '::' + b[4]) || 0) -
-                            (deg.get(a[3] + '::' + a[4]) || 0) ||
-                            (a[4] < b[4] ? -1 : a[4] > b[4] ? 1 : 0));
+                     if (m && m.kind === "link") {
+                       const pair = d.strongPair(d.links[m.li]);
+                       if (pair.length)
                          want = d.nodes[pair[0][1]].label + '::' + pair[0][2] +
                            ' \\u2192 ' + d.nodes[pair[0][3]].label + '::' + pair[0][4];
-                       }
-                       break;
                      }
                      return { shown: tip.style.display === 'block',
                               text: tip.textContent, want }; }""",

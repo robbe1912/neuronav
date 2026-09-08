@@ -1625,58 +1625,75 @@ const bucketPosIB = [], bucketColIB = [], bucketMat = [], bucketMesh = [];
     bucketMesh.push(mesh);   // dash distances are computed on the LineSegments2
   });
 }
-// wire-hover reverse maps: LineSegments2.raycast reports faceIndex = the
-// segment index inside its bucket geometry. Straight links own one segment
-// each (slotOf), highway arcs own 16 (hwSlot is the FLOAT base -> base
-// segment = hwSlot/6). Static slot layout, built once.
-const segLink = [[], [], []];   // per bucket: straight segment ix -> link ix
-const segArc = new Map();       // "bucket_baseSeg" -> link ix
-links.forEach((l, i) => {
-  const b = bucketOf[i];
-  if (hwSlot[i] >= 0) segArc.set(b + "_" + (hwSlot[i] / 6), i);
-  else segLink[b][slotOf[i]] = i;
-});
-function linkOfSeg(b, seg) {
-  if (segLink[b][seg] !== undefined) return segLink[b][seg];
-  for (const [k, li] of segArc) {
-    const us = k.indexOf("_");
-    if (+k.slice(0, us) !== b) continue;
-    const base = +k.slice(us + 1);
-    if (seg >= base && seg < base + 16) return li;
-  }
-  return -1;
+// per-link ink state, written by the k-pass in applyVisibility and read by
+// the picker: pick exactly what renders. <0.02 = no pickable ink (0 = no ink
+// at all — filtered/budget-under-arc/fn-wire-replaced; 0.012 dead-end dim
+// reads as nothing; GHOST_K 0.08 ghosts stay pickable)
+const edgeK = new Float32Array(MAXL);
+// shared 2D point-to-segment distance (screen space). Also records the hit
+// param in segT so callers can interpolate depth at the hit point.
+let segT = 0;
+function segHit(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const L2 = dx * dx + dy * dy;
+  let t = L2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / L2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  segT = t;
+  return Math.hypot(ax + t * dx - px, ay + t * dy - py);
 }
-// edge-hover pick — screen-space nearest chord, same philosophy as pickWire:
-// Line2's 3D raycast returns whichever line the ray grazes first, which at
-// overview scale reads RANDOM at crossings (the thing under the cursor loses
-// to a marginally-nearer chord elsewhere along the ray). Project each
-// visible link's chords and take the one nearest to the pointer in px.
-function pickEdge(e) {
+let pickWireZ = 1;   // NDC depth of the last hit — node-front comparisons
+// ONE picker for hover AND click: the meta of the wire under the pointer
+// across every layer that actually RENDERS INK —
+//   fnLines/fnQuiet arcs (fn wire mode), focusArcs (hub budget arcs) and
+//   straight bucket chords (overview + signal/inst strands).
+// Chords that render NO ink are skipped: fn-mode call chords between lit
+// files (blacked — fn wires replace them; the old picker tested those and
+// read as a "pre-curved collider"), budget chords under their arcs, and
+// dead-end dim (0.012) ink that reads as nothing. Distances score to the
+// INK EDGE (4px trunk beats 2px wire at ties; the quiet tier needs margin).
+function pickWireMeta(e) {
   const rect = renderer.domElement.getBoundingClientRect();
   const px = e.clientX - rect.left, py = e.clientY - rect.top;
   const v = new THREE.Vector3(), w = new THREE.Vector3();
-  let best = -1, bestD = 7;
+  let best = null, bestD = 8;
+  for (const mesh of [fnLines, fnQuiet, focusArcs && focusArcs.lines]) {
+    if (!mesh || !mesh.visible) continue;
+    const a = mesh.geometry.attributes.instanceStart.array;
+    const meta = mesh.userData.meta || [];
+    const per = mesh.userData.seg || 8;
+    const n = Math.min(a.length / 6, meta.length * per);
+    const quiet = mesh === fnQuiet;
+    for (let i = 0; i < n; i++) {
+      const o = i * 6;
+      v.set(a[o], a[o+1], a[o+2]).project(camera);
+      if (v.z > 1) continue;
+      w.set(a[o+3], a[o+4], a[o+5]).project(camera);
+      if (w.z > 1) continue;
+      const d = segHit(px, py,
+        (v.x + 1) / 2 * rect.width, (1 - v.y) / 2 * rect.height,
+        (w.x + 1) / 2 * rect.width, (1 - w.y) / 2 * rect.height);
+      const m = meta[Math.floor(i / per)];
+      const dd = d - (m.kind === "trunk" ? 2 : 1) + (quiet ? 3 : 0);
+      if (dd < bestD) { bestD = dd; best = m; pickWireZ = v.z + segT * (w.z - v.z); }
+    }
+  }
   for (let i = 0; i < links.length; i++) {
-    const l = links[i];
-    if (linkFiltered(l) || !typeVisible(l.ty) ||
-        (alphaTgt[l.s] < 0.05 && alphaTgt[l.t] < 0.05)) continue;
+    // ink truth from the k-pass — pick exactly what renders (see edgeK decl)
+    if (edgeK[i] < 0.02) continue;
     const arr = bucketPosIB[bucketOf[i]].array;
-    const base = hwSlot[i] >= 0 ? hwSlot[i] : slotOf[i];
+    const fo = hwSlot[i] >= 0 ? hwSlot[i] : slotOf[i] * 6;   // float offset
     const nseg = hwSlot[i] >= 0 ? 16 : 1;
     for (let s = 0; s < nseg; s++) {
-      const o = (base + s) * 6;
+      const o = fo + s * 6;
       v.set(arr[o], arr[o+1], arr[o+2]).project(camera);
-      if (v.z > 1) break;   // behind camera
+      if (v.z > 1) break;
       w.set(arr[o+3], arr[o+4], arr[o+5]).project(camera);
       if (w.z > 1) break;
-      const ax = (v.x + 1) / 2 * rect.width, ay = (1 - v.y) / 2 * rect.height;
-      const bx = (w.x + 1) / 2 * rect.width, by = (1 - w.y) / 2 * rect.height;
-      const dx = bx - ax, dy = by - ay;
-      const L2 = dx * dx + dy * dy;
-      let t = L2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / L2 : 0;
-      t = Math.max(0, Math.min(1, t));
-      const d = Math.hypot(ax + t * dx - px, ay + t * dy - py);
-      if (d < bestD) { bestD = d; best = i; }
+      const d = segHit(px, py,
+        (v.x + 1) / 2 * rect.width, (1 - v.y) / 2 * rect.height,
+        (w.x + 1) / 2 * rect.width, (1 - w.y) / 2 * rect.height);
+      const dd = d - 1;
+      if (dd < bestD) { bestD = dd; best = { kind: "link", li: i }; pickWireZ = v.z + segT * (w.z - v.z); }
     }
   }
   return best;
@@ -1866,18 +1883,10 @@ function syncEdgePos() {
     a[o]   = dpos[s] + rx * trimS + ox; a[o+1] = dpos[s+1] + ry * trimS + oy; a[o+2] = dpos[s+2] + rz * trimS;
     a[o+3] = dpos[t] - rx * trimT + ox; a[o+4] = dpos[t+1] - ry * trimT + oy; a[o+5] = dpos[t+2] - rz * trimT;
   });
-  bucketPosIB.forEach(ib => { ib.needsUpdate = true; });
-  // Line2 raycast short-circuits on geometry.boundingSphere AND
-  // geometry.boundingBox — an init-time compute cached degenerate ones over
-  // the empty buffers, so invalidate and let the next raycast rebuild them
-  // from live positions
-  bucketMesh.forEach(mesh => {
-    mesh.geometry.boundingSphere = null;
-    mesh.geometry.boundingBox = null;
-  });
-  // dash support: lineDistance attributes must track every geometry
-  // rewrite, but only USE_DASH reads them - and every edgeFlowOn false->true
-  // transition flows through the applyVisibility() call that just ran this
+   bucketPosIB.forEach(ib => { ib.needsUpdate = true; });
+   // dash support: lineDistance attributes must track every geometry
+   // rewrite, but only USE_DASH reads them - and every edgeFlowOn false->true
+   // transition flows through the applyVisibility() call that just ran this
   // syncEdgePos, so distances are fresh exactly when dashes can appear.
   if (edgeFlowOn) bucketMesh.forEach(ms => ms.computeLineDistances());
 }
@@ -2279,9 +2288,6 @@ const crumb = document.getElementById("crumb");
 const esc = s => String(s).replace(/[&<>"]/g,
   ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" })[ch]);
   const raycaster = new THREE.Raycaster();
-  // fat-line picking: LineSegments2.raycast reads params.Line2.threshold
-  // (screen-space px, stacked on material.linewidth). ~4px forgiveness.
-  raycaster.params.Line2 = { threshold: 4 };
   const mouse = new THREE.Vector2();
 const _pickV = new THREE.Vector3();   // scratch for screen-space pick accuracy
   let hovered = -1, hoveredFn = -1;
@@ -2593,6 +2599,11 @@ function rebuildFocusWires() {
   flines.frustumCulled = false; flines.renderOrder = 3;
   scene.add(flines);
   focusArcs = { lines: flines, geo: fgeo, mat: fmat };
+  // the arcs REPLACE the budget links' straight bucket chords (k-pass blacks
+  // those) — hover/click must test THESE chords, or the collider stays on
+  // the invisible pre-curve straight line
+  flines.userData.meta = list.map(li => ({ kind: "link", li }));
+  flines.userData.seg = ARC_SEG;
   focusArcs.lines.visible = true;
 }
 function applyVisibility() {
@@ -2732,6 +2743,7 @@ function applyVisibility() {
       if (sameC) { if (k > 0.05) k = 0.05; }
       else if (el3 > 200 && hwSlot[i] < 0) k = 0.04;
     }
+    edgeK[i] = k;   // ink truth for the picker — see edgeK decl
     const b = bucketOf[i], o6 = i * 6;
     const tgt = bucketColIB[b].array;
     if (k === 0) {
@@ -3822,8 +3834,35 @@ const wireTipEl = document.createElement("div");
 wireTipEl.id = "wireTip";
 document.body.appendChild(wireTipEl);
 function hideWireTip() { wireTipEl.style.display = "none"; }
+// strongest named wires for a file-level link — shared by edge hover and
+// wire-click descriptions
+function strongPair(l) {
+  const pair = [];
+  mwires.forEach(w => {
+    if ((w[1] === l.s && w[3] === l.t) || (w[1] === l.t && w[3] === l.s)) pair.push(w);
+  });
+  pair.sort((a, b) =>
+    (wireDeg.get(b[3] + "::" + b[4]) || 0) - (wireDeg.get(a[3] + "::" + a[4]) || 0) ||
+    (wireSrcDeg.get(b[1] + "::" + b[2]) || 0) - (wireSrcDeg.get(a[1] + "::" + a[2]) || 0) ||
+    (a[4] < b[4] ? -1 : a[4] > b[4] ? 1 : 0) ||
+    (a[2] < b[2] ? -1 : a[2] > b[2] ? 1 : 0) ||
+    (a[5] - b[5]));
+  return pair;
+}
 function wireDesc(meta) {
   // what the wire contains and where it goes — fn names on both ends
+  if (meta.kind === "link") {
+    const pair = strongPair(links[meta.li]);
+    if (!pair.length) {
+      // inst/signal strands carry no named wires — describe the link itself
+      const l = links[meta.li];
+      return "hub wire\n" + nodes[l.s].path + "  \u2192  " + nodes[l.t].path +
+        "  (" + l.ty + ", w=" + l.w + ")";
+    }
+    return "hub wire\n" + nodes[pair[0][1]].path + " :: " + pair[0][2] +
+      "  @L" + pair[0][5] + "\n  ↓ into\n" + nodes[pair[0][3]].path + " :: " + pair[0][4] +
+      (pair.length > 1 ? "\n+" + (pair.length - 1) + " more named wires on this pair" : "");
+  }
   if (meta.kind === "trunk") {
     const mates = meta.mates || [];
     const head = "🚌 bus " + nodes[meta.sf].path + "  →  " +
@@ -5433,30 +5472,29 @@ renderer.domElement.addEventListener("pointermove", e => {
   // hover is the on-demand reveal — the hovered wire re-lights (budget
   // bypass) AND shows its tooltip. Suppressed while dragging. Filtered/
   // ghost edges never match.
-  if (!txt && !pointerDown && mwires.length) {
-    const li = pickEdge(e);
-    if (li >= 0) {
-      const l = links[li];
-      const pair = [];
-      mwires.forEach(w => {
-        if ((w[1] === l.s && w[3] === l.t) || (w[1] === l.t && w[3] === l.s)) pair.push(w);
-      });
-      if (pair.length) {
-        // highest-weight wire: callee in-degree, then caller in-degree,
-        // then names/line for determinism
-        pair.sort((a, b) =>
-          (wireDeg.get(b[3] + "::" + b[4]) || 0) - (wireDeg.get(a[3] + "::" + a[4]) || 0) ||
-          (wireSrcDeg.get(b[1] + "::" + b[2]) || 0) - (wireSrcDeg.get(a[1] + "::" + a[2]) || 0) ||
-          (a[4] < b[4] ? -1 : a[4] > b[4] ? 1 : 0) ||
-          (a[2] < b[2] ? -1 : a[2] > b[2] ? 1 : 0) ||
-          (a[5] - b[5]));
-        txt = nodes[pair[0][1]].label + "::" + pair[0][2] +
-          " → " + nodes[pair[0][3]].label + "::" + pair[0][4];
-      }
-    }
-    if (focusActive && li !== hoverEdgeLi) {
-      hoverEdgeLi = li;
+  if (!txt && !pointerDown) {
+    const m = pickWireMeta(e);
+    const hli = m && m.kind === "link" ? m.li : -1;
+    if (focusActive && hli !== hoverEdgeLi) {
+      hoverEdgeLi = hli;
       applyVisibility();   // re-runs the budget pass with the hover bypass
+    }
+    if (m) {
+      if (m.kind === "link") {
+        const pair = strongPair(links[m.li]);
+        if (pair.length) {
+          txt = nodes[pair[0][1]].label + "::" + pair[0][2] +
+            " → " + nodes[pair[0][3]].label + "::" + pair[0][4];
+        }
+      } else if (m.kind === "trunk") {
+        txt = "🚌 bus " + nodes[m.sf].label + " → " + nodes[m.tf].label +
+          "  (" + (m.mates || []).length + " wires)";
+      } else {
+        const a = fnMeta[m.a], b = fnMeta[m.b];
+        txt = nodes[a.file].label + "::" + a.name + "() → " +
+              nodes[b.file].label + "::" + b.name + "()" +
+              (m.ln >= 0 ? "  @L" + m.ln : "");
+      }
     }
   }
   if (txt) {
@@ -5524,48 +5562,6 @@ function frameQueryCamera() {
   dir.normalize();
   tweenCamTo(c, c.clone().addScaledVector(dir, Math.min(900, 240 + r * 2)));
 }
-// pick a 3D fn wire / bus arc under the cursor — custom screen-space test
-// (Line2's own raycast proved unreliable here): 2D point-to-SEGMENT distance
-// on the projected chords (midpoint sampling missed on curved arcs — the
-// "collider is pre-curved" bug), nearest within 8px wins
-let pickWireZ = 1;   // NDC depth of the last hit — node-front comparisons
-function pickWire(e) {
-  if (!focusActive || !fnLines) return null;
-  const rect = renderer.domElement.getBoundingClientRect();
-  const px = e.clientX - rect.left, py = e.clientY - rect.top;
-  const v = new THREE.Vector3(), w = new THREE.Vector3();
-  let best = null, bestD = 8;
-  for (const mesh of [fnLines, fnQuiet]) {
-    if (!mesh) continue;
-    const a = mesh.geometry.attributes.instanceStart.array;
-    const meta = mesh.userData.meta || [];
-    const n = Math.min(a.length / 6, meta.length * 8);
-    for (let i = 0; i < n; i++) {
-      const o = i * 6;
-      v.set(a[o], a[o+1], a[o+2]).project(camera);
-      if (v.z > 1) continue;   // behind camera
-      w.set(a[o+3], a[o+4], a[o+5]).project(camera);
-      if (w.z > 1) continue;
-      const ax = (v.x + 1) / 2 * rect.width, ay = (1 - v.y) / 2 * rect.height;
-      const bx = (w.x + 1) / 2 * rect.width, by = (1 - w.y) / 2 * rect.height;
-      const dx = bx - ax, dy = by - ay;
-      const L2 = dx * dx + dy * dy;
-      let t = L2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / L2 : 0;
-      t = Math.max(0, Math.min(1, t));
-      const d = Math.hypot(ax + t * dx - px, ay + t * dy - py);
-      // score = distance to the INK EDGE, not the centerline: real mouse
-      // coords arrive integer-rounded, and tap wires run <1px from trunk
-      // centerlines — the 4px bus must beat a 2px wire at near-ties
-      const dd = d - (meta[Math.floor(i / 8)].kind === "trunk" ? 2 : 1);
-      if (dd < bestD) {
-        bestD = dd;
-        best = meta[Math.floor(i / 8)];
-        pickWireZ = v.z + t * (w.z - v.z);
-      }
-    }
-  }
-  return best;
-}
 // wires & buses pick in the CAPTURE phase: fn-box labels (.flab) and the
 // canvas itself sit above the wires' pixels — without this, clicking a wire
 // near the hub opens the fn instead. No wire nearby -> event passes through.
@@ -5576,7 +5572,7 @@ document.addEventListener("pointerdown", e => {
 document.addEventListener("click", e => {
   if (!focusActive || !fnLines) return;
   if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
-  const wHit = pickWire(e);
+  const wHit = pickWireMeta(e);
   if (!wHit) return;
   // fn-box faces are small precise targets and wires TERMINATE at them —
   // the box wins outright. Only file spheres defer to nearer wires: the
@@ -5671,7 +5667,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
     return { x: r.left + (v.x + 1) / 2 * r.width,
              y: r.top + (1 - v.y) / 2 * r.height, z: v.z };
   },
-  pickWire, wireDesc, showWireTip, hideWireTip,
+  pickWireMeta, wireDesc, showWireTip, hideWireTip,
   get litSet() { return compactIdx; }, get compactScale() { return compactScale; },
   get overlaps() { return compactOverlaps; },
   get camTween() { return camTween; }, get focusStack() { return focusStack; },
@@ -5692,7 +5688,8 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get mapPY() { return mapPY; }, mapClampView,
   get paneW() { return paneW; }, setMapVisible, divider,
   get glW() { return glW(); },
-  get bucketMesh() { return bucketMesh; }, linkOfSeg, raycaster, linkFiltered, typeVisible,
+  get bucketMesh() { return bucketMesh; }, raycaster, linkFiltered, typeVisible,
+  nodeFiltered, fnMode, supMem, strongPair,
   get mapLayout() { return mapLayout; },
   get routeAudit() { return mapLayout && mapLayout.audit; },
   sphR,
