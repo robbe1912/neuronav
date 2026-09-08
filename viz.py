@@ -4560,7 +4560,7 @@ function mapRender() {
   };
   let maxX = 90;
   geo.forEach(g => { maxX = Math.max(maxX, g.w); });   // freeX radius scales [F6]
-  const freeX = (x, ya, yb) => {
+  const freeX = (x, ya, yb, maxR) => {
     x = Math.max(6, Math.min(cw - 6, x));   // lanes never leave the world
     const span = rects.filter(r => r.y1 > ya && r.y0 < yb);
     const bands = crossedBands(ya, yb);
@@ -4571,10 +4571,13 @@ function mapRender() {
     const laneAt = c =>
       bands.some(g => laneX[g] && laneX[g].some(u => Math.abs(u - c) < 7));
     // cost 0 = clean lane, 1 = shares a band lane (last resort), 2 = crosses
-    // a box (never acceptable) — scan outward, take the first clean slot
+    // a box (never acceptable) — scan outward, take the first clean slot.
+    // Long hauls may scan the whole world: with maxX exhausted they used to
+    // accept a box-crossing x (the piercing bug) — a clean column always
+    // exists near the world margins, and the trip there is worth it.
     const cost = c => (spanAt(c) ? 2 : 0) + (laneAt(c) ? 1 : 0);
     let bestX = x, bestB = cost(x);
-    for (let d = 5; d <= maxX && bestB > 0; d += 5) {
+    for (let d = 5; d <= (maxR || maxX) && bestB > 0; d += 5) {
       for (const c of [x + d, x - d]) {
         if (c < 6 || c > cw - 6) continue;
         const b = cost(c);
@@ -4592,13 +4595,19 @@ function mapRender() {
   const spanHits = (x0, x1, y) => rects.some(r =>
     y >= r.y0 && y <= r.y1 && x1 >= r.x0 && x0 <= r.x1);
   const nextY = (x0, x1, startY, limitY) => {
+    const blocked = y =>
+      usedY.some(u => Math.abs(u - y) < 7) ||
+      spanHits(Math.min(x0, x1), Math.max(x0, x1), y);
     let y = startY;
-    while ((usedY.some(u => Math.abs(u - y) < 7) ||
-            spanHits(Math.min(x0, x1), Math.max(x0, x1), y)) && y < limitY) y += 7;
+    while (blocked(y) && y < limitY) y += 7;
+    // a blocked band admits exhaustion — never let the 7px step overshoot
+    // PAST the band floor onto the box tops of the next chunk
+    if (y > limitY) y = limitY;
     usedY.push(y);
-    // channels live in the box-free gap bands: a crowded channel bundles
-    // horizontals — it must never fail into a bezier
-    return { y, ok: true };
+    // a crowded channel bundles horizontals — it must never fail into a
+    // bezier, but it must ADMIT exhaustion so the router can try the next
+    // gap band instead of slicing through the chunk between bands
+    return { y, ok: !blocked(y) };
   };
   // roster row lookup: "fileIx<null>fn" -> row index (wires terminate on rows)
   const rowOf = new Map();
@@ -4625,17 +4634,105 @@ function mapRender() {
     else rowTotIn.set(w.df + "_" + dr, (rowTotIn.get(w.df + "_" + dr) || 0) + 1);
   });
   const underlays = [], spines = [], wires = [];
-  const routeOrtho = (A, B, sy, ty, sameRow, sx0, tx0, claim) => {
-    const bands = sameRow ? crossedBands(sy, sy + 1) : crossedBands(ty - 1, ty);
-    const lastBand = bands.length ? gapY[bands[bands.length - 1]] : null;
-    const startY = bands.length && gapY[bands[0]] ? gapY[bands[0]].y0 + 3
-                 : sameRow ? sy + 14 : (sy + ty) / 2;
-    const lim = lastBand ? lastBand.y1 : startY + 120;
-    const yc = nextY(Math.min(sx0, tx0), Math.max(sx0, tx0), startY, lim);
+  const routeOrtho = (A, B, sy, ty, sameRow, sx0, tx0, bus) => {
+    // long hauls cross every chunk between the two rows — hand the router
+    // the FULL band range so the staircase can hop chunk-by-chunk. The old
+    // 1px window at the target edge returned at most one band, so the
+    // staircase never fired and every haul fell to the single-band channel.
+    let bands = sameRow
+      ? crossedBands(sy, sy + 1)
+      : crossedBands(Math.min(sy, ty), Math.max(sy, ty));
+    if (!bands.length) {
+      // same-row dip: drop to the first gap band BELOW the row
+      const bi = gapY.findIndex(g => g.y0 > sy);
+      if (bi >= 0) bands = [bi];
+    }
+    // exit-hoist: if A is shorter than a row-mate, the bottom-edge exit
+    // horizontal would slice through it — drop to the row's true bottom
+    // first (the sx0 drop is clean: same-row boxes never overlap A's x-span)
+    let syE = sy;
+    for (const r of rects) {
+      if (r === A || r.y0 >= sy - 2 || r.y1 <= sy + 2) continue;
+      syE = Math.max(syE, r.y1);
+    }
+    const up = ty < sy;
+    // STAIRCASE for long hauls (ELK between-layer law): a clean column
+    // through EVERY chunk rarely exists, so hop band-by-band — one vertical
+    // per chunk, each cleared against that chunk only, channels accumulating
+    // in the bands as a metro yard. Verticals can no longer pierce a row.
+    if (bands.length >= 2) {
+      // both build directions run top-to-bottom (up-hauls start at the
+      // target's bottom edge), so bands ascend toward the cursor either way
+      const seq = bands;
+      const xStart = up ? tx0 : sx0, xEnd = up ? sx0 : tx0;
+      // attach-edge law: up-hauls leave the source TOP edge, down-hauls the
+      // bottom (syE hoist) — the vertical to the first band then only ever
+      // crosses the 2px margin, never the row's own boxes
+      const yTop = up ? ty : syE, yBot = up ? A.y : ty;
+      const B2 = up ? A : B;
+      const cols = [];
+      let seed = xStart, prevY = yTop;
+      for (let i = 0; i < seq.length; i++) {
+        const g = gapY[seq[i]];
+        const yc = nextY(Math.min(seed, xEnd), Math.max(seed, xEnd),
+                         g.y0 + 3, g.y1);
+        const fx = freeX(seed, prevY, yc.y, cw);
+        if (fx.ok) claimLane(fx.x, prevY, yc.y);
+        cols.push({ x: fx.x, yCh: yc.y, yFloor: g.y1 });
+        seed = fx.x;
+        prevY = yc.y;
+      }
+      const fxN = freeX(seed, prevY, yBot, cw);
+      const xN = Math.max(B2.x + 2, Math.min(B2.x + B2.w - 2, fxN.x));
+      if (fxN.ok) claimLane(xN, prevY, yBot);
+      const p = [[xStart, yTop]];
+      let cx = xStart, cy = yTop;
+      for (let i = 0; i < cols.length; i++) {
+        const c = cols[i], nx = i + 1 < cols.length ? cols[i + 1].x : xN;
+        const d = nx >= c.x ? 1 : -1;
+        const chIn = Math.max(0, Math.min(8,
+          Math.abs(c.x - cx) / 2, (c.yCh - cy) / 2));
+        if (Math.abs(c.x - cx) > 0.5) p.push([c.x, cy]);
+        p.push([c.x, c.yCh - chIn], [c.x + d * chIn, c.yCh]);
+        // chamfer descent never leaves the band: floor-clamped, else the
+        // post-channel horizontal slices the next chunk's box tops
+        const chOut = Math.max(0, Math.min(8, Math.abs(nx - c.x) / 2,
+          c.yFloor - c.yCh));
+        p.push([nx - d * chOut, c.yCh], [nx, c.yCh + chOut]);
+        cx = nx; cy = c.yCh + chOut;
+      }
+      // orthogonal arrival: chamfer into the target column, then drop/rise
+      // vertically onto the port — the final leg must never be a diagonal
+      const dE = xEnd >= cx ? 1 : -1;
+      const chE = Math.max(0, Math.min(8, Math.abs(xEnd - cx) / 2,
+        Math.abs(yBot - cy) / 2));
+      p.push([xEnd - dE * chE, cy], [xEnd, cy + (yBot >= cy ? chE : -chE)],
+             [xEnd, yBot]);
+      if (up) p.reverse();
+      if (!up && syE > sy) p.unshift([sx0, sy]);
+      // terminator anchors on pts[last] = (tx0, ty) for BOTH directions;
+      // the old up ? sx0 floated arrowheads / T-ticks off the path end
+      return { pts: p, bez: false, tx: tx0, ty,
+               back: ty < sy };
+    }
+    // channel placement: scan each gap band in order; a band that admits a
+    // clear horizontal wins, an exhausted band is only the bundled fallback
+    // (channels never slice through the chunk between bands)
+    let yc = null;
+    for (const bi of bands) {
+      const g = gapY[bi];
+      if (!g) continue;
+      const t = nextY(Math.min(sx0, tx0), Math.max(sx0, tx0),
+                      g.y0 + 3, g.y1);
+      if (!yc) yc = t;
+      if (t.ok) { yc = t; break; }
+    }
+    if (!yc) yc = { y: (sy + ty) / 2, ok: false };
     const yCh = yc.y;
-    const fx = freeX(sx0, Math.min(sy, yCh), Math.max(sy, yCh));
+    const sY = up ? A.y : syE;   // attach edge = the side facing the channel
+    const fx = freeX(sx0, Math.min(sY, yCh), Math.max(sY, yCh));
     const sx = fx.x;
-    if (fx.ok) claimLane(sx, sy, yCh);
+    if (fx.ok) claimLane(sx, sY, yCh);
     const fx2 = freeX(tx0, Math.min(yCh, ty), Math.max(yCh, ty));
     const tx = Math.max(B.x + 2, Math.min(B.x + B.w - 2, fx2.x));
     if (fx2.ok) claimLane(tx, yCh, ty);
@@ -4643,10 +4740,17 @@ function mapRender() {
     // the bezier fallback died with the diagonal layer
     const dir = tx >= sx ? 1 : -1;
     const ch = Math.max(0, Math.min(8, Math.abs(tx - sx) / 2,
-      Math.abs(yCh - sy) / 2, Math.abs(yCh - ty) / 2));
+      Math.abs(yCh - sY) / 2, Math.abs(yCh - ty) / 2));
+    const tyDir = ty >= yCh ? 1 : -1;   // approach side of the channel
+    const sDir = yCh >= sY ? 1 : -1;    // source side of the channel
     return {
-      pts: [[sx0, sy], [sx, sy], [sx, yCh - ch], [sx + dir * ch, yCh],
-            [tx - dir * ch, yCh], [tx, sameRow ? yCh - ch : yCh + ch], [tx, ty]],
+      pts: !up && syE > sy
+        ? [[sx0, sy], [sx0, syE], [sx, syE], [sx, yCh - ch],
+           [sx + dir * ch, yCh], [tx - dir * ch, yCh],
+           [tx, yCh + tyDir * ch], [tx, ty]]
+        : [[sx0, sY], [sx, sY], [sx, yCh - sDir * ch], [sx + dir * ch, yCh],
+           [tx - dir * ch, yCh], [tx, yCh + tyDir * ch],
+           [tx, ty]],
       bez: false, tx, ty,
       back: !sameRow && ty < sy,
     };
@@ -4657,13 +4761,18 @@ function mapRender() {
     if (l.ty !== "attach" && l.ty !== "inst") return;
     const A = place.get(l.s), B = place.get(l.t);
     if (!A || !B) return;
-    const sy = A.y + A.h, sameRow = fd.get(l.s) === fd.get(l.t);
-    const ty = sameRow ? B.y + B.h : B.y;
+    const sy = A.y + A.h;
+    // same CHUNK row, not same BFS depth: depth rows wrap to world width,
+    // so equal fd can land in adjacent chunks — routing those as a same-row
+    // dip dropped the channel mid-air (yCh = midpoint) through box interiors
+    const sameRow = A.row === B.row;
+    // up-hauls enter the target's bottom edge (the source sits below it)
+    const ty = (sameRow || B.y + B.h <= sy) ? B.y + B.h : B.y;
     const sIx = outIx.get(l.s) || 0; outIx.set(l.s, sIx + 1);
     const tIx = inIx.get(l.t) || 0; inIx.set(l.t, tIx + 1);
     const sx0 = A.x + A.w * (sIx + 1) / ((outN.get(l.s) || 1) + 1);
     const tx0 = B.x + B.w * (tIx + 1) / ((inN.get(l.t) || 1) + 1);
-    const ur = routeOrtho(A, B, sy, ty, sameRow, sx0, tx0);
+    const ur = routeOrtho(A, B, sy, ty, sameRow, sx0, tx0, true);
     ur.flow = sameRow ? "same" : (ty > sy ? "down" : "up");
     underlays.push(Object.assign({ s: l.s, t: l.t, ty0: l.ty }, ur));
   });
@@ -4673,14 +4782,19 @@ function mapRender() {
     if (l.ty === "attach" || l.ty === "inst") return;
     const A = place.get(l.s), B = place.get(l.t);
     if (!A || !B) return;
-    const sy = A.y + A.h, sameRow = fd.get(l.s) === fd.get(l.t);
-    const ty = sameRow ? B.y + B.h : B.y;
+    const sy = A.y + A.h;
+    // same CHUNK row, not same BFS depth: depth rows wrap to world width,
+    // so equal fd can land in adjacent chunks — routing those as a same-row
+    // dip dropped the channel mid-air (yCh = midpoint) through box interiors
+    const sameRow = A.row === B.row;
+    // up-hauls enter the target's bottom edge (the source sits below it)
+    const ty = (sameRow || B.y + B.h <= sy) ? B.y + B.h : B.y;
     const sIx = outIx.get(l.s) || 0; outIx.set(l.s, sIx + 1);
     const tIx = inIx.get(l.t) || 0; inIx.set(l.t, tIx + 1);
     const sx0 = A.x + A.w * (sIx + 1) / ((outN.get(l.s) || 1) + 1);
     const tx0 = B.x + B.w * (tIx + 1) / ((inN.get(l.t) || 1) + 1);
     const amber = l.ty === "signal" && !(byPair.get(l.s + "_" + l.t) || []).length;
-    const sr = routeOrtho(A, B, sy, ty, sameRow, sx0, tx0);
+    const sr = routeOrtho(A, B, sy, ty, sameRow, sx0, tx0, true);
     sr.flow = sameRow ? "same" : (ty > sy ? "down" : "up");
     spines.push(Object.assign(
       { s: l.s, t: l.t, ty: l.ty, pair: l.s + "_" + l.t, amber, sRow: A.row,
@@ -4760,7 +4874,7 @@ function mapRender() {
     if (!A || !B) return;
     const sRow = rowOf.get(w.sf + "\x00" + w.sfn);
     const dRow = rowOf.get(w.df + "\x00" + w.dfn);
-    const sameRow = fd.get(w.sf) === fd.get(w.df);
+    const sameRow = A.row === B.row;   // chunk-row truth: fd wraps (see spines)
     let sx0;
     if (sRow === undefined) {
       const sIx = outIx.get(w.sf) || 0; outIx.set(w.sf, sIx + 1);
@@ -4794,9 +4908,11 @@ function mapRender() {
       const tIx = rowIxIn.get(kk) || 0; rowIxIn.set(kk, tIx + 1);
       tx0 = B.x + B.w * (tIx + 1) / ((rowTotIn.get(kk) || 1) + 1);
     }
+    const upW = !sameRow && B.y + B.h <= sy;
     const ty = dRow === undefined
-      ? (sameRow ? B.y + B.h : B.y)
-      : (sameRow ? B.y + NH + (dRow + 1) * RH : B.y + NH + dRow * RH);
+      ? (sameRow || upW ? B.y + B.h : B.y)
+      : (sameRow || upW ? B.y + NH + (dRow + 1) * RH
+                        : B.y + NH + dRow * RH);
     // cardinal routing: two boxes side by side on the SAME row with a clear
     // corridor connect STRAIGHT ACROSS — exit one side edge, enter the other
     // (Unreal/Mermaid law: no dip-down-up detour for a horizontal neighbor).
@@ -4808,7 +4924,9 @@ function mapRender() {
     const blocked = !side || rects.some(r =>
       r !== A && r !== B && sy >= r.y0 && sy <= r.y1 &&
       r.x1 > gapL && r.x0 < gapR);
-    if (!blocked) {
+    // the shortcut is same-row-only: side is x-only, so for cross-row pairs
+    // it drew a straight line at the source port height through foreign boxes
+    if (sameRow && !blocked) {
       const x0 = side > 0 ? A.x + A.w : A.x;
       const x1 = side > 0 ? B.x : B.x + B.w;
       const ch2 = Math.max(0, Math.min(8, Math.abs(x1 - x0) / 2));
@@ -4969,8 +5087,11 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     // wire color = TYPE (Blueprint law): the cluster gradient read as
     // decoration; type answers "what kind of wire is this?" at a glance
     const color = sp.amber ? "#ffb347" : (MGLYPH[sp.ty] || MGLYPH.call).c;
-    // trunk leader: combined-width stroke for every corridor riding it
-    seg(sp, color, sp.trunkW ? Math.min(2 + 1.1 * (sp.trunkW - 1), 7) : 2,
+    // trunk leader: combined-width stroke for every corridor riding it;
+    // metro corridors add a modest width bump per rider (stays a rail yard
+    // of distinct strokes, not one merged cable)
+    const cn = Math.max(sp.trunkW || 1, sp.corridorN || 1);
+    seg(sp, color, cn > 1 ? Math.min(2 + 1.1 * (cn - 1), 7) : 2,
         sp.back ? [2, 3] : null, 0.5 * dim(sp.s, sp.t));
   });
   L.wires.forEach(w => {
