@@ -2013,10 +2013,11 @@ function tick() {
       const d = Math.hypot(fnJDotPos[i*3] - camera.position.x,
                            fnJDotPos[i*3+1] - camera.position.y,
                            fnJDotPos[i*3+2] - camera.position.z);
-      // pure screen-constancy: 0.0048 * px-factor(1073) = ~5.2px radius at
-      // EVERY distance. A world-unit floor explodes at close zoom (a 4-unit
-      // floor = 64px blob at d=134 — the user's boulder screenshot)
-      const rT = d * 0.0048;
+      // pure screen-constancy: 0.0038 * px-factor(1073) = ~4.1px radius at
+      // EVERY distance (ink#5: bollards stop reading as boulders; ~1.7x
+      // the conduit half-width keeps them the clear anchor). A world-unit
+      // floor explodes at close zoom (a 4-unit floor = 64px blob at d=134)
+      const rT = d * 0.0038;
       const f = rT / fnJDotR[i];
       if (Math.abs(f - 1) > 0.06) {
         const o = i * 16;
@@ -3138,7 +3139,11 @@ let fnMesh = null, fnLines = null, fnStalks = null, fnMeta = [], fnArrows = null
   // wires collapse into ONE background trunk (QUIET_LIFT_FRAC apex lift)
   const QUIET_TRUNK_MIN = 3, QUIET_LIFT_FRAC = 0.22;
 let fnTrunkW = 0;   // wires riding trunks (each emits entry+exit ramps)
-let fnJstubN = 0;   // junction delivery stubs (shared J -> fn box legs)
+let fnJstubN = 0;   // shared junction legs: Jof delivery stubs + station tree legs
+let fnStationsArr = [];  // per-file bus stations of the current fn layer (via __dbg)
+let fnJclearV = -1; // min world junction->box-center distance (via __dbg)
+let fnJclip = 0;    // conduits whose obstacle lift hit the cap (via __dbg)
+let fnLegN = 0;     // station tree legs (subset of fnJstubN, via __dbg)
 let fnQuietTrunkN = 0;  // quiet-tier trunk arcs (via __dbg)
 let fnQuietTrunkW = 0;  // quiet wires absorbed into trunks (via __dbg)
 let fnBus = null;   // trunk conduit bodies (InstancedMesh cylinders)
@@ -3233,9 +3238,17 @@ function updateFocusLabels() {
     const base = "translate(" + x.toFixed(1) + "px," + y.toFixed(1) + "px) translate(-50%,-100%)";
     f.el.style.display = "block";
     f.el.style.transform = base;
-    // fn satellites may overlap each other (they're small + parked on
-    // their owner's arc) — they only avoid hubs + file labels
-    if (f.kind === 1) { taken.push(f.el.getBoundingClientRect()); continue; }
+    // fn satellites now mutually collide-avoid (ink#4): 18px screen gap to
+    // every placed rect — the dense-swarm label shagpile; a blocked label
+    // hides (element stays; next frame re-tries as the camera moves)
+    if (f.kind === 1) {
+      const r1 = f.el.getBoundingClientRect();
+      const clear18 = t => r1.right < t.left - 18 || t.right < r1.left - 18 ||
+        r1.bottom < t.top - 18 || t.bottom < r1.top - 18;
+      if (!taken.every(clear18)) { f.el.style.display = "none"; continue; }
+      taken.push(r1);
+      continue;
+    }
     let r = f.el.getBoundingClientRect();
     if (hubRects.some(hr => !clearOf(r, hr)) || taken.some(t => !clearOf(r, t))) {
       let ok = false;
@@ -3463,6 +3476,145 @@ function rebuildFnLayer(focusing) {
   for (const [k, n] of pairCnt) if (n >= 3) trunked.add(k);
   const qTrunked = new Set();
   for (const [k, n] of qPairCnt) if (n >= QUIET_TRUNK_MIN) qTrunked.add(k);
+  // ---- bus stations (bus3d_spec D1-D3): per-file junctions on a ring
+  // BEYOND the outermost occupied fn-box ring — provably open air. The
+  // old sphR*1.16 entry shell sat INSIDE ring 1 for every lit file
+  // (1.16*sphR < sphR+14 whenever sphR < 87.5; max seen 32.1), which is
+  // exactly the buried-bollard clutter: sweeps re-projected onto that
+  // shell could never escape the swarm radially.
+  const STATION_R = 22, SUBJ_R = 16;
+  const ringOut = new Map();   // fi -> outermost occupied fn-box ring
+  for (const [fi, arr] of byFile) {
+    // aggregated files (n > AGG_MAX, non-focus) render ONE 'n×' box at
+    // arcR+12 — 12 PAST the member rings; it owns the outermost radius
+    const agg = arr.length > AGG_MAX && level[fi] > 0;
+    ringOut.set(fi, Math.max(sphR(fi) + 14 + (Math.max(1, Math.ceil(arr.length / 12)) - 1) * 8,
+                               agg ? sphR(fi) + 26 : 0));
+  }
+  const boxesOf = new Map();   // fi -> rendered fn indices (agg members out)
+  for (let i = 0; i < fnMeta.length; i++) {
+    const m = fnMeta[i]; if (m.agg && !m.count) continue;
+    let arr = boxesOf.get(m.file); if (!arr) boxesOf.set(m.file, arr = []);
+    arr.push(i);
+  }
+  const angMin = (a, b) => { const d = Math.abs(a - b) % (2*Math.PI);
+    return d > Math.PI ? 2*Math.PI - d : d; };
+  const cirMean = bs => { let x = 0, z = 0;
+    for (const b of bs) { x += Math.cos(b); z += Math.sin(b); }
+    return Math.atan2(z, x); };
+  const brgOf = (fi, p) => Math.atan2(p[2] - pos[fi*3+2], p[0] - pos[fi*3]);
+  // scored bearing: 16 fixed candidates + the mean-fan bearing — argmin
+  // occlusion against EVERY rendered box (own swarm first, foreign
+  // swarms too — rubric clearance is file-agnostic) + a small pull
+  // toward the mean. Ties: lower index.
+  const allBoxes = [];
+  for (const [, arr] of boxesOf) for (const ix of arr) allBoxes.push(ix);
+  const stationAt = (fi, mean) => {
+    const R = (ringOut.get(fi) || sphR(fi)) + STATION_R;
+    const cx = pos[fi*3], cy = pos[fi*3+1], cz = pos[fi*3+2];
+    let best = null;
+    for (let ci = 0; ci <= 16; ci++) {
+      const phi = ci < 16 ? ci * Math.PI / 8 : mean;
+      const px = cx + Math.cos(phi) * R, pz = cz + Math.sin(phi) * R;
+      let cost = 0.4 * angMin(phi, mean) * angMin(phi, mean);
+      for (const ix of allBoxes) {
+        const dx = px - fpos[ix*3], dy = cy - fpos[ix*3+1], dz = pz - fpos[ix*3+2];
+        const d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 > 3600) continue;   // 60 wu and out: no say
+        cost += 1 / Math.max(d2, 36);
+      }
+      if (!best || cost < best.cost - 1e-12) best = { cost, phi, p: [px, cy, pz] };
+    }
+    return best;
+  };
+  // sector split: cut at the largest circular gap when spread > 2.1 rad,
+  // one more internal cut if a side is still wide (<= 3 groups).
+  const sectorize = items => {
+    if (items.length < 2) return [items.slice()];
+    const s = items.slice().sort((a, b) => a.brg - b.brg);
+    let gi = 0, gw = -1;
+    for (let i = 0; i < s.length; i++) {
+      const nx = i + 1 < s.length ? s[i+1].brg : s[0].brg + 2*Math.PI;
+      if (nx - s[i].brg > gw) { gw = nx - s[i].brg; gi = i; }
+    }
+    if (2*Math.PI - gw <= 2.1) return [s];
+    const cut2 = g => {
+      if (g.length < 2 || g[g.length-1].brg - g[0].brg <= 2.1) return [g];
+      let j = 0, w = -1;
+      for (let i = 0; i + 1 < g.length; i++)
+        if (g[i+1].brg - g[i].brg > w) { w = g[i+1].brg - g[i].brg; j = i; }
+      return [g.slice(0, j+1), g.slice(j+1)];
+    };
+    return cut2(s.slice(gi + 1)).concat(cut2(s.slice(0, gi + 1)));
+  };
+  // per-FILE trunked-pair groups (arrivals and departures SHARE one
+  // station per sector — a Blueprint reroute is bidirectional, and split
+  // in/out stations 13 wu apart made their trunk fans graze at ~0.4 wu)
+  const stGrp = new Map();
+  for (const k of trunked) {
+    const parts = k.split(">"), sf = +parts[0], tf = +parts[1];
+    for (const [fi, oth, role] of [[sf, tf, 0], [tf, sf, 1]]) {
+      let g = stGrp.get(fi);
+      if (!g) stGrp.set(fi, g = { fi, items: [], wires: 0 });
+      g.items.push({ tk: k, role, w: pairCnt.get(k),
+        brg: Math.atan2(pos[oth*3+2] - pos[fi*3+2], pos[oth*3] - pos[fi*3]) });
+      g.wires += pairCnt.get(k);
+    }
+  }
+  const feedOf = new Map();   // tk -> {out:[src box], in:[tgt box]}
+  for (let i = 0, p = 0; i < eidx.length; i += 2, p++) {
+    if (!wireTier[p]) continue;
+    const k = fnMeta[eidx[i]].file + ">" + fnMeta[eidx[i+1]].file;
+    if (!trunked.has(k)) continue;
+    let f = feedOf.get(k); if (!f) feedOf.set(k, f = { out: [], in: [] });
+    if (!fnMeta[eidx[i]].agg || fnMeta[eidx[i]].count) f.out.push(eidx[i]);
+    if (!fnMeta[eidx[i+1]].agg || fnMeta[eidx[i+1]].count) f.in.push(eidx[i+1]);
+  }
+  const stations = new Map();  // tk -> {0: srcStation, 1: tgtStation}
+  const stList = [];           // all stations, stable order
+  for (const [, g] of stGrp)
+    for (const grp of sectorize(g.items)) {
+      const mean = cirMean(grp.map(x => x.brg));
+      const st = stationAt(g.fi, mean);
+      const wires = grp.reduce((sm, x) => sm + x.w, 0);
+      const S = { id: stList.length, fi: g.fi, p: st.p, brg: st.phi,
+                  wires, tks: [], subJ: [], boxSub: new Map() };
+      for (const x of grp) S.tks.push(x.tk);
+      // shallow fan tree (spec D3): merges with >3 wires split into moat
+      // sub-junctions by box bearing — taps leave radially OUTWARD and no
+      // dot sees more than ~3 legs (skeptic R7). boxSub keyed by role:box
+      // (a box can both feed and receive through this station).
+      if (wires > 3) {
+        const feed = new Map();   // role:ix -> ix (dedup, stable)
+        for (const x of grp)
+          for (const ix of (feedOf.get(x.tk) || {out:[],in:[]})[x.role ? "in" : "out"])
+            feed.set(x.role + ":" + ix, ix);
+        const fb = [...feed.keys()].map(key => feed.get(key))
+          .sort((a, b) => brgOf(g.fi, [fpos[a*3], 0, fpos[a*3+2]]) -
+                        brgOf(g.fi, [fpos[b*3], 0, fpos[b*3+2]]));
+        const nSub = wires > 12 ? 3 : 2, per = Math.ceil(fb.length / nSub);
+        const R = (ringOut.get(g.fi) || sphR(g.fi)) + SUBJ_R;
+        for (let si = 0; si < nSub; si++) {
+          const mem = fb.slice(si * per, (si + 1) * per);
+          if (!mem.length) continue;
+          const sb = cirMean(mem.map(ix => brgOf(g.fi, [fpos[ix*3], 0, fpos[ix*3+2]])));
+          const sp = [pos[g.fi*3] + Math.cos(sb) * R, pos[g.fi*3+1], pos[g.fi*3+2] + Math.sin(sb) * R];
+          for (const ix of mem) {
+            // a box in both roles maps by whichever role the wire uses
+            S.boxSub.set("0:" + ix, sp);
+            S.boxSub.set("1:" + ix, sp);
+          }
+          S.subJ.push(sp);
+        }
+      }
+      for (const x of grp) {
+        let m = stations.get(x.tk); if (!m) stations.set(x.tk, m = {});
+        m[x.role] = S;
+      }
+      stList.push(S);
+    }
+  // (moat relaxation runs after Jof placement below — stations stay fixed,
+  // sub-junctions and Jof dots rotate on their rings)
   const inB = new Map(), dirB = new Map();
   for (let i = 0, p = 0; i < eidx.length; i += 2, p++) {
     const a = eidx[i], b = eidx[i+1];
@@ -3475,12 +3627,58 @@ function rebuildFnLayer(focusing) {
     d[0] += dx / l; d[1] += dy / l; d[2] += dz / l;
     dirB.set(b, d);
   }
-  const Jof = new Map();
+  const Jof = new Map(), JofR = new Map();
   for (const [b, n] of inB) if (n >= 2) {
-    const d = dirB.get(b);
-    const l = Math.hypot(d[0], d[1], d[2]) || 1;
-    Jof.set(b, [fpos[b*3] + d[0] / l * 14, fpos[b*3+1] + d[1] / l * 14,
-                fpos[b*3+2] + d[2] / l * 14]);
+    // moat anchor: radially OUTWARD past the outermost occupied radius
+    // (spec D4) — the old 14-off-box dot sat inside the swarm band
+    const fi = fnMeta[b].file;
+    const ox = fpos[b*3] - pos[fi*3], oz = fpos[b*3+2] - pos[fi*3+2];
+    const ol = Math.hypot(ox, oz) || 1;
+    const L = Math.max(SUBJ_R, (ringOut.get(fi) || sphR(fi)) - ol + SUBJ_R);
+    Jof.set(b, [fpos[b*3] + ox / ol * L, pos[fi*3+1], fpos[b*3+2] + oz / ol * L]);
+    JofR.set(b, L);
+  }
+  // final moat relaxation: rotate sub-junctions + Jof dots away from ANY
+  // same-file dot within 10 wu and any box center within 16 wu — 8 bounded
+  // rounds of clamped tangential rotation, deterministic scan order.
+  {
+    const moat = [];
+    for (const S of stList)
+      for (const sp of S.subJ)
+        moat.push({ fi: S.fi, p: sp, r: (ringOut.get(S.fi) || sphR(S.fi)) + SUBJ_R });
+    for (const [b, J] of Jof)
+      moat.push({ fi: fnMeta[b].file, p: J, r: JofR.get(b) });
+    const sgn = (a, b) => ((a - b + Math.PI) % (2*Math.PI) + 2*Math.PI) % (2*Math.PI) - Math.PI >= 0 ? 1 : -1;
+    for (let round = 0; round < 8; round++)
+      for (const md of moat) {
+        const brg = brgOf(md.fi, md.p);
+        let rot = 0;
+        for (const S of stList) {
+          if (S.fi !== md.fi) continue;
+          for (const q of [S.p, ...S.subJ]) {
+            if (q === md.p) continue;
+            if (Math.hypot(md.p[0]-q[0], md.p[1]-q[1], md.p[2]-q[2]) < 10)
+              rot += sgn(brg, brgOf(md.fi, q)) * 0.10;
+          }
+        }
+        for (const om of moat) {
+          if (om === md || om.fi !== md.fi) continue;
+          if (Math.hypot(md.p[0]-om.p[0], md.p[1]-om.p[1], md.p[2]-om.p[2]) < 10)
+            rot += sgn(brg, brgOf(md.fi, om.p)) * 0.10;
+        }
+        for (const ix of allBoxes) {
+          const q = [fpos[ix*3], fpos[ix*3+1], fpos[ix*3+2]];
+          if (Math.hypot(md.p[0]-q[0], md.p[1]-q[1], md.p[2]-q[2]) < 16)
+            rot += sgn(brg, brgOf(md.fi, q)) * 0.06;
+        }
+        rot = Math.max(-0.15, Math.min(0.15, rot));
+        if (rot) {
+          const nb = brg + rot;
+          md.p[0] = pos[md.fi*3] + Math.cos(nb) * md.r;
+          md.p[1] = pos[md.fi*3+1];
+          md.p[2] = pos[md.fi*3+2] + Math.sin(nb) * md.r;
+        }
+      }
   }
   // shared arc emitter: 8 quadratic segments (16 verts — the harness
   // counts wires as verts/16), optional arrowhead at the end tangent
@@ -3532,107 +3730,76 @@ function rebuildFnLayer(focusing) {
   const trunkEnds = new Map();  // reroute junctions: {e, x, c, m: trunk meta}
   const busSegs = [];   // {a:[x,y,z], b:[x,y,z], col:[r,g,b], k} conduit pieces
   const busJunc = [];   // junction bollards: {p:[x,y,z], c:[r,g,b]}
-  const jcons = [];     // junction constraints: {p, kind:"shell"|"box", fi, b}
+  const jcons = [];     // junction constraints: {p, kind:"box", b, r}
   const trunkGeom = []; // deferred trunk emission (after junction separation)
-  const fnStops = new Map();   // "tk|b" -> per-fn bus stop (dominant targets)
-  // trunk wire targets: when every wire of a pair lands on ONE fn, the bus
-  // exit lives AT that fn box (Unreal reroute) — not on the file sphere
-  // below the swarm, which reads as wires ending in empty space
-  const tgtCnt = new Map();
-  for (let i = 0, p = 0; i < eidx.length; i += 2, p++) {
-    if (!wireTier[p]) continue;
-    const tk = fnMeta[eidx[i]].file + ">" + fnMeta[eidx[i+1]].file;
-    if (!trunked.has(tk)) continue;
-    let m = tgtCnt.get(tk);
-    if (!m) tgtCnt.set(tk, m = new Map());
-    const b = eidx[i+1];
-    m.set(b, (m.get(b) || 0) + 1);
-  }
   fnTrunkN = 0;
   fnTrunkW = 0;
   fnJstubN = 0;
   fnQuietTrunkN = 0;
   fnQuietTrunkW = 0;
+  fnLegN = 0;
+  fnJclip = 0;
+  const corridorTier = new Map();   // "srcId>tgtId" -> 0..2 (first-seen order)
+  // fan trunk termini out of shared stations: corridors leaving/arriving at
+  // one bollard offset along the station tangent (ranked by the OTHER end's
+  // bearing) so coincident first/last conduit segments separate instead of
+  // stacking at 0 wu; trunks still read as leaving the dot
+  const stTerm = new Map();   // station id -> Map("k:end" -> offset point)
+  for (const S of stList) {
+    const terms = [];
+    for (const k of trunked) {
+      const stB = stations.get(k);
+      if (!stB) continue;
+      if (stB[0] === S) terms.push({ k, end: 0, other: stB[1].p });
+      if (stB[1] === S) terms.push({ k, end: 1, other: stB[0].p });
+    }
+    if (terms.length < 2) continue;
+    terms.sort((a, b) => brgOf(S.fi, a.other) - brgOf(S.fi, b.other));
+    const tx = -Math.sin(S.brg), tz = Math.cos(S.brg);
+    const m = new Map();
+    terms.forEach((t, r) => {
+      const off = (r - (terms.length - 1) / 2) * 9;
+      m.set(t.k + ":" + t.end, [S.p[0] + tx * off, S.p[1], S.p[2] + tz * off]);
+    });
+    stTerm.set(S.id, m);
+  }
   for (const k of trunked) {
     const parts = k.split(">");
     const sf = +parts[0], tf = +parts[1];
     const c0 = fnCen.get(sf), c1 = fnCen.get(tf);
     if (!c0 || !c1) continue;
-    let p0 = surf(sf, [c0[0]/fnCnt.get(sf), c0[1]/fnCnt.get(sf), c0[2]/fnCnt.get(sf)]);
-    // bus stop: pull the entry off the sphere surface — the REROUTE JUNCTION
-    // where the fn fan merges in (Blueprint reroute node: many in, one
-    // corridor, all arrive at the same end)
-    {
-      const dx = p0[0] - pos[sf*3], dy = p0[1] - pos[sf*3+1], dz = p0[2] - pos[sf*3+2];
-      const l = Math.hypot(dx, dy, dz) || 1;
-      const pull = sphR(sf) * 0.16;
-      p0[0] += dx / l * pull; p0[1] += dy / l * pull; p0[2] += dz / l * pull;
-    }
-    // crowd avoidance: slide the entry along the shell away from the fn-box
-    // swarm — 6 deterministic sweeps pushing out of any box within 12, then
-    // re-projecting onto the shell. The incoming fan dives through fewer
-    // boxes on its way to the junction.
-    {
-      const shellR = sphR(sf) * 1.16;
-      for (let it = 0; it < 6; it++) {
-        let moved = false;
-        for (let j = 0; j < fnMeta.length; j++) {
-          if (fnMeta[j].file !== sf) continue;
-          const dx = p0[0] - fpos[j*3], dy = p0[1] - fpos[j*3+1], dz = p0[2] - fpos[j*3+2];
-          const dd = Math.hypot(dx, dy, dz);
-          if (dd > 12 || dd < 1e-6) continue;
-          const push = (12 - dd) * 0.5;
-          p0[0] += dx / dd * push; p0[1] += dy / dd * push; p0[2] += dz / dd * push;
-          moved = true;
-        }
-        const cx = p0[0] - pos[sf*3], cy = p0[1] - pos[sf*3+1], cz = p0[2] - pos[sf*3+2];
-        const cl = Math.hypot(cx, cy, cz) || 1;
-        p0[0] = pos[sf*3] + cx / cl * shellR;
-        p0[1] = pos[sf*3+1] + cy / cl * shellR;
-        p0[2] = pos[sf*3+2] + cz / cl * shellR;
-        if (!moved) break;
-      }
-      jcons.push({ p: p0, kind: "shell", fi: sf });
-    }
-    // exit junction: single-destination pairs anchor AT the target fn box,
-    // offset 14 toward the source — the stub lands ON the function
-    const tm = tgtCnt.get(k);
-    const tgtFn = tm && tm.size === 1 ? tm.keys().next().value : -1;
-    let p1;
-    if (tgtFn >= 0) {
-      const fb = [fpos[tgtFn*3], fpos[tgtFn*3+1], fpos[tgtFn*3+2]];
-      const ux = p0[0] - fb[0], uy = p0[1] - fb[1], uz = p0[2] - fb[2];
-      const ul = Math.hypot(ux, uy, uz) || 1;
-      p1 = [fb[0] + ux / ul * 14, fb[1] + uy / ul * 14, fb[2] + uz / ul * 14];
-    } else {
-      p1 = surf(tf, [c1[0]/fnCnt.get(tf), c1[1]/fnCnt.get(tf), c1[2]/fnCnt.get(tf)]);
-      const dx = p1[0] - pos[tf*3], dy = p1[1] - pos[tf*3+1], dz = p1[2] - pos[tf*3+2];
-      const l = Math.hypot(dx, dy, dz) || 1;
-      const pull = sphR(tf) * 0.16;
-      p1[0] += dx / l * pull; p1[1] += dy / l * pull; p1[2] += dz / l * pull;
-    }
+    const stBoth = stations.get(k);
+    const stS = stBoth && stBoth[0], stT = stBoth && stBoth[1];
+    if (!stS || !stT) continue;
+    // entry/exit = the two files' stations (shared per sector — ONE bollard
+    // per sector, not one per pair). Delivery legs run station/subJ -> box
+    // per wire; single-destination trunks need no special stop.
+    const p0 = (stTerm.get(stS.id) || new Map()).get(k + ":0") || stS.p;
+    const p1 = (stTerm.get(stT.id) || new Map()).get(k + ":1") || stT.p;
     // trunk color = DESTINATION FILE's cluster color (colArr is per-file;
     // fcol is per-fn-box — indexing it by file reads garbage => black tubes)
     const tc = [colArr[tf*3], colArr[tf*3+1], colArr[tf*3+2]];
     const tmeta = { kind: "trunk", k, sf, tf, mates: [] };
-    // per-fn stops: a trunk often feeds ONE dominant function (the user:
-    // "a ton of wires converge on ONE function") — every target fn with >=2
-    // trunk wires gets its OWN junction 14 off its box; singletons share the
-    // generic file stop
-    if (tm) for (const [b, n] of tm) {
-      if (n < 2) continue;
-      const fb = [fpos[b*3], fpos[b*3+1], fpos[b*3+2]];
-      const ux = p0[0] - fb[0], uy = p0[1] - fb[1], uz = p0[2] - fb[2];
-      const ul = Math.hypot(ux, uy, uz) || 1;
-      const st = [fb[0] + ux / ul * 14, fb[1] + uy / ul * 14, fb[2] + uz / ul * 14];
-      fnStops.set(k + "|" + b, st);
-      busJunc.push({ p: st, c: tc });
-      jcons.push({ p: st, kind: "box", b });
+    const ck = stS.id + ">" + stT.id;
+    if (!corridorTier.has(ck)) corridorTier.set(ck, corridorTier.size % 3);
+    trunkGeom.push({ p0, p1, tc, tmeta, tier: corridorTier.get(ck) });
+    trunkEnds.set(k, { e: p0, x: p1, c: tc, m: tmeta });
+  }
+  // station bollards + shared tree legs (subJ -> station). One dim leg per
+  // sub-junction, counted in fnJstubN so the harness arc arithmetic
+  // (bright + fnTrunkW + fnTrunkN + fnJstubN) stays exact.
+  for (const S of stList) {
+    const c = [colArr[S.fi*3], colArr[S.fi*3+1], colArr[S.fi*3+2]];
+    busJunc.push({ p: S.p, c });
+    const dc = [c[0]*0.62, c[1]*0.62, c[2]*0.62];
+    for (const sp of S.subJ) {
+      busJunc.push({ p: sp, c });
+      emitArc(tierB, sp[0], sp[1], sp[2], S.p[0], S.p[1], S.p[2],
+              dc[0], dc[1], dc[2], dc[0], dc[1], dc[2], 0, 0.14, false,
+              { kind: "jleg", fi: S.fi });
+      fnJstubN++;
+      fnLegN++;
     }
-    if (tgtFn >= 0) jcons.push({ p: p1, kind: "box", b: tgtFn });
-    else jcons.push({ p: p1, kind: "shell", fi: tf });
-    trunkGeom.push({ p0, p1, tc, tmeta });
-    busJunc.push({ p: p0, c: tc }, { p: p1, c: tc });
   }
   // quiet-tier trunks: >= QUIET_TRUNK_MIN neighbor↔neighbor wires between
   // the same file pair collapse into ONE background arc between the
@@ -3654,12 +3821,12 @@ function rebuildFnLayer(focusing) {
     fnQuietTrunkN++;
     qTrunkGeo.set(k, { e: p0, x: p1, c: tc, tm });
   }
-  // junction separation: two deterministic depenetration rounds — junctions
-  // closer than 6 spread apart, then every junction re-anchors (shell points
-  // return to their sphere radius, box stubs to 14 off their fn). Keeps
-  // junctions from stacking on each other and on wire crossings.
+  // junction separation: 3 deterministic depenetration rounds — box-anchored
+  // junctions (fn stops + Jof moat dots) closer than 6 spread apart
+  // tangentially around their fn, then re-anchor at their own radius
+  // (jc.r). Stations/sub-junctions are placed in open air and stay FIXED.
   for (const [b, J] of Jof) {
-    jcons.push({ p: J, kind: "box", b });
+    jcons.push({ p: J, kind: "box", b, r: JofR.get(b) });
     busJunc.push({ p: [J[0], J[1], J[2]], c: [fcol[b*3], fcol[b*3+1], fcol[b*3+2]] });
   }
   for (let round = 0; round < 3; round++) {
@@ -3684,36 +3851,57 @@ function rebuildFnLayer(focusing) {
         if (tl < 1e-6) return;   // head-on: next round settles it
         P[0] += tx / tl * push; P[1] += ty / tl * push; P[2] += tz / tl * push;
       };
-      if (jcA.kind === "box" && jcB.kind === "box" && jcA.b === jcB.b) {
-        slideBox(jcB, A);
-      } else if (jcA.kind === "shell" && jcB.kind === "shell") {
-        const half = push / 2;   // both pinned to their spheres — split the diff
-        A[0] -= dx / dd * half; A[1] -= dy / dd * half; A[2] -= dz / dd * half;
-        B[0] += dx / dd * half; B[1] += dy / dd * half; B[2] += dz / dd * half;
-      } else if (jcB.kind === "box") {
-        slideBox(jcB, A);   // shell cannot leave its sphere; the box yields
-      } else {
-        slideBox(jcA, B);
-      }
+      if (jcA.b === jcB.b) slideBox(jcB, A);   // same fn: one ring, later yields
+      else { slideBox(jcB, A); slideBox(jcA, B); }   // different fns: both yield
     }
     for (const jc of jcons) {
-      if (jc.kind === "shell") {
-        const dx = jc.p[0] - pos[jc.fi*3], dy = jc.p[1] - pos[jc.fi*3+1], dz = jc.p[2] - pos[jc.fi*3+2];
-        const l = Math.hypot(dx, dy, dz) || 1;
-        const r = sphR(jc.fi) * 1.16;
-        jc.p[0] = pos[jc.fi*3] + dx / l * r;
-        jc.p[1] = pos[jc.fi*3+1] + dy / l * r;
-        jc.p[2] = pos[jc.fi*3+2] + dz / l * r;
-      } else {
-        const fb = [fpos[jc.b*3], fpos[jc.b*3+1], fpos[jc.b*3+2]];
-        const dx = jc.p[0] - fb[0], dy = jc.p[1] - fb[1], dz = jc.p[2] - fb[2];
-        const l = Math.hypot(dx, dy, dz) || 1;
-        jc.p[0] = fb[0] + dx / l * 14;
-        jc.p[1] = fb[1] + dy / l * 14;
-        jc.p[2] = fb[2] + dz / l * 14;
-      }
+      const fb = [fpos[jc.b*3], fpos[jc.b*3+1], fpos[jc.b*3+2]];
+      const dx = jc.p[0] - fb[0], dy = jc.p[1] - fb[1], dz = jc.p[2] - fb[2];
+      const l = Math.hypot(dx, dy, dz) || 1;
+      const r = jc.r || 14;
+      jc.p[0] = fb[0] + dx / l * r;
+      jc.p[1] = fb[1] + dy / l * r;
+      jc.p[2] = fb[2] + dz / l * r;
     }
   }
+  // obstacle-aware conduit lift (spec D5): raise the control point so the
+  // arc clears foreign swarm hulls that straddle the chord. Closed form:
+  // height(t) = base(t) + 2t(1-t)*lift >= obstacle top over the crossing
+  // interval. Cap keeps masts sane; capped trunks are counted in fnJclip.
+  const litFiles = [];
+  {
+    const seen = new Set();
+    for (const e of visEdges) {
+      if (!seen.has(e[0])) { seen.add(e[0]); litFiles.push(e[0]); }
+      if (!seen.has(e[2])) { seen.add(e[2]); litFiles.push(e[2]); }
+    }
+  }
+  const obsLift = (p0, p1, sf, tf) => {
+    const dx = p1[0] - p0[0], dz = p1[2] - p0[2];
+    const A2 = dx*dx + dz*dz;
+    if (A2 < 1e-9) return 0;
+    let need = 0;
+    for (const fi of litFiles) {
+      if (fi === sf || fi === tf) continue;
+      const sr = sphR(fi), ro = ringOut.get(fi);
+      const hull = ro !== undefined ? ro : sr;
+      for (const [R, top] of [[sr, pos[fi*3+1] + sr + 3], [hull + 5, pos[fi*3+1] + 6]]) {
+        const fx = p0[0] - pos[fi*3], fz = p0[2] - pos[fi*3+2];
+        const B = 2*(fx*dx + fz*dz), C = fx*fx + fz*fz - R*R;
+        const disc = B*B - 4*A2*C;
+        if (disc <= 0) continue;
+        const sq = Math.sqrt(disc);
+        const t1 = Math.max(0.12, (-B - sq) / (2*A2)), t2 = Math.min(0.88, (-B + sq) / (2*A2));
+        if (t2 <= t1) continue;
+        for (const t of [t1, t2, (t1 + t2) / 2]) {
+          const base = p0[1] + (p1[1] - p0[1]) * t;
+          const n = (top + 4 - base) / (2*t*(1 - t));
+          if (n > need) need = n;
+        }
+      }
+    }
+    return need;
+  };
   // phase 2: trunk geometry, emitted AFTER separation so arcs, conduits and
   // the shared reroute ends all read the final junction positions
   for (const g of trunkGeom) {
@@ -3721,12 +3909,16 @@ function rebuildFnLayer(focusing) {
     emitArc(tierB, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
             tc[0], tc[1], tc[2], tc[0], tc[1], tc[2], 0, 0.30, true, tmeta);
     fnTrunkN++;
-    trunkEnds.set(tmeta.k, { e: p0, x: p1, c: tc, m: tmeta });
     // conduit body: the bus must have PHYSICAL presence — a 1px line among
-    // 1px lines reads as nothing (the user: "converges but no bus line").
-    // Lift 0.30 arcs the bus OVER the fn-box crowd around the spheres.
+    // 1px lines reads as nothing. Tier by corridor (same station pair =>
+    // same corridor), raised by the obstacle law; apex stays >= 0.11*dist
+    // and ALWAYS +Y (conduit lane law).
     const dist = Math.hypot(p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2]) || 1;
-    const lift = (CONDUIT_LIFT_BASE + CONDUIT_LIFT_TIER * (fnTrunkN % 3)) * dist;
+    const Ltier = (CONDUIT_LIFT_BASE + CONDUIT_LIFT_TIER * g.tier) * dist;
+    const Lob = obsLift(p0, p1, tmeta.sf, tmeta.tf);
+    const cap = 0.70 * dist;
+    if (Lob > cap) fnJclip++;
+    const lift = Math.min(cap, Math.max(Ltier, Lob));
     const qx = (p0[0]+p1[0])/2, qy = (p0[1]+p1[1])/2 + lift, qz = (p0[2]+p1[2])/2;
     let bx2 = p0[0], by2 = p0[1], bz2 = p0[2];
     for (let s = 1; s <= FS; s++) {
@@ -3753,34 +3945,41 @@ function rebuildFnLayer(focusing) {
       const tk = fnMeta[a].file + ">" + fnMeta[b].file;
       const ends = trunked.has(tk) ? trunkEnds.get(tk) : null;
       if (ends) {
-        // Blueprint reroute node: the wire leaves its fn, merges at the bus
-        // ENTRY junction, rides the trunk, and leaves at the shared EXIT —
-        // every wire of the pair arrives at the same end
+        // Blueprint reroute node: the wire leaves its fn, merges at its
+        // sector sub-junction (or the station), rides the trunk, and
+        // arrives via the exit-side fan — every wire of the pair at the
+        // same end. Taps dim to the trunk hue (ink#1) and carry no arrow
+        // (ink#2 — direction lives on the ONE trunk tip).
         done = true;
         fnTrunkW++;
         const wmeta = { kind: "wire", a, b, ln, tk };
         ends.m.mates.push(wmeta);
-        emitArc(T, ax, ay, az, ends.e[0], ends.e[1], ends.e[2],
-                cA.r, cA.g, cA.b, ends.c[0], ends.c[1], ends.c[2], phase, 0.10, false, wmeta);
-        // exit leg leaves from THIS wire's fn stop when one exists — the
-        // stub lands on the function, not on the file sphere below it
-        const stp = fnStops.get(tk + "|" + b) || ends.x;
-        emitArc(T, stp[0], stp[1], stp[2], bx, by, bz,
-                ends.c[0], ends.c[1], ends.c[2], cB.r, cB.g, cB.b, phase + 2.5, 0.10, true, wmeta);
+        const dc = [ends.c[0]*0.62, ends.c[1]*0.62, ends.c[2]*0.62];
+        const stBoth = stations.get(tk);
+        const e0 = stBoth && stBoth[0] ? (stBoth[0].boxSub.get("0:" + a) || stBoth[0].p) : ends.e;
+        emitArc(T, ax, ay, az, e0[0], e0[1], e0[2],
+                dc[0], dc[1], dc[2], dc[0], dc[1], dc[2], phase, 0.16, false, wmeta);
+        // exit leg: delivery fan leaves from the target box's sub-junction
+        // (or the in-station directly on quiet merges)
+        const e1 = stBoth && stBoth[1] ? (stBoth[1].boxSub.get("1:" + b) || stBoth[1].p) : ends.x;
+        emitArc(T, e1[0], e1[1], e1[2], bx, by, bz,
+                dc[0], dc[1], dc[2], cB.r, cB.g, cB.b, phase + 2.5, 0.16, false, wmeta);
       } else {
         const J = Jof.get(b);
         if (J) {
-          // reroute junction: wires merge AT the junction, then ONE shared
-          // stub delivers into the fn box — the junction must not be a dead
-          // end in open space ("supposed to go into request_level_transition")
+          // reroute junction: wires merge AT the moat junction, then ONE
+          // shared stub delivers into the fn box — the junction must not
+          // be a dead end in open space ("supposed to go into
+          // request_level_transition"). Fan dims to the target hue (ink#1).
+          const d6 = [cB.r*0.62, cB.g*0.62, cB.b*0.62];
           emitArc(T, ax, ay, az, J[0], J[1], J[2],
-                  cA.r, cA.g, cA.b, cB.r, cB.g, cB.b, phase, 0.10, false,
+                  d6[0], d6[1], d6[2], d6[0], d6[1], d6[2], phase, 0.16, false,
                   { kind: "wire", a, b, ln });
           if (!Jstub.has(b)) {
             Jstub.add(b);
             fnJstubN++;
             emitArc(T, J[0], J[1], J[2], bx, by, bz,
-                    cB.r, cB.g, cB.b, cB.r, cB.g, cB.b, phase, 0.08, true,
+                    cB.r, cB.g, cB.b, cB.r, cB.g, cB.b, phase, 0.16, true,
                     { kind: "wire", a, b, ln });
           }
           done = true;
@@ -3857,6 +4056,21 @@ function rebuildFnLayer(focusing) {
     fnBusRi = new Float32Array(busSegs.length).fill(4);
     scene.add(fnBus);
   }
+  // probe surfaces (extend-only __dbg contract): the station map + the
+  // worst junction->box clearance, so QA can assert open-air placement
+  fnStationsArr = stList.map(S => ({ fi: S.fi, p: S.p,
+    brg: S.brg, wires: S.wires, tks: S.tks.slice(), subJ: S.subJ.map(p => [p[0], p[1], p[2]]) }));
+  fnJclearV = -1;
+  if (busJunc.length) {
+    let jmin = Infinity;
+    for (const j of busJunc) for (let i = 0; i < fnMeta.length; i++) {
+      const m = fnMeta[i];
+      if (m.agg && !m.count) continue;
+      const dd = Math.hypot(j.p[0]-m.p[0], j.p[1]-m.p[1], j.p[2]-m.p[2]);
+      if (dd < jmin) jmin = dd;
+    }
+    if (isFinite(jmin)) fnJclearV = jmin;
+  }
   if (busJunc.length) {
     // reroute bollards: the junction must be a THING — a dot where the fan
     // merges and where the bus delivers onto the fn box (Blueprint reroute)
@@ -3866,7 +4080,7 @@ function rebuildFnLayer(focusing) {
     fnJDot.renderOrder = 3;   // junctions sit ON TOP of the wire tangle
     const M = new THREE.Matrix4(), C = new THREE.Color();
     fnJDotPos = new Float32Array(busJunc.length * 3);
-    fnJDotR = new Float32Array(busJunc.length).fill(3.2);
+    fnJDotR = new Float32Array(busJunc.length).fill(2.6);
     busJunc.forEach((j, k) => {
       M.makeTranslation(j.p[0], j.p[1], j.p[2]);
       fnJDot.setMatrixAt(k, M);
@@ -4176,6 +4390,9 @@ function wireDesc(meta) {
       "  · " + fnMeta[m.a].name + "() → " + fnMeta[m.b].name + "()"
       + (m.ln >= 0 ? "  @L" + m.ln : "")).join("\n");
     return head + (body ? "\n" + body : "");
+  }
+  if (meta.kind === "jleg") {
+    return "🚌 junction leg\n" + nodes[meta.fi].path + "  (fan → station)";
   }
   const a = fnMeta[meta.a], b = fnMeta[meta.b];
   const src = nodes[a.file], dst = nodes[b.file];
@@ -5920,8 +6137,6 @@ function showFnInfo(k) {
   renderFn("kUsedBy", "iUsedBy", "CALLED BY", ins);
 }
 
-// fn-ownership affordance: hovering a fn box draws a stalk from the box to
-// its owning file — with two files close together, color alone can't say
 // which sphere a function belongs to
 let fnStalk = null;
 function fnStalkUpdate(fi, p) {
@@ -6072,6 +6287,8 @@ renderer.domElement.addEventListener("pointermove", e => {
       } else if (m.kind === "trunk") {
         txt = "🚌 bus " + nodes[m.sf].label + " → " + nodes[m.tf].label +
           "  (" + (m.mates || []).length + " wires)";
+      } else if (m.kind === "jleg") {
+        txt = "🚌 junction leg · " + nodes[m.fi].label;
       } else {
         const a = fnMeta[m.a], b = fnMeta[m.b];
         txt = nodes[a.file].label + "::" + a.name + "() → " +
@@ -6250,6 +6467,8 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get camera() { return camera; },
   get fnTrunkW() { return fnTrunkW; }, get fnJstubN() { return fnJstubN; },
   get fnQuietTrunkW() { return fnQuietTrunkW; },
+  get fnStations() { return fnStationsArr; }, get fnJclear() { return fnJclearV; },
+  get fnJclip() { return fnJclip; }, get fnLegN() { return fnLegN; },
   // probe hook: world -> screen px through the live camera + canvas rect
   projectPoint(x, y, z) {
     const v = new THREE.Vector3(x, y, z).project(camera);
