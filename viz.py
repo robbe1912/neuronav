@@ -2007,7 +2007,10 @@ function tick() {
       const d = Math.hypot(fnJDotPos[i*3] - camera.position.x,
                            fnJDotPos[i*3+1] - camera.position.y,
                            fnJDotPos[i*3+2] - camera.position.z);
-      const rT = Math.max(4, Math.min(8, d * 0.006));
+      // pure screen-constancy: 0.0035 * px-factor(1073) = ~3.8px radius at
+      // EVERY distance. A world-unit floor explodes at close zoom (a 4-unit
+      // floor = 64px blob at d=134 — the user's boulder screenshot)
+      const rT = Math.max(0.25, d * 0.0035);
       const f = rT / fnJDotR[i];
       if (Math.abs(f - 1) > 0.06) {
         const o = i * 16;
