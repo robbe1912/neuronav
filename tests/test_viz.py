@@ -1312,6 +1312,37 @@ def run_tests():
             page.screenshot(path=str(ROOT / "tests" / "qa_map_zoomout.png"),
                             scale="css", type="png")
             print("artifact: tests/qa_map_zoomout.png")
+            # 8c. zoom-gated ink tiers (paint-only): the fine layers
+            # (underlays, named wires, port dots/arrowheads) hide when
+            # zoomed out and return when zoomed back in (hysteresis) -
+            # the LAYOUT never changes: mapLayout.wires count identical
+            # at both ends (ONE-layout law survives the tier gate).
+            wires_pre = page.evaluate("() => window.__dbg.mapLayout.wires.length")
+            page.mouse.move(mcx, mcy)
+            for _ in range(20):
+                page.mouse.wheel(0, 120)
+                page.wait_for_timeout(40)
+                if page.evaluate("() => window.__dbg.mapZ") < 0.5:
+                    break
+            page.wait_for_timeout(400)
+            ink_off = page.evaluate(
+                """() => ({ ink: window.__dbg.mapInkOn,
+                            wires: window.__dbg.mapLayout.wires.length })""")
+            check("zoom-out hides fine ink (paint-only tier)",
+                  ink_off["ink"] is False, str(ink_off))
+            check("ink gate never touches the layout (wires unchanged)",
+                  ink_off["wires"] == wires_pre, f"{wires_pre} -> {ink_off['wires']}")
+            # zoom back in: hysteresis upper bound restores the tier
+            page.mouse.move(mcx, mcy)
+            for _ in range(20):
+                page.mouse.wheel(0, -120)
+                page.wait_for_timeout(40)
+                if page.evaluate("() => window.__dbg.mapZ") >= 1.0:
+                    break
+            page.wait_for_timeout(400)
+            ink_on = page.evaluate("() => window.__dbg.mapInkOn")
+            check("zoom-in restores fine ink (hysteresis)",
+                  ink_on is True, str(ink_on))
             # a wild pan must clamp the window inside the world, never
             # strand the layout off-screen
             page.mouse.move(mcx, mcy)

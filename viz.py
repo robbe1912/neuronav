@@ -4020,6 +4020,16 @@ mwires.forEach(w => {
   wireSrcDeg.set(sk, (wireSrcDeg.get(sk) || 0) + 1);
 });
 let mapZ = 0, mapPX = 0, mapPY = 0;      // view: zoom + pan over the world
+// zoom-gated ink tiers (paint-only declutter): the fine layers (underlays,
+// named wires, port dots/arrowheads) hide when zoomed out and return with
+// hysteresis so wheel jitter at the threshold cannot flicker. LAYOUT IS
+// NEVER TOUCHED - the wiring diagram stays THE layout at every zoom.
+const MAP_INK_Z = 0.85, MAP_INK_Z_ON = 0.90;
+let mapInkOn = true;
+const mapInkEval = () => {
+  if (!mapInkOn && mapZ >= MAP_INK_Z_ON) mapInkOn = true;
+  else if (mapInkOn && mapZ < MAP_INK_Z) mapInkOn = false;
+};
 let mapDrag = null, mapDragged = false;
 let mapRects = [];             // last drawn node rects (click hit-testing)
 let mapVarsOn = false;         // var wires OFF by default, map-local chip [F10]
@@ -4148,7 +4158,7 @@ const mapDistSeg = (px, py, ax, ay, bx, by) => {
   return Math.hypot(px - ax - t * dx, py - ay - t * dy);
 };
 function mapWireAt(wx, wy) {
-  if (!mapLayout) return -1;
+  if (!mapLayout || !mapInkOn) return -1;   // ink tier off: no invisible-wire hits
   const tol = 6 / mapZ;
   let best = -1, bd = tol;
   mapLayout.wires.forEach((w, ix) => {
@@ -4545,6 +4555,7 @@ function mapRender() {
     mapPX = Math.max(0, (cw - cwView / mapZ) / 2);
     mapPY = Math.max(0, (worldH - chView / mapZ) / 2);
   }
+  mapInkEval();   // hysteresis re-arm after every zoom change (fit floors 1.0)
   // inter-row gap bands + lane machinery (survives section 10)
   const rects = [];
   place.forEach(p => rects.push({ x0: p.x, x1: p.x + p.w, y0: p.y, y1: p.y + p.h }));
@@ -5076,9 +5087,11 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   };
   // render order (section 9): underlays -> spines -> wires -> boxes/rosters
   // -> labels/chips/terminators. Underlay alpha 0.25 (declutter lever 5).
-  // ONE mode: the full wiring diagram paints at every zoom - nothing is
-  // gated on zoom level (owner mandate).
-  L.underlays.forEach(u => {
+  // Zoom-gated ink tiers: the fine layers (underlays, named wires, port
+  // dots/arrowheads) hide when zoomed out - PAINT-ONLY, the layout never
+  // changes (mapInkEval hysteresis). Structure (spines, buses, junction
+  // dots, boxes, chips) stays on at every zoom.
+  if (mapInkOn) L.underlays.forEach(u => {
     seg(u, MGLYPH[u.ty0] ? MGLYPH[u.ty0].c : MGLYPH.attach.c, 1,
         MGLYPH.attach.dash, 0.25 * dim(u.s, u.t));
     // T-junction terminator: short tick across the entry, no arrow
@@ -5100,7 +5113,7 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     seg(sp, color, Math.min(2 + 0.85 * Math.log2(sp.flowSum), 5.5),
         sp.back ? [2, 3] : null, 0.5 * dim(sp.s, sp.t));
   });
-  L.wires.forEach(w => {
+  if (mapInkOn) L.wires.forEach(w => {
     const g = MGLYPH[w.ty] || MGLYPH.call;
     // backward edges (against flow gravity) read as dashed; type color kept
     seg(w, g.c, 1.5, w.back ? [2, 3] : g.dash, 0.9 * dim(w.sf, w.df));
@@ -5198,9 +5211,11 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText("\u00d7" + ch.n, ch.x + ch.w / 2, ch.y + dyW + ch.h / 2 + 0.5);
   });
-  // terminators last so arrowheads/dots sit on the box edges (section 9)
+  // terminators last so arrowheads/dots sit on the box edges (section 9);
+  // ink-tier gated with the wires themselves - invisible wires wear no
+  // arrowheads
   ctx.setLineDash([]);
-  L.wires.forEach(w => {
+  if (mapInkOn) L.wires.forEach(w => {
     const g = MGLYPH[w.ty] || MGLYPH.call;
     ctx.globalAlpha = dim(w.sf, w.df);
     // port dot: the wire leaves from a NAMED row — pin the origin (the
@@ -5354,6 +5369,7 @@ mapPane.addEventListener("wheel", e => {
   const cx = e.clientX - b.left, cy = e.clientY - b.top;
   const wx = cx / mapZ + mapPX, wy = cy / mapZ + mapPY;
   mapZ = Math.max(0.2, Math.min(3, mapZ * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+  mapInkEval();   // hysteresis re-arm at the new zoom (paint-only tier)
   mapPX = wx - cx / mapZ;
   mapPY = wy - cy / mapZ;
   mapClampView();
@@ -6144,6 +6160,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   mwires, mapInfo, get mapVars() { return mapVarsOn; }, mapExpandUser,
   get mapZ() { return mapZ; }, get mapPX() { return mapPX; },
   get mapPY() { return mapPY; }, mapClampView,
+  get mapInkOn() { return mapInkOn; },
   get paneW() { return paneW; }, setMapVisible, divider,
   get glW() { return glW(); },
   get bucketMesh() { return bucketMesh; }, raycaster, linkFiltered, typeVisible,
