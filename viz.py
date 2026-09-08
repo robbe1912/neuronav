@@ -4972,8 +4972,8 @@ function mapRender() {
   });
   if (!mapZ) {   // focus change / first draw: fit BOTH dims [F15 rev2]
     mapZ = Math.max(0.55, Math.min(1.0, Math.min(cwView / cwL, chView / worldH)));
-    mapPX = Math.max(0, (cwL - cwView / mapZ) / 2);
-    mapPY = Math.max(0, (worldH - chView / mapZ) / 2);
+    mapPX = (cwL - cwView / mapZ) / 2;    // negative when world < pane: centers
+    mapPY = (worldH - chView / mapZ) / 2; // the shrunken content (D2)
     // fit-relative ink tier: fine ink ON at the overview (wire clicks work
     // there), one wheel-notch out it drops; restore needs +14% (hysteresis)
     mapInkLo = Math.max(0.35, Math.min(0.85, mapZ * 0.97));
@@ -5032,23 +5032,27 @@ function mapRender() {
     y >= r.y0 && y <= r.y1 && x1 >= r.x0 && x0 <= r.x1);
   const nextY = (x0, x1, startY, limitY, step) => {
     step = step || 7;   // 7px channel lattice; thin tap rails may pack at 5
+    // channel claims are X-AWARE: two horizontals may share a y when their
+    // x-spans barely overlap (a shared channel far apart reads as one line
+    // anyway); within an overlapping span the lattice keeps them >=step apart
+    const xa = Math.min(x0, x1), xb = Math.max(x0, x1);
     const blocked = y =>
-      usedY.some(u => Math.abs(u - y) < step) ||
-      spanHits(Math.min(x0, x1), Math.max(x0, x1), y);
+      usedY.some(u => Math.abs(u.y - y) < step &&
+        Math.min(u.b, xb) - Math.max(u.a, xa) > 10) ||
+      spanHits(xa, xb, y);
     let y = startY;
     while (blocked(y) && y < limitY) y += step;
     // a blocked band admits exhaustion — never let the step overshoot PAST
-    // the band floor onto the box tops of the next chunk. The floor itself
-    // spreads: each exhausted caller climbs one lattice step above the last
-    // so exhaustion never stacks two horizontals within the pairing gate.
-    if (y > limitY) {
+    // the band floor onto the box tops of the next chunk. Landing EXACTLY on
+    // the floor counts as exhaustion too (the 7px lattice from below hits it
+    // dead on), and the floor spreads: each exhausted caller climbs one
+    // lattice step above the last so exhaustion never stacks two overlapping
+    // horizontals within the pairing gate.
+    if (y >= limitY) {
       y = limitY;
       while (blocked(y) && y - step >= Math.min(startY, limitY)) y -= step;
     }
-    usedY.push(y);
-    // a crowded channel bundles horizontals — it must never fail into a
-    // bezier, but it must ADMIT exhaustion so the router can try the next
-    // gap band instead of slicing through the chunk between bands
+    usedY.push({ y, a: xa, b: xb });
     return { y, ok: !blocked(y) };
   };
   // roster row lookup: "fileIx<null>fn" -> row index (wires terminate on rows)
@@ -5372,7 +5376,7 @@ function mapRender() {
       const off = dir === "down" ? 7 : -7;
       let railSeed = P.y + off;
       if (railSeed > g.y1 - 3 || railSeed < g.y0 + 3) railSeed = P.y - off;
-      railSeed = Math.max(g.y0 + 3, Math.min(g.y1, railSeed));
+      railSeed = Math.max(g.y0 + 3, Math.min(g.y1 - 3, railSeed));
       const rail = nextY(Math.min(P.x, Math.min(...ports)),
         Math.max(P.x, Math.max(...ports)), railSeed, g.y1, 5);
       members.forEach(sp => {
@@ -5634,7 +5638,36 @@ function mapRender() {
       n: riders.length, x: anc[0] - cwid / 2, y: anc[1] - 15,
       w: cwid, h: 14, wires: riders });
   });
-  // node rects with roster zones (header refocus / row L3 / "+N more" picker)
+  // badge de-overlap at LAYOUT time: first-clear grid over dy (band-side
+  // first) x dx offsets against box rects and earlier chips (2px pad).
+  // Deterministic in chips order; the paint ladder remains the last resort.
+  chips.forEach((c, ci) => {
+    const hitR = (x, y) =>
+      rects.some(r => x - 2 < r.x1 && x + c.w + 2 > r.x0 &&
+                      y - 2 < r.y1 && y + c.h + 2 > r.y0) ||
+      chips.some((o, oi) => oi < ci &&
+        x - 2 < o.x + o.w && x + c.w + 2 > o.x &&
+        y - 2 < o.y + o.h && y + c.h + 2 > o.y);
+    if (!hitR(c.x, c.y)) return;
+    const xs = [0, c.w + 8, -(c.w + 8), 2 * (c.w + 8), -2 * (c.w + 8)];
+    const ys = [0, 7, -7, 14, -14, 21, -21, 28, -28, 35, -35, 42];
+    outer:
+    for (const dy of ys) for (const dx of xs) {
+      const nx = Math.max(6, Math.min(cwL - c.w - 6, c.x + dx));
+      if (!hitR(nx, c.y + dy)) { c.x = nx; c.y += dy; break outer; }
+    }
+  });
+  // wires + bus stubs: collapse zero-length waypoints (same law as spines -
+  // the lone stray arrowhead read its direction off a zero-length tail)
+  wires.forEach(w => {
+    if (!w.pts || w.pts.length < 2) return;
+    const q = [w.pts[0]];
+    for (let k = 1; k < w.pts.length; k++) {
+      const l = q[q.length - 1];
+      if (Math.hypot(w.pts[k][0] - l[0], w.pts[k][1] - l[1]) > 0.01) q.push(w.pts[k]);
+    }
+    w.pts = q;
+  });
   mapRects = [];
   place.forEach((p, i) => {
     const g = geo.get(i);
@@ -5851,10 +5884,15 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   const hit2 = (r) => taken2.some(t =>
     r.x < t.x + t.w && r.x + r.w > t.x && r.y < t.y + t.h && r.y + r.h > t.y);
   const place2 = (x, y, w, h) => {
-    for (const dy of [0, -10, 10, -20, 20, -30, 30, -40]) {
-      const r = { x: x - w / 2, y: y + dy * mapZ - h / 2, w, h };
-      if (!hit2(r)) { taken2.push(r); return dy; }
-    }
+    // slide ladder with an X leg: badges first try straight up/down off the
+    // ink, then slide ALONG their anchor row (screen px) to escape box edges
+    // and neighboring badges - a chip with no vertical room still finds a
+    // home beside the trunk instead of overlapping (D4)
+    for (const dy of [0, -10, 10, -20, 20, -30, 30, -40])
+      for (const dx of [0, 14, -14, 28, -28, 42, -42]) {
+        const r = { x: x + dx - w / 2, y: y + dy * mapZ - h / 2, w, h };
+        if (!hit2(r)) { taken2.push(r); return { dy, dx }; }
+      }
     return null;   // no room: hide rather than stack
   };
   const inView = (x, y) => {
@@ -5889,9 +5927,9 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     const sw = ch.w * mapZ, sh = ch.h * mapZ;
     const a = m2s(ch.x + ch.w / 2, ch.y + ch.h / 2);
     if (!inView(ch.x, ch.y)) return;
-    const dy = place2(a.x, a.y, sw, sh);
-    if (dy === null) return;
-    const dyW = dy / mapZ;                 // screen px -> world px
+    const p2 = place2(a.x, a.y, sw, sh);
+    if (p2 === null) return;
+    const dyW = p2.dy / mapZ, dxW = p2.dx / mapZ;  // screen px -> world px
     // zoom fade (InkKnobs #7): badges dissolve below z~0.45, solid by 0.70 -
     // at overview zoom they were unreadable smudges doubling the wire count
     const zf = Math.max(0, Math.min(1, (mapZ - 0.45) / 0.25));
@@ -5901,14 +5939,14 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     ctx.strokeStyle = g.c;
     ctx.lineWidth = 1;
     ctx.beginPath();
-    if (ctx.roundRect) ctx.roundRect(ch.x, ch.y + dyW, ch.w, ch.h, 4);
-    else ctx.rect(ch.x, ch.y + dyW, ch.w, ch.h);
+    if (ctx.roundRect) ctx.roundRect(ch.x + dxW, ch.y + dyW, ch.w, ch.h, 4);
+    else ctx.rect(ch.x + dxW, ch.y + dyW, ch.w, ch.h);
     ctx.fill();
     ctx.stroke();
     ctx.fillStyle = g.c;
     ctx.font = "bold " + MAP_FONT(10);
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText("\u00d7" + ch.n, ch.x + ch.w / 2, ch.y + dyW + ch.h / 2 + 0.5);
+    ctx.fillText("\u00d7" + ch.n, ch.x + dxW + ch.w / 2, ch.y + dyW + ch.h / 2 + 0.5);
     ctx.font = MAP_FONT(10);
   });
   // terminators last so arrowheads/dots sit on the box edges (section 9);
@@ -6000,8 +6038,16 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
 function mapClampView() {
   if (!mapLayout) return;
   const cwView = mapPane.clientWidth || 440, chView = mapPane.clientHeight || innerHeight;
-  mapPX = Math.max(0, Math.min(Math.max(0, (mapLayout.worldW || MAP_WORLD_W) - cwView / mapZ), mapPX));
-  mapPY = Math.max(0, Math.min(Math.max(0, (mapLayout.worldH || 0) - chView / mapZ), mapPY));
+  // window clamp; world smaller than the window => negative bounds, and the
+  // position snaps to the centered midpoint (far-out orientability: content
+  // floats mid-pane with equal dead space, never corner-stranded)
+  const clampC = (p, world, view) => {
+    const lo = Math.min(0, world - view / mapZ), hi = Math.max(0, world - view / mapZ);
+    p = Math.max(lo, Math.min(hi, p));
+    return hi === 0 && lo < 0 ? (lo + hi) / 2 : p;
+  };
+  mapPX = clampC(mapPX, mapLayout.worldW || MAP_WORLD_W, cwView);
+  mapPY = clampC(mapPY, mapLayout.worldH || 0, chView);
 }
 // rAF dirty-flag single draw (section 5 [F7]): every caller coalesces here
 function drawMapPane() {
