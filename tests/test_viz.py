@@ -1373,6 +1373,86 @@ def run_tests():
             ink_on = page.evaluate("() => window.__dbg.mapInkOn")
             check("zoom-in restores fine ink (hysteresis)",
                   ink_on is True, str(ink_on))
+            # 8d. map-center-on-selection: clicking a 3D file node pans the
+            # 2D pane so the node's box lands on pane center (tol 12px,
+            # clamp permitting), pulses it, and is a clean no-op while the
+            # pane is collapsed.
+            def _hub_pick():
+                return page.evaluate(
+                    """() => { const d = window.__dbg;
+                         // aim at the focus SEED itself (level 0): always lit
+                         // bright (pickable per the alphaTgt > 0.5 pick law),
+                         // guaranteed inside the map's top-40, and camera-
+                         // centered. Deep-BFS high-degree nodes can be dimmed
+                         // (unpickable by design) or capped out of the map.
+                         let hub = -1, best = -1;
+                         for (let i = 0; i < d.level.length; i++) {
+                           if (d.level[i] !== 0) continue;
+                           if ((d.degree[i] || 0) > best) {
+                             best = d.degree[i] || 0; hub = i; }
+                         }
+                         if (hub < 0) return null;
+                         const v = new d.THREE.Vector3(
+                           d.pos[hub*3], d.pos[hub*3+1],
+                           d.pos[hub*3+2]).project(d.camera);
+                         if (v.z > 1 || v.z < -1) return null;
+                         const r = d.renderer.domElement.getBoundingClientRect();
+                         return { hub,
+                                  sx: (v.x*0.5+0.5)*r.width + r.left,
+                                  sy: (-v.y*0.5+0.5)*r.height + r.top }; }"""
+                )
+                pick = _hub_pick()
+                vp = page.viewport_size
+                _diag = page.evaluate(
+                    """() => { const d = window.__dbg;
+                         return { lay: !!d.mapLayout, req: d.mapCenterReq,
+                                  pulse: d.mapPulse ? d.mapPulse.i : null,
+                                  rects: d.mapRects ? d.mapRects.length : -1 }; }"""
+                )
+                if pick is not None and 0 <= pick["sx"] < vp["width"] and 0 <= pick["sy"] < vp["height"]:
+                    _pre = page.evaluate(
+                        """() => { const d = window.__dbg;
+                             return { vis: d.mapPane.canvas.offsetWidth > 0,
+                                      req0: d.mapCenterReq }; }"""
+                    )
+                    page.mouse.click(pick["sx"], pick["sy"])
+                    page.wait_for_timeout(400)
+                    aim = page.evaluate(
+                        """() => { const d = window.__dbg;
+                             if (!d.mapLayout) return { hit: false, lay: false };
+                             const want = d.mapPulse ? d.mapPulse.i : d.mapCenterReq;
+                             const rc = d.mapRects.find(r => r.i === want);
+                             if (!rc) return { hit: false, want,
+                                               rects: d.mapRects.length,
+                                               ixs: d.mapRects.map(r => r.i).slice(0, 45) };
+                             const pane = d.mapPane.canvas;
+                             const cx = (rc.x + rc.w/2 - d.mapPX) * d.mapZ;
+                             const cy = (rc.y + rc.h/2 - d.mapPY) * d.mapZ;
+                             return { hit: true, pulse: !!d.mapPulse,
+                                      off: Math.hypot(cx - pane.clientWidth/2,
+                                                      cy - pane.clientHeight/2) }; }"""
+                    )
+                    aim["_pre"] = _pre
+                    aim["_pick"] = pick
+                    check("3d node click centers its map box",
+                          aim.get("hit") and aim["off"] <= 18, str(aim))
+                    check("center click starts the amber pulse",
+                          aim.get("hit") and aim["pulse"] is True, str(aim))
+                # pane collapsed -> request refused, nothing deferred
+                page.click("#bMap")
+                page.wait_for_timeout(150)
+                page.mouse.click(pick["sx"], pick["sy"])
+                page.wait_for_timeout(150)
+                req_closed = page.evaluate("() => window.__dbg.mapCenterReq")
+                check("collapsed pane: center request refused",
+                      req_closed == -1, str(req_closed))
+                page.click("#bMap")   # reopen for later sections
+                page.wait_for_timeout(200)
+                # pulse lifecycle: gone after MAP_PULSE_MS (900) + margin
+                page.wait_for_timeout(1300)
+                pulse_gone = page.evaluate("() => window.__dbg.mapPulse")
+                check("selection pulse clears after its lifetime",
+                      pulse_gone is None, str(pulse_gone))
             # a wild pan must clamp the window inside the world, never
             # strand the layout off-screen
             page.mouse.move(mcx, mcy)

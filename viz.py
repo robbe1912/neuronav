@@ -1939,6 +1939,12 @@ function popFocus() {
 }
 function tick() {
   const nowT = performance.now();
+  // map selection pulse: keep the pane repainting while the amber ring
+  // breathes; drop it at end of life (pane closed -> pulse frozen, not lost)
+  if (mapPulse && mapVisible) {
+    if (performance.now() - mapPulse.t0 > MAP_PULSE_MS) mapPulse = null;
+    drawMapPane();
+  }
   // dash-flow while focusing: offsets walk each edge along its s→t vertex
   // order (caller→callee), with a per-bucket phase hashed from the bucket
   // index so the flow reads per-edge instead of one global march. Overview
@@ -3058,7 +3064,7 @@ function rebuildHubs() {
     el.textContent = nodes[i].label + " · " + Math.round(degree[i]);
     el.title = nodes[i].path;
     el.onpointerenter = () => { tip.style.display = "none"; };
-    el.onclick = () => { pushFocusState(); showInfo(i); focusSeeds.clear(); focusSeeds.add(i); applyVisibility(); focus(i); };
+    el.onclick = () => { pushFocusState(); showInfo(i); focusSeeds.clear(); focusSeeds.add(i); applyVisibility(); focus(i); mapCenterOn(i); };
     hubsEl.appendChild(el);
     return { i, el };
   });
@@ -4084,6 +4090,13 @@ const mapInkEval = () => {
 };
 let mapDrag = null, mapDragged = false;
 let mapRects = [];             // last drawn node rects (click hit-testing)
+// map-center-on-selection: a 3D node click asks the 2D pane to pan the
+// node's box to pane center (exactly once) and pulse it. Pane closed =
+// clean no-op — nothing deferred to reopen.
+let mapCenterReq = -1;
+let mapPulse = null;
+const MAP_CENTER_TOL_PX = 12, MAP_PULSE_MS = 900;
+const mapCenterOn = i => { if (mapVisible) mapCenterReq = i; };
 let mapVarsOn = false;         // var wires OFF by default, map-local chip [F10]
 const mapExpandUser = new Map();   // file ix -> bool override (dblclick)
 let mapHover = -1;             // hovered named-wire ix (L1 disclosure)
@@ -4447,6 +4460,7 @@ function mapRender() {
     [...expand].sort((a, b) => a - b).join(",") + "||" +
     Math.round(cwView) + "x" + Math.round(chView);
   if (mapLayout && mapLayout.key === key) {
+    mapConsumeCenterReq();
     mapPaint(ctx, dpr, cwView, chView, capNote);
     return;
   }
@@ -5100,7 +5114,30 @@ function mapRender() {
     trunkGroups, pairW, chunkY, chunkRowH, audit, buses,
   };
   window.routeAudit = mapLayout.audit;
+  mapConsumeCenterReq();
   mapPaint(ctx, dpr, cwView, chView, capNote);
+}
+// consume a pending center request: pan the box to pane center when it is
+// meaningfully off-center (tol), then pulse it. Runs in BOTH mapRender
+// paint paths (cache-hit + rebuild) so the aim survives layout caching.
+// Pan only — mapZ untouched (refit owns zoom). Consumed exactly once, so
+// it never fights later manual pans; the pulse fires even when the pan is
+// skipped (box already centered).
+function mapConsumeCenterReq() {
+  if (mapCenterReq < 0) return;
+  const rc = mapRects.find(r => r.i === mapCenterReq);
+  mapCenterReq = -1;
+  if (!rc) return;
+  const cwView = mapPane.clientWidth || 440,
+        chView = mapPane.clientHeight || innerHeight;
+  const dx = (rc.x + rc.w / 2 - mapPX) * mapZ - cwView / 2;
+  const dy = (rc.y + rc.h / 2 - mapPY) * mapZ - chView / 2;
+  if (Math.abs(dx) > MAP_CENTER_TOL_PX || Math.abs(dy) > MAP_CENTER_TOL_PX) {
+    mapPX += dx / mapZ;
+    mapPY += dy / mapZ;
+    mapClampView();
+  }
+  mapPulse = { i: rc.i, t0: performance.now() };
 }
 function mapPaint(ctx, dpr, cwView, chView, capNote) {
   const L = mapLayout;
@@ -5242,6 +5279,28 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     return sx >= -30 && sx <= cwView + 30 && sy >= -10 && sy <= chView + 10;
   };
   ctx.font = MAP_FONT(10);
+  // selection pulse (paint-only): amber rounded-rect breathing around the
+  // clicked node's box — inflates and fades over MAP_PULSE_MS, tick()
+  // drops it at end of life. Never touches layout or picking.
+  if (mapPulse) {
+    const prc = mapRects.find(r => r.i === mapPulse.i);
+    if (prc) {
+      const t = (performance.now() - mapPulse.t0) / MAP_PULSE_MS;
+      if (t >= 0 && t <= 1) {
+        const inf = (4 + 10 * t) / mapZ;
+        ctx.globalAlpha = 0.9 * (1 - t);
+        ctx.strokeStyle = "#ffb347";
+        ctx.lineWidth = 3 / mapZ;
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(prc.x - inf, prc.y - inf,
+                                         prc.w + 2 * inf, prc.h + 2 * inf, 6);
+        else ctx.rect(prc.x - inf, prc.y - inf,
+                      prc.w + 2 * inf, prc.h + 2 * inf);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
   L.chips.forEach(ch => {
     const g = MGLYPH[ch.ty] || MGLYPH.call;
     const sw = ch.w * mapZ, sh = ch.h * mapZ;
@@ -5378,7 +5437,7 @@ function setMapVisible(v) {
   info.classList.toggle("mapShift", v);
   resize3D();
   if (v) { sizeMapPane(); drawMapPane(); }
-  else { mapTipHide(); mapOvCloseOne(); }
+  else { mapTipHide(); mapOvCloseOne(); mapCenterReq = -1; mapPulse = null; }
 }
 // ---- divider drag: resize the split (rAF-throttled), never orbits the 3D ---
 // the divider is its own element — OrbitControls listens on the canvas only,
@@ -6132,12 +6191,14 @@ renderer.domElement.addEventListener("click", e => {
       applyVisibility();
       focusSeedsCamera();
       showInfo(hovered);
+      mapCenterOn(hovered);
     } else {
       pushFocusState();
       focusSeeds.clear(); focusSeeds.add(hovered);
       applyVisibility();
       focus(hovered);
       showInfo(hovered);
+      mapCenterOn(hovered);
     }
   }
 });
@@ -6216,11 +6277,13 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get mapZ() { return mapZ; }, get mapPX() { return mapPX; },
   get mapPY() { return mapPY; }, mapClampView,
   get mapInkOn() { return mapInkOn; },
+  get mapCenterReq() { return mapCenterReq; }, get mapPulse() { return mapPulse; },
   get paneW() { return paneW; }, setMapVisible, divider,
   get glW() { return glW(); },
   get bucketMesh() { return bucketMesh; }, raycaster, linkFiltered, typeVisible,
   nodeFiltered, fnMode, supMem, strongPair,
   get mapLayout() { return mapLayout; },
+  get mapRects() { return mapRects; },
   get routeAudit() { return mapLayout && mapLayout.audit; },
   sphR,
   get focusArcRef() { return focusArcs; } };
