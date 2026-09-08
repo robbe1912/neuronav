@@ -947,7 +947,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <title>neuronav — code graph</title>
 <style>
-  :root { --pane-w: 440px; }   /* map pane width — divider drag rewrites it */
+  :root { --pane-w: 800px; }   /* map pane width — divider drag rewrites it */
   html, body { margin:0; height:100%; background:#000; overflow:hidden;
     font: 13px/1.45 "Segoe UI", system-ui, sans-serif; color:#cfd8dc; }
   /* camera drags must never text-select the overlays (labels/panel swallowed
@@ -1014,6 +1014,10 @@ _TEMPLATE = r"""<!DOCTYPE html>
     z-index:10; display:none; align-items:center; gap:6px;
     background:rgba(10,14,18,.82); border:1px solid #1de9b633;
     border-radius:14px; padding:4px 7px 4px 14px; font-size:11px; color:#b0bec5; }
+  /* pane open: center over the 3D region, not the window - a wide map pane
+     (default 800) would otherwise put the crumb ON TOP of the pane's vars
+     chip, stealing its clicks */
+  body.mapOpen #crumb { left: calc((100% - var(--pane-w)) / 2); }
   #crumb b { color:#1de9b6; font-weight:600; }
   #crumb .x { cursor:pointer; color:#78909c; padding:0 6px; border-radius:50%;
     line-height:1.3; }
@@ -1260,7 +1264,7 @@ function pathToSeed(i) {
 // 3D/map split: the map pane is a permanent part of the layout (collapsible
 // via #bMap). The 3D renderer owns everything left of it; both sizes derive
 // from paneW so a divider drag reflows both at once.
-const PANE_MIN = 180, PANE_DEFAULT = 440;
+const PANE_MIN = 180, PANE_DEFAULT = 800;
 const paneMax = () => Math.max(PANE_MIN + 120, innerWidth - 320);   // 3D keeps >=320
 const PANE_KEY = "neuronav.mapPaneW";
 let mapVisible = true;   // pane ships open; #bMap collapses/expands it
@@ -4268,13 +4272,13 @@ document.getElementById("bGhost").onclick = e => {
 
 const mapPane = document.getElementById("mapPane");
 const MAP_MAX = 40;            // lit-node cap: past this the pane refuses
-const FN_PORT_MAX = 6;          // roster rows per expanded box, then "+N more"
-const NH = 22, RH = 14, GAPX = 14, TOP = 46;   // header / row / gap / first-row Y
+const FN_PORT_MAX = 4;          // roster rows per expanded box, then "+N more"
+const NH = 22, RH = 13, GAPX = 12, TOP = 46;   // header / row / gap / first-row Y
 const MAP_FONT = sz => sz + "px ui-monospace, Menlo, Consolas, monospace";
 // type glyphs (spec section 3): stroke color / dash pattern / terminator.
 // one font constant (above) covers ALL map text.
 const MGLYPH = {
-  call:   { c: "#d9e2eb", dash: null,   term: "tri" },
+  call:   { c: "#cfe0ea", dash: null,   term: "tri" },   // cooler: stops matching roster gray
   signal: { c: "#ffb347", dash: [6, 4], term: "hollow" },
   var:    { c: "#73e68c", dash: [2, 3], term: "dot" },
   attach: { c: "#3dccf2", dash: [1, 3], term: "tbar" },
@@ -4296,11 +4300,13 @@ let mapZ = 0, mapPX = 0, mapPY = 0;      // view: zoom + pan over the world
 // named wires, port dots/arrowheads) hide when zoomed out and return with
 // hysteresis so wheel jitter at the threshold cannot flicker. LAYOUT IS
 // NEVER TOUCHED - the wiring diagram stays THE layout at every zoom.
-const MAP_INK_Z = 0.85, MAP_INK_Z_ON = 0.90;
+// Thresholds are FIT-RELATIVE (set when a layout fits): fine ink stays ON at
+// the fit zoom (wire clicks work at the overview) and drops one notch out.
+let mapInkLo = 0.55, mapInkHi = 0.62;
 let mapInkOn = true;
 const mapInkEval = () => {
-  if (!mapInkOn && mapZ >= MAP_INK_Z_ON) mapInkOn = true;
-  else if (mapInkOn && mapZ < MAP_INK_Z) mapInkOn = false;
+  if (!mapInkOn && mapZ >= mapInkHi) mapInkOn = true;
+  else if (mapInkOn && mapZ < mapInkLo) mapInkOn = false;
 };
 let mapDrag = null, mapDragged = false;
 let mapRects = [];             // last drawn node rects (click hit-testing)
@@ -4503,9 +4509,10 @@ function mapOpenList(ci) {
   const ch = mapLayout.chips[ci];
   mapListEl.innerHTML = "";
   const h = document.createElement("h3");
-  h.textContent = nodes[ch.s].label + " \u2192 " + nodes[ch.t].label +
-    "  (" + ch.ty + " \u00d7" + ch.n + ")";
-  mapListEl.appendChild(h);
+  h.textContent = ch.peel
+    ? nodes[ch.s].label + " \u2192 row " + ch.row + "  (\u00d7" + ch.n + " wires)"
+    : nodes[ch.s].label + " \u2192 " + nodes[ch.t].label +
+      "  (" + ch.ty + " \u00d7" + ch.n + ")";
   ch.wires.forEach(wr => {
     const row = document.createElement("div");
     row.className = "row";
@@ -4601,14 +4608,18 @@ fnPickIn.addEventListener("input", () => fnPickFill(fnPickIn.value));
 fnPickIn.addEventListener("keydown", e => {
   if (e.key === "Escape") { e.stopPropagation(); fnClosePick(); }
 });
-const MAP_WORLD_W = 1100;   // world width - the pane is a window onto it
+const MAP_WORLD_W = 1100;   // world width CAP - the pane is a window onto it
 function mapRender() {
   if (!mapVisible) return;
   const ctx = mapPane.getContext("2d");
   const cwView = mapPane.clientWidth || 440;
   const chView = mapPane.clientHeight || innerHeight;
   const dpr = mapPane.width / cwView || 1;
-  const cw = MAP_WORLD_W;           // world width - the pane is just a window
+  // world width FOLLOWS the pane (pane + 170, clamped): the fit zoom then
+  // lands near min(paneW/worldW, paneH/worldH) so every box is visible at
+  // boot while text keeps >=~8px effective (F15 rev2: fit below 1.0 allowed,
+  // floor 0.55 protects text on pathological repos)
+  const cw = MAP_WORLD_W;   // scan ceiling; the fit scan picks the real width
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = "#0b0f14";
   ctx.fillRect(0, 0, cwView, chView);
@@ -4797,48 +4808,112 @@ function mapRender() {
       rows[r].forEach((i, k) => col.set(i, k));
     }
   }
-  // rows WRAP to world width against the resolved box widths
-  const WRAP = cw - 16;
-  const chunks = [];
-  for (let r = 0; r < rows.length; r++) {
-    const row = rows[r];
-    if (!row) continue;
-    let cur = [], twc = -GAPX;
-    row.forEach(i => {
-      const w = geo.get(i).w;
-      if (twc + GAPX + w > WRAP && cur.length) { chunks.push(cur); cur = []; twc = -GAPX; }
-      cur.push(i); twc += GAPX + w;
+  // rows WRAP to world width against the resolved box widths. The world
+  // width is CHOSEN: a narrow world wraps into more/taller chunks, a wide
+  // one into fewer/flatter - the fit zoom z = min(paneW/W, paneH/H(W)) has
+  // an interior optimum. Wrap once per candidate width (cheap: <=40 boxes),
+  // keep the width that maximizes z (ties: narrower world). Deterministic:
+  // same data + pane => same scan.
+  const wrapChunks = W => {
+    const ch = [];
+    for (let r = 0; r < rows.length; r++) {
+      const row = rows[r];
+      if (!row) continue;
+      let cur = [], twc = -GAPX;
+      row.forEach(i => {
+        const w = geo.get(i).w;
+        if (twc + GAPX + w > W && cur.length) { ch.push(cur); cur = []; twc = -GAPX; }
+        cur.push(i); twc += GAPX + w;
+      });
+      if (cur.length) ch.push(cur);
+    }
+    return ch;
+  };
+  // band demand: how many admitted edges cross each chunk boundary. Hot
+  // corridors (hub adjacency) get TALLER gap bands so channel capacity
+  // grows with traffic - horizontals ladder instead of piling on the band
+  // floor (the near-parallel wall). Deterministic from edges order.
+  const bandPads = ch => {
+    const cOf = new Map();
+    ch.forEach((chunk, g) => chunk.forEach(i => cOf.set(i, g)));
+    const cross = ch.map(() => 0);
+    edges.forEach(l => {
+      const a = cOf.get(l.s), b = cOf.get(l.t);
+      if (a === undefined || b === undefined || a === b) return;
+      for (let g = Math.min(a, b); g < Math.max(a, b); g++) cross[g]++;
     });
-    if (cur.length) chunks.push(cur);
+    return cross.map(n => 36 + 7 * Math.max(0, Math.min(16, n - 4)));
+  };
+  const wrapH = ch => {   // per-chunk rowH = max(56, tallest + band pad) [F6]
+    // band pads grow with crossing demand (capacity for hot corridors) but
+    // under a HARD height budget: the fit zoom may not fall below ~0.70 or
+    // the whole pane shrinks to a thumbnail. Extras scale down to fit.
+    const Hmax = chView / 0.70;
+    const rowHOf = (tall, pad) => Math.max(56, tall + pad);
+    const total = pads => {
+      let y = TOP;
+      ch.forEach((chunk, g) => {
+        let tall = NH;
+        chunk.forEach(i => { tall = Math.max(tall, geo.get(i).h); });
+        y += rowHOf(tall, pads[g]);
+      });
+      return y + 20;
+    };
+    let pads = bandPads(ch);
+    const base = ch.map(() => 36);
+    const H1 = total(pads);
+    if (H1 > Hmax && H1 > total(base)) {
+      const s = Math.max(0, (Hmax - total(base)) / (H1 - total(base)));
+      pads = pads.map((p, g) => base[g] + Math.round((p - base[g]) * s));
+    }
+    const tops = [];
+    ch.forEach((chunk, g) => {
+      let tall = NH;
+      chunk.forEach(i => { tall = Math.max(tall, geo.get(i).h); });
+      tops.push(tall);
+      pads[g] = rowHOf(tall, pads[g]) - tall;   // effective pad after floor
+    });
+    return { h: Math.max(chView, total(pads)), tops, pads };
+  };
+  let cwBest = Math.min(640, cw), zBest = -1;
+  for (let W = 560; W <= cw; W += 20) {
+    const z = Math.min(cwView / W, chView / wrapH(wrapChunks(W)).h);
+    if (z > zBest + 1e-9) { zBest = z; cwBest = W; }
   }
-  // per-chunk rowH = max(64, tallest expanded box in the chunk + 40) [F6]
+  const cwL = cwBest;                    // resolved world width for THIS pane
+  const chunks = wrapChunks(cwL);
+  const wrapRes = wrapH(chunks);
   const chunkRowH = [], chunkY = [], chunkTop = [];
   let wy = TOP;
-  chunks.forEach(chunk => {
+  chunks.forEach((chunk, g) => {
     let tall = NH;
     chunk.forEach(i => { tall = Math.max(tall, geo.get(i).h); });
     chunkTop.push(tall);
-    chunkRowH.push(Math.max(64, tall + 40));
+    chunkRowH.push(Math.max(56, tall + wrapRes.pads[g]));
     chunkY.push(wy);
-    wy += Math.max(64, tall + 40);
+    wy += Math.max(56, tall + wrapRes.pads[g]);
   });
   const worldH = Math.max(chView, wy + 20);
   const place = new Map();
   chunks.forEach((chunk, rr) => {
     const tw = chunk.reduce((a, i) => a + geo.get(i).w, 0) + GAPX * (chunk.length - 1);
-    let x = Math.max(8, (cw - tw) / 2);
+    let x = Math.max(8, (cwL - tw) / 2);
     const y = chunkY[rr];
     chunk.forEach(i => {
       place.set(i, { x, y, w: geo.get(i).w, h: geo.get(i).h, row: rr });
       x += geo.get(i).w + GAPX;
     });
   });
-  if (!mapZ) {   // focus change / first draw: fit BOTH dims, floor 1.0 [F15]
-    mapZ = Math.max(1.0, Math.min(cwView / cw, chView / worldH));
-    mapPX = Math.max(0, (cw - cwView / mapZ) / 2);
+  if (!mapZ) {   // focus change / first draw: fit BOTH dims [F15 rev2]
+    mapZ = Math.max(0.55, Math.min(1.0, Math.min(cwView / cwL, chView / worldH)));
+    mapPX = Math.max(0, (cwL - cwView / mapZ) / 2);
     mapPY = Math.max(0, (worldH - chView / mapZ) / 2);
+    // fit-relative ink tier: fine ink ON at the overview (wire clicks work
+    // there), one wheel-notch out it drops; restore needs +14% (hysteresis)
+    mapInkLo = Math.max(0.35, Math.min(0.85, mapZ * 0.97));
+    mapInkHi = Math.min(1.0, mapInkLo * 1.14);
   }
-  mapInkEval();   // hysteresis re-arm after every zoom change (fit floors 1.0)
+  mapInkEval();   // hysteresis re-arm after every zoom change
   // inter-row gap bands + lane machinery (survives section 10)
   const rects = [];
   place.forEach(p => rects.push({ x0: p.x, x1: p.x + p.w, y0: p.y, y1: p.y + p.h }));
@@ -4854,16 +4929,17 @@ function mapRender() {
   };
   let maxX = 90;
   geo.forEach(g => { maxX = Math.max(maxX, g.w); });   // freeX radius scales [F6]
-  const freeX = (x, ya, yb, maxR) => {
-    x = Math.max(6, Math.min(cw - 6, x));   // lanes never leave the world
+  const freeX = (x, ya, yb, maxR, pad) => {
+    x = Math.max(6, Math.min(cwL - 6, x));   // lanes never leave the world
     const span = rects.filter(r => r.y1 > ya && r.y0 < yb);
     const bands = crossedBands(ya, yb);
     const spanAt = c => span.some(r => c >= r.x0 && c <= r.x1);
     // 7px exclusivity: parallel verticals closer than this read as ONE line
     // at 1x zoom (user: "vertical lines overlap") — lanes are a scarce
-    // resource, bundling only as the last resort
+    // resource, bundling only as the last resort. Trunks scan at 12px so two
+    // thick corridors never parallel inside one screen glance (pad param)
     const laneAt = c =>
-      bands.some(g => laneX[g] && laneX[g].some(u => Math.abs(u - c) < 7));
+      bands.some(g => laneX[g] && laneX[g].some(u => Math.abs(u - c) < (pad || 7)));
     // cost 0 = clean lane, 1 = shares a band lane (last resort), 2 = crosses
     // a box (never acceptable) — scan outward, take the first clean slot.
     // Long hauls may scan the whole world: with maxX exhausted they used to
@@ -4873,7 +4949,7 @@ function mapRender() {
     let bestX = x, bestB = cost(x);
     for (let d = 5; d <= (maxR || maxX) && bestB > 0; d += 5) {
       for (const c of [x + d, x - d]) {
-        if (c < 6 || c > cw - 6) continue;
+        if (c < 6 || c > cwL - 6) continue;
         const b = cost(c);
         if (b < bestB) { bestB = b; bestX = c; }
         if (b === 0) break;
@@ -4888,15 +4964,21 @@ function mapRender() {
   const usedY = [];
   const spanHits = (x0, x1, y) => rects.some(r =>
     y >= r.y0 && y <= r.y1 && x1 >= r.x0 && x0 <= r.x1);
-  const nextY = (x0, x1, startY, limitY) => {
+  const nextY = (x0, x1, startY, limitY, step) => {
+    step = step || 7;   // 7px channel lattice; thin tap rails may pack at 5
     const blocked = y =>
-      usedY.some(u => Math.abs(u - y) < 7) ||
+      usedY.some(u => Math.abs(u - y) < step) ||
       spanHits(Math.min(x0, x1), Math.max(x0, x1), y);
     let y = startY;
-    while (blocked(y) && y < limitY) y += 7;
-    // a blocked band admits exhaustion — never let the 7px step overshoot
-    // PAST the band floor onto the box tops of the next chunk
-    if (y > limitY) y = limitY;
+    while (blocked(y) && y < limitY) y += step;
+    // a blocked band admits exhaustion — never let the step overshoot PAST
+    // the band floor onto the box tops of the next chunk. The floor itself
+    // spreads: each exhausted caller climbs one lattice step above the last
+    // so exhaustion never stacks two horizontals within the pairing gate.
+    if (y > limitY) {
+      y = limitY;
+      while (blocked(y) && y - step >= Math.min(startY, limitY)) y -= step;
+    }
     usedY.push(y);
     // a crowded channel bundles horizontals — it must never fail into a
     // bezier, but it must ADMIT exhaustion so the router can try the next
@@ -4928,7 +5010,7 @@ function mapRender() {
     else rowTotIn.set(w.df + "_" + dr, (rowTotIn.get(w.df + "_" + dr) || 0) + 1);
   });
   const underlays = [], spines = [], wires = [];
-  const routeOrtho = (A, B, sy, ty, sameRow, sx0, tx0, bus) => {
+  const routeOrtho = (A, B, sy, ty, sameRow, sx0, tx0, bus, lanePad, yPad) => {
     // long hauls cross every chunk between the two rows — hand the router
     // the FULL band range so the staircase can hop chunk-by-chunk. The old
     // 1px window at the target edge returned at most one band, so the
@@ -4969,14 +5051,14 @@ function mapRender() {
       for (let i = 0; i < seq.length; i++) {
         const g = gapY[seq[i]];
         const yc = nextY(Math.min(seed, xEnd), Math.max(seed, xEnd),
-                         g.y0 + 3, g.y1);
-        const fx = freeX(seed, prevY, yc.y, cw);
+                         g.y0 + 3 + (yPad || 0), g.y1);
+        const fx = freeX(seed, prevY, yc.y, cwL, lanePad);
         if (fx.ok) claimLane(fx.x, prevY, yc.y);
         cols.push({ x: fx.x, yCh: yc.y, yFloor: g.y1 });
         seed = fx.x;
         prevY = yc.y;
       }
-      const fxN = freeX(seed, prevY, yBot, cw);
+      const fxN = freeX(seed, prevY, yBot, cwL, lanePad);
       const xN = Math.max(B2.x + 2, Math.min(B2.x + B2.w - 2, fxN.x));
       if (fxN.ok) claimLane(xN, prevY, yBot);
       const p = [[xStart, yTop]];
@@ -5017,17 +5099,17 @@ function mapRender() {
       const g = gapY[bi];
       if (!g) continue;
       const t = nextY(Math.min(sx0, tx0), Math.max(sx0, tx0),
-                      g.y0 + 3, g.y1);
+                      g.y0 + 3 + (yPad || 0), g.y1);
       if (!yc) yc = t;
       if (t.ok) { yc = t; break; }
     }
     if (!yc) yc = { y: (sy + ty) / 2, ok: false };
     const yCh = yc.y;
     const sY = up ? A.y : syE;   // attach edge = the side facing the channel
-    const fx = freeX(sx0, Math.min(sY, yCh), Math.max(sY, yCh));
+    const fx = freeX(sx0, Math.min(sY, yCh), Math.max(sY, yCh), null, lanePad);
     const sx = fx.x;
     if (fx.ok) claimLane(sx, sY, yCh);
-    const fx2 = freeX(tx0, Math.min(yCh, ty), Math.max(yCh, ty));
+    const fx2 = freeX(tx0, Math.min(yCh, ty), Math.max(yCh, ty), null, lanePad);
     const tx = Math.max(B.x + 2, Math.min(B.x + B.w - 2, fx2.x));
     if (fx2.ok) claimLane(tx, yCh, ty);
     // freeX/nextY no longer fail: clean lanes first, else bundled corridors —
@@ -5070,16 +5152,19 @@ function mapRender() {
     ur.flow = sameRow ? "same" : (ty > sy ? "down" : "up");
     underlays.push(Object.assign({ s: l.s, t: l.t, ty0: l.ty }, ur));
   });
-  // 2) corridor spines (section 2 tier-1): gradient; a signal pair that
-  //    resolved zero handlers renders as an anonymous amber corridor [F13]
+  // 2) corridor spines (section 2 tier-1): records first - routing waits for
+  //    the hub-bus grouping, which decides who rides a shared trunk. A
+  //    signal pair that resolved zero handlers renders as an anonymous amber
+  //    corridor [F13]. wty = wire TYPE (sp.ty stays the y-coordinate that
+  //    routeOrtho returns; the old build let the y overwrite l.ty, so every
+  //    spine painted call-gray - the "near-identical gray wires" complaint).
   edges.forEach(l => {
     if (l.ty === "attach" || l.ty === "inst") return;
     const A = place.get(l.s), B = place.get(l.t);
     if (!A || !B) return;
     const sy = A.y + A.h;
     // same CHUNK row, not same BFS depth: depth rows wrap to world width,
-    // so equal fd can land in adjacent chunks — routing those as a same-row
-    // dip dropped the channel mid-air (yCh = midpoint) through box interiors
+    // so equal fd can land in adjacent chunks (see underlays)
     const sameRow = A.row === B.row;
     // up-hauls enter the target's bottom edge (the source sits below it)
     const ty = (sameRow || B.y + B.h <= sy) ? B.y + B.h : B.y;
@@ -5087,24 +5172,173 @@ function mapRender() {
     const tIx = inIx.get(l.t) || 0; inIx.set(l.t, tIx + 1);
     const sx0 = A.x + A.w * (sIx + 1) / ((outN.get(l.s) || 1) + 1);
     const tx0 = B.x + B.w * (tIx + 1) / ((inN.get(l.t) || 1) + 1);
-    const amber = l.ty === "signal" && !(byPair.get(l.s + "_" + l.t) || []).length;
-    const sr = routeOrtho(A, B, sy, ty, sameRow, sx0, tx0, true);
-    sr.flow = sameRow ? "same" : (ty > sy ? "down" : "up");
-    spines.push(Object.assign(
-      { s: l.s, t: l.t, ty: l.ty, pair: l.s + "_" + l.t, amber, sRow: A.row,
-        tRow: B.row, xb: sameRow ? [] : crossedBands(sy, ty),
-        flowSum: l.w || 1 }, sr));
+    spines.push({ s: l.s, t: l.t, wty: l.ty, pair: l.s + "_" + l.t,
+      amber: l.ty === "signal" && !(byPair.get(l.s + "_" + l.t) || []).length,
+      sRow: A.row, tRow: B.row, sx0, tx0, sy, ty, sameRow,
+      flowSum: l.w || 1, con: false, pts: [], bez: false,
+      flow: sameRow ? "same" : (ty > sy ? "down" : "up"), back: false });
   });
-  // band consolidation: corridors spanning the same chunk-row hop (source
-  // row -> target row) share ONE trunk - the highest-ranked member's route,
-  // stroked at combined width. Members keep chips + enumerated lists but
-  // stop stroking parallel near-identical lines. Amber corridors (F13),
-  // lane-exhausted beziers and same-row local hops stay individual.
-  // Deterministic: groups keyed by the ordered row pair, the leader is the
-  // first spine in edges order (w desc, s, t).
+  // ---- hub buses (Blueprint reroute, tier-1): every corridor leaving ONE
+  // source in ONE direction (down/up/same) merges onto a single thick trunk
+  // that rides routeOrtho to the deterministic farthest rider's REAL box;
+  // each rider is delivered by a thin type-colored tap peeling off the trunk
+  // in the band adjacent to its row. Peel points are router OUTPUT (points
+  // on the routed trunk), never invented geometry - routeOrtho stays the one
+  // authority, so the no-diagonal law holds by construction.
+  // Deterministic: buses keyed source+direction, insertion = edges order
+  // (w desc, s, t); farthest row numeric; port picks are lower medians.
+  const hubBuses = [];                  // {trunk, taps, peels, members}
+  const hubDots = [];                   // junction dots painted ON paths
+  let hubTrunks = 0, hubTaps = 0, hubRiders = 0, hubPeels = 0;
+  const dirOf = sp => sp.sameRow ? "same" : (sp.tRow > sp.sRow ? "down" : "up");
+  const spineBusMap = new Map();
+  spines.forEach(sp => {
+    if (sp.amber) return;               // F13: amber corridors stay individual
+    const k = sp.s + "|" + dirOf(sp);
+    let a = spineBusMap.get(k);
+    if (!a) spineBusMap.set(k, a = []);
+    a.push(sp);
+  });
+  spineBusMap.forEach(a => {
+    if (a.length < 2) return;
+    const dir = dirOf(a[0]);
+    // same-row dips need a band below the source chunk to park the channel
+    if (dir === "same" && !gapY[a[0].sRow]) return;
+    const rows = [...new Set(a.map(x => x.tRow))].sort((p, q) => p - q);
+    const farRow = dir === "up" ? rows[0] : rows[rows.length - 1];
+    const inFar = a.filter(x => x.tRow === farRow)
+      .sort((x, y) => x.tx0 - y.tx0 || (x.pair < y.pair ? -1 : 1));
+    const far = inFar[Math.floor((inFar.length - 1) / 2)];
+    const A = place.get(far.s), Bf = place.get(far.t);
+    const flowSum = a.reduce((s, x) => s + x.flowSum, 0);
+    const wTr = Math.min(2 + 0.85 * Math.log2(flowSum), 5.5);
+    // trunk: STRAIGHT-COLUMN FIRST (metro few-bends law): if one clean
+    // vertical lane spans the whole haul (freeX cost 0 - usually near the
+    // world margins), the trunk is exit-channel -> column -> arrival-channel
+    // (5 bends) instead of a per-band staircase (2+ bends per band crossed).
+    // Staircase is the fallback when every column pierces a box.
+    // Wide lane pad (no two trunks parallel inside 12px), channel floor
+    // seeded below the stroke half-width so it never bleeds onto box tops.
+    const lanePad = Math.max(9, 9 / mapZ), yPad = 3 + Math.ceil(wTr / 2);
+    let tr = null;
+    if (dir !== "same") {
+      const bi = dir === "down" ? A.row : A.row - 1;      // exit-side band
+      const ai = dir === "down" ? farRow - 1 : farRow;    // arrival band
+      const gb = gapY[bi], ga = gapY[ai];
+      const sYx = dir === "down" ? A.y + A.h : A.y;
+      if (gb && ga && ((dir === "down" && sYx <= gb.y0) ||
+                       (dir === "up" && sYx >= gb.y1))) {
+        const fx = freeX(far.sx0, gb.y0 + 3, ga.y1, cwL, lanePad);
+        if (fx.clean) {
+          const yEx = nextY(Math.min(far.sx0, fx.x), Math.max(far.sx0, fx.x),
+            gb.y0 + 3 + yPad, gb.y1);
+          const yAr = nextY(Math.min(fx.x, far.tx0), Math.max(fx.x, far.tx0),
+            ga.y0 + 3 + yPad, ga.y1);
+          claimLane(fx.x, yEx.y, yAr.y);
+          tr = { pts: [[far.sx0, sYx], [far.sx0, yEx.y], [fx.x, yEx.y],
+                       [fx.x, yAr.y], [far.tx0, yAr.y], [far.tx0, far.ty]],
+                 bez: false, tx: far.tx0, ty: far.ty, back: dir === "up" };
+        }
+      }
+    }
+    if (!tr) tr = routeOrtho(A, Bf, far.sy, far.ty, far.sameRow, far.sx0,
+      far.tx0, true, lanePad, yPad);
+    // dominant type color: honest flow per type, ties by member count, name
+    const tySum = new Map();
+    a.forEach(x => tySum.set(x.wty, (tySum.get(x.wty) || 0) + x.flowSum));
+    const tyCnt = new Map();
+    a.forEach(x => tyCnt.set(x.wty, (tyCnt.get(x.wty) || 0) + 1));
+    const domTy = [...tySum.keys()].sort((p, q) =>
+      tySum.get(q) - tySum.get(p) || tyCnt.get(q) - tyCnt.get(p) ||
+      (p < q ? -1 : 1))[0];
+    const trunk = Object.assign({ s: far.s, t: far.t, wty: domTy, pair: far.pair,
+      hub: "trunk", trunkW: a.length, flowSum }, tr);
+    trunk.flow = dir === "same" ? "same" : dir;
+    spines.push(trunk);   // strokes in the spine pass, before its taps
+    // peel points: the trunk's horizontal run inside each rider row's
+    // adjacent band (down: band above the row; up/same: band below it)
+    const peels = [];
+    rows.forEach(r => {
+      const bi = dir === "down" ? r - 1 : r;
+      const g = gapY[bi];
+      if (!g || bi < 0) return;
+      let seg = null;
+      for (let i = 0; i < trunk.pts.length - 1; i++) {
+        const p = trunk.pts[i], q = trunk.pts[i + 1];
+        if (p[1] === q[1] && p[1] > g.y0 && p[1] < g.y1) {
+          seg = { x0: Math.min(p[0], q[0]), x1: Math.max(p[0], q[0]), y: p[1] };
+          break;
+        }
+      }
+      if (!seg) {   // degenerate: vertical trunk through the band - peel at
+        let best = null, bd = 1e9;   // the waypoint nearest the band centre
+        trunk.pts.forEach(p => {
+          const d = Math.abs(p[1] - (g.y0 + g.y1) / 2);
+          if (d < bd) { bd = d; best = p; }
+        });
+        if (best) seg = { x0: best[0], x1: best[0], y: best[1] };
+      }
+      if (!seg) return;
+      const mr = a.filter(x => x.tRow === r).map(x => x.tx0).sort((p, q) => p - q);
+      const med = mr[Math.floor((mr.length - 1) / 2)];
+      const px = seg.x1 - seg.x0 >= 8
+        ? Math.max(seg.x0 + 2, Math.min(seg.x1 - 2, med)) : (seg.x0 + seg.x1) / 2;
+      peels.push({ row: r, x: px, y: seg.y });
+    });
+    const busRec = { trunk, peels, members: a, taps: [] };
+    // taps: ONE delivery rail per (bus x row), 7px off the trunk's channel
+    // (side facing the targets), placed by the same nextY/usedY machinery.
+    // Each tap = peel dot -> rail -> port drop: strict orthogonal, 2 bends,
+    // no chamfers - the EDA "one thick trunk, thin perpendicular taps" read.
+    // One rail instead of k fan polylines keeps channels - and the 4px
+    // near-parallel budget - free for other traffic.
+    const served = new Set();
+    peels.forEach(P => {
+      const bi = dir === "down" ? P.row - 1 : P.row;
+      const g = gapY[bi];
+      if (!g) return;
+      const members = a.filter(sp => sp.tRow === P.row);
+      const ports = members.map(sp => sp.tx0);
+      // rail = 7px off the trunk channel, on the target-facing side. If that
+      // would clamp onto the band floor (where exhausted traffic piles into
+      // one gray mass), flip to the channel's other side instead - rails
+      // must ladder, never join the floor pile.
+      const off = dir === "down" ? 7 : -7;
+      let railSeed = P.y + off;
+      if (railSeed > g.y1 - 3 || railSeed < g.y0 + 3) railSeed = P.y - off;
+      railSeed = Math.max(g.y0 + 3, Math.min(g.y1, railSeed));
+      const rail = nextY(Math.min(P.x, Math.min(...ports)),
+        Math.max(P.x, Math.max(...ports)), railSeed, g.y1, 5);
+      members.forEach(sp => {
+        spines.push({ s: sp.s, t: sp.t, wty: sp.wty, pair: sp.pair,
+          hub: "tap", tapBus: busRec, bez: false, tx: sp.tx0, ty: sp.ty,
+          back: false, flow: dir === "same" ? "up" : dir,
+          pts: [[P.x, P.y], [P.x, rail.y], [sp.tx0, rail.y], [sp.tx0, sp.ty]] });
+        busRec.taps.push(spines[spines.length - 1]);
+        served.add(sp);
+        hubTaps++;
+      });
+    });
+    a.forEach(sp => {
+      if (!served.has(sp)) return;       // unserved riders stroke solo below
+      sp.con = true;                     // rider: chip carrier, no stroke
+      sp.gLeader = trunk;
+      sp.bus = busRec;
+      sp.pts = [];
+    });
+    hubDots.push({ x: trunk.pts[0][0], y: trunk.pts[0][1], c: domTy });
+    peels.forEach(p => hubDots.push({ x: p.x, y: p.y, c: domTy }));
+    hubBuses.push(busRec);
+    hubTrunks++; hubRiders += a.length; hubPeels += peels.length;
+  });
+  // band consolidation backstop (L-C): leftover cross-row corridors sharing
+  // the same chunk-row hop still share ONE trunk - the leader's route at
+  // combined width. Hub-bus riders and amber corridors are not eligible;
+  // eligibility is sRow !== tRow (the old xb field died with its unordered
+  // crossedBands(sy, ty) args - up-hauls always read as band-less).
   const spineGroups = new Map();
   spines.forEach(sp => {
-    if (sp.amber || sp.bez || !sp.xb.length) return;
+    if (sp.amber || sp.bus || sp.con || sp.hub || sp.sameRow) return;
     const k = sp.sRow + ">" + sp.tRow;
     let a = spineGroups.get(k);
     if (!a) spineGroups.set(k, a = []);
@@ -5122,10 +5356,29 @@ function mapRender() {
       a[j].gIx = j;
     }
   });
-  // stroked-pair -> honest flow: the width driver mapPaint reads. Twins are
-  // excluded - they stroke nothing, their ink rides the leader.
+  // routing pass: everyone still stroking gets its route now, in edges
+  // order, AFTER the hub trunks/taps claimed their lanes (deterministic)
+  spines.forEach(sp => {
+    if (sp.con || sp.hub) return;
+    const sr = routeOrtho(place.get(sp.s), place.get(sp.t), sp.sy, sp.ty,
+      sp.sameRow, sp.sx0, sp.tx0, true);
+    Object.assign(sp, sr);
+  });
+  // stroked-pair -> honest flow: the width driver mapPaint reads. Riders
+  // are excluded - they stroke nothing, their ink rides the trunk.
+  // zero-length waypoints (staircase corner artifacts) inflate bend counts
+  // and segment censuses - collapse consecutive duplicate points
+  spines.forEach(sp => {
+    if (sp.pts.length < 2) return;
+    const q = [sp.pts[0]];
+    for (let k = 1; k < sp.pts.length; k++) {
+      const l = q[q.length - 1];
+      if (Math.hypot(sp.pts[k][0] - l[0], sp.pts[k][1] - l[1]) > 0.01) q.push(sp.pts[k]);
+    }
+    sp.pts = q;
+  });
   const pairW = new Map();
-  spines.forEach(sp => { if (!sp.con) pairW.set(sp.pair, sp.flowSum); });
+  spines.forEach(sp => { if (!sp.con && sp.pts.length) pairW.set(sp.pair, sp.flowSum); });
   // 3) individual named wires (tier-2 top-1/pair): terminate ON their fn rows
   // Blueprint-reroute buses (2D twin of the 3D bus law): named wires of the
   // same type converging on ONE fn row (>=2) merge at a junction dot parked
@@ -5278,23 +5531,42 @@ function mapRender() {
     return pts[0];
   };
   const chips = [];
-  spines.forEach(sp => {
-    const riders = (byPair.get(sp.pair) || []).filter(w => !indivSet.has(w));
-    const perTy = new Map();
-    riders.forEach(w => perTy.set(w.ty, (perTy.get(w.ty) || 0) + 1));
-    // consolidated members park their chips on the shared trunk, stacked
-    // deterministically by group index so every pair keeps a click target
-    const onTrunk = sp.gLeader && sp.gIx > 0 ? sp.gLeader : null;
-    const anc = chipAnchor(onTrunk ? onTrunk.pts : sp.pts);
-    let cy = anc[1] - 8 - (onTrunk ? sp.gIx * 18 : 0);
-    perTy.forEach((n, ty) => {
-      const txt = "\u00d7" + n;
+  const ridersOf = sps => sps.flatMap(sp =>
+    (byPair.get(sp.pair) || []).filter(w => !indivSet.has(w)));
+  // peel badges: ONE aggregate per (hub bus x delivery row), anchored at the
+  // peel dot where that row's taps split off (EDA: badge at the tap). The
+  // badge lists every named wire riding the trunk into that row; x1 badges
+  // are suppressed - a single rider is the visible wire itself.
+  hubBuses.forEach(bus => {
+    bus.peels.forEach(P => {
+      const members = bus.members.filter(m => m.tRow === P.row);
+      const riders = ridersOf(members);
+      if (riders.length < 2) return;
+      const txt = "\u00d7" + riders.length;
       const cwid = txtW(txt) + 10;
-      chips.push({ pair: sp.pair, s: sp.s, t: sp.t, ty, n,
-                   x: anc[0] - cwid / 2, y: cy - 7, w: cwid, h: 14,
-                   wires: riders.filter(w => w.ty === ty) });
-      cy -= 16;
+      chips.push({ pair: null, s: bus.members[0].s, t: -1, row: P.row,
+        peel: true, ty: bus.trunk.wty, n: riders.length,
+        x: P.x - cwid / 2, y: P.y - 21, w: cwid, h: 14, wires: riders });
     });
+  });
+  // remaining stroked spines keep per-pair badges (L-C leaders aggregate
+  // their twins' riders; singles list their own), same n>=2 gate
+  const chipSpines = spines.filter(sp =>
+    !sp.bus && !sp.con && sp.pts.length && !sp.hub);
+  const donePair = new Set();
+  chipSpines.forEach(sp => {
+    if (donePair.has(sp.pair)) return;
+    donePair.add(sp.pair);
+    const grp = spineGroups.get(sp.sRow + ">" + sp.tRow);
+    const members = grp && grp[0] === sp ? grp : [sp];
+    const riders = ridersOf(members);
+    if (riders.length < 2) return;
+    const anc = chipAnchor(sp.pts);
+    const txt = "\u00d7" + riders.length;
+    const cwid = txtW(txt) + 10;
+    chips.push({ pair: sp.pair, s: sp.s, t: sp.t, ty: sp.wty,
+      n: riders.length, x: anc[0] - cwid / 2, y: anc[1] - 15,
+      w: cwid, h: 14, wires: riders });
   });
   // node rects with roster zones (header refocus / row L3 / "+N more" picker)
   mapRects = [];
@@ -5317,18 +5589,22 @@ function mapRender() {
     spines: 0, underlays: underlays.length, wires: wires.length,
     trunkGroups, buses: buses.length,
     busW: buses.reduce((s, b) => s + b.n, 0),
+    hubTrunks, hubTaps, hubRiders, hubPeels,
     bez: 0, back: 0, down: 0, up: 0, sameRow: 0 };
-  spines.forEach(sp => { if (!sp.con) audit.spines++; });   // twins ride the leader
+  // stroked spines only (riders carry pts:[] - their ink rides the trunk)
+  spines.forEach(sp => { if (!sp.con && sp.pts.length) audit.spines++; });
   [underlays, spines, wires].forEach(arr => arr.forEach(rec => {
+    if (!rec.pts.length && !rec.bez) return;   // rider stubs census nothing
     if (rec.bez) audit.bez++;
     if (rec.back) audit.back++;
     if (rec.flow === "same") audit.sameRow++;
-    else audit[rec.flow]++;
+    else if (rec.flow) audit[rec.flow]++;
   }));
   mapLayout = {
     key, sig, lit, edges, E, place, geo, rects, wires, spines, underlays,
-    chips, rosterRows, expandedSet: expand, worldH, capNote,
-    trunkGroups, pairW, chunkY, chunkRowH, audit, buses,
+    chips, rosterRows, expandedSet: expand, worldH, worldW: cwL, capNote,
+    trunkGroups, trunkTotal: trunkGroups + hubTrunks, hubBuses, hubDots,
+    pairW, chunkY, chunkRowH, audit, buses,
   };
   window.routeAudit = mapLayout.audit;
   mapConsumeCenterReq();
@@ -5369,11 +5645,11 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   }
   // window on the world: pan/zoom = pure transform of the cached layout
   ctx.setTransform(dpr * mapZ, 0, 0, dpr * mapZ, -mapPX * dpr * mapZ, -mapPY * dpr * mapZ);
-  // disclosure dimming: L1 hover dims non-incident to 0.15; L3 freeze to 0.08
+  // disclosure dimming: L1 hover dims non-incident to 0.12; L3 freeze to 0.06
   const hov = mapHover >= 0 && L.wires[mapHover] ? L.wires[mapHover] : null;
   const dim = (a, b) => {
-    if (mapFrozenIx >= 0) return (a === mapFrozenIx || b === mapFrozenIx) ? 1 : 0.08;
-    if (hov) return (a === hov.sf || a === hov.df || b === hov.sf || b === hov.df) ? 1 : 0.15;
+    if (mapFrozenIx >= 0) return (a === mapFrozenIx || b === mapFrozenIx) ? 1 : 0.06;
+    if (hov) return (a === hov.sf || a === hov.df || b === hov.sf || b === hov.df) ? 1 : 0.12;
     return 1;
   };
   const seg = (rec, color, width, dash, alpha) => {
@@ -5391,33 +5667,57 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     }
     ctx.stroke();
   };
-  // render order (section 9): underlays -> spines -> wires -> boxes/rosters
-  // -> labels/chips/terminators. Underlay alpha 0.25 (declutter lever 5).
-  // Zoom-gated ink tiers: the fine layers (underlays, named wires, port
-  // dots/arrowheads) hide when zoomed out - PAINT-ONLY, the layout never
-  // changes (mapInkEval hysteresis). Structure (spines, buses, junction
-  // dots, boxes, chips) stays on at every zoom.
+  // render order (section 9): underlays -> spines (taps, singles, trunks) ->
+  // hub junction dots -> wires -> boxes/rosters -> labels/chips/terminators.
+  // Underlay alpha 0.18 (declutter lever 5). Zoom-gated ink tiers: the fine
+  // layers (underlays, named wires, port dots/arrowheads) hide when zoomed
+  // out - PAINT-ONLY, the layout never changes (mapInkEval hysteresis).
+  // Structure (spines, buses, junction dots, boxes, chips) stays on always.
   if (mapInkOn) L.underlays.forEach(u => {
     seg(u, MGLYPH[u.ty0] ? MGLYPH[u.ty0].c : MGLYPH.attach.c, 1,
-        MGLYPH.attach.dash, 0.25 * dim(u.s, u.t));
+        MGLYPH.attach.dash, 0.18 * dim(u.s, u.t));
     // T-junction terminator: short tick across the entry, no arrow
-    ctx.globalAlpha = 0.25 * dim(u.s, u.t);
+    ctx.globalAlpha = 0.18 * dim(u.s, u.t);
     ctx.setLineDash([]);
     ctx.beginPath();
     ctx.moveTo(u.tx - 4, u.ty); ctx.lineTo(u.tx + 4, u.ty);
     ctx.stroke();
   });
   L.spines.forEach(sp => {
-    if (sp.con) return;   // consolidated twin: its ink rides the shared trunk
-    // wire color = TYPE (Blueprint law): the cluster gradient read as
-    // decoration; type answers "what kind of wire is this?" at a glance
-    const color = sp.amber ? "#ffb347" : (MGLYPH[sp.ty] || MGLYPH.call).c;
-    // ONE flow law for single spines AND trunk leaders: width reads the
-    // summed admitted weight riding the stroke (own l.w, or the trunk's
-    // rolled-up flowSum), log2 so heavy trunks taper. Cap 5.5: channels sit
-    // at the band floor y0+3, a 7px stroke bled onto the box tops.
-    seg(sp, color, Math.min(2 + 0.85 * Math.log2(sp.flowSum), 5.5),
-        sp.back ? [2, 3] : null, 0.5 * dim(sp.s, sp.t));
+    if (sp.con || !sp.pts.length) return;  // riders: ink rides the trunk
+    // wire color = TYPE (Blueprint law); wty carries it (the old build let
+    // the y-coordinate overwrite the type, painting everything call-gray)
+    const color = sp.amber ? "#ffb347" : (MGLYPH[sp.wty] || MGLYPH.call).c;
+    if (sp.hub === "trunk") {
+      // thick trunk: width reads the summed admitted weight (log2 taper,
+      // cap 5.5), floored at 1.3 screen px so trunks stay fat when zoomed
+      // out; full-alpha - the trunk IS the structure (InkKnobs #3)
+      seg(sp, color, Math.max(Math.min(2 + 0.85 * Math.log2(sp.flowSum), 5.5), 1.3 / mapZ),
+          sp.back ? [2, 3] : null, 0.78 * dim(sp.s, sp.t));
+    } else if (sp.hub === "tap") {
+      // thin tap at the rider's type color: access road, not corridor
+      seg(sp, color, 1, null, 0.6 * dim(sp.s, sp.t));
+    } else {
+      // single spine / L-C trunk leader
+      const lead = sp.trunkW >= 2;
+      seg(sp, color, Math.min(2 + 0.85 * Math.log2(sp.flowSum), 5.5),
+          sp.back ? [2, 3] : null, (lead ? 0.78 : 0.45) * dim(sp.s, sp.t));
+    }
+  });
+  // hub junction dots (Blueprint reroute nodes): origin + peel points sit ON
+  // the routed trunk/tap paths; drawn after the spine pass so converging ink
+  // visually terminates ON the marker. Screen-size floor keeps them visible
+  // when zoomed out (InkKnobs #16).
+  ctx.setLineDash([]);
+  (L.hubDots || []).forEach(d => {
+    ctx.globalAlpha = 0.95;
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, Math.max(3.2, 2.5 / mapZ), 0, Math.PI * 2);
+    ctx.fillStyle = (MGLYPH[d.c] || MGLYPH.call).c;
+    ctx.fill();
+    ctx.strokeStyle = "#0a0e12";
+    ctx.lineWidth = 1;
+    ctx.stroke();
   });
   if (mapInkOn) L.wires.forEach(w => {
     const g = MGLYPH[w.ty] || MGLYPH.call;
@@ -5526,7 +5826,11 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     const dy = place2(a.x, a.y, sw, sh);
     if (dy === null) return;
     const dyW = dy / mapZ;                 // screen px -> world px
-    ctx.globalAlpha = dim(ch.s, ch.t);
+    // zoom fade (InkKnobs #7): badges dissolve below z~0.45, solid by 0.70 -
+    // at overview zoom they were unreadable smudges doubling the wire count
+    const zf = Math.max(0, Math.min(1, (mapZ - 0.45) / 0.25));
+    if (zf <= 0) return;
+    ctx.globalAlpha = dim(ch.s, ch.t) * zf;
     ctx.fillStyle = "rgba(8,12,16,.85)";
     ctx.strokeStyle = g.c;
     ctx.lineWidth = 1;
@@ -5536,8 +5840,10 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     ctx.fill();
     ctx.stroke();
     ctx.fillStyle = g.c;
+    ctx.font = "bold " + MAP_FONT(10);
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText("\u00d7" + ch.n, ch.x + ch.w / 2, ch.y + dyW + ch.h / 2 + 0.5);
+    ctx.font = MAP_FONT(10);
   });
   // terminators last so arrowheads/dots sit on the box edges (section 9);
   // ink-tier gated with the wires themselves - invisible wires wear no
@@ -5591,7 +5897,7 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     const g = MGLYPH[bs.ty] || MGLYPH.call;
     ctx.globalAlpha = 0.95;
     ctx.beginPath();
-    ctx.arc(bs.x, bs.y, 3.2, 0, Math.PI * 2);
+    ctx.arc(bs.x, bs.y, Math.max(3.2, 2.5 / mapZ), 0, Math.PI * 2);
     ctx.fillStyle = g.c;
     ctx.fill();
     ctx.strokeStyle = "#0a0e12";
@@ -5628,7 +5934,7 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
 function mapClampView() {
   if (!mapLayout) return;
   const cwView = mapPane.clientWidth || 440, chView = mapPane.clientHeight || innerHeight;
-  mapPX = Math.max(0, Math.min(Math.max(0, MAP_WORLD_W - cwView / mapZ), mapPX));
+  mapPX = Math.max(0, Math.min(Math.max(0, (mapLayout.worldW || MAP_WORLD_W) - cwView / mapZ), mapPX));
   mapPY = Math.max(0, Math.min(Math.max(0, (mapLayout.worldH || 0) - chView / mapZ), mapPY));
 }
 // rAF dirty-flag single draw (section 5 [F7]): every caller coalesces here
@@ -5841,12 +6147,16 @@ const mapInfo = () => {
     rosterRows: mapLayout.rosterRows,
     expanded: mapLayout.expandedSet.size,
     // corridor trunk consolidation: admitted corridor polylines vs the
-    // count actually stroked (consolidated twins ride the shared trunk)
+    // count actually stroked (riders con onto hub trunks / L-C leaders).
+    // trunkGroups = umbrella (hub buses + L-C row-hop groups) so the gate
+    // reads the whole trunk system, not one layer.
     spineTotal: mapLayout.spines.length,
-    spinesDrawn: mapLayout.spines.filter(sp => !sp.con).length,
-    trunkGroups: mapLayout.trunkGroups || 0,
+    spinesDrawn: mapLayout.spines.filter(sp => !sp.con && sp.pts.length).length,
+    trunkGroups: mapLayout.trunkTotal || mapLayout.trunkGroups || 0,
+    hubTrunks: mapLayout.hubTrunks !== undefined ? mapLayout.hubTrunks
+      : (mapLayout.audit ? mapLayout.audit.hubTrunks : 0) || 0,
     drawnPolys: mapLayout.underlays.length +
-      mapLayout.spines.filter(sp => !sp.con).length +
+      mapLayout.spines.filter(sp => !sp.con && sp.pts.length).length +
       mapLayout.wires.length,
     probeWire: probe,
   };
