@@ -4575,7 +4575,9 @@ function mapOpenList(ci) {
   const ch = mapLayout.chips[ci];
   mapListEl.innerHTML = "";
   const h = document.createElement("h3");
-  h.textContent = ch.peel
+  h.textContent = ch.origin
+    ? nodes[ch.s].label + " trunk  (\u00d7" + ch.n + " wires on the pipe)"
+    : ch.peel
     ? nodes[ch.s].label + " \u2192 row " + ch.row + "  (\u00d7" + ch.n + " wires)"
     : nodes[ch.s].label + " \u2192 " + nodes[ch.t].label +
       "  (" + ch.ty + " \u00d7" + ch.n + ")";
@@ -5481,12 +5483,24 @@ function mapRender() {
     });
     const side = Lc >= Rc ? -1 : 1;
     const jy = B.y + NH + dRow * RH + RH / 2;      // destination row centre
-    // junction must sit in open air: nudge outward once, else fall back
-    const jHit = x => rects.some(r =>
-      x > r.x0 - 4 && x < r.x1 + 4 && jy > r.y0 - 3 && jy < r.y1 + 3);
+    // junction must sit in open air: nudge outward twice, else scan the
+    // inter-box gaps at 2px pads - depth-varied chunk-row neighbours sit
+    // 10-15px apart, and the old 4px pads rejected the whole gap, leaving
+    // 9-wire arrival fans where a bus belonged (P3 root cause)
+    const jHit = (x, pad) => rects.some(r =>
+      x > r.x0 - pad && x < r.x1 + pad && jy > r.y0 - 3 && jy < r.y1 + 3);
     let jx = side < 0 ? B.x - 14 : B.x + B.w + 14;
-    if (jHit(jx)) jx = side < 0 ? jx - 10 : jx + 10;
-    if (jHit(jx)) return;
+    if (jHit(jx, 4)) jx = side < 0 ? jx - 10 : jx + 10;
+    if (jHit(jx, 4)) {
+      let ok = false;
+      for (let s = 4; s <= 44 && !ok; s += 2) {
+        for (const dx of (side < 0 ? [-s, s] : [s, -s])) {
+          const c = B.x + B.w * (side < 0 ? 0 : 1) + (side < 0 ? -14 : 14) + dx;
+          if (!jHit(c, 2)) { jx = c; ok = true; break; }
+        }
+      }
+      if (!ok) return;
+    }
     const bus = { df: a[0].df, dfn: a[0].dfn, ty: a[0].ty,
                   x: jx, y: jy, n: a.length, wires: a };
     buses.push(bus);
@@ -5553,9 +5567,14 @@ function mapRender() {
       const x0 = side > 0 ? A.x + A.w : A.x;
       const x1 = side > 0 ? B.x : B.x + B.w;
       const ch2 = Math.max(0, Math.min(8, Math.abs(x1 - x0) / 2));
-      wr = { pts: [[sx0, sy], [x0 + side * ch2, sy],
-                   [x1 - side * ch2, sy], [tx0, sy]],
-             bez: false, tx: tx0, ty: sy, back: false };
+      // straight-across rides the SOURCE row line; a hidden source fn exits
+      // at the box BOTTOM, which can sit past the target row - jog onto the
+      // row so the terminus never floats below the box (P2)
+      const p = [[sx0, sy], [x0 + side * ch2, sy],
+                 [x1 - side * ch2, sy], [tx0, sy]];
+      if (Math.abs(ty - sy) > 0.5) p.push([tx0, ty]);
+      wr = { pts: p,
+             bez: false, tx: tx0, ty, back: false };
     } else wr = routeOrtho(A, B, sy, ty, sameRow, sx0, tx0);
     wr.flow = sameRow ? "same" : (ty > sy ? "down" : "up");
     wires.push(Object.assign({
@@ -5618,6 +5637,18 @@ function mapRender() {
         peel: true, ty: bus.trunk.wty, n: riders.length,
         x: P.x - cwid / 2, y: P.y - 21, w: cwid, h: 14, wires: riders });
     });
+    // origin badge: ONE per bus at the trunk's departure dot, n = TOTAL
+    // riders - disambiguates the per-row peel badges (x4 at a row of a
+    // 12-rider trunk now reads as tap-count vs pipe-count)
+    const all = ridersOf(bus.members);
+    if (all.length >= 2 && bus.trunk.pts && bus.trunk.pts.length) {
+      const t0 = bus.trunk.pts[0];
+      const txt0 = "\u00d7" + all.length;
+      const cw0 = txtW(txt0) + 10;
+      chips.push({ pair: null, s: bus.members[0].s, t: -1, row: -1,
+        origin: true, ty: bus.trunk.wty, n: all.length,
+        x: t0[0] - cw0 - 6, y: t0[1] - 20, w: cw0, h: 14, wires: all });
+    }
   });
   // remaining stroked spines keep per-pair badges (L-C leaders aggregate
   // their twins' riders; singles list their own), same n>=2 gate
