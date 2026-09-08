@@ -3128,8 +3128,13 @@ let fnMesh = null, fnLines = null, fnStalks = null, fnMeta = [], fnArrows = null
   // tiered control lifts, so quadratic apexes sit 0.11/0.135/0.16*dist
   // above the midpoint and never stack on each other.
   const CONDUIT_LIFT_BASE = 0.22, CONDUIT_LIFT_TIER = 0.05;
+  // quiet-tier consolidation: file pairs with >= QUIET_TRUNK_MIN quiet
+  // wires collapse into ONE background trunk (QUIET_LIFT_FRAC apex lift)
+  const QUIET_TRUNK_MIN = 3, QUIET_LIFT_FRAC = 0.22;
 let fnTrunkW = 0;   // wires riding trunks (each emits entry+exit ramps)
 let fnJstubN = 0;   // junction delivery stubs (shared J -> fn box legs)
+let fnQuietTrunkN = 0;  // quiet-tier trunk arcs (via __dbg)
+let fnQuietTrunkW = 0;  // quiet wires absorbed into trunks (via __dbg)
 let fnBus = null;   // trunk conduit bodies (InstancedMesh cylinders)
 let busPts = null;  // segment endpoints for per-frame screen-constant rescale
 let fnBusRi = null; // current per-segment radius (world units)
@@ -3439,18 +3444,19 @@ function rebuildFnLayer(focusing) {
   //     the trunk carries the one direction arrow.
   //  2. FN JUNCTIONS: among non-trunked wires, >=3 into the same fn box
   //     merge at an onramp short of the box (one trunk, one pin arrow).
-  const pairCnt = new Map(), wireTier = [];
+  const pairCnt = new Map(), qPairCnt = new Map(), wireTier = [];
   for (let i = 0; i < eidx.length; i += 2) {
     const a = eidx[i], b = eidx[i+1];
     const bright = level[fnMeta[a].file] === 0 || level[fnMeta[b].file] === 0;
     wireTier.push(bright ? 1 : 0);
-    if (bright) {
-      const k = fnMeta[a].file + ">" + fnMeta[b].file;
-      pairCnt.set(k, (pairCnt.get(k) || 0) + 1);
-    }
+    const k = fnMeta[a].file + ">" + fnMeta[b].file;
+    if (bright) pairCnt.set(k, (pairCnt.get(k) || 0) + 1);
+    else qPairCnt.set(k, (qPairCnt.get(k) || 0) + 1);
   }
   const trunked = new Set();
   for (const [k, n] of pairCnt) if (n >= 3) trunked.add(k);
+  const qTrunked = new Set();
+  for (const [k, n] of qPairCnt) if (n >= QUIET_TRUNK_MIN) qTrunked.add(k);
   const inB = new Map(), dirB = new Map();
   for (let i = 0, p = 0; i < eidx.length; i += 2, p++) {
     const a = eidx[i], b = eidx[i+1];
@@ -3539,6 +3545,8 @@ function rebuildFnLayer(focusing) {
   fnTrunkN = 0;
   fnTrunkW = 0;
   fnJstubN = 0;
+  fnQuietTrunkN = 0;
+  fnQuietTrunkW = 0;
   for (const k of trunked) {
     const parts = k.split(">");
     const sf = +parts[0], tf = +parts[1];
@@ -3619,6 +3627,26 @@ function rebuildFnLayer(focusing) {
     else jcons.push({ p: p1, kind: "shell", fi: tf });
     trunkGeom.push({ p0, p1, tc, tmeta });
     busJunc.push({ p: p0, c: tc }, { p: p1, c: tc });
+  }
+  // quiet-tier trunks: >= QUIET_TRUNK_MIN neighbor↔neighbor wires between
+  // the same file pair collapse into ONE background arc between the
+  // surfaced fn-centroid points — the bright-trunk law mirrored down a
+  // tier. No junction-separation pass: background ink, build cost flat.
+  const qTrunkGeo = new Map();   // tk -> {e, x, c, tm} for member taps
+  for (const k of qTrunked) {
+    const parts = k.split(">");
+    const sf = +parts[0], tf = +parts[1];
+    const c0 = fnCen.get(sf), c1 = fnCen.get(tf);
+    if (!c0 || !c1) continue;
+    const p0 = surf(sf, [c0[0]/fnCnt.get(sf), c0[1]/fnCnt.get(sf), c0[2]/fnCnt.get(sf)]);
+    const p1 = surf(tf, [c1[0]/fnCnt.get(tf), c1[1]/fnCnt.get(tf), c1[2]/fnCnt.get(tf)]);
+    const tc = [colArr[tf*3], colArr[tf*3+1], colArr[tf*3+2]];
+    const tm = { kind: "trunk", k, sf, tf, mates: [] };
+    emitArc(tierQ, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
+            tc[0], tc[1], tc[2], tc[0], tc[1], tc[2], 0,
+            QUIET_LIFT_FRAC, false, tm);
+    fnQuietTrunkN++;
+    qTrunkGeo.set(k, { e: p0, x: p1, c: tc, tm });
   }
   // junction separation: two deterministic depenetration rounds — junctions
   // closer than 6 spread apart, then every junction re-anchors (shell points
@@ -3751,6 +3779,25 @@ function rebuildFnLayer(focusing) {
           }
           done = true;
         }
+      }
+    }
+    if (!done && T === tierQ) {
+      const qtk = fnMeta[a].file + ">" + fnMeta[b].file;
+      const qt = qTrunkGeo.get(qtk);
+      if (qt) {
+        // absorbed by the quiet trunk: entry tap fn -> trunk head, exit
+        // tap trunk tail -> fn (bright-trunk tap pattern, minus arrows —
+        // the arrow overlay is tier-blind and quiet ink stays silent)
+        done = true;
+        fnQuietTrunkW++;
+        const wmeta = { kind: "wire", a, b, ln, tk: qtk };
+        qt.tm.mates.push(wmeta);
+        emitArc(T, ax, ay, az, qt.e[0], qt.e[1], qt.e[2],
+                cA.r, cA.g, cA.b, qt.c[0], qt.c[1], qt.c[2],
+                phase, 0.10, false, wmeta);
+        emitArc(T, qt.x[0], qt.x[1], qt.x[2], bx, by, bz,
+                qt.c[0], qt.c[1], qt.c[2], cB.r, cB.g, cB.b,
+                phase + 2.5, 0.10, false, wmeta);
       }
     }
     if (!done) emitArc(T, ax, ay, az, bx, by, bz,
@@ -6135,11 +6182,13 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnLines() { return fnLines; }, get hubRing() { return hubRing; },
   get fnArrows() { return fnArrows; }, get compactBallR() { return compactBallR; },
   get fnQuiet() { return fnQuiet; }, get fnTrunkN() { return fnTrunkN; },
+  get fnQuietTrunkN() { return fnQuietTrunkN; },
   get fnBus() { return fnBus; }, get fnBusPx() { return fnBusRi; },
   get busPts() { return busPts; }, get fnJDot() { return fnJDot; },
   get fnJDotR() { return fnJDotR; }, get fnArrowR() { return fnArrowR; },
   get camera() { return camera; },
   get fnTrunkW() { return fnTrunkW; }, get fnJstubN() { return fnJstubN; },
+  get fnQuietTrunkW() { return fnQuietTrunkW; },
   // probe hook: world -> screen px through the live camera + canvas rect
   projectPoint(x, y, z) {
     const v = new THREE.Vector3(x, y, z).project(camera);
