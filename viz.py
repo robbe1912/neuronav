@@ -2007,10 +2007,10 @@ function tick() {
       const d = Math.hypot(fnJDotPos[i*3] - camera.position.x,
                            fnJDotPos[i*3+1] - camera.position.y,
                            fnJDotPos[i*3+2] - camera.position.z);
-      // pure screen-constancy: 0.0035 * px-factor(1073) = ~3.8px radius at
+      // pure screen-constancy: 0.0048 * px-factor(1073) = ~5.2px radius at
       // EVERY distance. A world-unit floor explodes at close zoom (a 4-unit
       // floor = 64px blob at d=134 — the user's boulder screenshot)
-      const rT = Math.max(0.25, d * 0.0035);
+      const rT = d * 0.0048;
       const f = rT / fnJDotR[i];
       if (Math.abs(f - 1) > 0.06) {
         const o = i * 16;
@@ -2020,6 +2020,26 @@ function tick() {
       }
     }
     if (dirty) fnJDot.instanceMatrix.needsUpdate = true;
+  }
+  // arrowheads follow the same screen-constant law, a touch smaller than the
+  // bollards so the two markers stay visually distinct (user request)
+  if (fnArrows && fnArrowR) {
+    let dirty = false;
+    const a = fnArrows.instanceMatrix.array;
+    for (let i = 0; i < fnArrowR.length; i++) {
+      const o = i * 16;
+      const d = Math.hypot(fnArrowPos[i*3] - camera.position.x,
+                           fnArrowPos[i*3+1] - camera.position.y,
+                           fnArrowPos[i*3+2] - camera.position.z) || 1;
+      const rT = d * 0.0042;   // ~4.5px radius, ~13px cone height on screen
+      const f = rT / fnArrowR[i];
+      if (Math.abs(f - 1) > 0.06) {
+        for (let c = 0; c < 12; c++) a[o + c] *= f;   // uniform cone scale
+        fnArrowR[i] = rT;
+        dirty = true;
+      }
+    }
+    if (dirty) fnArrows.instanceMatrix.needsUpdate = true;
   }
   // camera tween (focus / back-stack); a user drag cancels it
   if (camTween) {
@@ -3108,7 +3128,8 @@ let fnBus = null;   // trunk conduit bodies (InstancedMesh cylinders)
 let busPts = null;  // segment endpoints for per-frame screen-constant rescale
 let fnBusRi = null; // current per-segment radius (world units)
 let fnJDot = null;  // reroute junction bollards (InstancedMesh spheres)
-let fnJDotPos = null, fnJDotR = null;  // world positions + current radii (screen-constant)
+  let fnJDotPos = null, fnJDotR = null;  // world positions + current radii (screen-constant)
+  let fnArrowPos = null, fnArrowR = null;   // arrowhead positions + current radii (screen-constant)
 
 // ---- focus labels: name neighboring files + function satellites on focus ----
 const flabsEl = document.getElementById("flabs");
@@ -3218,7 +3239,7 @@ function rebuildFnLayer(focusing) {
   if (fnQuiet) { scene.remove(fnQuiet); fnQuiet.geometry.dispose(); fnQuiet = null; }
   if (fnBus) { scene.remove(fnBus); fnBus.geometry.dispose(); fnBus = null; busPts = null; fnBusRi = null; }
     if (fnJDot) { scene.remove(fnJDot); fnJDot.geometry.dispose(); fnJDot = null; fnJDotPos = null; fnJDotR = null; }
-  if (fnArrows) { scene.remove(fnArrows); fnArrows.geometry.dispose(); fnArrows = null; }
+  if (fnArrows) { scene.remove(fnArrows); fnArrows.geometry.dispose(); fnArrows = null; fnArrowPos = null; fnArrowR = null; }
   if (fnStalks) { scene.remove(fnStalks); fnStalks.geometry.dispose(); fnStalks = null; }
   fnMeta = [];
   if (!fnMode || !focusing) return;
@@ -3493,6 +3514,8 @@ function rebuildFnLayer(focusing) {
   const trunkEnds = new Map();  // reroute junctions: {e, x, c, m: trunk meta}
   const busSegs = [];   // {a:[x,y,z], b:[x,y,z], col:[r,g,b], k} conduit pieces
   const busJunc = [];   // junction bollards: {p:[x,y,z], c:[r,g,b]}
+  const jcons = [];     // junction constraints: {p, kind:"shell"|"box", fi, b}
+  const trunkGeom = []; // deferred trunk emission (after junction separation)
   const fnStops = new Map();   // "tk|b" -> per-fn bus stop (dominant targets)
   // trunk wire targets: when every wire of a pair lands on ONE fn, the bus
   // exit lives AT that fn box (Unreal reroute) — not on the file sphere
@@ -3524,6 +3547,32 @@ function rebuildFnLayer(focusing) {
       const l = Math.hypot(dx, dy, dz) || 1;
       const pull = sphR(sf) * 0.16;
       p0[0] += dx / l * pull; p0[1] += dy / l * pull; p0[2] += dz / l * pull;
+    }
+    // crowd avoidance: slide the entry along the shell away from the fn-box
+    // swarm — 6 deterministic sweeps pushing out of any box within 12, then
+    // re-projecting onto the shell. The incoming fan dives through fewer
+    // boxes on its way to the junction.
+    {
+      const shellR = sphR(sf) * 1.16;
+      for (let it = 0; it < 6; it++) {
+        let moved = false;
+        for (let j = 0; j < fnMeta.length; j++) {
+          if (fnMeta[j].file !== sf) continue;
+          const dx = p0[0] - fpos[j*3], dy = p0[1] - fpos[j*3+1], dz = p0[2] - fpos[j*3+2];
+          const dd = Math.hypot(dx, dy, dz);
+          if (dd > 12 || dd < 1e-6) continue;
+          const push = (12 - dd) * 0.5;
+          p0[0] += dx / dd * push; p0[1] += dy / dd * push; p0[2] += dz / dd * push;
+          moved = true;
+        }
+        const cx = p0[0] - pos[sf*3], cy = p0[1] - pos[sf*3+1], cz = p0[2] - pos[sf*3+2];
+        const cl = Math.hypot(cx, cy, cz) || 1;
+        p0[0] = pos[sf*3] + cx / cl * shellR;
+        p0[1] = pos[sf*3+1] + cy / cl * shellR;
+        p0[2] = pos[sf*3+2] + cz / cl * shellR;
+        if (!moved) break;
+      }
+      jcons.push({ p: p0, kind: "shell", fi: sf });
     }
     // exit junction: single-destination pairs anchor AT the target fn box,
     // offset 14 toward the source — the stub lands ON the function
@@ -3558,12 +3607,81 @@ function rebuildFnLayer(focusing) {
       const st = [fb[0] + ux / ul * 14, fb[1] + uy / ul * 14, fb[2] + uz / ul * 14];
       fnStops.set(k + "|" + b, st);
       busJunc.push({ p: st, c: tc });
+      jcons.push({ p: st, kind: "box", b });
     }
+    if (tgtFn >= 0) jcons.push({ p: p1, kind: "box", b: tgtFn });
+    else jcons.push({ p: p1, kind: "shell", fi: tf });
+    trunkGeom.push({ p0, p1, tc, tmeta });
+    busJunc.push({ p: p0, c: tc }, { p: p1, c: tc });
+  }
+  // junction separation: two deterministic depenetration rounds — junctions
+  // closer than 6 spread apart, then every junction re-anchors (shell points
+  // return to their sphere radius, box stubs to 14 off their fn). Keeps
+  // junctions from stacking on each other and on wire crossings.
+  for (const [b, J] of Jof) {
+    jcons.push({ p: J, kind: "box", b });
+    busJunc.push({ p: [J[0], J[1], J[2]], c: [fcol[b*3], fcol[b*3+1], fcol[b*3+2]] });
+  }
+  for (let round = 0; round < 3; round++) {
+    for (let i = 0; i < jcons.length; i++) for (let j = i + 1; j < jcons.length; j++) {
+      const jcA = jcons[i], jcB = jcons[j];
+      const A = jcA.p, B = jcB.p;
+      const dx = B[0] - A[0], dy = B[1] - A[1], dz = B[2] - A[2];
+      const dd = Math.hypot(dx, dy, dz);
+      if (dd > 6 || dd < 1e-6) continue;
+      const push = 6 - dd;
+      const slideBox = (jc, away) => {
+        // slide a box-anchored junction around its fn ring away from `away` —
+        // radial push loses to re-anchor, tangential displacement survives it
+        const fb = [fpos[jc.b*3], fpos[jc.b*3+1], fpos[jc.b*3+2]];
+        const P = jc.p;
+        const rl = Math.hypot(P[0]-fb[0], P[1]-fb[1], P[2]-fb[2]) || 1;
+        const rx = (P[0]-fb[0]) / rl, ry = (P[1]-fb[1]) / rl, rz = (P[2]-fb[2]) / rl;
+        const sx = away[0]-P[0], sy = away[1]-P[1], sz = away[2]-P[2];
+        const radial = sx*rx + sy*ry + sz*rz;
+        const tx = sx - radial*rx, ty = sy - radial*ry, tz = sz - radial*rz;
+        const tl = Math.hypot(tx, ty, tz);
+        if (tl < 1e-6) return;   // head-on: next round settles it
+        P[0] += tx / tl * push; P[1] += ty / tl * push; P[2] += tz / tl * push;
+      };
+      if (jcA.kind === "box" && jcB.kind === "box" && jcA.b === jcB.b) {
+        slideBox(jcB, A);
+      } else if (jcA.kind === "shell" && jcB.kind === "shell") {
+        const half = push / 2;   // both pinned to their spheres — split the diff
+        A[0] -= dx / dd * half; A[1] -= dy / dd * half; A[2] -= dz / dd * half;
+        B[0] += dx / dd * half; B[1] += dy / dd * half; B[2] += dz / dd * half;
+      } else if (jcB.kind === "box") {
+        slideBox(jcB, A);   // shell cannot leave its sphere; the box yields
+      } else {
+        slideBox(jcA, B);
+      }
+    }
+    for (const jc of jcons) {
+      if (jc.kind === "shell") {
+        const dx = jc.p[0] - pos[jc.fi*3], dy = jc.p[1] - pos[jc.fi*3+1], dz = jc.p[2] - pos[jc.fi*3+2];
+        const l = Math.hypot(dx, dy, dz) || 1;
+        const r = sphR(jc.fi) * 1.16;
+        jc.p[0] = pos[jc.fi*3] + dx / l * r;
+        jc.p[1] = pos[jc.fi*3+1] + dy / l * r;
+        jc.p[2] = pos[jc.fi*3+2] + dz / l * r;
+      } else {
+        const fb = [fpos[jc.b*3], fpos[jc.b*3+1], fpos[jc.b*3+2]];
+        const dx = jc.p[0] - fb[0], dy = jc.p[1] - fb[1], dz = jc.p[2] - fb[2];
+        const l = Math.hypot(dx, dy, dz) || 1;
+        jc.p[0] = fb[0] + dx / l * 14;
+        jc.p[1] = fb[1] + dy / l * 14;
+        jc.p[2] = fb[2] + dz / l * 14;
+      }
+    }
+  }
+  // phase 2: trunk geometry, emitted AFTER separation so arcs, conduits and
+  // the shared reroute ends all read the final junction positions
+  for (const g of trunkGeom) {
+    const p0 = g.p0, p1 = g.p1, tc = g.tc, tmeta = g.tmeta;
     emitArc(tierB, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
             tc[0], tc[1], tc[2], tc[0], tc[1], tc[2], 0, 0.30, true, tmeta);
     fnTrunkN++;
-    trunkEnds.set(k, { e: p0, x: p1, c: tc, m: tmeta });
-    busJunc.push({ p: p0, c: tc }, { p: p1, c: tc });
+    trunkEnds.set(tmeta.k, { e: p0, x: p1, c: tc, m: tmeta });
     // conduit body: the bus must have PHYSICAL presence — a 1px line among
     // 1px lines reads as nothing (the user: "converges but no bus line").
     // Lift 0.30 arcs the bus OVER the fn-box crowd around the spheres.
@@ -3577,7 +3695,7 @@ function rebuildFnLayer(focusing) {
       const x = u*u*p0[0] + 2*u*t*qx + t*t*p1[0];
       const y = u*u*p0[1] + 2*u*t*qy + t*t*p1[1];
       const z = u*u*p0[2] + 2*u*t*qz + t*t*p1[2];
-      busSegs.push({ a: [bx2, by2, bz2], b: [x, y, z], col: tc, k });
+      busSegs.push({ a: [bx2, by2, bz2], b: [x, y, z], col: tc, k: tmeta.k });
       bx2 = x; by2 = y; bz2 = z;
     }
   }
@@ -3625,7 +3743,6 @@ function rebuildFnLayer(focusing) {
             emitArc(T, J[0], J[1], J[2], bx, by, bz,
                     cB.r, cB.g, cB.b, cB.r, cB.g, cB.b, phase, 0.08, true,
                     { kind: "wire", a, b, ln });
-            busJunc.push({ p: [J[0], J[1], J[2]], c: [cB.r, cB.g, cB.b] });
           }
           done = true;
         }
@@ -3691,7 +3808,7 @@ function rebuildFnLayer(focusing) {
     fnJDot.renderOrder = 3;   // junctions sit ON TOP of the wire tangle
     const M = new THREE.Matrix4(), C = new THREE.Color();
     fnJDotPos = new Float32Array(busJunc.length * 3);
-    fnJDotR = new Float32Array(busJunc.length).fill(3);
+    fnJDotR = new Float32Array(busJunc.length).fill(3.2);
     busJunc.forEach((j, k) => {
       M.makeTranslation(j.p[0], j.p[1], j.p[2]);
       fnJDot.setMatrixAt(k, M);
@@ -3723,6 +3840,10 @@ function rebuildFnLayer(focusing) {
     fnArrows.instanceMatrix.needsUpdate = true;
     if (fnArrows.instanceColor) fnArrows.instanceColor.needsUpdate = true;
     scene.add(fnArrows);
+    // screen-constant arrow tracking (same law as the bollards): seed the
+    // radius at the geometry's own 2.4 so the first tick shrinks deliberately
+    fnArrowPos = new Float32Array(aPos);
+    fnArrowR = new Float32Array(aPos.length / 3).fill(2.4);
   }
 }
 
@@ -5768,6 +5889,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnArrows() { return fnArrows; }, get compactBallR() { return compactBallR; },
   get fnQuiet() { return fnQuiet; }, get fnTrunkN() { return fnTrunkN; },
   get fnBus() { return fnBus; }, get fnBusPx() { return fnBusRi; }, get fnJDot() { return fnJDot; },
+  get fnJDotR() { return fnJDotR; }, get fnArrowR() { return fnArrowR; },
   get camera() { return camera; },
   get fnTrunkW() { return fnTrunkW; }, get fnJstubN() { return fnJstubN; },
   // probe hook: world -> screen px through the live camera + canvas rect
