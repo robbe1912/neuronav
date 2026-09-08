@@ -1973,6 +1973,7 @@ function tick() {
     fnLines.material.opacity = 0.75 * lod;
     if (fnQuiet) fnQuiet.material.opacity = 0.16 * lod;
     if (fnBus) fnBus.material.opacity = 0.35 + 0.65 * lod;
+  if (fnJDot) fnJDot.material.opacity = 0.35 + 0.55 * lod;
     if (fnArrows) fnArrows.material.opacity = 0.9 * lod;
   }
   // conduit width is SCREEN-CONSTANT per segment: radius ∝ each segment's own
@@ -1996,6 +1997,26 @@ function tick() {
       }
     }
     if (dirty) fnBus.instanceMatrix.needsUpdate = true;
+  }
+  // bollards read at ANY camera distance: a 1-2px dot in a dark knot is not
+  // a reroute node you can see — radius ∝ camera distance (~2.5-4px on screen)
+  if (fnJDot && fnJDotPos) {
+    let dirty = false;
+    const a = fnJDot.instanceMatrix.array;
+    for (let i = 0; i < fnJDotR.length; i++) {
+      const d = Math.hypot(fnJDotPos[i*3] - camera.position.x,
+                           fnJDotPos[i*3+1] - camera.position.y,
+                           fnJDotPos[i*3+2] - camera.position.z);
+      const rT = Math.max(5.5, Math.min(20, d * 0.012));
+      const f = rT / fnJDotR[i];
+      if (Math.abs(f - 1) > 0.06) {
+        const o = i * 16;
+        a[o] *= f; a[o+5] *= f; a[o+10] *= f;   // uniform sphere scale
+        fnJDotR[i] = rT;
+        dirty = true;
+      }
+    }
+    if (dirty) fnJDot.instanceMatrix.needsUpdate = true;
   }
   // camera tween (focus / back-stack); a user drag cancels it
   if (camTween) {
@@ -3079,9 +3100,12 @@ function updateHubs() {
 let fnMesh = null, fnLines = null, fnStalks = null, fnMeta = [], fnArrows = null, fnQuiet = null;
 let fnTrunkN = 0;   // file-pair bus trunks in the current fn layer (via __dbg)
 let fnTrunkW = 0;   // wires riding trunks (each emits entry+exit ramps)
+let fnJstubN = 0;   // junction delivery stubs (shared J -> fn box legs)
 let fnBus = null;   // trunk conduit bodies (InstancedMesh cylinders)
 let busPts = null;  // segment endpoints for per-frame screen-constant rescale
 let fnBusRi = null; // current per-segment radius (world units)
+let fnJDot = null;  // reroute junction bollards (InstancedMesh spheres)
+let fnJDotPos = null, fnJDotR = null;  // world positions + current radii (screen-constant)
 
 // ---- focus labels: name neighboring files + function satellites on focus ----
 const flabsEl = document.getElementById("flabs");
@@ -3190,6 +3214,7 @@ function rebuildFnLayer(focusing) {
   if (fnLines) { scene.remove(fnLines); fnLines.geometry.dispose(); fnLines = null; }
   if (fnQuiet) { scene.remove(fnQuiet); fnQuiet.geometry.dispose(); fnQuiet = null; }
   if (fnBus) { scene.remove(fnBus); fnBus.geometry.dispose(); fnBus = null; busPts = null; fnBusRi = null; }
+    if (fnJDot) { scene.remove(fnJDot); fnJDot.geometry.dispose(); fnJDot = null; fnJDotPos = null; fnJDotR = null; }
   if (fnArrows) { scene.remove(fnArrows); fnArrows.geometry.dispose(); fnArrows = null; }
   if (fnStalks) { scene.remove(fnStalks); fnStalks.geometry.dispose(); fnStalks = null; }
   fnMeta = [];
@@ -3464,33 +3489,78 @@ function rebuildFnLayer(focusing) {
   };
   const trunkEnds = new Map();  // reroute junctions: {e, x, c, m: trunk meta}
   const busSegs = [];   // {a:[x,y,z], b:[x,y,z], col:[r,g,b], k} conduit pieces
+  const busJunc = [];   // junction bollards: {p:[x,y,z], c:[r,g,b]}
+  const fnStops = new Map();   // "tk|b" -> per-fn bus stop (dominant targets)
+  // trunk wire targets: when every wire of a pair lands on ONE fn, the bus
+  // exit lives AT that fn box (Unreal reroute) — not on the file sphere
+  // below the swarm, which reads as wires ending in empty space
+  const tgtCnt = new Map();
+  for (let i = 0, p = 0; i < eidx.length; i += 2, p++) {
+    if (!wireTier[p]) continue;
+    const tk = fnMeta[eidx[i]].file + ">" + fnMeta[eidx[i+1]].file;
+    if (!trunked.has(tk)) continue;
+    let m = tgtCnt.get(tk);
+    if (!m) tgtCnt.set(tk, m = new Map());
+    const b = eidx[i+1];
+    m.set(b, (m.get(b) || 0) + 1);
+  }
   fnTrunkN = 0;
   fnTrunkW = 0;
+  fnJstubN = 0;
   for (const k of trunked) {
     const parts = k.split(">");
     const sf = +parts[0], tf = +parts[1];
     const c0 = fnCen.get(sf), c1 = fnCen.get(tf);
     if (!c0 || !c1) continue;
     let p0 = surf(sf, [c0[0]/fnCnt.get(sf), c0[1]/fnCnt.get(sf), c0[2]/fnCnt.get(sf)]);
-    let p1 = surf(tf, [c1[0]/fnCnt.get(tf), c1[1]/fnCnt.get(tf), c1[2]/fnCnt.get(tf)]);
-    // bus stop: pull BOTH ends 16% off the sphere surfaces — these are the
-    // REROUTE JUNCTIONS where fn wires merge in and fan out (Blueprint
-    // reroute node: many in, one corridor, all arrive at the same end)
-    for (const p of [p0, p1]) {
-      const fi = p === p0 ? sf : tf;
-      const dx = p[0] - pos[fi*3], dy = p[1] - pos[fi*3+1], dz = p[2] - pos[fi*3+2];
+    // bus stop: pull the entry off the sphere surface — the REROUTE JUNCTION
+    // where the fn fan merges in (Blueprint reroute node: many in, one
+    // corridor, all arrive at the same end)
+    {
+      const dx = p0[0] - pos[sf*3], dy = p0[1] - pos[sf*3+1], dz = p0[2] - pos[sf*3+2];
       const l = Math.hypot(dx, dy, dz) || 1;
-      const pull = sphR(fi) * 0.16;
-      p[0] += dx / l * pull; p[1] += dy / l * pull; p[2] += dz / l * pull;
+      const pull = sphR(sf) * 0.16;
+      p0[0] += dx / l * pull; p0[1] += dy / l * pull; p0[2] += dz / l * pull;
+    }
+    // exit junction: single-destination pairs anchor AT the target fn box,
+    // offset 14 toward the source — the stub lands ON the function
+    const tm = tgtCnt.get(k);
+    const tgtFn = tm && tm.size === 1 ? tm.keys().next().value : -1;
+    let p1;
+    if (tgtFn >= 0) {
+      const fb = [fpos[tgtFn*3], fpos[tgtFn*3+1], fpos[tgtFn*3+2]];
+      const ux = p0[0] - fb[0], uy = p0[1] - fb[1], uz = p0[2] - fb[2];
+      const ul = Math.hypot(ux, uy, uz) || 1;
+      p1 = [fb[0] + ux / ul * 14, fb[1] + uy / ul * 14, fb[2] + uz / ul * 14];
+    } else {
+      p1 = surf(tf, [c1[0]/fnCnt.get(tf), c1[1]/fnCnt.get(tf), c1[2]/fnCnt.get(tf)]);
+      const dx = p1[0] - pos[tf*3], dy = p1[1] - pos[tf*3+1], dz = p1[2] - pos[tf*3+2];
+      const l = Math.hypot(dx, dy, dz) || 1;
+      const pull = sphR(tf) * 0.16;
+      p1[0] += dx / l * pull; p1[1] += dy / l * pull; p1[2] += dz / l * pull;
     }
     // trunk color = DESTINATION FILE's cluster color (colArr is per-file;
     // fcol is per-fn-box — indexing it by file reads garbage => black tubes)
     const tc = [colArr[tf*3], colArr[tf*3+1], colArr[tf*3+2]];
     const tmeta = { kind: "trunk", k, sf, tf, mates: [] };
+    // per-fn stops: a trunk often feeds ONE dominant function (the user:
+    // "a ton of wires converge on ONE function") — every target fn with >=2
+    // trunk wires gets its OWN junction 14 off its box; singletons share the
+    // generic file stop
+    if (tm) for (const [b, n] of tm) {
+      if (n < 2) continue;
+      const fb = [fpos[b*3], fpos[b*3+1], fpos[b*3+2]];
+      const ux = p0[0] - fb[0], uy = p0[1] - fb[1], uz = p0[2] - fb[2];
+      const ul = Math.hypot(ux, uy, uz) || 1;
+      const st = [fb[0] + ux / ul * 14, fb[1] + uy / ul * 14, fb[2] + uz / ul * 14];
+      fnStops.set(k + "|" + b, st);
+      busJunc.push({ p: st, c: tc });
+    }
     emitArc(tierB, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
             tc[0], tc[1], tc[2], tc[0], tc[1], tc[2], 0, 0.30, true, tmeta);
     fnTrunkN++;
     trunkEnds.set(k, { e: p0, x: p1, c: tc, m: tmeta });
+    busJunc.push({ p: p0, c: tc }, { p: p1, c: tc });
     // conduit body: the bus must have PHYSICAL presence — a 1px line among
     // 1px lines reads as nothing (the user: "converges but no bus line").
     // Lift 0.30 arcs the bus OVER the fn-box crowd around the spheres.
@@ -3508,6 +3578,7 @@ function rebuildFnLayer(focusing) {
       bx2 = x; by2 = y; bz2 = z;
     }
   }
+  const Jstub = new Set();   // fns already carrying a junction delivery stub
   for (let i = 0, p = 0; i < eidx.length; i += 2, p++) {
     const a = eidx[i], b = eidx[i+1];
     const T = wireTier[p] ? tierB : tierQ;
@@ -3531,14 +3602,28 @@ function rebuildFnLayer(focusing) {
         ends.m.mates.push(wmeta);
         emitArc(T, ax, ay, az, ends.e[0], ends.e[1], ends.e[2],
                 cA.r, cA.g, cA.b, ends.c[0], ends.c[1], ends.c[2], phase, 0.10, false, wmeta);
-        emitArc(T, ends.x[0], ends.x[1], ends.x[2], bx, by, bz,
+        // exit leg leaves from THIS wire's fn stop when one exists — the
+        // stub lands on the function, not on the file sphere below it
+        const stp = fnStops.get(tk + "|" + b) || ends.x;
+        emitArc(T, stp[0], stp[1], stp[2], bx, by, bz,
                 ends.c[0], ends.c[1], ends.c[2], cB.r, cB.g, cB.b, phase + 2.5, 0.10, true, wmeta);
       } else {
         const J = Jof.get(b);
         if (J) {
+          // reroute junction: wires merge AT the junction, then ONE shared
+          // stub delivers into the fn box — the junction must not be a dead
+          // end in open space ("supposed to go into request_level_transition")
           emitArc(T, ax, ay, az, J[0], J[1], J[2],
-                  cA.r, cA.g, cA.b, cB.r, cB.g, cB.b, phase, 0.10, true,
+                  cA.r, cA.g, cA.b, cB.r, cB.g, cB.b, phase, 0.10, false,
                   { kind: "wire", a, b, ln });
+          if (!Jstub.has(b)) {
+            Jstub.add(b);
+            fnJstubN++;
+            emitArc(T, J[0], J[1], J[2], bx, by, bz,
+                    cB.r, cB.g, cB.b, cB.r, cB.g, cB.b, phase, 0.08, true,
+                    { kind: "wire", a, b, ln });
+            busJunc.push({ p: [J[0], J[1], J[2]], c: [cB.r, cB.g, cB.b] });
+          }
           done = true;
         }
       }
@@ -3593,6 +3678,27 @@ function rebuildFnLayer(focusing) {
     busPts = busSegs;
     fnBusRi = new Float32Array(busSegs.length).fill(4);
     scene.add(fnBus);
+  }
+  if (busJunc.length) {
+    // reroute bollards: the junction must be a THING — a dot where the fan
+    // merges and where the bus delivers onto the fn box (Blueprint reroute)
+    const jg = new THREE.SphereGeometry(3, 8, 6);
+    fnJDot = new THREE.InstancedMesh(jg, new THREE.MeshBasicMaterial({
+      transparent: true, opacity: 0.9, depthWrite: false }), busJunc.length);
+    fnJDot.renderOrder = 3;   // junctions sit ON TOP of the wire tangle
+    const M = new THREE.Matrix4(), C = new THREE.Color();
+    fnJDotPos = new Float32Array(busJunc.length * 3);
+    fnJDotR = new Float32Array(busJunc.length).fill(3);
+    busJunc.forEach((j, k) => {
+      M.makeTranslation(j.p[0], j.p[1], j.p[2]);
+      fnJDot.setMatrixAt(k, M);
+      fnJDotPos[k*3] = j.p[0]; fnJDotPos[k*3+1] = j.p[1]; fnJDotPos[k*3+2] = j.p[2];
+      fnJDot.setColorAt(k, C.setRGB(j.c[0], j.c[1], j.c[2]));
+    });
+    fnJDot.instanceMatrix.needsUpdate = true;
+    if (fnJDot.instanceColor) fnJDot.instanceColor.needsUpdate = true;
+    fnJDot.frustumCulled = false;
+    scene.add(fnJDot);
   }
   if (aPos.length) {
     const arrowGeo = new THREE.ConeGeometry(2.4, 7, 6);
@@ -5658,8 +5764,9 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnLines() { return fnLines; }, get hubRing() { return hubRing; },
   get fnArrows() { return fnArrows; }, get compactBallR() { return compactBallR; },
   get fnQuiet() { return fnQuiet; }, get fnTrunkN() { return fnTrunkN; },
-  get fnBus() { return fnBus; }, get fnBusPx() { return fnBusRi; },
-  get fnTrunkW() { return fnTrunkW; },
+  get fnBus() { return fnBus; }, get fnBusPx() { return fnBusRi; }, get fnJDot() { return fnJDot; },
+  get camera() { return camera; },
+  get fnTrunkW() { return fnTrunkW; }, get fnJstubN() { return fnJstubN; },
   // probe hook: world -> screen px through the live camera + canvas rect
   projectPoint(x, y, z) {
     const v = new THREE.Vector3(x, y, z).project(camera);

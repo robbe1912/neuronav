@@ -229,13 +229,13 @@ def run_tests():
                      if (d.level[e[0]] === 0 || d.level[e[2]] === 0) bright++;
                      else silent++;
                    } });
-                 return { wires, quiet, bright, silent, trunks: d.fnTrunkN,
-                          trunkW: d.fnTrunkW,
-                          litFiles: lit.size, hub,
-                          ring: !!(d.hubRing && d.hubRing.visible) }; }"""
+                  return { wires, quiet, bright, silent, trunks: d.fnTrunkN,
+                           trunkW: d.fnTrunkW, jstub: d.fnJstubN,
+                           litFiles: lit.size, hub,
+                           ring: !!(d.hubRing && d.hubRing.visible) }; }"""
         )
         check("fn layer: hub wires bright, neighbors quiet, none dropped",
-              fnb["wires"] == fnb["bright"] + fnb["trunkW"] + fnb["trunks"] and
+              fnb["wires"] == fnb["bright"] + fnb["trunkW"] + fnb["trunks"] + fnb["jstub"] and
               fnb["quiet"] == fnb["silent"] and
               fnb["bright"] + fnb["silent"] > 0, str(fnb))
         check("hub ring marks the focused hub", fnb["ring"], str(fnb))
