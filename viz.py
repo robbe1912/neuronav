@@ -950,6 +950,10 @@ _TEMPLATE = r"""<!DOCTYPE html>
   :root { --pane-w: 440px; }   /* map pane width — divider drag rewrites it */
   html, body { margin:0; height:100%; background:#000; overflow:hidden;
     font: 13px/1.45 "Segoe UI", system-ui, sans-serif; color:#cfd8dc; }
+  /* camera drags must never text-select the overlays (labels/panel swallowed
+     pointer drags and froze the camera) */
+  body, body * { user-select: none; -webkit-user-select: none; }
+  input, textarea { user-select: text; -webkit-user-select: text; }
   #panel { position:fixed; top:12px; left:12px; z-index:10; width:230px;
     background:rgba(10,14,18,.82); border:1px solid #1de9b633; border-radius:10px;
     padding:12px; backdrop-filter: blur(4px); }
@@ -1079,6 +1083,10 @@ _TEMPLATE = r"""<!DOCTYPE html>
   #mapTip { position:absolute; display:none; background:#000d;
     border:1px solid #1de9b644; color:#eee; padding:4px 8px; border-radius:6px;
     white-space:pre-line; max-width:280px; line-height:1.5; }
+  #wireTip { position:fixed; display:none; z-index:30; background:#000e;
+    border:1px solid #1de9b655; color:#eee; padding:6px 10px; border-radius:6px;
+    font-size:12px; white-space:pre-line; max-width:340px; max-height:45vh;
+    overflow-y:auto; line-height:1.5; pointer-events:none; }
   #mapList { position:absolute; display:none; pointer-events:auto;
     background:rgba(8,12,16,.95); border:1px solid #263238; border-radius:8px;
     padding:8px; min-width:240px; max-width:300px; max-height:50vh;
@@ -1562,7 +1570,7 @@ const TYPE_COLORS = {
 // overview opacity rises gently with bucket weight: width stays the main
 // weight cue — and heavy edges must never read dimmer than trivial ones
 const BUCKETS = [
-  { max: 1, width: 1.3, op: 0.28 },          // w <= 1
+  { max: 1, width: 2, op: 0.28 },            // w <= 1
   { max: 4, width: 2.2, op: 0.32 },          // 2..4
   { max: Infinity, width: 3.5, op: 0.36 },   // >= 5
 ];
@@ -1933,7 +1941,7 @@ function tick() {
       const d = Math.hypot((s.a[0]+s.b[0])/2 - camera.position.x,
                            (s.a[1]+s.b[1])/2 - camera.position.y,
                            (s.a[2]+s.b[2])/2 - camera.position.z);
-      const rT = Math.max(0.05, Math.min(12, d * 0.0022));
+      const rT = Math.max(0.05, Math.min(12, d * 0.0037));
       const f = rT / fnBusRi[i];
       if (Math.abs(f - 1) > 0.06) {
         const o = i * 16;
@@ -2488,18 +2496,15 @@ function rebuildFocusWires() {
   });
   list.sort((a, b) => a - b);   // deterministic vertex order
   if (!list.length) {
-    if (focusArcs) focusArcs.lines.visible = false;
+    if (focusArcs) {
+      scene.remove(focusArcs.lines); focusArcs.lines.geometry.dispose();
+      focusArcs = null;
+    }
     return;
   }
-  if (!focusArcs) {
-    const geo = new THREE.BufferGeometry();
-    const mat = new THREE.LineDashedMaterial({ vertexColors: true,
-      transparent: true, opacity: 0.95, dashSize: 8, gapSize: 5,
-      depthWrite: false });
-    const lines = new THREE.LineSegments(geo, mat);
-    lines.frustumCulled = false; lines.renderOrder = 3;
-    scene.add(lines);
-    focusArcs = { lines, geo, mat };
+  if (focusArcs) {
+    scene.remove(focusArcs.lines); focusArcs.lines.geometry.dispose();
+    focusArcs = null;
   }
   const n = list.length;
   const vCount = n * ARC_SEG * 2;
@@ -2538,11 +2543,21 @@ function rebuildFocusWires() {
       px = x; py = y; pz = z; pd = dd;
     }
   });
-  const geo = focusArcs.geo;
-  geo.setAttribute("position", new THREE.BufferAttribute(P, 3));
-  geo.setAttribute("color", new THREE.BufferAttribute(C, 3));
-  geo.setAttribute("lineDistance", new THREE.BufferAttribute(D, 1));
-  focusArcs.mat.dashed = true;
+  // fat-line rebuild per call: the budget is tiny (≤ hub budget arcs) and
+  // Line2 gives the hub fan real 2px ink like every other wire
+  const fgeo = new LineSegmentsGeometry();
+  fgeo.setPositions(P);
+  fgeo.setColors(C);
+  const fmat = new LineMaterial({ vertexColors: true,
+    transparent: true, opacity: 0.95, linewidth: 2, worldUnits: false,
+    dashed: true, dashSize: 8, gapSize: 5, depthWrite: false,
+    blending: THREE.NormalBlending, alphaToCoverage: false });
+  fmat.resolution.set(glW(), innerHeight);
+  const flines = new LineSegments2(fgeo, fmat);
+  flines.computeLineDistances();
+  flines.frustumCulled = false; flines.renderOrder = 3;
+  scene.add(flines);
+  focusArcs = { lines: flines, geo: fgeo, mat: fmat };
   focusArcs.lines.visible = true;
 }
 function applyVisibility() {
@@ -3155,7 +3170,7 @@ function rebuildFnLayer(focusing) {
   // budget cap at fn grain (the lit set is 1-hop + compacted; AGG_MAX
   // still declutters per-file box rings, but wires stay complete)
   if (!visEdges.length) return;
-  const fIdx = new Map(), fpos = [], fcol = [], eidx = [];
+  const fIdx = new Map(), fpos = [], fcol = [], eidx = [], wireRows = [];
   // mutators-only filter: when on, fn satellites for functions with no
   // member writes are not created at all (their wires collapse with them)
   const ioOf = (fi, name) => (DATA.fio || {})[nodes[fi].path + "::" + name];
@@ -3182,6 +3197,7 @@ function rebuildFnLayer(focusing) {
     const a = nodeOf(e, true), b = nodeOf(e, false);
     if (a < 0 || b < 0) return;   // filtered out by mutators-only
     eidx.push(a, b);
+    wireRows.push(e);   // parallel row for wire descriptions (line number)
   });
   if (!fnMeta.length) return;
   // pass 2: fn boxes orbit their OWNER file sphere. Each lit file's fns
@@ -3308,7 +3324,7 @@ function rebuildFnLayer(focusing) {
   //     (the user: "extreme clutter on the game manager ... wires all over
   //     the place"). Present for tracing, silent in the overview.
   const FS = 8;
-  const mk = () => ({ ep: [], ec: [], ed: [] });
+  const mk = () => ({ ep: [], ec: [], ed: [], meta: [] });
   const tierB = mk(), tierQ = mk();
   const aPos = [], aDir = [], aCol = [];
   const cA = new THREE.Color(), cB = new THREE.Color();
@@ -3355,7 +3371,8 @@ function rebuildFnLayer(focusing) {
   // shared arc emitter: 8 quadratic segments (16 verts — the harness
   // counts wires as verts/16), optional arrowhead at the end tangent
   const emitArc = (T, ax, ay, az, bx, by, bz,
-                   ar, ag, ab, br, bg, bb, phase, liftFrac, arrow) => {
+                   ar, ag, ab, br, bg, bb, phase, liftFrac, arrow, meta) => {
+    if (meta) T.meta.push(meta);   // 1 meta entry per arc (8 segments each)
     const dist = Math.hypot(bx-ax, by-ay, bz-az) || 1;
     const lift = liftFrac * dist * (ax + ay + az <= bx + by + bz ? 1 : -1);
     const mx = (ax+bx)/2, my = (ay+by)/2 + lift, mz = (az+bz)/2;
@@ -3398,8 +3415,8 @@ function rebuildFnLayer(focusing) {
     const r = sphR(fi);
     return [pos[fi*3] + dx / l * r, pos[fi*3+1] + dy / l * r, pos[fi*3+2] + dz / l * r];
   };
-  const trunkEnds = new Map();  // reroute junctions: {e: entry, x: exit, c: color}
-  const busSegs = [];   // {a:[x,y,z], b:[x,y,z], col:[r,g,b]} conduit pieces
+  const trunkEnds = new Map();  // reroute junctions: {e, x, c, m: trunk meta}
+  const busSegs = [];   // {a:[x,y,z], b:[x,y,z], col:[r,g,b], k} conduit pieces
   fnTrunkN = 0;
   fnTrunkW = 0;
   for (const k of trunked) {
@@ -3422,10 +3439,11 @@ function rebuildFnLayer(focusing) {
     // trunk color = DESTINATION FILE's cluster color (colArr is per-file;
     // fcol is per-fn-box — indexing it by file reads garbage => black tubes)
     const tc = [colArr[tf*3], colArr[tf*3+1], colArr[tf*3+2]];
+    const tmeta = { kind: "trunk", k, sf, tf, mates: [] };
     emitArc(tierB, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
-            tc[0], tc[1], tc[2], tc[0], tc[1], tc[2], 0, 0.30, true);
+            tc[0], tc[1], tc[2], tc[0], tc[1], tc[2], 0, 0.30, true, tmeta);
     fnTrunkN++;
-    trunkEnds.set(k, { e: p0, x: p1, c: tc });
+    trunkEnds.set(k, { e: p0, x: p1, c: tc, m: tmeta });
     // conduit body: the bus must have PHYSICAL presence — a 1px line among
     // 1px lines reads as nothing (the user: "converges but no bus line").
     // Lift 0.30 arcs the bus OVER the fn-box crowd around the spheres.
@@ -3439,7 +3457,7 @@ function rebuildFnLayer(focusing) {
       const x = u*u*p0[0] + 2*u*t*qx + t*t*p1[0];
       const y = u*u*p0[1] + 2*u*t*qy + t*t*p1[1];
       const z = u*u*p0[2] + 2*u*t*qz + t*t*p1[2];
-      busSegs.push({ a: [bx2, by2, bz2], b: [x, y, z], col: tc });
+      busSegs.push({ a: [bx2, by2, bz2], b: [x, y, z], col: tc, k });
       bx2 = x; by2 = y; bz2 = z;
     }
   }
@@ -3451,6 +3469,7 @@ function rebuildFnLayer(focusing) {
     cA.setRGB(fcol[a*3], fcol[a*3+1], fcol[a*3+2]);
     cB.setRGB(fcol[b*3], fcol[b*3+1], fcol[b*3+2]);
     const phase = ((i + 1) * 2654435761 >>> 3) % 911 / 911 * 13;
+    const ln = wireRows[p] ? wireRows[p][4] : -1;   // source line for the tip
     let done = false;
     if (T === tierB) {
       const tk = fnMeta[a].file + ">" + fnMeta[b].file;
@@ -3461,15 +3480,18 @@ function rebuildFnLayer(focusing) {
         // every wire of the pair arrives at the same end
         done = true;
         fnTrunkW++;
+        const wmeta = { kind: "wire", a, b, ln, tk };
+        ends.m.mates.push(wmeta);
         emitArc(T, ax, ay, az, ends.e[0], ends.e[1], ends.e[2],
-                cA.r, cA.g, cA.b, ends.c[0], ends.c[1], ends.c[2], phase, 0.10, false);
+                cA.r, cA.g, cA.b, ends.c[0], ends.c[1], ends.c[2], phase, 0.10, false, wmeta);
         emitArc(T, ends.x[0], ends.x[1], ends.x[2], bx, by, bz,
-                ends.c[0], ends.c[1], ends.c[2], cB.r, cB.g, cB.b, phase + 2.5, 0.10, true);
+                ends.c[0], ends.c[1], ends.c[2], cB.r, cB.g, cB.b, phase + 2.5, 0.10, true, wmeta);
       } else {
         const J = Jof.get(b);
         if (J) {
           emitArc(T, ax, ay, az, J[0], J[1], J[2],
-                  cA.r, cA.g, cA.b, cB.r, cB.g, cB.b, phase, 0.10, true);
+                  cA.r, cA.g, cA.b, cB.r, cB.g, cB.b, phase, 0.10, true,
+                  { kind: "wire", a, b, ln });
           done = true;
         }
       }
@@ -3477,22 +3499,30 @@ function rebuildFnLayer(focusing) {
     if (!done) emitArc(T, ax, ay, az, bx, by, bz,
                        cA.r, cA.g, cA.b, cB.r, cB.g, cB.b, phase,
                        0.08 + 0.10 * (((i + 1) * 2654435761 >>> 0) % 97) / 97,
-                       T === tierB);
+                       T === tierB, { kind: "wire", a, b, ln });
   }
   const makeWires = (T, op) => {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(T.ep), 3));
-    g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(T.ec), 3));
-    g.setAttribute("lineDistance", new THREE.BufferAttribute(new Float32Array(T.ed), 1));
-    const ls = new THREE.LineSegments(g, new THREE.LineDashedMaterial({
+    // fat lines: WebGL ignores linewidth on classic LineSegments — Line2
+    // renders real screen-space width (default wires read at 2px)
+    const g = new LineSegmentsGeometry();
+    g.setPositions(new Float32Array(T.ep));
+    g.setColors(new Float32Array(T.ec));
+    const m = new LineMaterial({
       vertexColors: true, transparent: true, opacity: op,
-      dashSize: 7, gapSize: 4, blending: THREE.NormalBlending, depthWrite: false }));
+      linewidth: 2, worldUnits: false, dashed: true,
+      dashSize: 7, gapSize: 4, blending: THREE.NormalBlending,
+      depthWrite: false, alphaToCoverage: false });
+    m.resolution.set(glW(), innerHeight);
+    const ls = new LineSegments2(g, m);
+    ls.computeLineDistances();
     ls.frustumCulled = false;
     scene.add(ls);
     return ls;
   };
   fnLines = makeWires(tierB, 0.75);
   if (tierQ.ep.length) fnQuiet = makeWires(tierQ, 0.16);
+  fnLines.userData.meta = tierB.meta;   // wire pick descriptions
+  if (fnQuiet) fnQuiet.userData.meta = tierQ.meta;
   if (busSegs.length) {
     const cyl = new THREE.CylinderGeometry(1, 1, 1, 6);
     fnBus = new THREE.InstancedMesh(cyl, new THREE.MeshBasicMaterial({
@@ -3751,6 +3781,41 @@ const mapPickRows = mapOvEl.querySelector("#mapPick .rows");
 let mapPickRc = null;
 function mapTipHide() { mapTipEl.style.display = "none"; }
 function mapClosePick() { mapPickEl.style.display = "none"; mapPickRc = null; }
+// ---- 3D wire/bus tooltip (position:fixed, follows cursor over the WebGL
+// canvas; describes the picked fn wire or bus trunk)
+const wireTipEl = document.createElement("div");
+wireTipEl.id = "wireTip";
+document.body.appendChild(wireTipEl);
+function hideWireTip() { wireTipEl.style.display = "none"; }
+function wireDesc(meta) {
+  // what the wire contains and where it goes — fn names on both ends
+  if (meta.kind === "trunk") {
+    const mates = meta.mates || [];
+    const head = "🚌 bus " + nodes[meta.sf].path + "  →  " +
+      nodes[meta.tf].path + "  (" + mates.length + " wires)";
+    const body = mates.map(m =>
+      "  · " + fnMeta[m.a].name + "() → " + fnMeta[m.b].name + "()"
+      + (m.ln >= 0 ? "  @L" + m.ln : "")).join("\n");
+    return head + (body ? "\n" + body : "");
+  }
+  const a = fnMeta[meta.a], b = fnMeta[meta.b];
+  const src = nodes[a.file], dst = nodes[b.file];
+  const ty = "call";
+  return ty + " wire\n" + src.path + " :: " + a.name + "()" +
+    (meta.ln >= 0 ? "  @L" + meta.ln : "") +
+    "\n  ↓ into\n" + dst.path + " :: " + b.name + "()";
+}
+function showWireTip(meta, cx, cy) {
+  wireTipEl.textContent = wireDesc(meta);
+  wireTipEl.style.display = "block";
+  const pad = 14;
+  let x = cx + pad, y = cy + pad;
+  const r = wireTipEl.getBoundingClientRect();
+  if (x + r.width > innerWidth - 8) x = cx - r.width - pad;
+  if (y + r.height > innerHeight - 8) y = cy - r.height - pad;
+  wireTipEl.style.left = x + "px";
+  wireTipEl.style.top = y + "px";
+}
 // ESC priority (section 8): picker (fn picker first, then map picker),
 // then pinned list, then the L3 freeze
 function mapOvCloseOne() {
@@ -5430,6 +5495,46 @@ function frameQueryCamera() {
   dir.normalize();
   tweenCamTo(c, c.clone().addScaledVector(dir, Math.min(900, 240 + r * 2)));
 }
+// pick a 3D fn wire / bus arc under the cursor — custom screen-space test
+// (Line2's own raycast proved unreliable here): project every arc segment
+// midpoint and take the nearest within 8px of the pointer
+function pickWire(e) {
+  if (!focusActive || !fnLines) return null;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const px = e.clientX - rect.left, py = e.clientY - rect.top;
+  const v = new THREE.Vector3();
+  let best = null, bestD = 8;
+  for (const [mesh] of [[fnLines], fnQuiet ? [fnQuiet] : []]) {
+    const a = mesh.geometry.attributes.instanceStart.array;
+    const meta = mesh.userData.meta || [];
+    const n = Math.min(a.length / 6, meta.length * 8);
+    for (let i = 0; i < n; i++) {
+      const o = i * 6;
+      v.set((a[o] + a[o+3]) / 2, (a[o+1] + a[o+4]) / 2, (a[o+2] + a[o+5]) / 2)
+       .project(camera);
+      if (v.z > 1) continue;   // behind camera
+      const sx = (v.x + 1) / 2 * rect.width, sy = (1 - v.y) / 2 * rect.height;
+      const d = Math.hypot(sx - px, sy - py);
+      if (d < bestD) { bestD = d; best = meta[Math.floor(i / 8)]; }
+    }
+  }
+  return best;
+}
+// wires & buses pick in the CAPTURE phase: fn-box labels (.flab) and the
+// canvas itself sit above the wires' pixels — without this, clicking a wire
+// near the hub opens the fn instead. No wire nearby -> event passes through.
+document.addEventListener("pointerdown", e => {
+  downX = e.clientX; downY = e.clientY;   // fresh drag-guard origin anywhere
+}, true);
+document.addEventListener("click", e => {
+  if (!focusActive || !fnLines) return;
+  if (hoveredFn >= 0 || hovered >= 0) return;   // a node owns this click
+  if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
+  const wHit = pickWire(e);
+  if (!wHit) return;
+  e.stopPropagation();   // the label/canvas click handlers stay out
+  showWireTip(wHit, e.clientX, e.clientY);
+}, true);
 renderer.domElement.addEventListener("click", e => {
   if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
   if (hoveredFn >= 0) {
@@ -5465,6 +5570,10 @@ function resize3D() {
   camera.aspect = w/h; camera.updateProjectionMatrix();
   renderer.setSize(w, h);
   bucketMat.forEach(m => m.resolution.set(w, h));
+  // fat-line overlays live in screen px too — stale resolution = wrong width
+  if (fnLines) fnLines.material.resolution.set(w, h);
+  if (fnQuiet) fnQuiet.material.resolution.set(w, h);
+  if (focusArcs) focusArcs.mat.resolution.set(w, h);
 }
 addEventListener("resize", resize3D);
 // LOD zoom threshold: crossing it reveals/hides intra-cluster edges at
@@ -5499,6 +5608,14 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnQuiet() { return fnQuiet; }, get fnTrunkN() { return fnTrunkN; },
   get fnBus() { return fnBus; }, get fnBusPx() { return fnBusRi; },
   get fnTrunkW() { return fnTrunkW; },
+  // probe hook: world -> screen px through the live camera + canvas rect
+  projectPoint(x, y, z) {
+    const v = new THREE.Vector3(x, y, z).project(camera);
+    const r = renderer.domElement.getBoundingClientRect();
+    return { x: r.left + (v.x + 1) / 2 * r.width,
+             y: r.top + (1 - v.y) / 2 * r.height, z: v.z };
+  },
+  pickWire, wireDesc, showWireTip, hideWireTip,
   get litSet() { return compactIdx; }, get compactScale() { return compactScale; },
   get overlaps() { return compactOverlaps; },
   get camTween() { return camTween; }, get focusStack() { return focusStack; },

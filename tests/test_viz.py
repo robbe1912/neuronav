@@ -194,7 +194,7 @@ def run_tests():
                  // carry one arc (28 verts) per budget link
                  const fa = d.focusArcRef;
                  const arcN = fa && fa.lines.visible
-                   ? fa.geo.attributes.position.count / 28 : 0;
+                   ? fa.lines.geometry.attributes.instanceStart.count / 14 : 0;
                  return { lit: lit.length, arcN, leaks, worst }; }"""
         )
         check("hub budget: <= 12 lit edges on focus",
@@ -212,9 +212,9 @@ def run_tests():
         fnb = page.evaluate(
             """() => { const d = window.__dbg;
                  const wires = d.fnLines ?
-                     d.fnLines.geometry.attributes.position.count / 16 : 0;
+                     d.fnLines.geometry.attributes.instanceStart.count / 8 : 0;
                  const quiet = d.fnQuiet ?
-                     d.fnQuiet.geometry.attributes.position.count / 16 : 0;
+                     d.fnQuiet.geometry.attributes.instanceStart.count / 8 : 0;
                  const lit = new Set();
                  let hub = -1;
                  for (let i = 0; i < d.level.length; i++) {
