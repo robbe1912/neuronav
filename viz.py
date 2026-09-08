@@ -1996,7 +1996,7 @@ function tick() {
       const d = Math.hypot((s.a[0]+s.b[0])/2 - camera.position.x,
                            (s.a[1]+s.b[1])/2 - camera.position.y,
                            (s.a[2]+s.b[2])/2 - camera.position.z);
-      const rT = Math.max(0.05, Math.min(12, d * 0.0037));
+      const rT = Math.max(0.05, Math.min(12, d * 0.0037 * (s.rf || 1)));
       const f = rT / fnBusRi[i];
       if (Math.abs(f - 1) > 0.06) {
         const o = i * 16;
@@ -2017,11 +2017,15 @@ function tick() {
       const d = Math.hypot(fnJDotPos[i*3] - camera.position.x,
                            fnJDotPos[i*3+1] - camera.position.y,
                            fnJDotPos[i*3+2] - camera.position.z);
-      // pure screen-constancy: 0.0038 * px-factor(1073) = ~4.1px radius at
-      // EVERY distance (ink#5: bollards stop reading as boulders; ~1.7x
-      // the conduit half-width keeps them the clear anchor). A world-unit
-      // floor explodes at close zoom (a 4-unit floor = 64px blob at d=134)
-      const rT = d * 0.0038;
+      // size hierarchy at a station (skeptic A3): bollard radius =
+      // max(screen law, 1.35 x its nearest trunk's radius) x its own size
+      // factor (stations 1.0, sub-junctions 0.72, Jof 0.85) — the merge
+      // dot must be the BIGGEST element at its station, never a 3px speck
+      // under a 6px trunk
+      const kf = fnJDotK ? fnJDotK[i] : 1;
+      let rT = d * 0.0038 * kf;
+      if (fnJDotTr && fnJDotTr[i] >= 0 && fnBusRi)
+        rT = Math.max(rT, fnBusRi[fnJDotTr[i]] * 1.35 * kf);
       const f = rT / fnJDotR[i];
       if (Math.abs(f - 1) > 0.06) {
         const o = i * 16;
@@ -3146,6 +3150,7 @@ let fnTrunkW = 0;   // wires riding trunks (each emits entry+exit ramps)
 let fnJstubN = 0;   // shared junction legs: Jof delivery stubs + station tree legs
 let fnStationsArr = [];  // per-file bus stations of the current fn layer (via __dbg)
 let fnJclearV = -1; // min world junction->box-center distance (via __dbg)
+let fnJDotTr = null, fnJDotK = null;  // per-junction nearest trunk seg + size factor
 let fnJclip = 0;    // conduits whose obstacle lift hit the cap (via __dbg)
 let fnLegN = 0;     // station tree legs (subset of fnJstubN, via __dbg)
 let fnQuietTrunkN = 0;  // quiet-tier trunk arcs (via __dbg)
@@ -3229,6 +3234,18 @@ function updateFocusLabels() {
   const hubRects = [...document.querySelectorAll(".hub")]
     .filter(e => e.style.display === "block").map(e => e.getBoundingClientRect());
   const taken = [];
+  // station dots are label obstacles (skeptic R8): project them once per
+  // frame — no flab may cover a junction bollard
+  const stPts = [];
+  for (const S of fnStationsArr) {
+    for (const q of [S.p, ...S.subJ]) {
+      _flabV.set(q[0], q[1], q[2]).project(camera);
+      if (_flabV.z <= 1 && Math.abs(_flabV.x) <= 1.02 && Math.abs(_flabV.y) <= 1.02)
+        stPts.push([(_flabV.x * 0.5 + 0.5) * w, (-_flabV.y * 0.5 + 0.5) * h]);
+    }
+  }
+  const clearDots = r => stPts.every(q =>
+    q[0] < r.left - 10 || q[0] > r.right + 10 || q[1] < r.top - 10 || q[1] > r.bottom + 10);
   for (const f of fLabs) {
     const p = f.kind === 1 ? fnMeta[f.ix].p : null;
     _flabV.set(
@@ -3249,17 +3266,17 @@ function updateFocusLabels() {
       const r1 = f.el.getBoundingClientRect();
       const clear18 = t => r1.right < t.left - 18 || t.right < r1.left - 18 ||
         r1.bottom < t.top - 18 || t.bottom < r1.top - 18;
-      if (!taken.every(clear18)) { f.el.style.display = "none"; continue; }
+      if (!taken.every(clear18) || !clearDots(r1)) { f.el.style.display = "none"; continue; }
       taken.push(r1);
       continue;
     }
     let r = f.el.getBoundingClientRect();
-    if (hubRects.some(hr => !clearOf(r, hr)) || taken.some(t => !clearOf(r, t))) {
+    if (hubRects.some(hr => !clearOf(r, hr)) || taken.some(t => !clearOf(r, t)) || !clearDots(r)) {
       let ok = false;
       for (const dy of [16, -14, 32, -30]) {
         f.el.style.transform = "translate(" + x.toFixed(1) + "px," + (y + dy).toFixed(1) + "px) translate(-50%,-100%)";
         r = f.el.getBoundingClientRect();
-        if (hubRects.every(hr => clearOf(r, hr)) && taken.every(t => clearOf(r, t))) { ok = true; break; }
+        if (hubRects.every(hr => clearOf(r, hr)) && taken.every(t => clearOf(r, t)) && clearDots(r)) { ok = true; break; }
       }
       if (!ok) { f.el.style.display = "none"; continue; }
     }
@@ -3527,7 +3544,11 @@ function rebuildFnLayer(focusing) {
         if (d2 > 3600) continue;   // 60 wu and out: no say
         cost += 1 / Math.max(d2, 36);
       }
-      if (!best || cost < best.cost - 1e-12) best = { cost, phi, p: [px, cy, pz] };
+      // +Y depth stagger: same-plane dots merge edge-on (skeptic R3) —
+      // stations float 12 wu above the box plane; tree legs approach in
+      // the empty lane BELOW the horizontal trunk fan
+      if (!best || cost < best.cost - 1e-12)
+        best = { cost, phi, p: [px, cy + 12, pz] };
     }
     return best;
   };
@@ -3602,7 +3623,7 @@ function rebuildFnLayer(focusing) {
           const mem = fb.slice(si * per, (si + 1) * per);
           if (!mem.length) continue;
           const sb = cirMean(mem.map(ix => brgOf(g.fi, [fpos[ix*3], 0, fpos[ix*3+2]])));
-          const sp = [pos[g.fi*3] + Math.cos(sb) * R, pos[g.fi*3+1], pos[g.fi*3+2] + Math.sin(sb) * R];
+          const sp = [pos[g.fi*3] + Math.cos(sb) * R, pos[g.fi*3+1] + 2 + 2*si, pos[g.fi*3+2] + Math.sin(sb) * R];
           for (const ix of mem) {
             // a box in both roles maps by whichever role the wire uses
             S.boxSub.set("0:" + ix, sp);
@@ -3679,7 +3700,6 @@ function rebuildFnLayer(focusing) {
         if (rot) {
           const nb = brg + rot;
           md.p[0] = pos[md.fi*3] + Math.cos(nb) * md.r;
-          md.p[1] = pos[md.fi*3+1];
           md.p[2] = pos[md.fi*3+2] + Math.sin(nb) * md.r;
         }
       }
@@ -3702,13 +3722,13 @@ function rebuildFnLayer(focusing) {
       T.ep.push(px, py, pz, x, y, z);
       T.ec.push(ar, ag, ab, br, bg, bb);
       T.ed.push(pd + phase, dd + phase);
-      if (s === 7 && arrow) {
-        const tt = 7 / FS, uu = 1 - tt;
-        const axp = 2*uu*(mx-ax) + 2*tt*(bx-mx);
-        const ayp = 2*uu*(my-ay) + 2*tt*(by-my);
-        const azp = 2*uu*(mz-az) + 2*tt*(bz-mz);
+      if (s === FS && arrow) {
+        // delivery arrow sits EXACTLY at the arc end with the end tangent
+        // (t=1 derivative 2(B-M)) — tips must land on the delivery
+        // geometry, not one segment short of it (skeptic R4: 1.9px)
+        const axp = bx - mx, ayp = by - my, azp = bz - mz;
         const al = Math.hypot(axp, ayp, azp) || 1;
-        aPos.push(x, y, z);
+        aPos.push(bx, by, bz);
         aDir.push(axp/al, ayp/al, azp/al);
         aCol.push(br, bg, bb);
       }
@@ -3789,19 +3809,40 @@ function rebuildFnLayer(focusing) {
     trunkGeom.push({ p0, p1, tc, tmeta, tier: corridorTier.get(ck) });
     trunkEnds.set(k, { e: p0, x: p1, c: tc, m: tmeta });
   }
-  // station bollards + shared tree legs (subJ -> station). One dim leg per
-  // sub-junction, counted in fnJstubN so the harness arc arithmetic
-  // (bright + fnTrunkW + fnTrunkN + fnJstubN) stays exact.
+  // station bollards (size k: stations 1.0, sub-junctions 0.72 — depth in
+  // the tree reads as size; the tick rescale floors stations at 1.35x the
+  // local trunk radius) + tree legs as THIN CONDUITS: the subJ->station
+  // leg is the visually thick member of the funnel while individual ramps
+  // stay dim 1px arcs (skeptic A3). Legs carry their own busPts key and a
+  // 0.55 radius factor; they are NOT arcs, so the harness arithmetic
+  // (bright + fnTrunkW + fnTrunkN + fnJstubN) stays exact with jstubN
+  // counting only Jof delivery stubs.
   for (const S of stList) {
     const c = [colArr[S.fi*3], colArr[S.fi*3+1], colArr[S.fi*3+2]];
-    busJunc.push({ p: S.p, c });
-    const dc = [c[0]*0.62, c[1]*0.62, c[2]*0.62];
-    for (const sp of S.subJ) {
-      busJunc.push({ p: sp, c });
-      emitArc(tierB, sp[0], sp[1], sp[2], S.p[0], S.p[1], S.p[2],
-              dc[0], dc[1], dc[2], dc[0], dc[1], dc[2], 0, 0.14, false,
-              { kind: "jleg", fi: S.fi });
-      fnJstubN++;
+    busJunc.push({ p: S.p, c, k: 1 });
+    for (let li = 0; li < S.subJ.length; li++) {
+      const sp = S.subJ[li];
+      busJunc.push({ p: sp, c, k: 0.72 });
+      // legs land on a tangent line 5 wu BELOW the station — the empty
+      // lane under the horizontal trunk fan (trunks bow +Y from termini
+      // on the mid line), slotted wide of them: >=9 horizontal + >=5
+      // vertical clearance by construction
+      const tx = -Math.sin(S.brg), tz = Math.cos(S.brg);
+      const off = (li - (S.subJ.length - 1) / 2) * 18;
+      const ep = [S.p[0] + tx * off, S.p[1] - 5, S.p[2] + tz * off];
+      const dist = Math.hypot(ep[0]-sp[0], ep[1]-sp[1], ep[2]-sp[2]) || 1;
+      const lift = 0.21 * dist;   // apex >= 0.10*dist — conduit lane law
+      const mx = (sp[0]+ep[0])/2, my = (sp[1]+ep[1])/2 + lift, mz = (sp[2]+ep[2])/2;
+      let lx = sp[0], ly = sp[1], lz = sp[2];
+      for (let s = 1; s <= FS; s++) {
+        const t = s / FS, u = 1 - t;
+        const x = u*u*sp[0] + 2*u*t*mx + t*t*ep[0];
+        const y = u*u*sp[1] + 2*u*t*my + t*t*ep[1];
+        const z = u*u*sp[2] + 2*u*t*mz + t*t*ep[2];
+        busSegs.push({ a: [lx, ly, lz], b: [x, y, z], col: c,
+                       k: "L|" + S.fi + "|" + S.id, rf: 0.55 });
+        lx = x; ly = y; lz = z;
+      }
       fnLegN++;
     }
   }
@@ -3831,7 +3872,7 @@ function rebuildFnLayer(focusing) {
   // (jc.r). Stations/sub-junctions are placed in open air and stay FIXED.
   for (const [b, J] of Jof) {
     jcons.push({ p: J, kind: "box", b, r: JofR.get(b) });
-    busJunc.push({ p: [J[0], J[1], J[2]], c: [fcol[b*3], fcol[b*3+1], fcol[b*3+2]] });
+    busJunc.push({ p: [J[0], J[1], J[2]], c: [fcol[b*3], fcol[b*3+1], fcol[b*3+2]], k: 0.85 });
   }
   for (let round = 0; round < 3; round++) {
     for (let i = 0; i < jcons.length; i++) for (let j = i + 1; j < jcons.length; j++) {
@@ -3935,6 +3976,7 @@ function rebuildFnLayer(focusing) {
     }
   }
   const Jstub = new Set();   // fns already carrying a junction delivery stub
+  const tgtArrow = new Set();   // delivery arrows: ONE per target box (R4)
   for (let i = 0, p = 0; i < eidx.length; i += 2, p++) {
     const a = eidx[i], b = eidx[i+1];
     const T = wireTier[p] ? tierB : tierQ;
@@ -4009,10 +4051,16 @@ function rebuildFnLayer(focusing) {
                 phase + 2.5, 0.10, false, wmeta);
       }
     }
-    if (!done) emitArc(T, ax, ay, az, bx, by, bz,
-                       cA.r, cA.g, cA.b, cB.r, cB.g, cB.b, phase,
-                       0.08 + 0.10 * (((i + 1) * 2654435761 >>> 0) % 97) / 97,
-                       T === tierB, { kind: "wire", a, b, ln });
+    if (!done) {
+      // direct wire: one delivery arrow per TARGET box — parallel wires into
+      // the same fn share the direction cue (skeptic R4: 31 -> ~18 arrows)
+      const arr = T === tierB && !tgtArrow.has(b);
+      if (T === tierB) tgtArrow.add(b);
+      emitArc(T, ax, ay, az, bx, by, bz,
+              cA.r, cA.g, cA.b, cB.r, cB.g, cB.b, phase,
+              0.08 + 0.10 * (((i + 1) * 2654435761 >>> 0) % 97) / 97,
+              arr, { kind: "wire", a, b, ln });
+    }
   }
   const makeWires = (T, op) => {
     // fat lines: WebGL ignores linewidth on classic LineSegments — Line2
@@ -4048,16 +4096,16 @@ function rebuildFnLayer(focusing) {
       const d = bx.clone().sub(ax), len = d.length() || 1;
       Q.setFromUnitVectors(UP, d.normalize());
       V.copy(ax).addScaledVector(d, len / 2);
-      S1.set(4, len, 4);   // base radius — tick rescales to keep ~4px on screen
+      const rr = 4 * (s.rf || 1);   // legs start at 0.55x — base radius
+      S1.set(rr, len, rr);   // tick rescales to keep ~4px on screen
       M.compose(V, Q, S1);
       fnBus.setMatrixAt(k, M);
       fnBus.setColorAt(k, C.setRGB(s.col[0], s.col[1], s.col[2]));
     });
-    fnBus.instanceMatrix.needsUpdate = true;
+    fnBusRi = new Float32Array(busSegs.length).map((_, q) => 4 * (busSegs[q].rf || 1));
     if (fnBus.instanceColor) fnBus.instanceColor.needsUpdate = true;
     fnBus.frustumCulled = false;
     busPts = busSegs;
-    fnBusRi = new Float32Array(busSegs.length).fill(4);
     scene.add(fnBus);
   }
   // probe surfaces (extend-only __dbg contract): the station map + the
@@ -4074,6 +4122,24 @@ function rebuildFnLayer(focusing) {
       if (dd < jmin) jmin = dd;
     }
     if (isFinite(jmin)) fnJclearV = jmin;
+  }
+  // per-junction nearest trunk segment (stations size off their trunk in
+  // the tick) + size factors — both module vars, rebuilt with the layer
+  fnJDotTr = null; fnJDotK = null;
+  if (busJunc.length && busSegs.length) {
+    fnJDotTr = new Int32Array(busJunc.length).fill(-1);
+    fnJDotK = new Float32Array(busJunc.length);
+    for (let i = 0; i < busJunc.length; i++) {
+      fnJDotK[i] = busJunc[i].k || 1;
+      let bd = Infinity;
+      for (let s = 0; s < busSegs.length; s++) {
+        const g = busSegs[s];
+        const dA = Math.hypot(busJunc[i].p[0]-g.a[0], busJunc[i].p[1]-g.a[1], busJunc[i].p[2]-g.a[2]);
+        const dB = Math.hypot(busJunc[i].p[0]-g.b[0], busJunc[i].p[1]-g.b[1], busJunc[i].p[2]-g.b[2]);
+        const dd = Math.min(dA, dB);
+        if (dd < bd) { bd = dd; fnJDotTr[i] = s; }
+      }
+    }
   }
   if (busJunc.length) {
     // reroute bollards: the junction must be a THING — a dot where the fan
