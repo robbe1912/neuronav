@@ -2013,15 +2013,15 @@ function tick() {
       const d = Math.hypot(fnJDotPos[i*3] - camera.position.x,
                            fnJDotPos[i*3+1] - camera.position.y,
                            fnJDotPos[i*3+2] - camera.position.z);
-      // size hierarchy at a station (skeptic A3): bollard radius =
-      // max(screen law, 1.35 x its nearest trunk's radius) x its own size
-      // factor (stations 1.0, sub-junctions 0.72, Jof 0.85) — the merge
-      // dot must be the BIGGEST element at its station, never a 3px speck
-      // under a 6px trunk
+      // SCREEN-CONSTANT bollard radii, the same law class as conduit width
+      // (skeptic B3: a world-radius floor shrinks with zoom while trunks
+      // hold ~screen px — hierarchy inverted at hubzoom). Station ≈11px,
+      // sub-junction ≈5.7px, Jof ≈5.4px (px-factor ~1073), scaled by the
+      // dot's size factor — one dominant merge dot per station, tree dots
+      // clearly subordinate (round-3 crop verdict: "cluster of mid-sized
+      // balls" with 9px/6px was still too flat).
       const kf = fnJDotK ? fnJDotK[i] : 1;
-      let rT = d * 0.0038 * kf;
-      if (fnJDotTr && fnJDotTr[i] >= 0 && fnBusRi)
-        rT = Math.max(rT, fnBusRi[fnJDotTr[i]] * 1.35 * kf);
+      const rT = d * 0.0102 * kf;
       const f = rT / fnJDotR[i];
       if (Math.abs(f - 1) > 0.06) {
         const o = i * 16;
@@ -2042,7 +2042,7 @@ function tick() {
       const d = Math.hypot(fnArrowPos[i*3] - camera.position.x,
                            fnArrowPos[i*3+1] - camera.position.y,
                            fnArrowPos[i*3+2] - camera.position.z) || 1;
-      const rT = d * 0.0042;   // ~4.5px radius, ~13px cone height on screen
+      const rT = d * 0.0052;   // ~5.6px white delivery cones (skeptic B5)
       const f = rT / fnArrowR[i];
       if (Math.abs(f - 1) > 0.06) {
         for (let c = 0; c < 12; c++) a[o + c] *= f;   // uniform cone scale
@@ -3138,7 +3138,7 @@ let fnMesh = null, fnLines = null, fnStalks = null, fnMeta = [], fnArrows = null
   // corridor trunks (trunkGeom order = deterministic visEdges order) get
   // tiered control lifts, so quadratic apexes sit 0.11/0.135/0.16*dist
   // above the midpoint and never stack on each other.
-  const CONDUIT_LIFT_BASE = 0.22, CONDUIT_LIFT_TIER = 0.05;
+  const CONDUIT_LIFT_BASE = 0.22;  // tier step 0.03 below (apex law >= 0.11*dist holds)
   // quiet-tier consolidation: file pairs with >= QUIET_TRUNK_MIN quiet
   // wires collapse into ONE background trunk (QUIET_LIFT_FRAC apex lift)
   const QUIET_TRUNK_MIN = 3, QUIET_LIFT_FRAC = 0.22;
@@ -3146,9 +3146,9 @@ let fnTrunkW = 0;   // wires riding trunks (each emits entry+exit ramps)
 let fnJstubN = 0;   // shared junction legs: Jof delivery stubs + station tree legs
 let fnStationsArr = [];  // per-file bus stations of the current fn layer (via __dbg)
 let fnJclearV = -1; // min world junction->box-center distance (via __dbg)
-let fnJDotTr = null, fnJDotK = null;  // per-junction nearest trunk seg + size factor
+let fnLegN = 0;     // station tree legs (thin conduits, via __dbg)
+let fnJDotK = null;  // per-junction bollard size factor (screen-constant law)
 let fnJclip = 0;    // conduits whose obstacle lift hit the cap (via __dbg)
-let fnLegN = 0;     // station tree legs (subset of fnJstubN, via __dbg)
 let fnQuietTrunkN = 0;  // quiet-tier trunk arcs (via __dbg)
 let fnQuietTrunkW = 0;  // quiet wires absorbed into trunks (via __dbg)
 let fnBus = null;   // trunk conduit bodies (InstancedMesh cylinders)
@@ -3242,6 +3242,16 @@ function updateFocusLabels() {
   }
   const clearDots = r => stPts.every(q =>
     q[0] < r.left - 10 || q[0] > r.right + 10 || q[1] < r.top - 10 || q[1] > r.bottom + 10);
+  // delivery arrowheads are obstacles too (a label chip sat ON an arrow
+  // in the r3 crop — direction markers must never be covered)
+  if (fnArrows) {
+    const am = fnArrows.instanceMatrix.array;
+    for (let i = 0; i < am.length / 16; i++) {
+      _flabV.set(am[i*16+12], am[i*16+13], am[i*16+14]).project(camera);
+      if (_flabV.z <= 1 && Math.abs(_flabV.x) <= 1.02 && Math.abs(_flabV.y) <= 1.02)
+        stPts.push([(_flabV.x * 0.5 + 0.5) * w, (-_flabV.y * 0.5 + 0.5) * h]);
+    }
+  }
   for (const f of fLabs) {
     const p = f.kind === 1 ? fnMeta[f.ix].p : null;
     _flabV.set(
@@ -3497,9 +3507,8 @@ function rebuildFnLayer(focusing) {
   // BEYOND the outermost occupied fn-box ring — provably open air. The
   // old sphR*1.16 entry shell sat INSIDE ring 1 for every lit file
   // (1.16*sphR < sphR+14 whenever sphR < 87.5; max seen 32.1), which is
-  // exactly the buried-bollard clutter: sweeps re-projected onto that
+  const STATION_R = 32, SUBJ_R = 27;
   // shell could never escape the swarm radially.
-  const STATION_R = 22, SUBJ_R = 16;
   const ringOut = new Map();   // fi -> outermost occupied fn-box ring
   for (const [fi, arr] of byFile) {
     // aggregated files (n > AGG_MAX, non-focus) render ONE 'n×' box at
@@ -3544,7 +3553,7 @@ function rebuildFnLayer(focusing) {
       // stations float 12 wu above the box plane; tree legs approach in
       // the empty lane BELOW the horizontal trunk fan
       if (!best || cost < best.cost - 1e-12)
-        best = { cost, phi, p: [px, cy + 12, pz] };
+        best = { cost, phi, p: [px, cy + 16, pz] };
     }
     return best;
   };
@@ -3613,13 +3622,22 @@ function rebuildFnLayer(focusing) {
         const fb = [...feed.keys()].map(key => feed.get(key))
           .sort((a, b) => brgOf(g.fi, [fpos[a*3], 0, fpos[a*3+2]]) -
                         brgOf(g.fi, [fpos[b*3], 0, fpos[b*3+2]]));
-        const nSub = wires > 12 ? 3 : 2, per = Math.ceil(fb.length / nSub);
+        const nSub = Math.min(6, Math.max(2, Math.ceil(wires / 4))), per = Math.ceil(fb.length / nSub);
         const R = (ringOut.get(g.fi) || sphR(g.fi)) + SUBJ_R;
+        // subJ bearings are FORCED APART around the station bearing (0.9
+        // rad steps, half-shifted so no dot sits ON the bearing): member
+        // boxes still assign by sorted bearing, but the dots themselves
+        // never sit collinear with the tangent slot axis (skeptic B1) —
+        // and the Y ladder runs DOWNWARD below the swarm plane (station
+        // holds +Y): in-plane gaps foreshortened by the d2 camera split on
+        // the vertical axis instead (skeptic R3 real-pairs)
         for (let si = 0; si < nSub; si++) {
           const mem = fb.slice(si * per, (si + 1) * per);
           if (!mem.length) continue;
-          const sb = cirMean(mem.map(ix => brgOf(g.fi, [fpos[ix*3], 0, fpos[ix*3+2]])));
-          const sp = [pos[g.fi*3] + Math.cos(sb) * R, pos[g.fi*3+1] + 2 + 2*si, pos[g.fi*3+2] + Math.sin(sb) * R];
+          const sb = S.brg + (si - (nSub - 1) / 2) * 0.9 + 0.45;
+          const sp = [pos[g.fi*3] + Math.cos(sb) * R,
+                      pos[g.fi*3+1] - 4 - Math.min(20, 5 * si),
+                      pos[g.fi*3+2] + Math.sin(sb) * R];
           for (const ix of mem) {
             // a box in both roles maps by whichever role the wire uses
             S.boxSub.set("0:" + ix, sp);
@@ -3686,6 +3704,14 @@ function rebuildFnLayer(focusing) {
           if (om === md || om.fi !== md.fi) continue;
           if (Math.hypot(md.p[0]-om.p[0], md.p[1]-om.p[1], md.p[2]-om.p[2]) < 10)
             rot += sgn(brg, brgOf(md.fi, om.p)) * 0.10;
+        }
+        // cross-file moat dots: adjacent files' rings can intersect (a vfx
+        // subJ and a gm subJ sat 22 wu apart, 2.4 wu depth gap, 5.8px on
+        // screen at d2) — rotate away from foreign dots too, gentler weight
+        for (const om of moat) {
+          if (om === md || om.fi === md.fi) continue;
+          if (Math.hypot(md.p[0]-om.p[0], md.p[1]-om.p[1], md.p[2]-om.p[2]) < 24)
+            rot += sgn(brg, brgOf(md.fi, om.p)) * 0.05;
         }
         for (const ix of allBoxes) {
           const q = [fpos[ix*3], fpos[ix*3+1], fpos[ix*3+2]];
@@ -3760,6 +3786,7 @@ function rebuildFnLayer(focusing) {
   fnLegN = 0;
   fnJclip = 0;
   const corridorTier = new Map();   // "srcId>tgtId" -> 0..2 (first-seen order)
+  const corridorOrd = new Map();    // "srcId>tgtId" -> trunk count so far
   // fan trunk termini out of shared stations: corridors leaving/arriving at
   // one bollard offset along the station tangent (ranked by the OTHER end's
   // bearing) so coincident first/last conduit segments separate instead of
@@ -3802,23 +3829,27 @@ function rebuildFnLayer(focusing) {
     const tmeta = { kind: "trunk", k, sf, tf, mates: [] };
     const ck = stS.id + ">" + stT.id;
     if (!corridorTier.has(ck)) corridorTier.set(ck, corridorTier.size % 3);
-    trunkGeom.push({ p0, p1, tc, tmeta, tier: corridorTier.get(ck) });
+    // depth-banding (skeptic B5/R5): trunks of ONE corridor fly at distinct
+    // heights — corridor seed + per-trunk ordinal over 6 tiers, so stacked
+    // trunks read over/under instead of braiding at one depth
+    const ord = corridorOrd.get(ck) || 0; corridorOrd.set(ck, ord + 1);
+    trunkGeom.push({ p0, p1, tc, tmeta, tier: (corridorTier.get(ck) + ord) % 6 });
     trunkEnds.set(k, { e: p0, x: p1, c: tc, m: tmeta });
   }
-  // station bollards (size k: stations 1.0, sub-junctions 0.72 — depth in
-  // the tree reads as size; the tick rescale floors stations at 1.35x the
-  // local trunk radius) + tree legs as THIN CONDUITS: the subJ->station
-  // leg is the visually thick member of the funnel while individual ramps
-  // stay dim 1px arcs (skeptic A3). Legs carry their own busPts key and a
-  // 0.55 radius factor; they are NOT arcs, so the harness arithmetic
-  // (bright + fnTrunkW + fnTrunkN + fnJstubN) stays exact with jstubN
-  // counting only Jof delivery stubs.
+  // station bollards: a DISJOINT ivory family (S<=0.12, L>=0.84) — cluster
+  // hues fill the wheel densely (golden-ratio over 29 clusters), so hue
+  // disjointness is impossible; saturation+lightness distance is provable:
+  // fn boxes sit at S=0.72, L<=0.70. Bollards are the only near-white
+  // elements, so a merge dot is identifiable BY COLOR ALONE at any zoom
+  // (skeptic round-3 pre-ruling 3.ii; assert after the instancing below).
+  const BOL_COL = [ new THREE.Color().setHSL(0.10, 0.12, 0.90),   // station
+                    new THREE.Color().setHSL(0.12, 0.07, 0.87),   // sub-junction
+                    new THREE.Color().setHSL(0.12, 0.05, 0.84) ]; // Jof
   for (const S of stList) {
-    const c = [colArr[S.fi*3], colArr[S.fi*3+1], colArr[S.fi*3+2]];
-    busJunc.push({ p: S.p, c, k: 1 });
+    busJunc.push({ p: S.p, c: [BOL_COL[0].r, BOL_COL[0].g, BOL_COL[0].b], k: 1 });
     for (let li = 0; li < S.subJ.length; li++) {
       const sp = S.subJ[li];
-      busJunc.push({ p: sp, c, k: 0.72 });
+      busJunc.push({ p: sp, c: [BOL_COL[1].r, BOL_COL[1].g, BOL_COL[1].b], k: 0.56 });
       // legs land on a tangent line 5 wu BELOW the station — the empty
       // lane under the horizontal trunk fan (trunks bow +Y from termini
       // on the mid line), slotted wide of them: >=9 horizontal + >=5
@@ -3827,7 +3858,8 @@ function rebuildFnLayer(focusing) {
       const off = (li - (S.subJ.length - 1) / 2) * 18;
       const ep = [S.p[0] + tx * off, S.p[1] - 5, S.p[2] + tz * off];
       const dist = Math.hypot(ep[0]-sp[0], ep[1]-sp[1], ep[2]-sp[2]) || 1;
-      const lift = 0.21 * dist;   // apex >= 0.10*dist — conduit lane law
+      const lift = 0.26 * dist;   // apex = 0.13*dist: >= 0.10*dist law with margin
+      // (tilted chords + 8-seg sampling eat a thin 0.105 one)
       const mx = (sp[0]+ep[0])/2, my = (sp[1]+ep[1])/2 + lift, mz = (sp[2]+ep[2])/2;
       let lx = sp[0], ly = sp[1], lz = sp[2];
       for (let s = 1; s <= FS; s++) {
@@ -3835,8 +3867,9 @@ function rebuildFnLayer(focusing) {
         const x = u*u*sp[0] + 2*u*t*mx + t*t*ep[0];
         const y = u*u*sp[1] + 2*u*t*my + t*t*ep[1];
         const z = u*u*sp[2] + 2*u*t*mz + t*t*ep[2];
-        busSegs.push({ a: [lx, ly, lz], b: [x, y, z], col: c,
-                       k: "L|" + S.fi + "|" + S.id, rf: 0.55 });
+        busSegs.push({ a: [lx, ly, lz], b: [x, y, z],
+                       col: [BOL_COL[1].r, BOL_COL[1].g, BOL_COL[1].b],
+                       k: "L|" + S.fi + "|" + S.id + "|" + li, rf: 0.55 });
         lx = x; ly = y; lz = z;
       }
       fnLegN++;
@@ -3865,10 +3898,10 @@ function rebuildFnLayer(focusing) {
   // junction separation: 3 deterministic depenetration rounds — box-anchored
   // junctions (fn stops + Jof moat dots) closer than 6 spread apart
   // tangentially around their fn, then re-anchor at their own radius
-  // (jc.r). Stations/sub-junctions are placed in open air and stay FIXED.
   for (const [b, J] of Jof) {
+    // bollard instancing happens AFTER the separation rounds + merge pass
+    // (this push only registers the dot for the rounds; J mutates in place)
     jcons.push({ p: J, kind: "box", b, r: JofR.get(b) });
-    busJunc.push({ p: [J[0], J[1], J[2]], c: [fcol[b*3], fcol[b*3+1], fcol[b*3+2]], k: 0.85 });
   }
   for (let round = 0; round < 3; round++) {
     for (let i = 0; i < jcons.length; i++) for (let j = i + 1; j < jcons.length; j++) {
@@ -3903,6 +3936,55 @@ function rebuildFnLayer(focusing) {
       jc.p[0] = fb[0] + dx / l * r;
       jc.p[1] = fb[1] + dy / l * r;
       jc.p[2] = fb[2] + dz / l * r;
+    }
+  }
+  // Jof merge pass + Y-ladder (skeptic R3 real-pairs): same-depth moat dots
+  // within 22 wu collapse onto ONE shared reroute point (bollards are file-
+  // neutral ivory now, so one dot serving several stubs tells no lie), and
+  // the survivors get a deterministic +7wu-per-index Y ladder so in-plane
+  // separations foreshortened by the d2 camera still split on screen.
+  {
+    const jofs = [...Jof.entries()].sort((A, B) => A[0] - B[0]);
+    for (let i = 0; i < jofs.length; i++) {
+      if (!Jof.has(jofs[i][0])) continue;
+      for (let j = i + 1; j < jofs.length; j++) {
+        if (!Jof.has(jofs[j][0]) || jofs[j][1] === jofs[i][1]) continue;
+        const A = jofs[i][1], B = jofs[j][1];
+        if (Math.hypot(A[0]-B[0], A[1]-B[1], A[2]-B[2]) < 22) {
+          A[0] = (A[0]+B[0])/2; A[1] = (A[1]+B[1])/2; A[2] = (A[2]+B[2])/2;
+          Jof.set(jofs[j][0], A);   // share the array: fans + stubs follow
+        }
+      }
+    }
+    // snap pass: a Jof dot within 18 wu of a station/subJ tree dot SHARES
+    // that dot (sub|jof pairs at 12 wu projected 4.8px at d2 — two ivory
+    // bus dots that close read as one smear). Tree points are skipped by
+    // the Y-ladder and the instancing loop — they are already bollards.
+    const treePts = [];
+    for (const S of stList) { treePts.push(S.p); for (const q of S.subJ) treePts.push(q); }
+    const isTree = J2 => treePts.some(q => q === J2);
+    for (const [b, J] of Jof) {
+      if (isTree(J)) continue;
+      for (const S of stList) {
+        const near = [S.p, ...S.subJ].find(q =>
+          Math.hypot(q[0]-J[0], q[1]-J[1], q[2]-J[2]) < 18);
+        if (near) { Jof.set(b, near); break; }
+      }
+    }
+    const seen = new Set(); let ord = 0;
+    for (const [b, J] of Jof) {   // map iteration: merged points share refs
+      if (isTree(J)) continue;
+      const kk = J[0].toFixed(2) + "," + J[1].toFixed(2) + "," + J[2].toFixed(2);
+      if (!seen.has(kk)) { seen.add(kk); J[1] += 7 * (ord % 3); ord++; }
+    }
+    // instancing: one bollard per DISTINCT merged point
+    const done = new Set();
+    for (const [b, J] of Jof) {
+      if (isTree(J)) continue;
+      const kk = J[0].toFixed(2) + "," + J[1].toFixed(2) + "," + J[2].toFixed(2);
+      if (done.has(kk)) continue;
+      done.add(kk);
+      busJunc.push({ p: [J[0], J[1], J[2]], c: [BOL_COL[2].r, BOL_COL[2].g, BOL_COL[2].b], k: 0.55 });
     }
   }
   // obstacle-aware conduit lift (spec D5): raise the control point so the
@@ -3955,7 +4037,7 @@ function rebuildFnLayer(focusing) {
     // same corridor), raised by the obstacle law; apex stays >= 0.11*dist
     // and ALWAYS +Y (conduit lane law).
     const dist = Math.hypot(p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2]) || 1;
-    const Ltier = (CONDUIT_LIFT_BASE + CONDUIT_LIFT_TIER * g.tier) * dist;
+    const Ltier = (CONDUIT_LIFT_BASE + 0.03 * g.tier) * dist;
     const Lob = obsLift(p0, p1, tmeta.sf, tmeta.tf);
     const cap = 0.70 * dist;
     if (Lob > cap) fnJclip++;
@@ -3998,14 +4080,26 @@ function rebuildFnLayer(focusing) {
         ends.m.mates.push(wmeta);
         const dc = [ends.c[0]*0.62, ends.c[1]*0.62, ends.c[2]*0.62];
         const stBoth = stations.get(tk);
-        const e0 = stBoth && stBoth[0] ? (stBoth[0].boxSub.get("0:" + a) || stBoth[0].p) : ends.e;
+        // GAP HANDOFF (skeptic B2/R7): ramps stop 14 wu SHORT of their
+        // merge dot — the thick tree leg + bollard carry the merge, the
+        // individual rider ink ends in open moat instead of piling 34
+        // arcs onto the station/sub-junction disk
+        const shortOf = (from, to, g) => {
+          const L = Math.hypot(to[0]-from[0], to[1]-from[1], to[2]-from[2]) || 1;
+          const t = Math.max(0, (L - g) / L);
+          return [from[0]+(to[0]-from[0])*t, from[1]+(to[1]-from[1])*t, from[2]+(to[2]-from[2])*t];
+        };
+        const e0 = stBoth && stBoth[0] ? shortOf([ax,ay,az], stBoth[0].boxSub.get("0:"+a) || stBoth[0].p, 14) : ends.e;
         emitArc(T, ax, ay, az, e0[0], e0[1], e0[2],
                 dc[0], dc[1], dc[2], dc[0], dc[1], dc[2], phase, 0.16, false, wmeta);
         // exit leg: delivery fan leaves from the target box's sub-junction
-        // (or the in-station directly on quiet merges)
-        const e1 = stBoth && stBoth[1] ? (stBoth[1].boxSub.get("1:" + b) || stBoth[1].p) : ends.x;
-        emitArc(T, e1[0], e1[1], e1[2], bx, by, bz,
-                dc[0], dc[1], dc[2], cB.r, cB.g, cB.b, phase + 2.5, 0.16, false, wmeta);
+        // (or the in-station directly on quiet merges), also gapped. Emitted
+        // BOX-FIRST (like the entry tap) so both ramp kinds read as leaving
+        // the box and joining the merge — not as strokes born on the dot.
+        const e1r = stBoth && stBoth[1] ? (stBoth[1].boxSub.get("1:" + b) || stBoth[1].p) : ends.x;
+        const e1 = shortOf([bx,by,bz], e1r, 14);
+        emitArc(T, bx, by, bz, e1[0], e1[1], e1[2],
+                cB.r, cB.g, cB.b, dc[0], dc[1], dc[2], phase + 2.5, 0.16, false, wmeta);
       } else {
         const J = Jof.get(b);
         if (J) {
@@ -4119,24 +4213,10 @@ function rebuildFnLayer(focusing) {
     }
     if (isFinite(jmin)) fnJclearV = jmin;
   }
-  // per-junction nearest trunk segment (stations size off their trunk in
-  // the tick) + size factors — both module vars, rebuilt with the layer
-  fnJDotTr = null; fnJDotK = null;
-  if (busJunc.length && busSegs.length) {
-    fnJDotTr = new Int32Array(busJunc.length).fill(-1);
-    fnJDotK = new Float32Array(busJunc.length);
-    for (let i = 0; i < busJunc.length; i++) {
-      fnJDotK[i] = busJunc[i].k || 1;
-      let bd = Infinity;
-      for (let s = 0; s < busSegs.length; s++) {
-        const g = busSegs[s];
-        const dA = Math.hypot(busJunc[i].p[0]-g.a[0], busJunc[i].p[1]-g.a[1], busJunc[i].p[2]-g.a[2]);
-        const dB = Math.hypot(busJunc[i].p[0]-g.b[0], busJunc[i].p[1]-g.b[1], busJunc[i].p[2]-g.b[2]);
-        const dd = Math.min(dA, dB);
-        if (dd < bd) { bd = dd; fnJDotTr[i] = s; }
-      }
-    }
-  }
+  // per-junction size factors (screen-constant bollard law in the tick)
+  fnJDotK = null;
+  if (busJunc.length)
+    fnJDotK = Float32Array.from(busJunc, j => j.k || 1);
   if (busJunc.length) {
     // reroute bollards: the junction must be a THING — a dot where the fan
     // merges and where the bus delivers onto the fn box (Blueprint reroute)
@@ -4144,6 +4224,7 @@ function rebuildFnLayer(focusing) {
     fnJDot = new THREE.InstancedMesh(jg, new THREE.MeshBasicMaterial({
       transparent: true, opacity: 0.9, depthWrite: false }), busJunc.length);
     fnJDot.renderOrder = 3;   // junctions sit ON TOP of the wire tangle
+    fnJDot.material.depthTest = false;  // occlusion may never fully hide a dot (pre-ruling 3.iii)
     const M = new THREE.Matrix4(), C = new THREE.Color();
     fnJDotPos = new Float32Array(busJunc.length * 3);
     fnJDotR = new Float32Array(busJunc.length).fill(2.6);
@@ -4153,6 +4234,15 @@ function rebuildFnLayer(focusing) {
       fnJDotPos[k*3] = j.p[0]; fnJDotPos[k*3+1] = j.p[1]; fnJDotPos[k*3+2] = j.p[2];
       fnJDot.setColorAt(k, C.setRGB(j.c[0], j.c[1], j.c[2]));
     });
+    // disjointness assert (skeptic pre-ruling 3.ii): every bollard is
+    // near-white (S<=0.15, L>=0.80) while every RENDERED fn box carries a
+    // cluster color at S=0.72, L<=0.70 — bollards are identifiable by
+    // color alone; a violation means the family drifted
+    const hsl = { h: 0, s: 0, l: 0 };
+    for (const j of busJunc) {
+      C.setRGB(j.c[0], j.c[1], j.c[2]).getHSL(hsl);
+      if (hsl.s > 0.15 || hsl.l < 0.80) console.error("[bus] bollard family drift", hsl);
+    }
     fnJDot.instanceMatrix.needsUpdate = true;
     if (fnJDot.instanceColor) fnJDot.instanceColor.needsUpdate = true;
     fnJDot.frustumCulled = false;
@@ -4161,9 +4251,11 @@ function rebuildFnLayer(focusing) {
   if (aPos.length) {
     const arrowGeo = new THREE.ConeGeometry(2.4, 7, 6);
     const arrowMat = new THREE.MeshBasicMaterial({ transparent: true,
-      opacity: 0.9, depthWrite: false });
+      opacity: 1.0, depthWrite: false });
     fnArrows = new THREE.InstancedMesh(arrowGeo, arrowMat, aPos.length / 3);
     fnArrows.frustumCulled = false;
+    fnArrows.renderOrder = 4;   // above tubes AND bollards: cone tips sit at
+    fnArrows.material.depthTest = false;  // termini, half-inside tube volumes
     const M = new THREE.Matrix4(), Q = new THREE.Quaternion(),
           V = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0),
           S1 = new THREE.Vector3(1, 1, 1), C = new THREE.Color();
@@ -4172,7 +4264,13 @@ function rebuildFnLayer(focusing) {
       Q.setFromUnitVectors(UP, V);
       M.compose(new THREE.Vector3(aPos[k*3], aPos[k*3+1], aPos[k*3+2]), Q, S1);
       fnArrows.setMatrixAt(k, M);
-      C.setRGB(aCol[k*3], aCol[k*3+1], aCol[k*3+2]);
+      // white delivery cones (aCol stays for hover): dark tips were
+      // INVISIBLE on the dark scene background (pixel probe: 900/900 px
+      // 'dark' in every arrow window), and trunk-colored tips vanish in
+      // color continuity. Pure white contrasts bg, tubes, and boxes; at
+      // ~5.6px they stay smaller than the smallest bollard (subJ ~6px,
+      // cones vs spheres) so they never read as junction dots.
+      C.setRGB(1, 1, 1);
       fnArrows.setColorAt(k, C);
     }
     fnArrows.instanceMatrix.needsUpdate = true;
