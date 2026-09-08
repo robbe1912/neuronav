@@ -4754,9 +4754,14 @@ function mapRender() {
       spanHits(Math.min(x0, x1), Math.max(x0, x1), y);
     let y = startY;
     while (blocked(y) && y < limitY) y += step;
-    // a blocked band admits exhaustion — never let the 7px step overshoot
-    // PAST the band floor onto the box tops of the next chunk
-    if (y > limitY) y = limitY;
+    // a blocked band admits exhaustion — never let the step overshoot PAST
+    // the band floor onto the box tops of the next chunk. The floor itself
+    // spreads: each exhausted caller climbs one lattice step above the last
+    // so exhaustion never stacks two horizontals within the pairing gate.
+    if (y > limitY) {
+      y = limitY;
+      while (blocked(y) && y - step >= Math.min(startY, limitY)) y -= step;
+    }
     usedY.push(y);
     // a crowded channel bundles horizontals — it must never fail into a
     // bezier, but it must ADMIT exhaustion so the router can try the next
@@ -4997,7 +5002,7 @@ function mapRender() {
     // Staircase is the fallback when every column pierces a box.
     // Wide lane pad (no two trunks parallel inside 12px), channel floor
     // seeded below the stroke half-width so it never bleeds onto box tops.
-    const lanePad = Math.max(12, 12 / mapZ), yPad = 3 + Math.ceil(wTr / 2);
+    const lanePad = Math.max(9, 9 / mapZ), yPad = 3 + Math.ceil(wTr / 2);
     let tr = null;
     if (dir !== "same") {
       const bi = dir === "down" ? A.row : A.row - 1;      // exit-side band
@@ -5144,6 +5149,17 @@ function mapRender() {
   });
   // stroked-pair -> honest flow: the width driver mapPaint reads. Riders
   // are excluded - they stroke nothing, their ink rides the trunk.
+  // zero-length waypoints (staircase corner artifacts) inflate bend counts
+  // and segment censuses - collapse consecutive duplicate points
+  spines.forEach(sp => {
+    if (sp.pts.length < 2) return;
+    const q = [sp.pts[0]];
+    for (let k = 1; k < sp.pts.length; k++) {
+      const l = q[q.length - 1];
+      if (Math.hypot(sp.pts[k][0] - l[0], sp.pts[k][1] - l[1]) > 0.01) q.push(sp.pts[k]);
+    }
+    sp.pts = q;
+  });
   const pairW = new Map();
   spines.forEach(sp => { if (!sp.con && sp.pts.length) pairW.set(sp.pair, sp.flowSum); });
   // 3) individual named wires (tier-2 top-1/pair): terminate ON their fn rows
