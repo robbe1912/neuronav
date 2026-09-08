@@ -5496,26 +5496,43 @@ function frameQueryCamera() {
   tweenCamTo(c, c.clone().addScaledVector(dir, Math.min(900, 240 + r * 2)));
 }
 // pick a 3D fn wire / bus arc under the cursor — custom screen-space test
-// (Line2's own raycast proved unreliable here): project every arc segment
-// midpoint and take the nearest within 8px of the pointer
+// (Line2's own raycast proved unreliable here): 2D point-to-SEGMENT distance
+// on the projected chords (midpoint sampling missed on curved arcs — the
+// "collider is pre-curved" bug), nearest within 8px wins
+let pickWireZ = 1;   // NDC depth of the last hit — node-front comparisons
 function pickWire(e) {
   if (!focusActive || !fnLines) return null;
   const rect = renderer.domElement.getBoundingClientRect();
   const px = e.clientX - rect.left, py = e.clientY - rect.top;
-  const v = new THREE.Vector3();
+  const v = new THREE.Vector3(), w = new THREE.Vector3();
   let best = null, bestD = 8;
-  for (const [mesh] of [[fnLines], fnQuiet ? [fnQuiet] : []]) {
+  for (const mesh of [fnLines, fnQuiet]) {
+    if (!mesh) continue;
     const a = mesh.geometry.attributes.instanceStart.array;
     const meta = mesh.userData.meta || [];
     const n = Math.min(a.length / 6, meta.length * 8);
     for (let i = 0; i < n; i++) {
       const o = i * 6;
-      v.set((a[o] + a[o+3]) / 2, (a[o+1] + a[o+4]) / 2, (a[o+2] + a[o+5]) / 2)
-       .project(camera);
+      v.set(a[o], a[o+1], a[o+2]).project(camera);
       if (v.z > 1) continue;   // behind camera
-      const sx = (v.x + 1) / 2 * rect.width, sy = (1 - v.y) / 2 * rect.height;
-      const d = Math.hypot(sx - px, sy - py);
-      if (d < bestD) { bestD = d; best = meta[Math.floor(i / 8)]; }
+      w.set(a[o+3], a[o+4], a[o+5]).project(camera);
+      if (w.z > 1) continue;
+      const ax = (v.x + 1) / 2 * rect.width, ay = (1 - v.y) / 2 * rect.height;
+      const bx = (w.x + 1) / 2 * rect.width, by = (1 - w.y) / 2 * rect.height;
+      const dx = bx - ax, dy = by - ay;
+      const L2 = dx * dx + dy * dy;
+      let t = L2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / L2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      const d = Math.hypot(ax + t * dx - px, ay + t * dy - py);
+      // score = distance to the INK EDGE, not the centerline: real mouse
+      // coords arrive integer-rounded, and tap wires run <1px from trunk
+      // centerlines — the 4px bus must beat a 2px wire at near-ties
+      const dd = d - (meta[Math.floor(i / 8)].kind === "trunk" ? 2 : 1);
+      if (dd < bestD) {
+        bestD = dd;
+        best = meta[Math.floor(i / 8)];
+        pickWireZ = v.z + t * (w.z - v.z);
+      }
     }
   }
   return best;
@@ -5525,13 +5542,23 @@ function pickWire(e) {
 // near the hub opens the fn instead. No wire nearby -> event passes through.
 document.addEventListener("pointerdown", e => {
   downX = e.clientX; downY = e.clientY;   // fresh drag-guard origin anywhere
-}, true);
+  hideWireTip();   // any new press dismisses the tip (drag, right-click);
+}, true);          // a wire click re-shows it right after
 document.addEventListener("click", e => {
   if (!focusActive || !fnLines) return;
-  if (hoveredFn >= 0 || hovered >= 0) return;   // a node owns this click
   if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
   const wHit = pickWire(e);
   if (!wHit) return;
+  // fn-box faces are small precise targets and wires TERMINATE at them —
+  // the box wins outright. Only file spheres defer to nearer wires: the
+  // hub sphere's projected disk covers lifted bus arcs (hover raycast is
+  // sphere-only and can't see the arc in front), so depth decides there.
+  if (hoveredFn >= 0) return;
+  if (hovered >= 0) {
+    const np = [pos[hovered * 3], pos[hovered * 3 + 1], pos[hovered * 3 + 2]];
+    const nz = new THREE.Vector3(np[0], np[1], np[2]).project(camera).z;
+    if (pickWireZ >= nz) return;
+  }
   e.stopPropagation();   // the label/canvas click handlers stay out
   showWireTip(wHit, e.clientX, e.clientY);
 }, true);
