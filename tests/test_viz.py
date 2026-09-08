@@ -240,6 +240,35 @@ def run_tests():
               fnb["bright"] + fnb["silent"] > 0, str(fnb))
         check("hub ring marks the focused hub", fnb["ring"], str(fnb))
 
+        # 4c-bis. conduit lane law: bus conduits ALWAYS arc +Y over the
+        # fn-box crowd (no -Y dives into the swarm), tiered by trunk
+        # emission order so shared corridors separate. Per trunk the
+        # apex (max seg.b.y) must clear the straight-line midpoint by
+        # >= 0.10 * dist — flat or diving conduits are impossible.
+        cond = page.evaluate(
+            """() => { const pts = window.__dbg.busPts;
+                 if (!pts || !pts.length) return { trunks: 0, bad: [] };
+                 const byK = new Map();
+                 pts.forEach(s => {
+                   if (!byK.has(s.k)) byK.set(s.k, []);
+                   byK.get(s.k).push(s); });
+                 const bad = [];
+                 let n = 0;
+                 for (const [k, segs] of byK) {
+                   n++;
+                   const a0 = segs[0].a, bZ = segs[segs.length - 1].b;
+                   const dist = Math.hypot(bZ[0]-a0[0], bZ[1]-a0[1],
+                                           bZ[2]-a0[2]) || 1;
+                   let apexY = -Infinity;
+                   segs.forEach(s => { apexY = Math.max(apexY, s.b[1]); });
+                   const need = (a0[1] + bZ[1]) / 2 + 0.10 * dist;
+                   if (apexY < need - 1e-6) bad.push({ k, apexY, need });
+                 }
+                 return { trunks: n, bad }; }"""
+        )
+        check("conduits arc over the crowd (+Y, tiered)",
+              cond["trunks"] > 0 and len(cond["bad"]) == 0, str(cond))
+
         # 4d. pin topology: budgeted wires attach at DISTINCT rim points —
         # each budget wire's hub attachment bearing must deviate from the
         # direct center-to-center bearing (Rodrigues fan, ±0.22 rad)

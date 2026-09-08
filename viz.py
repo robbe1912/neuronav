@@ -3121,7 +3121,13 @@ function updateHubs() {
 
 // ---- function-level layer (files inside the current focus) -------------------
 let fnMesh = null, fnLines = null, fnStalks = null, fnMeta = [], fnArrows = null, fnQuiet = null;
-let fnTrunkN = 0;   // file-pair bus trunks in the current fn layer (via __dbg)
+  let fnTrunkN = 0;   // file-pair bus trunks in the current fn layer (via __dbg)
+  // conduit lane law: ALWAYS +Y — a -Y lift drops the conduit down INTO
+  // the fn-box swarm it is supposed to overfly. Consecutive shared-
+  // corridor trunks (trunkGeom order = deterministic visEdges order) get
+  // tiered control lifts, so quadratic apexes sit 0.11/0.135/0.16*dist
+  // above the midpoint and never stack on each other.
+  const CONDUIT_LIFT_BASE = 0.22, CONDUIT_LIFT_TIER = 0.05;
 let fnTrunkW = 0;   // wires riding trunks (each emits entry+exit ramps)
 let fnJstubN = 0;   // junction delivery stubs (shared J -> fn box legs)
 let fnBus = null;   // trunk conduit bodies (InstancedMesh cylinders)
@@ -3470,7 +3476,7 @@ function rebuildFnLayer(focusing) {
                    ar, ag, ab, br, bg, bb, phase, liftFrac, arrow, meta) => {
     if (meta) T.meta.push(meta);   // 1 meta entry per arc (8 segments each)
     const dist = Math.hypot(bx-ax, by-ay, bz-az) || 1;
-    const lift = liftFrac * dist * (ax + ay + az <= bx + by + bz ? 1 : -1);
+    const lift = liftFrac * dist;   // ALWAYS +Y: no sign hack, no -Y dives
     const mx = (ax+bx)/2, my = (ay+by)/2 + lift, mz = (az+bz)/2;
     let px = ax, py = ay, pz = az, pd = 0;
     for (let s = 1; s <= FS; s++) {
@@ -3686,8 +3692,7 @@ function rebuildFnLayer(focusing) {
     // 1px lines reads as nothing (the user: "converges but no bus line").
     // Lift 0.30 arcs the bus OVER the fn-box crowd around the spheres.
     const dist = Math.hypot(p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2]) || 1;
-    const lsgn = (p0[0] + p0[1] + p0[2] <= p1[0] + p1[1] + p1[2]) ? 1 : -1;
-    const lift = 0.30 * dist * lsgn;
+    const lift = (CONDUIT_LIFT_BASE + CONDUIT_LIFT_TIER * (fnTrunkN % 3)) * dist;
     const qx = (p0[0]+p1[0])/2, qy = (p0[1]+p1[1])/2 + lift, qz = (p0[2]+p1[2])/2;
     let bx2 = p0[0], by2 = p0[1], bz2 = p0[2];
     for (let s = 1; s <= FS; s++) {
@@ -6130,7 +6135,8 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnLines() { return fnLines; }, get hubRing() { return hubRing; },
   get fnArrows() { return fnArrows; }, get compactBallR() { return compactBallR; },
   get fnQuiet() { return fnQuiet; }, get fnTrunkN() { return fnTrunkN; },
-  get fnBus() { return fnBus; }, get fnBusPx() { return fnBusRi; }, get fnJDot() { return fnJDot; },
+  get fnBus() { return fnBus; }, get fnBusPx() { return fnBusRi; },
+  get busPts() { return busPts; }, get fnJDot() { return fnJDot; },
   get fnJDotR() { return fnJDotR; }, get fnArrowR() { return fnArrowR; },
   get camera() { return camera; },
   get fnTrunkW() { return fnTrunkW; }, get fnJstubN() { return fnJstubN; },
