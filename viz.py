@@ -1646,6 +1646,41 @@ function linkOfSeg(b, seg) {
   }
   return -1;
 }
+// edge-hover pick — screen-space nearest chord, same philosophy as pickWire:
+// Line2's 3D raycast returns whichever line the ray grazes first, which at
+// overview scale reads RANDOM at crossings (the thing under the cursor loses
+// to a marginally-nearer chord elsewhere along the ray). Project each
+// visible link's chords and take the one nearest to the pointer in px.
+function pickEdge(e) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  const px = e.clientX - rect.left, py = e.clientY - rect.top;
+  const v = new THREE.Vector3(), w = new THREE.Vector3();
+  let best = -1, bestD = 7;
+  for (let i = 0; i < links.length; i++) {
+    const l = links[i];
+    if (linkFiltered(l) || !typeVisible(l.ty) ||
+        (alphaTgt[l.s] < 0.05 && alphaTgt[l.t] < 0.05)) continue;
+    const arr = bucketPosIB[bucketOf[i]].array;
+    const base = hwSlot[i] >= 0 ? hwSlot[i] : slotOf[i];
+    const nseg = hwSlot[i] >= 0 ? 16 : 1;
+    for (let s = 0; s < nseg; s++) {
+      const o = (base + s) * 6;
+      v.set(arr[o], arr[o+1], arr[o+2]).project(camera);
+      if (v.z > 1) break;   // behind camera
+      w.set(arr[o+3], arr[o+4], arr[o+5]).project(camera);
+      if (w.z > 1) break;
+      const ax = (v.x + 1) / 2 * rect.width, ay = (1 - v.y) / 2 * rect.height;
+      const bx = (w.x + 1) / 2 * rect.width, by = (1 - w.y) / 2 * rect.height;
+      const dx = bx - ax, dy = by - ay;
+      const L2 = dx * dx + dy * dy;
+      let t = L2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / L2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      const d = Math.hypot(ax + t * dx - px, ay + t * dy - py);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+  }
+  return best;
+}
 // focus-mode dash-flow (direction cue): world-units/s of dashOffset travel,
 // re-read each tick
 const FLOW_SPEED = 2.5;
@@ -5399,14 +5434,9 @@ renderer.domElement.addEventListener("pointermove", e => {
   // bypass) AND shows its tooltip. Suppressed while dragging. Filtered/
   // ghost edges never match.
   if (!txt && !pointerDown && mwires.length) {
-    let hitLi = -1;
-    for (const h of raycaster.intersectObjects(bucketMesh)) {
-      const li = linkOfSeg(bucketMesh.indexOf(h.object), h.faceIndex);
-      if (li < 0) continue;
+    const li = pickEdge(e);
+    if (li >= 0) {
       const l = links[li];
-      if (linkFiltered(l) || !typeVisible(l.ty) ||
-          (alphaTgt[l.s] < 0.05 && alphaTgt[l.t] < 0.05)) continue;
-      hitLi = li;
       const pair = [];
       mwires.forEach(w => {
         if ((w[1] === l.s && w[3] === l.t) || (w[1] === l.t && w[3] === l.s)) pair.push(w);
@@ -5423,10 +5453,9 @@ renderer.domElement.addEventListener("pointermove", e => {
         txt = nodes[pair[0][1]].label + "::" + pair[0][2] +
           " → " + nodes[pair[0][3]].label + "::" + pair[0][4];
       }
-      break;
     }
-    if (focusActive && hitLi !== hoverEdgeLi) {
-      hoverEdgeLi = hitLi;
+    if (focusActive && li !== hoverEdgeLi) {
+      hoverEdgeLi = li;
       applyVisibility();   // re-runs the budget pass with the hover bypass
     }
   }
