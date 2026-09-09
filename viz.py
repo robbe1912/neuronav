@@ -1437,6 +1437,13 @@ dpos.set(pos);
 // dim pass needs this to keep supernode-carried edges bright)
 const supCollapsed = new Map();
 // satellite allowance block moved above the eval-time syncFileMesh() call
+// PERCEPTUAL ANCHOR law (3rd user sighting): ink arriving at a node implies
+// that node's anchor READS — 2.5px resolves geometrically but a 2-6px speck
+// is "effectively invisible as an anchor" (VLM). anchorBoost[i] = minimum
+// screen-px the sprite must draw while ink terminates on it (0 = no demand);
+// syncFileMesh lifts scale to meet it (capped so hierarchy survives).
+const ANCHOR_PX = 6;
+const anchorBoost = new Float32Array(N);
 
 // true 3D node geometry (billboard sprites read flat on screen): files =
 // shaded spheres, functions = boxes orbiting their owner file sphere,
@@ -1495,14 +1502,20 @@ function syncFileMesh() {
       // dead-only mode boosts the survivors so the red set reads at overview distance
       // sqrt(spread) size compensation: gaps scale ~spread, nodes scale
       // ~sqrt(spread) so pulling apart leaves them readable without a
-      // camera reframe (reframing was the "systems completely change" bug)
-      // focus-context nodes shrink with their alpha instead of staying
-      // full-size black occluders
-      _dummy.scale.setScalar(sphR(i) * (deadOnly && nodes[i].dead > 0 ? 1.7 : 1) * hoverScale[i] * (0.45 + 0.55 * a));
+      let sc = sphR(i) * (deadOnly && nodes[i].dead > 0 ? 1.7 : 1) * hoverScale[i] * (0.45 + 0.55 * a);
+      // perceptual anchor: if ink terminates on this node, hold the sprite
+      // at ANCHOR_PX screen radius (lift = floor/r, capped 2.6x so the size
+      // hierarchy survives — hubs stay dominant, specks stop vanishing)
+      if (anchorBoost[i] > 0) {
+        const dist = camera.position.distanceTo(_dummy.position);
+        const rpx = sc * (renderer.domElement.clientHeight / 2) /
+                    (Math.tan(camera.fov * Math.PI / 360) * dist);
+        if (rpx > 0.001 && rpx < anchorBoost[i]) sc *= Math.min(4.0, anchorBoost[i] / rpx);
+      }
+      _dummy.scale.setScalar(sc);
     }
     _dummy.updateMatrix();
     fileMesh.setMatrixAt(i, _dummy.matrix);
-    // dim = darken (scale keeps silhouette, color carries the focus gradient);
     // hovered nodes also lift slightly in brightness alongside the scale ease
     const lift = a * (1 + 0.35 * (hoverScale[i] - 1)) * (i === fnOwner ? 1.9 : 1);
     _col.setRGB(colArr[i*3] * lift, colArr[i*3+1] * lift, colArr[i*3+2] * lift);
@@ -2127,7 +2140,11 @@ function busLodInit() {
   // Both ends resolved or the whole chain culls (all FS segments share k).
   const legOK = tk => {
     const fi = +String(tk).split("|")[1];
-    return pxOf(fi) >= 2.5 && stOK(fi);
+    // PERCEPTUAL_ANCHOR: 2.5px resolves geometrically but reads as a speck —
+    // a leg chained to a 2.5-6px box is floating ink (3rd user sighting,
+    // VLM-confirmed). Cull the whole chain below ANCHOR_PX; also require the
+    // file node alpha-visible (a faded-out owner cannot anchor connector ink).
+    return pxOf(fi) >= ANCHOR_PX && alphaTgt[fi] >= 0.5 && stOK(fi);
   };
   return { res, resA, trOK, stOK, legOK, pxOf, tkPx };
 }
@@ -2744,6 +2761,7 @@ const TYPE_C3D = { call: 0xd9e2eb, signal: 0xffb347, var: 0x73e68c,
 let focusArcs = null;   // { lines, geo, mat }
 const ARC_SEG = 14;
 function rebuildFocusWires() {
+  anchorBoost.fill(0);   // anchor demands belong to the live arc set only
   const list = [];
   // zero-wire .tscn affordance (C2.2 ruling): a deg-57+ hub whose whole
   // neighborhood sits in the ghost tier renders NOTHING about its
@@ -2835,8 +2853,10 @@ function rebuildFocusWires() {
   // the arcs REPLACE the budget links' straight bucket chords (k-pass blacks
   // those) — hover/click must test THESE chords, or the collider stays on
   // the invisible pre-curve straight line
-  flines.userData.meta = list.map(li => ({ kind: "link", li }));
   flines.userData.seg = ARC_SEG;
+  // every arc terminates on a node: while this set is live, those sprites
+  // are perceptual anchors (affordance far-ends included) — demand ANCHOR_PX
+  for (const li of list) { anchorBoost[links[li].s] = ANCHOR_PX; anchorBoost[links[li].t] = ANCHOR_PX; }
   focusArcs.lines.visible = true;
 }
 function applyVisibility() {
