@@ -6,7 +6,9 @@ tool lives in. Clients: OpenCode, Claude Code, VS Code, Codex (all stdio MCP).
 Tools:
 - explore(query, n=4): START HERE for "how does X work" — one call returns
   line-numbered source slices + callers/callees flow for the best hits;
-  degrades to lexical matching when the embedding backend is down
+- repo_map(budget_tokens=2048): token-budget repo map — files ranked by
+  structural PageRank with key signatures, tree-grouped by dir; the cheap
+  orientation preamble to call before any search
 - semantic_search(query, n=8): nearest files by embedding similarity
 - find_functions(query, n=6): semantic search over individual functions
 - symbol_graph(symbol, depth=1): callers/callees around a function or class
@@ -60,6 +62,32 @@ def explore(query: str, n: int = 4) -> str:
     budget-capped so nothing externalizes to a file mid-answer.
     """
     return _explore.run(query, n)
+
+
+MAX_MAP_BUDGET = 8192
+MIN_MAP_BUDGET = 256
+
+
+def _here(g) -> str:
+    """One-line you-are-here header: which checkout, how big, how many
+    subsystems — stamped on orientation-tool responses so a client can
+    always tell which project it is talking to."""
+    n_clusters = len(nav.clusters())
+    return f"you are here: {nav.ROOT.as_posix()} — {len(g.files)} files, {n_clusters} clusters"
+
+
+@mcp.tool(annotations=READONLY)
+def repo_map(budget_tokens: int = 2048) -> str:
+    """Token-budget repo map — the cheap orientation preamble.
+
+    Aider-style: files ranked by structural PageRank (edge weight = wire
+    count), each with its key signatures, tree-grouped by directory,
+    truncated at the token budget. Call this first to learn the layout,
+    then context(path) on any file that matters.
+    """
+    budget = max(MIN_MAP_BUDGET, min(budget_tokens, MAX_MAP_BUDGET))
+    g = graph.get_graph()
+    return _here(g) + "\n" + graph.repo_map(budget_tokens=budget)
 
 
 @mcp.tool(annotations=READONLY)

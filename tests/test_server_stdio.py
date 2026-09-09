@@ -8,6 +8,7 @@
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -121,6 +122,15 @@ def main() -> None:
         tools = recv(2)["result"]["tools"]
         names = [t["name"] for t in tools]
         check("tools/list advertises context", "context" in names, f"tools={names}")
+        check("tools/list advertises repo_map", "repo_map" in names, f"tools={names}")
+        ann = next(
+            (t.get("annotations") for t in tools if t["name"] == "repo_map"), None
+        )
+        check(
+            "repo_map: readOnlyHint set",
+            bool(ann and ann.get("readOnlyHint") is True),
+            json.dumps(ann),
+        )
 
         send(
             {
@@ -165,6 +175,43 @@ def main() -> None:
             "context: no-path clusters overview",
             "clusters overview" in over and "ext=" in over,
             over.splitlines()[:1],
+        )
+
+        # repo_map: read-only orientation preamble — bounded output +
+        # you-are-here header on every response
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "tools/call",
+                "params": {"name": "repo_map", "arguments": {"budget_tokens": 512}},
+            }
+        )
+        small = text_of(recv(6)["result"])
+        check(
+            "repo_map: you-are-here header",
+            bool(re.match(r"you are here: .+ — \d+ files, \d+ clusters", small)),
+            small.splitlines()[:1],
+        )
+        check(
+            "repo_map: output bounded to budget",
+            len(small) <= 512 * 4 + 512,
+            f"{len(small)} chars for budget 512",
+        )
+
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/call",
+                "params": {"name": "repo_map", "arguments": {}},
+            }
+        )
+        full = text_of(recv(7)["result"])
+        check(
+            "repo_map: default budget admits more than a 512 sliver",
+            len(full) > len(small),
+            f"{len(small)} -> {len(full)} chars",
         )
     finally:
         proc.kill()
