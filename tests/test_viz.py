@@ -54,6 +54,24 @@ def run_tests():
         check("stats line", bool(m), stats.strip()[:90])
         n_files = int(m.group(1)) if m else 0
 
+        # 1c. boot-state LOD law: the default view gates the whole bus
+        # tier — junction bollards and trunk conduits render ONLY when
+        # their served boxes are resolvable (viewport-fraction floors).
+        # The boot camera must show no droplets, no open-ended buses
+        # (the round-5 user report, now pinned).
+        lod0 = page.evaluate(
+            """() => { const d = window.__dbg;
+                 return d.fnLod ? { b: d.fnLod.bollardsShown,
+                                    c: d.fnLod.conduitsShown,
+                                    ch: d.fnLod.chevShown,
+                                    mch: d.fnLod.minChevPx } : null; }"""
+        )
+        check("fnLod exposed in __dbg", bool(lod0), "boot read")
+        check("boot view gates bus tier (no droplets, no open buses)",
+              lod0 and lod0["b"] == 0 and lod0["c"] == 0, str(lod0))
+        check("boot chevrons meet the 8px floor or hide",
+              lod0 and (lod0["ch"] == 0 or lod0["mch"] >= 8), str(lod0))
+
         # 1b. strata reading order: stats must announce the depth channel
         strata = page.evaluate("() => window.__dbg.meta ? window.__dbg.meta.strata : false")
         if strata:
@@ -110,9 +128,10 @@ def run_tests():
                    if (!isTest(d.links[i].s) && !isTest(d.links[i].t)) continue;
                    const arr = d.bucketPosIB[d.bucketOf[i]].array, b = d.hwSlot[i];
                    const s = d.links[i].s, t = d.links[i].t;
-                   // both endpoints are surface-trimmed (radius + 2 margin):
-                   // expected total offset = trim_s + trim_t
-                   const exp = d.sizes[s] * 1.1 + 2 + d.sizes[t] * 1.1 + 2;
+                    // both endpoints are surface-trimmed (rendered radius
+                    // + 2 margin): expected total offset = trim_s + trim_t
+                    // (sphR = rendered radius incl spread + fn-sat boost)
+                    const exp = d.sphR(s) + 2 + d.sphR(t) + 2;
                    const d3 = (o, j) => {
                      const dx = arr[o] - d.pos[j*3], dy = arr[o+1] - d.pos[j*3+1], dz = arr[o+2] - d.pos[j*3+2];
                      return Math.sqrt(dx*dx + dy*dy + dz*dz);
@@ -131,7 +150,8 @@ def run_tests():
               f"hidden span {arc_hidden} / shown trim {arc_shown}")
 
 
-        # 4. focus + functions: fn boxes exist and sit ON the wires.
+        # 4. focus + functions: fn boxes exist and orbit their OWNER file
+        # sphere (arc placement) instead of sitting on the wire midpoints.
         # The focus token must exist in THIS index (harness is config-agnostic
         # since the self-index landed): aim at the highest-degree node's
         # path stem — 'magicplayer' hardcoding died when config left SWMG.
@@ -146,35 +166,223 @@ def run_tests():
         page.dispatch_event("#search", "input")
         page.check("#cbFn")
         page.wait_for_timeout(1200)
-        wire = page.evaluate(
+
+        # 4-pre. LOD law at default-camera focus (the eighth view):
+        # search focus + fn layer on, camera NOT moved — the bus tier
+        # must serve here regardless of hub shell radius. A distance-
+        # only gate passed this on topology luck (close-shelled hubs
+        # serve, far-shelled gate); focus-state keying makes it law.
+        lodf = page.evaluate(
+            """() => { const d = window.__dbg;
+                 return d.fnLod ? { b: d.fnLod.bollardsShown,
+                                    c: d.fnLod.conduitsShown,
+                                    ch: d.fnLod.chevShown,
+                                    msb: d.fnLod.minServedBoxPx,
+                                    mch: d.fnLod.minChevPx,
+                                    od: d.fnLod.oDot, oa: d.fnLod.oArrow } : null; }"""
+        )
+        check("focus at default camera serves the bus tier",
+              lodf and lodf["b"] > 0 and lodf["c"] > 0 and lodf["msb"] > 0, str(lodf))
+        check("default-cam chevrons at size or hidden",
+              lodf and (lodf["ch"] == 0 or lodf["mch"] >= 8), str(lodf))
+        check("served layer at full legibility (opacity floors)",
+              lodf and lodf["od"] >= 0.8 and lodf["oa"] >= 0.8, str(lodf))
+
+        # 4-pre3. 3D vocabulary legend (user r5: the visual language
+        # explained itself nowhere): '?' chip toggles one-line legend.
+        lg = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const chip = document.getElementById('lg3d');
+                 const x = document.getElementById('lg3dx');
+                 if (!chip || !x) return null;
+                 chip.click();
+                 const open = x.style.display === 'flex' && d.legendOpen === true;
+                 const txt = (x.textContent || '').slice(0, 60);
+                 chip.click();
+                 const closed = x.style.display === 'none' && d.legendOpen === false;
+                 return { open, closed, txt }; }"""
+        )
+        check("legend chip toggles (trunk vocabulary self-explains)",
+              lg and lg["open"] and lg["closed"], str(lg))
+        vic = page.evaluate(
             """() => { const d = window.__dbg; const nm = d.fnMesh, meta = d.fnMeta;
                  if (!nm || !meta || !meta.length) return { fail: 'no fn layer' };
-                 const pos = d.pos, adj = {};
-                 d.links.forEach(l => { (adj[l.s]=adj[l.s]||new Set()).add(l.t);
-                                        (adj[l.t]=adj[l.t]||new Set()).add(l.s); });
+                 const pos = d.pos, sizes = d.sizes;
                  let maxOff = 0;
                  for (const fm of meta) {
-                   const A = fm.file, p = fm.p; let best = Infinity;
-                   for (const B of (adj[A]||[])) {
-                     const ax=pos[A*3],ay=pos[A*3+1],az=pos[A*3+2];
-                     const bx=pos[B*3],by=pos[B*3+1],bz=pos[B*3+2];
-                     const abx=bx-ax,aby=by-ay,abz=bz-az;
-                     const apx=p[0]-ax,apy=p[1]-ay,apz=p[2]-az;
-                     const ab2=abx*abx+aby*aby+abz*abz;
-                     let tt=ab2>0?(apx*abx+apy*aby+apz*abz)/ab2:0;
-                     tt=Math.max(0,Math.min(1,tt));
-                     const dx=apx-abx*tt,dy=apy-aby*tt,dz=apz-abz*tt;
-                     best=Math.min(best,Math.sqrt(dx*dx+dy*dy+dz*dz));
-                   }
-                   maxOff=Math.max(maxOff,best);
+                    const A = fm.file, p = fm.p;
+                    const dx = p[0]-pos[A*3], dy = p[1]-pos[A*3+1], dz = p[2]-pos[A*3+2];
+                    // owner-vicinity: boxes sit on arc rings of radius
+                    // oR + 14 + ring*8 (oR = rendered sphere radius incl
+                    // spread + fn-satellite boost via d.sphR) — at most
+                    // 24+ past the rendered surface
+                    maxOff = Math.max(maxOff, Math.sqrt(dx*dx+dy*dy+dz*dz) - d.sphR(A));
                  }
                  return { count: nm.count, geom: nm.geometry.type,
                           isInstanced: nm.isInstancedMesh, maxOff }; }"""
         )
         check("fn boxes instanced cubes",
-              wire.get("isInstanced") and wire.get("geom") == "BoxGeometry", str(wire))
-        check("fn boxes on wires", wire.get("maxOff", 99) <= 15.5,
-              f"maxOff={wire.get('maxOff')} count={wire.get('count')}")
+              vic.get("isInstanced") and vic.get("geom") == "BoxGeometry", str(vic))
+        check("fn boxes orbit owner sphere", vic.get("maxOff", 99) <= 40,
+              f"maxOff={vic.get('maxOff')} count={vic.get('count')}")
+
+        # 4b. hub budget: focusing the highest-degree node lights at most
+        # HUB_EDGE_BUDGET (12) links; they render as the curved arc overlay
+        # (bucket straight segments go black underneath), every other
+        # visible link drops to ghost ink (brightness <= 0.12). Hover
+        # bypass starts inactive (no pointer).
+        hb = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const lit = d.budgetLit ? [...d.budgetLit] : [];
+                 const bright = i => {
+                   const ib = d.bucketColIB[d.bucketOf[i]];
+                   const s = (d.hwSlot[i] >= 0 ? d.hwSlot[i] : d.slotOf[i] * 6);
+                   return Math.max(ib.array[s], ib.array[s+1], ib.array[s+2]);
+                 };
+                 let leaks = 0, worst = 0;
+                 for (let i = 0; i < d.links.length; i++) {
+                   if (lit.includes(i)) continue;
+                   const b = bright(i);
+                   if (b > 0.12) leaks++;
+                   worst = Math.max(worst, b);
+                 }
+                 // budget wires draw as arcs — the overlay must exist and
+                 // carry one arc (28 verts) per budget link
+                 const fa = d.focusArcRef;
+                 const arcN = fa && fa.lines.visible
+                   ? fa.lines.geometry.attributes.instanceStart.count / 14 : 0;
+                 return { lit: lit.length, arcN, leaks, worst }; }"""
+        )
+        check("hub budget: <= 12 lit edges on focus",
+              hb and hb["lit"] <= 12 and hb["arcN"] == hb["lit"], str(hb))
+        check("hub budget: ghost links <= 0.12 brightness",
+              hb and hb["leaks"] == 0, str(hb))
+
+        # 4c. fn layer: UNCAPPED between lit files (focus-neighborhood
+        # amendment — every fn interconnection between lit files renders;
+        # HUB_FN_BUDGET retired). Tier law: wires touching a level-0 focus
+        # subject draw bright (fnLines), neighbor↔neighbor wires draw as
+        # quiet ink (fnQuiet) — all present, none deleted. 16 verts per
+        # wire (8-segment arc, per-wire lift). The focused hub also
+        # carries the additive halo ring.
+        fnb = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const wires = d.fnLines ?
+                     d.fnLines.geometry.attributes.instanceStart.count / 8 : 0;
+                 const quiet = d.fnQuiet ?
+                     d.fnQuiet.geometry.attributes.instanceStart.count / 8 : 0;
+                 const lit = new Set();
+                 let hub = -1;
+                 for (let i = 0; i < d.level.length; i++) {
+                   if (d.level[i] >= 0 && d.level[i] <= 1) lit.add(i);
+                   if (d.level[i] === 0 && hub < 0) hub = i;
+                 }
+                 let bright = 0, silent = 0;
+                 (d.fedges || []).forEach(e => {
+                   if (lit.has(e[0]) && lit.has(e[2]) &&
+                       d.alphaTgt[e[0]] > 0.5 && d.alphaTgt[e[2]] > 0.5) {
+                     // render rule: either endpoint a focus subject (level 0)
+                     if (d.level[e[0]] === 0 || d.level[e[2]] === 0) bright++;
+                     else silent++;
+                   } });
+                  return { wires, quiet, bright, silent, trunks: d.fnTrunkN,
+                           trunkW: d.fnTrunkW, jstub: d.fnJstubN,
+                           qN: d.fnQuietTrunkN, qW: d.fnQuietTrunkW,
+                           litFiles: lit.size, hub,
+                           ring: !!(d.hubRing && d.hubRing.visible) }; }"""
+        )
+        check("fn layer: hub wires bright, neighbors quiet, none dropped",
+              fnb["wires"] == fnb["bright"] + fnb["trunkW"] + fnb["trunks"] + fnb["jstub"] and
+              fnb["quiet"] == fnb["silent"] + fnb["qW"] + fnb["qN"] and
+              fnb["bright"] + fnb["silent"] > 0, str(fnb))
+        check("hub ring marks the focused hub", fnb["ring"], str(fnb))
+
+        # 4c-ter. LOD laws at focus (the densest state): the bus tier
+        # MUST read here — bollards and conduits shown, every served
+        # box resolvable, chevrons at size. Gating is a pure camera-pose
+        # function; the focus camera settles before this read.
+        lod1 = page.evaluate(
+            """() => { const d = window.__dbg;
+                 return d.fnLod ? { b: d.fnLod.bollardsShown,
+                                    c: d.fnLod.conduitsShown,
+                                    ch: d.fnLod.chevShown,
+                                    msb: d.fnLod.minServedBoxPx,
+                                    mch: d.fnLod.minChevPx } : null; }"""
+        )
+        check("focus shows the bus tier (no over-gate)",
+              lod1 and lod1["b"] > 0 and lod1["c"] > 0, str(lod1))
+        check("focus served boxes resolvable (>2 ref-px)",
+              lod1 and lod1["msb"] > 2, str(lod1))
+        check("focus chevrons at size (>=8 ref-px)",
+              lod1 and lod1["ch"] > 0 and lod1["mch"] >= 8, str(lod1))
+
+        # 4c-bis. conduit lane law: bus conduits ALWAYS arc +Y over the
+        # fn-box crowd (no -Y dives into the swarm), tiered by trunk
+        # emission order so shared corridors separate. Per trunk the
+        # apex (max seg.b.y) must clear the straight-line midpoint by
+        # >= 0.10 * dist — flat or diving conduits are impossible.
+        cond = page.evaluate(
+            """() => { const pts = window.__dbg.busPts;
+                 if (!pts || !pts.length) return { trunks: 0, bad: [] };
+                 const byK = new Map();
+                 pts.forEach(s => {
+                   if (!byK.has(s.k)) byK.set(s.k, []);
+                   byK.get(s.k).push(s); });
+                 const bad = [];
+                 let n = 0;
+                 for (const [k, segs] of byK) {
+                   n++;
+                   const a0 = segs[0].a, bZ = segs[segs.length - 1].b;
+                   const dist = Math.hypot(bZ[0]-a0[0], bZ[1]-a0[1],
+                                           bZ[2]-a0[2]) || 1;
+                   let apexY = -Infinity;
+                   segs.forEach(s => { apexY = Math.max(apexY, s.b[1]); });
+                   const need = (a0[1] + bZ[1]) / 2 + 0.10 * dist;
+                   if (apexY < need - 1e-6) bad.push({ k, apexY, need });
+                 }
+                 return { trunks: n, bad }; }"""
+        )
+        check("conduits arc over the crowd (+Y, tiered)",
+              cond["trunks"] > 0 and len(cond["bad"]) == 0, str(cond))
+
+        # 4d. pin topology: budgeted wires attach at DISTINCT rim points —
+        # each budget wire's hub attachment bearing must deviate from the
+        # direct center-to-center bearing (Rodrigues fan, ±0.22 rad)
+        pins = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const lit = [...(d.budgetLit || [])];
+                 if (lit.length < 3) return { skip: true };
+                 const att = i => {
+                   const ib = d.bucketPosIB[d.bucketOf[i]];
+                   const s = (d.hwSlot[i] >= 0 ? d.hwSlot[i] : d.slotOf[i] * 6);
+                   return [ib.array[s], ib.array[s+1], ib.array[s+2]];
+                 };
+                 const hs = d.links[lit[0]].s;
+                 let off = 0, n = 0;
+                 for (const i of lit) {
+                   const l = d.links[i];
+                   if (l.s !== hs && l.t !== hs) continue;
+                   n++;
+                   const p = att(i);
+                   const vx = p[0] - d.pos[hs*3], vy = p[1] - d.pos[hs*3+1],
+                         vz = p[2] - d.pos[hs*3+2];
+                   const other = l.s === hs ? l.t : l.s;
+                   const dx = d.pos[other*3] - d.pos[hs*3],
+                         dy = d.pos[other*3+1] - d.pos[hs*3+1],
+                         dz = d.pos[other*3+2] - d.pos[hs*3+2];
+                   const vl = Math.sqrt(vx*vx + vy*vy + vz*vz) || 1;
+                   const dl = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
+                   const cosA = (vx*dx + vy*dy + vz*dz) / (vl * dl);
+                   if (Math.acos(Math.max(-1, Math.min(1, cosA))) > 0.02) off++;
+                 }
+                 return { n, off }; }"""
+        )
+        check("pin topology: rim attachments off direct bearing",
+              pins.get("skip") or (pins["n"] >= 1 and pins["off"] >= pins["n"] - 2),
+              str(pins))
+
+        page.screenshot(path=str(ROOT / "tests" / "qa_hubbudget.png"),
+                        scale="css", type="png")
 
         # 5. hover a fn box -> tooltip shows path :: name
         hover = page.evaluate(
@@ -239,6 +447,97 @@ def run_tests():
         # pointer still parked on the fn box -> capture the stalk evidence
         page.screenshot(path=str(ROOT / "tests" / "qa_stalk.png"), scale="css", type="png")
 
+        # 5aa. aggregate fn box ('n×') click opens the fn picker over that
+        # file's roster (ranked by incident-wire count then name) — NOT the
+        # empty-name fn panel. Data-gated: needs a file owning > AGG_MAX (6)
+        # wired fns in the focused set.
+        pick = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const agg = d.fnMeta.find(m => m.count);
+                 if (!agg) return null;
+                 const v = new d.THREE.Vector3(agg.p[0], agg.p[1], agg.p[2]).project(d.camera);
+                 const r = d.renderer.domElement.getBoundingClientRect();
+                 return { sx: (v.x*0.5+0.5)*r.width + r.left,
+                          sy: (-v.y*0.5+0.5)*r.height + r.top,
+                          path: d.nodes[agg.file].path, fi: agg.file }; }"""
+        )
+        if not pick:
+            print("SKIP fn picker — no aggregate fn box in this focus")
+        else:
+            # dispatch on the canvas (harness convention): a real mouse move
+            # can be swallowed by DOM labels (.hub pills take pointer events)
+            page.evaluate(
+                """(s) => { const el = window.__dbg.renderer.domElement;
+                     const o = { clientX: s.sx, clientY: s.sy, bubbles: true };
+                     el.dispatchEvent(new PointerEvent('pointermove', o));
+                     el.dispatchEvent(new PointerEvent('pointerdown', o));
+                     el.dispatchEvent(new PointerEvent('pointerup', o));
+                     el.dispatchEvent(new MouseEvent('click', o)); }""", pick)
+            page.wait_for_timeout(300)
+            pk = page.evaluate(
+                """(s) => { const d = window.__dbg;
+                     const el = document.getElementById('fnPick');
+                     if (!el || el.style.display !== 'block') return { fail: 'picker did not open' };
+                     const rows = [...el.querySelectorAll('.row')];
+                     if (!rows.length) return { fail: 'picker has no rows' };
+                     const inc = new Map();
+                     (d.mwires || []).forEach(w => {
+                       if (w[1] === s.fi) inc.set(w[2], (inc.get(w[2]) || 0) + 1);
+                       if (w[3] === s.fi) inc.set(w[4], (inc.get(w[4]) || 0) + 1); });
+                     const want = (d.fns[s.path] || [])
+                       .map(r => [r[0], r[1], inc.get(r[0]) || 0])
+                       .sort((a, b) => (b[2] - a[2]) ||
+                         (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+                       .slice(0, 80)
+                       .map(r => r[0] + '  :' + r[1]);
+                     return { got: rows.map(r => r.textContent), want }; }""", pick)
+            check("fn picker opens on aggregate chip click",
+                  "fail" not in pk and pk["got"] == pk["want"], str(pk)[:200])
+            # ESC while the picker is OPEN: picker-only close, focus survives
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(200)
+            check("esc closes fn picker",
+                  page.evaluate(
+                      "() => document.getElementById('fnPick').style.display") == "none")
+            # reopen, then a row click = the same fn panel as that fn box
+            # (in-page dispatch: the picker itself must not fight overlays)
+            page.evaluate(
+                """(s) => { const el = window.__dbg.renderer.domElement;
+                     const o = { clientX: s.sx, clientY: s.sy, bubbles: true };
+                     el.dispatchEvent(new PointerEvent('pointermove', o));
+                     el.dispatchEvent(new PointerEvent('pointerdown', o));
+                     el.dispatchEvent(new PointerEvent('pointerup', o));
+                     el.dispatchEvent(new MouseEvent('click', o)); }""", pick)
+            page.wait_for_timeout(300)
+            page.evaluate(
+                """() => document.querySelector('#fnPick .row')
+                     .dispatchEvent(new MouseEvent('click', { bubbles: true }))""")
+            page.wait_for_timeout(300)
+            fn_info = page.evaluate(
+                """() => ({ open: document.getElementById('info').style.display === 'block',
+                     title: document.getElementById('iTitle').textContent })""")
+            check("fn picker row opens fn panel",
+                  fn_info["open"] and fn_info["title"].endswith("()"), str(fn_info))
+
+        # 5aab. aggregate fn boxes keep sphere clearance like individual
+        # boxes: they ride the OUTER arc ring (arcR+12), never tucked against
+        # the owner sphere surface.
+        sc = page.evaluate(
+            """() => { const d = window.__dbg;
+                 let aggMin = Infinity, indMin = Infinity;
+                 for (const m of d.fnMeta) {
+                   const dx = m.p[0]-d.pos[m.file*3], dy = m.p[1]-d.pos[m.file*3+1], dz = m.p[2]-d.pos[m.file*3+2];
+                   const clr = Math.sqrt(dx*dx+dy*dy+dz*dz) -
+                     d.sizes[m.file] * 1.1 * Math.sqrt(d.spread);
+                   if (m.count) aggMin = Math.min(aggMin, clr);
+                   else if (!m.agg) indMin = Math.min(indMin, clr);
+                 }
+                 return { agg: aggMin === Infinity ? -1 : +aggMin.toFixed(1),
+                          ind: indMin === Infinity ? -1 : +indMin.toFixed(1) }; }"""
+        )
+        check("aggregate fn boxes keep sphere clearance",
+              sc["agg"] < 0 or (sc["agg"] >= 24 and sc["ind"] >= 13), str(sc))
+
         # 5b. hover a lit neighbor while focused -> tooltip shows BFS path to seed
         hop = page.evaluate(
             """() => { const d = window.__dbg;
@@ -282,7 +581,8 @@ def run_tests():
         # (auto-spin off first: rotation moves the projection we aim at;
         # fn layer off too — its boxes steal the raycast pick near the
         # focused node)
-        page.evaluate("""() => { document.getElementById('cbSpin').click();
+        page.evaluate("""() => { const sb = document.getElementById('cbSpin');
+                                 if (sb.checked) sb.click();
                                  if (document.getElementById('cbFn').checked)
                                    document.getElementById('cbFn').click(); }""")
         page.wait_for_timeout(150)
@@ -370,6 +670,10 @@ def run_tests():
             """(s) => { const d = window.__dbg;
                  return { hub: d.alphaTgt[s.hub], nb: d.alphaTgt[s.nb], far: d.alphaTgt[s.far] }; }""",
             grey_setup)
+        grey_labs_on = page.evaluate(
+            """() => ["hubs", "clabs", "flabs"].map(id =>
+                 document.getElementById(id).style.opacity)"""
+        )
         page.screenshot(path=str(ROOT / "tests" / "qa_grey.png"), scale="css", type="png")
         page.evaluate(
             """() => window.__dbg.renderer.domElement.dispatchEvent(
@@ -380,6 +684,10 @@ def run_tests():
             """(s) => { const d = window.__dbg;
                  return { hubTgt: d.alphaTgt[s.hub], farBack: d.alphaTgt[s.far] }; }""",
             grey_setup)
+        grey_labs_back = page.evaluate(
+            """() => ["hubs", "clabs", "flabs"].map(id =>
+                 document.getElementById(id).style.opacity)"""
+        )
         check("hover greys non-neighbors",
               bool(grey_setup) and "fail" not in grey_setup
               and grey_on.get("hub", 0) > 0.9
@@ -387,6 +695,10 @@ def run_tests():
               and grey_on.get("far", 1) <= 0.13
               and grey_back.get("farBack", 0) > 0.9,
               f"on {grey_on} / back {grey_back}")
+        check("greyout dims hub/cluster labels and restores",
+              grey_labs_on == ["0.25", "0.25", "0.25"]
+              and grey_labs_back == ["", "", ""],
+              f"on {grey_labs_on} / back {grey_labs_back}")
 
         # 5c. cluster chip isolate -> camera tweens to frame the island
         # (clear focus first so chips act on the overview)
@@ -461,25 +773,25 @@ def run_tests():
                   strata_y.get("checked", 0) > 0 and strata_y.get("bad", 1) == 0,
                   f"{strata_y.get('checked')} depth-rising links, {strata_y.get('bad')} inverted")
 
-        # 5ec. auto-spin: checkbox is the truth (tick re-derives autoRotate
-        # every frame — reads need a settle after each click). Harness left
-        # spin OFF at 5bb, so: on -> verify -> off -> verify -> back on.
+        # 5ec. auto-spin: OFF at boot by default (eye tracking); checkbox is
+        # the truth (tick re-derives autoRotate every frame — reads need a
+        # settle after each change): off at boot -> on after enable ->
+        # off after disable.
         spin = page.evaluate(
             """() => new Promise(res => { const d = window.__dbg;
                  const box = document.getElementById('cbSpin');
                  if (!box) return res({ fail: 'no cbSpin' });
                  const set = v => { box.checked = v; box.dispatchEvent(new Event('change')); };
-                 set(true);
-                 setTimeout(() => { const on0 = d.controls.autoRotate;
-                   set(false);
-                   setTimeout(() => { const off1 = !d.controls.autoRotate;
-                     set(true);
-                     setTimeout(() => res({ on0, off1, on2: d.controls.autoRotate }), 120);
+                 setTimeout(() => { const off0 = !box.checked && !d.controls.autoRotate;
+                   set(true);
+                   setTimeout(() => { const on1 = d.controls.autoRotate;
+                     set(false);
+                     setTimeout(() => res({ off0, on1, off2: !d.controls.autoRotate }), 120);
                    }, 120); }, 120); })"""
         )
-        check("auto-spin toggles via checkbox",
+        check("auto-spin off at boot, toggles via checkbox",
               bool(spin) and "fail" not in spin
-              and all(spin.get(k) for k in ("on0", "off1", "on2")), str(spin))
+              and all(spin.get(k) for k in ("off0", "on1", "off2")), str(spin))
 
         # 5d. dead-only toggle frames the dead set. Data-gated: with zero dead
         # files the toggle may legitimately be inert (nothing to frame) — and
@@ -596,6 +908,13 @@ def run_tests():
                          memHidden, dposOk, cx: info.cx, cy: info.cy, cz: info.cz });
                  }, 500); })"""
         )
+        # 5fb. crosstalk corridor labels must not outlive their arcs: hidden
+        # while a collapse is active, back after uncollapse
+        xt_state = page.evaluate(
+            """() => { const labs = [...document.querySelectorAll('.xtlab')];
+                 return { n: labs.length,
+                          hidden: labs.every(el => el.style.display === 'none') }; }"""
+        )
         if not (sup and "skip" in sup) and sup and "fail" not in sup:
             page.screenshot(path=str(ROOT / "tests" / "qa_collapse.png"), scale="css", type="png")
         sup2 = page.evaluate(
@@ -611,9 +930,18 @@ def run_tests():
                          want: (window.__supMems || []).length });
                  }, 500); })"""
         )
+        xt_back = page.evaluate(
+            """() => { const labs = [...document.querySelectorAll('.xtlab')];
+                 return { n: labs.length,
+                          shown: labs.filter(el => el.style.display === 'block').length }; }"""
+        )
         if sup and "skip" in sup:
             print(f"SKIP supernode collapse — {sup.get('skip')}")
         else:
+            check("crosstalk labels hide while collapsed",
+                  xt_state["n"] == 0 or xt_state["hidden"], str(xt_state))
+            check("crosstalk labels return after uncollapse",
+                  xt_back["n"] == 0 or xt_back["shown"] > 0, str(xt_back))
             check("supernode collapse re-targets and restores",
                   bool(sup) and "fail" not in sup
                   and sup.get("collapsed") and not sup2.get("collapsed2")
@@ -621,6 +949,83 @@ def run_tests():
                   and sup.get("dposOk") == sup.get("mems")
                   and sup2.get("restored") == sup2.get("want"),
                   f"{sup} / {sup2}")
+
+        # 5g. wire hover: pointer over an edge names its strongest named wire
+        # ('A::sfn -> B::dfn' from DATA.mwires). Data-gated on mwires + an
+        # on-screen probeable edge.
+        wtip = page.evaluate(
+            """() => { const d = window.__dbg;
+                 if (!(d.mwires || []).length) return null;
+                 const r = d.renderer.domElement.getBoundingClientRect();
+                 for (let i = 0; i < d.links.length; i++) {
+                   const l = d.links[i];
+                   if (d.hwSlot[i] >= 0) continue;   // straight slots only
+                   if (d.alphaTgt[l.s] <= 0.5 || d.alphaTgt[l.t] <= 0.5) continue;
+                   const arr = d.bucketPosIB[d.bucketOf[i]].array, o = d.slotOf[i] * 6;
+                   if (Math.abs(arr[o] - arr[o+3]) + Math.abs(arr[o+1] - arr[o+4]) < 2) continue;
+                   const mx = (arr[o] + arr[o+3]) / 2, my = (arr[o+1] + arr[o+4]) / 2, mz = (arr[o+2] + arr[o+5]) / 2;
+                   const vm = new d.THREE.Vector3(mx, my, mz).project(d.camera);
+                   if (Math.abs(vm.x) > 0.85 || Math.abs(vm.y) > 0.85 || vm.z > 1) continue;
+                   const px = p => [(p.x*0.5+0.5)*r.width, (-p.y*0.5+0.5)*r.height];
+                   const vs = px(new d.THREE.Vector3(d.pos[l.s*3], d.pos[l.s*3+1], d.pos[l.s*3+2]).project(d.camera));
+                   const vt = px(new d.THREE.Vector3(d.pos[l.t*3], d.pos[l.t*3+1], d.pos[l.t*3+2]).project(d.camera));
+                    const mp = px(vm);
+                    // clear of EVERY lit node (not just endpoints) so a node
+                    // tooltip can't win the pick at the wire midpoint
+                    let near = false;
+                    for (let j = 0; j < d.nodes.length; j++) {
+                      if (d.alphaTgt[j] <= 0.5) continue;
+                      const pj = px(new d.THREE.Vector3(
+                        d.pos[j*3], d.pos[j*3+1], d.pos[j*3+2]).project(d.camera));
+                      if (Math.hypot(mp[0]-pj[0], mp[1]-pj[1]) < 40) { near = true; break; }
+                    }
+                    if (near) continue;
+                    // clear of both endpoints so the node tooltip can't win
+                    if (Math.hypot(mp[0]-vs[0], mp[1]-vs[1]) < 40 ||
+                        Math.hypot(mp[0]-vt[0], mp[1]-vt[1]) < 40) continue;
+                   let has = false;
+                   (d.mwires || []).forEach(w => {
+                     if ((w[1] === l.s && w[3] === l.t) ||
+                         (w[1] === l.t && w[3] === l.s)) has = true; });
+                   if (!has) continue;
+                   return { sx: mp[0] + r.left, sy: mp[1] + r.top, s: l.s, t: l.t };
+                 }
+                 return null; }"""
+        )
+        if wtip:
+            # harness convention: dispatch on the canvas (real mouse moves
+            # can be swallowed by DOM labels); park off-canvas first so no
+            # node tooltip lingers
+            page.evaluate(
+                """(s) => { const el = window.__dbg.renderer.domElement;
+                     el.dispatchEvent(new PointerEvent('pointermove',
+                       { clientX: -500, clientY: -500, bubbles: true }));
+                     el.dispatchEvent(new PointerEvent('pointermove',
+                       { clientX: s.sx, clientY: s.sy, bubbles: true })); }""",
+                wtip)
+            page.wait_for_timeout(300)
+            # expectation: the product's own picker + strongest-wire sort —
+            # the oracle must be the same semantics the handler uses, not a
+            # re-derivation (the old raycast-first-hit + deg-only sort could
+            # drift from nearest-chord + full tiebreaks)
+            wres = page.evaluate(
+                """(s) => { const d = window.__dbg, tip = document.getElementById('tip');
+                     const m = d.pickWireMeta({ clientX: s.sx, clientY: s.sy });
+                     let want = null;
+                     if (m && m.kind === "link") {
+                       const pair = d.strongPair(d.links[m.li]);
+                       if (pair.length)
+                         want = d.nodes[pair[0][1]].label + '::' + pair[0][2] +
+                           ' \\u2192 ' + d.nodes[pair[0][3]].label + '::' + pair[0][4];
+                     }
+                     return { shown: tip.style.display === 'block',
+                              text: tip.textContent, want }; }""",
+                wtip)
+            check("wire tooltip on edge hover",
+                  wres["shown"] and wres["want"] and wres["text"] == wres["want"],
+                  str(wres))
+        else:
+            print("SKIP wire tooltip — no probeable on-screen wired edge")
 
         # 6. git-churn channel: DATA.hot normalized 0..1, size boost applied
         # to the hottest file, cold files untouched, caption notes the channel.
@@ -674,17 +1079,21 @@ def run_tests():
                  const chips = () => document.querySelectorAll('#legend .chip');
                  const fineN = chips().length;
                  if (fineN <= 3) return { skip: 'too few fine clusters to supergroup' };
-                 let idx = -1;
+                 let idx = -1, bestDh = 0, bestJ = -1;
                  // pick a clustered node whose fine vs group hues differ
-                 // enough that recoloring is measurable in RGB
+                 // enough that recoloring is measurable in RGB; fall back to
+                 // the max-dh node (index drift can shrink the hue gaps)
                  const hue = c => c < 0 ? 0.08 : (c * 0.61803398875 + 0.55) % 1;
                  for (let j = 0; j < d.nodes.length; j++) {
                    const nd = d.nodes[j];
                    if (nd.cluster < 0 || nd.gid < 0 || d.alphaTgt[j] <= 0.5) continue;
+                   if (nd.dead > 0) continue;
                    let dh = Math.abs(hue(nd.gid) - hue(nd.cluster));
                    dh = Math.min(dh, 1 - dh);
-                   if (dh > 0.15 && nd.dead <= 0) { idx = j; break; }
+                   if (dh > bestDh) { bestDh = dh; bestJ = j; }
+                   if (dh > 0.15) { idx = j; break; }
                  }
+                 if (idx < 0 && bestDh > 0.02) idx = bestJ;
                  if (idx < 0) return { fail: 'no recolorable node' };
                  const cArr = d.fileMesh.instanceColor.array;
                  const c0 = [cArr[idx*3], cArr[idx*3+1], cArr[idx*3+2]];
@@ -714,6 +1123,472 @@ def run_tests():
                   and grp.get("recolored"),
                   str(grp))
 
+        # 7b. split layout: the 2D map pane is a PERMANENT part of the tool —
+        # visible at boot, sharing the window with the 3D canvas; #bMap is a
+        # collapse/expand toggle; the divider resizes both regions 280-700px
+        # and the choice persists in localStorage
+        splits = page.evaluate("""() => {
+          const p = document.getElementById('mapPane');
+          const d = document.getElementById('divider');
+          const c = window.__dbg.renderer.domElement;
+          return { open: !p.classList.contains('collapsed'),
+                   w: p.clientWidth, cw: c.clientWidth, iw: innerWidth,
+                   btnOn: document.getElementById('bMap').classList.contains('on'),
+                   divVisible: d.offsetWidth > 0 }; }""")
+        check("map pane visible at boot (default open)",
+              splits["open"] and splits["btnOn"] and splits["divVisible"],
+              str(splits))
+        check("3D canvas shares window with pane at boot",
+              abs(splits["cw"] + splits["w"] - splits["iw"]) <= 2, str(splits))
+        # divider drag: pane widens, 3D canvas shrinks by the same amount
+        db = page.evaluate(
+            "() => document.getElementById('divider').getBoundingClientRect()")
+        cx, cy = db["x"] + db["width"] / 2, db["y"] + 100
+        page.mouse.move(cx, cy)
+        page.mouse.down()
+        page.mouse.move(cx - 120, cy, steps=8)
+        page.mouse.up()
+        page.wait_for_timeout(400)   # rAF-throttled resize settles
+        after = page.evaluate("""() => ({
+          w: document.getElementById('mapPane').clientWidth,
+          cw: window.__dbg.renderer.domElement.clientWidth, iw: innerWidth,
+          stored: parseInt(localStorage.getItem('neuronav.mapPaneW') || '', 10) })""")
+        check("divider drag widens pane + shrinks renderer (180..iw-320 clamp)",
+              180 <= after["w"] <= after["iw"] - 320
+              and after["w"] >= splits["w"] + 100
+              and after["cw"] < splits["cw"]
+              and abs(after["cw"] + after["w"] - after["iw"]) <= 2, str(after))
+        check("divider drag persists width to localStorage",
+              after["stored"] == after["w"], str(after))
+        # bMap = collapse/expand: 3D renderer reclaims the full window
+        page.evaluate("() => document.getElementById('bMap').click()")
+        page.wait_for_timeout(300)
+        closed = page.evaluate("""() => {
+          const p = document.getElementById('mapPane');
+          const d = document.getElementById('divider');
+          const c = window.__dbg.renderer.domElement;
+          return { collapsed: p.classList.contains('collapsed'),
+                   w: p.clientWidth, cw: c.clientWidth, iw: innerWidth,
+                   divGone: d.offsetWidth === 0 }; }""")
+        check("bMap collapses pane; renderer takes full window",
+              closed["collapsed"] and closed["divGone"] and closed["w"] == 0
+              and abs(closed["cw"] - closed["iw"]) <= 2, str(closed))
+        page.evaluate("() => document.getElementById('bMap').click()")
+        page.wait_for_timeout(300)
+        reopened = page.evaluate("""() => ({
+          w: document.getElementById('mapPane').clientWidth,
+          cw: window.__dbg.renderer.domElement.clientWidth,
+          iw: innerWidth });""")
+        check("bMap re-expands pane at persisted width",
+              reopened["w"] == after["w"]
+              and abs(reopened["cw"] + reopened["w"] - reopened["iw"]) <= 2,
+              str(reopened))
+        # width choice survives a reload (localStorage)
+        page.reload()
+        page.wait_for_timeout(2000)
+        reloaded = page.evaluate("""() => ({
+          w: document.getElementById('mapPane').clientWidth,
+          open: !document.getElementById('mapPane').classList.contains('collapsed') });""")
+        check("pane width persists across reload",
+              reloaded["open"] and reloaded["w"] == after["w"], str(reloaded))
+
+        # 8. map pane (map-spec-v2): named wires over fn rosters. Data-gated
+        # on DATA.mwires — an index without the named-wire exports skips.
+        # The pane is already open at the persisted width from section 7b.
+        mw = page.evaluate("() => window.__dbg.mwires || []")
+        if not mw:
+            print("SKIP map pane — no DATA.mwires in this index")
+        else:
+            page.fill("#search", tok)
+            page.dispatch_event("#search", "input")
+            page.wait_for_timeout(600)
+            page.wait_for_timeout(500)   # rAF-coalesced paint
+            minfo = page.evaluate("() => window.__dbg.mapInfo()")
+            check("map named wires drawn",
+                  bool(minfo) and minfo.get("wires", 0) > 0, str(minfo))
+            check("map roster rows rendered",
+                  bool(minfo) and minfo.get("rosterRows", 0) > 0, str(minfo))
+            # bundle chips need an admitted pair carrying 2+ same-type wires
+            has_mult = page.evaluate(
+                """() => { const d = window.__dbg; const cnt = new Map();
+                     (d.mwires || []).forEach(w => {
+                       if (w[0] === 'var') return;
+                       const k = w[1] + '_' + w[3];
+                       cnt.set(k, (cnt.get(k) || 0) + 1); });
+                     for (const v of cnt.values()) if (v >= 2) return true;
+                     return false; }""")
+            if has_mult:
+                check("map bundle chips present",
+                      bool(minfo) and minfo.get("chips", 0) > 0, str(minfo))
+            else:
+                print("SKIP map bundle chips - no multi-wire pair in this index")
+            # quiet edges (addendum rule 5): no wire text fields; wires still flow
+            check("map quiet edges: label fields removed",
+                  bool(minfo) and "labels" not in minfo
+                  and "shownLabels" not in minfo
+                  and minfo.get("wires", 0) > 0,
+                  str(minfo))
+            # routed edges (addendum rule 3): no diagonal center-to-center
+            # runs - S-curves keep vertical tangents, ortho allows only the
+            # <=8px corner chamfers
+            ra = page.evaluate(
+                """() => { const L = window.__dbg.mapLayout; if (!L) return null;
+                     let bez = 0, vt = 0, diag = 0, maxCh = 0;
+                     const aud = arr => (arr || []).forEach(w => {
+                       if (w.bez) { bez++;
+                         if (w.c1 && w.c1[0] === w.pts[0][0] &&
+                             w.c2 && w.c2[0] === w.pts[1][0]) vt++;
+                       } else {
+                         for (let i = 1; i < w.pts.length; i++) {
+                           const dx = Math.abs(w.pts[i][0] - w.pts[i-1][0]);
+                           const dy = Math.abs(w.pts[i][1] - w.pts[i-1][1]);
+                           if (dx > 0.01 && dy > 0.01) { diag++;
+                             maxCh = Math.max(maxCh, Math.min(dx, dy)); } } } });
+                     aud(L.wires); aud(L.spines);
+                     return { bez, vt, diag, maxCh: +maxCh.toFixed(1) }; }""")
+            check("map routed edges: no diagonal runs",
+                  bool(ra) and ra["bez"] == ra["vt"]
+                  and ra["maxCh"] <= 8.01,
+                  str(ra))
+            # vars chip: off at boot, toggles via a real click on its rect
+            check("map vars chip default off",
+                  page.evaluate("() => !window.__dbg.mapVars"))
+            bb = page.evaluate(
+                "() => document.getElementById('mapPane').getBoundingClientRect()")
+            page.mouse.click(bb["x"] + 31, bb["y"] + 34)   # pane-local (31,34)
+            page.wait_for_timeout(300)
+            check("map vars chip toggles on",
+                  page.evaluate("() => window.__dbg.mapVars"))
+            page.mouse.click(bb["x"] + 31, bb["y"] + 34)
+            page.wait_for_timeout(300)
+            # L2: click the first named wire -> showFnInfo panel (CALLED BY
+            # section), full caller list, no "+N more hidden" 24-cap.
+            # ONE layout is dense: wire midpoints can sit under a box or
+            # chip (they outrank wires in hit priority, and chips anchor at
+            # wire midpoints) - scan segment quarter points for one clear
+            # of both, on an orthogonal (lane-routed) wire only.
+            wpt = page.evaluate("""() => {
+                const L = window.__dbg.mapLayout; if (!L) return null;
+                const pane = document.getElementById('mapPane');
+                const pw = pane.clientWidth, ph = pane.clientHeight;
+                const px = window.__dbg.mapPX, py = window.__dbg.mapPY,
+                      z = window.__dbg.mapZ;
+                const covered = (sx, sy) =>
+                    // rects are x0/x1/y0/y1 world bands (L3567), not x/y/w/h
+                    L.rects.some(r => sx > (r.x0 - px) * z && sx < (r.x1 - px) * z
+                                  && sy > (r.y0 - py) * z && sy < (r.y1 - py) * z)
+                    || (L.chips || []).some(c =>
+                        sx > (c.x - px) * z && sx < (c.x + c.w - px) * z
+                        && sy > (c.y - py) * z && sy < (c.y + c.h - py) * z);
+                for (const w of L.wires) {
+                    if (w.bez) continue;
+                    // var wires open the FILE panel by design (member target
+                    // is not a fn) - probe only fn-bearing wires
+                    if (w.ty === 'var') continue;
+                    for (let k = 1; k < w.pts.length; k++) {
+                        for (const t of [0.5, 0.25, 0.75]) {
+                            const wx = w.pts[k-1][0] + (w.pts[k][0] - w.pts[k-1][0]) * t;
+                            const wy = w.pts[k-1][1] + (w.pts[k][1] - w.pts[k-1][1]) * t;
+                            const sx = (wx - px) * z, sy = (wy - py) * z;
+                            if (sx > 4 && sy > 4 && sx < pw - 4 && sy < ph - 4
+                                && !covered(sx, sy)) {
+                                // diag: replica of product mapWireAt (6px
+                                // screen tol, bez cubics sampled) at this aim
+                                const tol = 6 / z, near = [];
+                                const segd = (ax, ay, bx, by) => {
+                                    const dx = bx - ax, dy = by - ay, L2 = dx*dx + dy*dy || 1;
+                                    const tt = Math.max(0, Math.min(1, ((wx-ax)*dx + (wy-ay)*dy) / L2));
+                                    return Math.hypot(wx - ax - tt*dx, wy - ay - tt*dy); };
+                                L.wires.forEach((nw, nix) => {
+                                    let bd = 1e9;
+                                    if (nw.bez) {
+                                        if (!nw.c1 || !nw.c2) return;
+                                        for (let s = 0; s <= 24; s++) {
+                                            const u = s / 24, iu = 1 - u;
+                                            const x = iu*iu*iu*nw.pts[0][0] + 3*iu*iu*u*nw.c1[0] + 3*iu*u*u*nw.c2[0] + u*u*u*nw.pts[1][0];
+                                            const y = iu*iu*iu*nw.pts[0][1] + 3*iu*iu*u*nw.c1[1] + 3*iu*u*u*nw.c2[1] + u*u*u*nw.pts[1][1];
+                                            bd = Math.min(bd, Math.hypot(wx - x, wy - y));
+                                        }
+                                    } else {
+                                        for (let q = 1; q < nw.pts.length; q++)
+                                            bd = Math.min(bd, segd(nw.pts[q-1][0], nw.pts[q-1][1], nw.pts[q][0], nw.pts[q][1]));
+                                    }
+                                    if (bd <= tol) near.push({ ix: nix, ty: nw.ty, tyT: typeof nw.ty, dfn: nw.dfn, d: +bd.toFixed(2) });
+                                });
+                                near.sort((a, b) => a.d - b.d);
+                                return { sx, sy, near: near.slice(0, 6) };
+                            }
+                        }
+                    }
+                }
+                return null; }""")
+            if wpt:
+                page.mouse.click(bb["x"] + wpt["sx"], bb["y"] + wpt["sy"])
+                page.wait_for_timeout(300)
+                fn_info = page.evaluate(
+                    """() => ({ open: document.getElementById('info').style.display === 'block',
+                         title: document.getElementById('iTitle').textContent })""")
+                check("map wire click opens fn panel",
+                      fn_info["open"] and fn_info["title"].endswith("()"),
+                      str(fn_info) + " aim=" + str(wpt))
+                check("fn panel lists all callers (no 24-cap)",
+                      page.locator("#iUsedBy li.more").count() == 0)
+            else:
+                print("SKIP map wire click - no clear wire point")
+            # corridor trunk consolidation (declutter): corridors spanning
+            # the same chunk-row hop share one trunk - distinct stroked
+            # corridor polylines must drop below the admitted corridor
+            # count. Data-gated: E>12 AND same-hop groups present in this
+            # index/focus (fit layout, after the probe above - a wire
+            # click opens the info panel without relayout).
+            zinfo = page.evaluate("() => window.__dbg.mapInfo()")
+            if zinfo and zinfo.get("E", 0) > 12 and zinfo.get("trunkGroups", 0) > 0:
+                check("map trunk consolidation reduces drawn polylines",
+                      zinfo.get("spinesDrawn", 0) < zinfo.get("spineTotal", 0)
+                      and zinfo.get("drawnPolys", 0) <
+                          zinfo.get("spineTotal", 0) + zinfo.get("wires", 0),
+                      str(zinfo))
+            else:
+                print(f"SKIP map trunk consolidation - {zinfo}")
+
+            # 8b. ONE layout at every zoom (tier system deleted): the wiring
+            # diagram above is THE layout - zooming out must NEVER collapse
+            # it into band trunks, zooming in must never re-scope or
+            # rearrange it, and drag = pan must hold at every zoom.
+            mbb = page.evaluate(
+                "() => document.getElementById('mapPane').getBoundingClientRect()")
+            mcx, mcy = mbb["x"] + mbb["width"] / 2, mbb["y"] + mbb["height"] / 2
+
+            def mstruct():
+                return page.evaluate("""() => { const m = window.__dbg.mapInfo() || {};
+                    return { E: m.E, wires: m.wires, chips: m.chips,
+                             boxIxs: m.boxIxs, rosterRows: m.rosterRows,
+                             probe: m.probeWire }; }""")
+
+            mkeys = ("E", "wires", "chips", "boxIxs", "rosterRows")
+            mbase = mstruct()
+            # zoom in far: same structure, just scaled
+            page.mouse.move(mcx, mcy)
+            for _ in range(10):
+                page.mouse.wheel(0, -120)
+                page.wait_for_timeout(60)
+            page.wait_for_timeout(500)
+            zin = mstruct()
+            check("zoom-in keeps the ONE layout (no re-scope, no relayout)",
+                  all(zin[k] == mbase[k] for k in mkeys), f"{mbase} -> {zin}")
+            page.screenshot(path=str(ROOT / "tests" / "qa_map_zoomin.png"),
+                            scale="css", type="png")
+            print("artifact: tests/qa_map_zoomin.png")
+            # drag = pan zoomed in far: content follows the cursor 1:1 and
+            # HOLDS (the old doc re-center snap-back is gone)
+            page.mouse.move(mcx, mcy)
+            page.mouse.down()
+            page.mouse.move(mcx - 200, mcy - 150, steps=8)
+            page.mouse.up()
+            page.wait_for_timeout(120)
+            pan_mid = mstruct()
+            page.wait_for_timeout(600)
+            pan = mstruct()
+            pr0, pr1 = zin["probe"], pan["probe"]
+            moved = pr0 and pr1 and abs(pr1["sx"] - pr0["sx"] + 200) < 30 \
+                and abs(pr1["sy"] - pr0["sy"] + 150) < 30
+            check("drag pans content zoomed-in (cursor-following)", moved,
+                  f"{pr0} -> {pr1}")
+            check("pan holds zoomed-in (no snap-back)",
+                  pan_mid["probe"] == pan["probe"],
+                  f"{pan_mid['probe']} vs {pan['probe']}")
+            check("pan does not change the layout",
+                  all(pan[k] == mbase[k] for k in mkeys), "")
+            page.screenshot(path=str(ROOT / "tests" / "qa_map_panned.png"),
+                            scale="css", type="png")
+            print("artifact: tests/qa_map_panned.png")
+            # zoom far out: SAME layout scaled - nothing collapses into
+            # band trunks, no doc re-scoping, boxes keep their rosters
+            page.mouse.move(mcx, mcy)
+            for _ in range(14):
+                page.mouse.wheel(0, 120)
+                page.wait_for_timeout(60)
+            page.wait_for_timeout(500)
+            zout = mstruct()
+            check("zoom-out keeps the ONE layout (no band-trunk collapse)",
+                  all(zout[k] == mbase[k] for k in mkeys), f"{mbase} -> {zout}")
+            check("zoom-out moved the view (scaled, not frozen)",
+                  zout["probe"] != zin["probe"], "")
+            page.screenshot(path=str(ROOT / "tests" / "qa_map_zoomout.png"),
+                            scale="css", type="png")
+            print("artifact: tests/qa_map_zoomout.png")
+            # 8c. zoom-gated ink tiers (paint-only): the fine layers
+            # (underlays, named wires, port dots/arrowheads) hide when
+            # zoomed out and return when zoomed back in (hysteresis) -
+            # the LAYOUT never changes: mapLayout.wires count identical
+            # at both ends (ONE-layout law survives the tier gate).
+            wires_pre = page.evaluate("() => window.__dbg.mapLayout.wires.length")
+            page.mouse.move(mcx, mcy)
+            for _ in range(20):
+                page.mouse.wheel(0, 120)
+                page.wait_for_timeout(40)
+                if page.evaluate("() => window.__dbg.mapZ") < 0.5:
+                    break
+            page.wait_for_timeout(400)
+            ink_off = page.evaluate(
+                """() => ({ ink: window.__dbg.mapInkOn,
+                            wires: window.__dbg.mapLayout.wires.length })""")
+            check("zoom-out hides fine ink (paint-only tier)",
+                  ink_off["ink"] is False, str(ink_off))
+            check("ink gate never touches the layout (wires unchanged)",
+                  ink_off["wires"] == wires_pre, f"{wires_pre} -> {ink_off['wires']}")
+            # zoom back in: hysteresis upper bound restores the tier
+            page.mouse.move(mcx, mcy)
+            for _ in range(20):
+                page.mouse.wheel(0, -120)
+                page.wait_for_timeout(40)
+                if page.evaluate("() => window.__dbg.mapZ") >= 1.0:
+                    break
+            page.wait_for_timeout(400)
+            ink_on = page.evaluate("() => window.__dbg.mapInkOn")
+            check("zoom-in restores fine ink (hysteresis)",
+                  ink_on is True, str(ink_on))
+            # 8d. map-center-on-selection: clicking a 3D file node pans the
+            # 2D pane so the node's box lands on pane center (tol 12px,
+            # clamp permitting), pulses it, and is a clean no-op while the
+            # pane is collapsed.
+            def _hub_pick():
+                return page.evaluate(
+                    """() => { const d = window.__dbg;
+                         // aim at the focus SEED itself (level 0): always lit
+                         // bright (pickable per the alphaTgt > 0.5 pick law),
+                         // guaranteed inside the map's top-40, and camera-
+                         // centered. Deep-BFS high-degree nodes can be dimmed
+                         // (unpickable by design) or capped out of the map.
+                         let hub = -1, best = -1;
+                         for (let i = 0; i < d.level.length; i++) {
+                           if (d.level[i] !== 0) continue;
+                           if ((d.degree[i] || 0) > best) {
+                             best = d.degree[i] || 0; hub = i; }
+                         }
+                         if (hub < 0) return null;
+                         const v = new d.THREE.Vector3(
+                           d.pos[hub*3], d.pos[hub*3+1],
+                           d.pos[hub*3+2]).project(d.camera);
+                         if (v.z > 1 || v.z < -1) return null;
+                         const r = d.renderer.domElement.getBoundingClientRect();
+                         return { hub,
+                                  sx: (v.x*0.5+0.5)*r.width + r.left,
+                                  sy: (-v.y*0.5+0.5)*r.height + r.top }; }"""
+                )
+                pick = _hub_pick()
+                vp = page.viewport_size
+                _diag = page.evaluate(
+                    """() => { const d = window.__dbg;
+                         return { lay: !!d.mapLayout, req: d.mapCenterReq,
+                                  pulse: d.mapPulse ? d.mapPulse.i : null,
+                                  rects: d.mapRects ? d.mapRects.length : -1 }; }"""
+                )
+                if pick is not None and 0 <= pick["sx"] < vp["width"] and 0 <= pick["sy"] < vp["height"]:
+                    _pre = page.evaluate(
+                        """() => { const d = window.__dbg;
+                             return { vis: d.mapPane.canvas.offsetWidth > 0,
+                                      req0: d.mapCenterReq }; }"""
+                    )
+                    page.mouse.click(pick["sx"], pick["sy"])
+                    page.wait_for_timeout(400)
+                    aim = page.evaluate(
+                        """() => { const d = window.__dbg;
+                             if (!d.mapLayout) return { hit: false, lay: false };
+                             const want = d.mapPulse ? d.mapPulse.i : d.mapCenterReq;
+                             const rc = d.mapRects.find(r => r.i === want);
+                             if (!rc) return { hit: false, want,
+                                               rects: d.mapRects.length,
+                                               ixs: d.mapRects.map(r => r.i).slice(0, 45) };
+                             const pane = d.mapPane.canvas;
+                             const cx = (rc.x + rc.w/2 - d.mapPX) * d.mapZ;
+                             const cy = (rc.y + rc.h/2 - d.mapPY) * d.mapZ;
+                             return { hit: true, pulse: !!d.mapPulse,
+                                      off: Math.hypot(cx - pane.clientWidth/2,
+                                                      cy - pane.clientHeight/2) }; }"""
+                    )
+                    aim["_pre"] = _pre
+                    aim["_pick"] = pick
+                    check("3d node click centers its map box",
+                          aim.get("hit") and aim["off"] <= 18, str(aim))
+                    check("center click starts the amber pulse",
+                          aim.get("hit") and aim["pulse"] is True, str(aim))
+                # pane collapsed -> request refused, nothing deferred
+                page.click("#bMap")
+                page.wait_for_timeout(150)
+                page.mouse.click(pick["sx"], pick["sy"])
+                page.wait_for_timeout(150)
+                req_closed = page.evaluate("() => window.__dbg.mapCenterReq")
+                check("collapsed pane: center request refused",
+                      req_closed == -1, str(req_closed))
+                page.click("#bMap")   # reopen for later sections
+                page.wait_for_timeout(200)
+                # pulse lifecycle: gone after MAP_PULSE_MS (900) + margin
+                page.wait_for_timeout(1300)
+                pulse_gone = page.evaluate("() => window.__dbg.mapPulse")
+                check("selection pulse clears after its lifetime",
+                      pulse_gone is None, str(pulse_gone))
+            # a wild pan must clamp the window inside the world, never
+            # strand the layout off-screen
+            page.mouse.move(mcx, mcy)
+            page.mouse.down()
+            page.mouse.move(mcx - 2000, mcy - 2000, steps=8)
+            page.mouse.up()
+            page.wait_for_timeout(400)
+            vw = page.evaluate("""() => ({ px: window.__dbg.mapPX,
+                py: window.__dbg.mapPY, z: window.__dbg.mapZ })""")
+            check("pan clamps the window inside the world",
+                  vw["px"] >= 0 and vw["py"] >= 0, str(vw))
+            # restore defaults so later sections see the stock state
+            page.evaluate("""() => { const c = [...document.querySelectorAll('#dirs .chip')]
+                .find(x => x.textContent.trim() === 'tests'); c.click(); }""")
+            page.evaluate("() => { const d = document.getElementById('depth');"
+                          " d.value = 2; d.dispatchEvent(new Event('input')); }")
+            page.wait_for_timeout(400)
+            page.fill("#search", tok)
+            page.dispatch_event("#search", "input")
+            page.wait_for_timeout(500)
+            page.evaluate("() => document.getElementById('bMap').click()")  # collapse pane
+            page.keyboard.press("Escape")
+
+        # 4-pre2 (tail). trunk click parity (user r5: colored bus wires
+        # were clickable, the white trunk conduits were not): every
+        # served bus element must resolve to the SAME rider-card
+        # affordance. Stateful probe — runs LAST so its focus/camera
+        # perturbations land after every other assertion.
+        page.fill("#search", tok)
+        page.dispatch_event("#search", "input")
+        page.wait_for_timeout(1500)
+        trk = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const el = d.renderer.domElement, r = el.getBoundingClientRect();
+                 for (let x = 16; x < r.width; x += 24)
+                   for (let y = 16; y < r.height; y += 24) {
+                     const m = d.pickWireMeta({ clientX: r.left + x,
+                                               clientY: r.top + y });
+                     if (m && m.kind === 'trunk')
+                       return { sx: r.left + x, sy: r.top + y,
+                                desc: d.wireDesc(m) };
+                   }
+                 return null; }"""
+        )
+        check("served trunks are pickable at default-cam focus",
+              bool(trk), (str(trk)[:80] if trk else "no trunk pick in scan"))
+        if trk:
+            page.evaluate(
+                """(s) => { const el = window.__dbg.renderer.domElement;
+                     const o = { clientX: s.sx, clientY: s.sy, bubbles: true };
+                     el.dispatchEvent(new PointerEvent('pointermove', o));
+                     el.dispatchEvent(new PointerEvent('pointerdown', o));
+                     el.dispatchEvent(new PointerEvent('pointerup', o));
+                     el.dispatchEvent(new MouseEvent('click', o)); }""", trk)
+            page.wait_for_timeout(300)
+            card = page.evaluate(
+                """() => { const t = document.getElementById('wireTip');
+                     return t && t.style.display === 'block' ? t.textContent : ''; }"""
+            )
+            check("trunk click opens the rider card",
+                  card.startswith("\U0001F68C bus ") and "→" in card, card[:80])
         # artifact: screenshot of the focused fn-layer state
         page.screenshot(path=str(ROOT / "tests" / "last_run.png"), scale="css", type="png")
         print("artifact: tests/last_run.png")

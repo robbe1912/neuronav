@@ -23,3 +23,5 @@ graph_neuronav.html
 
 tools/_*.py
 tools/*.png
+.team_scratch/
+qa/
