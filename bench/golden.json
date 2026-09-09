@@ -1,0 +1,42 @@
+{
+  "comment": [
+    "Golden query set for the recall benchmark, over the neuronav SELF-INDEX",
+    "(config/neuronav.json: this repo's .py files). Every target is verifiable",
+    "from code: `anchor` is a literal substring that MUST appear in each",
+    "target file — one string (all targets) or a list matching targets order;",
+    "bench/run_bench.py --verify-only re-checks this and fails loudly when",
+    "repo drift breaks a justification. Prose/cross queries also pass a",
+    "no-echo check: no 3 contiguous query words appear verbatim in a target.",
+    "Targets are never",
+    "opinions; they name the file that owns the identifier/behavior the",
+    "query asks for. kinds: exact (fn identifier), symbol (class name),",
+    "prose (natural-language), cross (cross-cutting concern)."
+  ],
+  "queries": [
+    {"q": "parse_tscn", "kind": "exact", "targets": ["extractors/gdscript.py"], "anchor": "def parse_tscn"},
+    {"q": "sha256_of", "kind": "exact", "targets": ["nav.py"], "anchor": "def sha256_of"},
+    {"q": "titleize", "kind": "exact", "targets": ["clusters.py"], "anchor": "def titleize"},
+    {"q": "registry_for", "kind": "exact", "targets": ["extractors/__init__.py"], "anchor": "def registry_for"},
+    {"q": "sync_functions", "kind": "exact", "targets": ["graph.py"], "anchor": "def sync_functions"},
+    {"q": "_fold_continuations", "kind": "exact", "targets": ["graph.py"], "anchor": "def _fold_continuations"},
+    {"q": "_has_exact", "kind": "exact", "targets": ["extractors/python.py"], "anchor": "def _has_exact"},
+    {"q": "_lexical_fallback", "kind": "exact", "targets": ["explore.py"], "anchor": "def _lexical_fallback"},
+    {"q": "import_base", "kind": "exact", "targets": ["nav.py"], "anchor": "def import_base"},
+    {"q": "find_functions", "kind": "exact", "targets": ["graph.py", "server.py"], "anchor": "def find_functions"},
+    {"q": "NoCacheHandler", "kind": "symbol", "targets": ["tools/serve.py"], "anchor": "class NoCacheHandler"},
+    {"q": "LabelContext", "kind": "symbol", "targets": ["clusters.py"], "anchor": "class LabelContext"},
+    {"q": "FileSym", "kind": "symbol", "targets": ["extractors/model.py"], "anchor": "class FileSym"},
+    {"q": "MagicPlayer", "kind": "symbol", "targets": ["clusters.py"], "anchor": "MagicPlayer"},
+    {"q": "where do godot scene resources get read", "kind": "prose", "targets": ["extractors/gdscript.py"], "anchor": "def parse_tscn"},
+    {"q": "how do cross-module references become caller edges", "kind": "prose", "targets": ["extractors/python.py"], "anchor": "def _record_import"},
+    {"q": "what stops two simultaneous rescans from corrupting the store", "kind": "prose", "targets": ["nav.py"], "anchor": "def _db_lock"},
+    {"q": "how do hermetic suites embed without a live model backend", "kind": "prose", "targets": ["nav.py"], "anchor": "NEURONAV_EMBED_FAKE"},
+    {"q": "how are subsystem names chosen from member vocabulary", "kind": "prose", "targets": ["clusters.py"], "anchor": "def label_cluster"},
+    {"q": "which module hosts the agent protocol on stdin and stdout", "kind": "prose", "targets": ["server.py"], "anchor": "mcp.run(transport=\"stdio\")"},
+    {"q": "single call that shows a newcomer how the codebase is organized", "kind": "prose", "targets": ["explore.py", "server.py"], "anchor": ["def run(query", "def explore(query"]},
+    {"q": "how is the embedding index archived inside the repository", "kind": "prose", "targets": ["nav.py"], "anchor": "def export_base"},
+    {"q": "how is visual clutter of the rendered page measured", "kind": "prose", "targets": ["tools/qa_readability.py"], "anchor": "def run_declut_battery"},
+    {"q": "unreachable deletion candidates and their confidence tiers", "kind": "cross", "targets": ["graph.py"], "anchor": "def dead_code"},
+    {"q": "how are node positions computed reproducibly before baking", "kind": "cross", "targets": ["viz.py"], "anchor": "default_rng(1234)"}
+  ]
+}

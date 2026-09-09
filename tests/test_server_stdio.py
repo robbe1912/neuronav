@@ -8,6 +8,7 @@
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -121,6 +122,15 @@ def main() -> None:
         tools = recv(2)["result"]["tools"]
         names = [t["name"] for t in tools]
         check("tools/list advertises context", "context" in names, f"tools={names}")
+        check("tools/list advertises repo_map", "repo_map" in names, f"tools={names}")
+        ann = next(
+            (t.get("annotations") for t in tools if t["name"] == "repo_map"), None
+        )
+        check(
+            "repo_map: readOnlyHint set",
+            bool(ann and ann.get("readOnlyHint") is True),
+            json.dumps(ann),
+        )
 
         send(
             {
@@ -166,6 +176,71 @@ def main() -> None:
             "clusters overview" in over and "ext=" in over,
             over.splitlines()[:1],
         )
+
+        # repo_map: read-only orientation preamble — bounded output +
+        # you-are-here header on every response
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "tools/call",
+                "params": {"name": "repo_map", "arguments": {"budget_tokens": 512}},
+            }
+        )
+        small = text_of(recv(6)["result"])
+        check(
+            "repo_map: you-are-here header",
+            bool(re.match(r"you are here: .+ — \d+ files, \d+ clusters", small)),
+            small.splitlines()[:1],
+        )
+        check(
+            "repo_map: output bounded to budget",
+            len(small) <= 512 * 4 + 512,
+            f"{len(small)} chars for budget 512",
+        )
+
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/call",
+                "params": {"name": "repo_map", "arguments": {}},
+            }
+        )
+        full = text_of(recv(7)["result"])
+        check(
+            "repo_map: default budget admits more than a 512 sliver",
+            len(full) > len(small),
+            f"{len(small)} -> {len(full)} chars",
+        )
+
+        # semantic_search: hybrid recall surface — you-are-here header,
+        # src provenance per hit, 1-hop ctx neighbor labels
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 8,
+                "method": "tools/call",
+                "params": {
+                    "name": "semantic_search",
+                    "arguments": {"query": "player movement input", "n": 5},
+                },
+            }
+        )
+        sr = text_of(recv(8)["result"])
+        check(
+            "semantic_search: you-are-here header",
+            bool(re.match(r"you are here: .+ — \d+ files, \d+ clusters", sr)),
+            sr.splitlines()[:1],
+        )
+        body = [ln for ln in sr.splitlines() if "src=" in ln]
+        check(
+            "semantic_search: ranked hits with src provenance",
+            len(body) >= 1
+            and all(re.search(r"src=(vec|bm25|both)(?:\s|$)", ln) for ln in body),
+            sr.splitlines()[1:4],
+        )
+        check("semantic_search: ctx neighbor labels", "ctx=[" in sr, sr.splitlines()[1:2])
     finally:
         proc.kill()
         time.sleep(0.5)

@@ -863,6 +863,118 @@ class Graph:
         dups.sort(key=lambda d: -len(d["members"]))
         return dups[:limit]
 
+    # -- file importance: pagerank + budgeted repo map -------------------------
+
+    def file_wires(self) -> dict[str, dict[str, int]]:
+        """File-level adjacency folded from the symbol graph: file ->
+        {file: wire count}. A wire is one distinct symbol-to-symbol edge
+        (call/signal/var); self-wires drop, scene pseudo-keys (`rel::tscn`)
+        fold onto their scene file. Sorted + deterministic — the single
+        implementation shared by pagerank/repo_map and recall's 1-hop
+        expansion."""
+        out: dict[str, dict[str, int]] = {rel: {} for rel in self.files}
+        for src in sorted(self.edges):
+            sfi = src.partition("::")[0]
+            row = out.setdefault(sfi, {})
+            for dst in sorted(self.edges[src]):
+                dfi = dst.partition("::")[0]
+                if sfi != dfi:
+                    row[dfi] = row.get(dfi, 0) + 1
+        return out
+
+    def pagerank(self, damping: float = 0.85, iters: int = 30) -> dict[str, float]:
+        """PageRank over the file wire graph (edge weight = wire count).
+        Deterministic by construction: uniform init, exactly `iters`
+        power iterations (fixed cap, no epsilon early-exit), files visited
+        in sorted index order; dangling files (no out-wires) spread their
+        mass uniformly so ranks sum to ~1."""
+        wires = self.file_wires()
+        fis = sorted(wires)
+        n = len(fis)
+        if n == 0:
+            return {}
+        idx = {fi: i for i, fi in enumerate(fis)}
+        out_w = [sum(wires[fi].values()) for fi in fis]
+        # incoming wires as (src index, weight); built in sorted src order
+        # so the float accumulation order — and thus every rank — is fixed
+        incoming: list[list[tuple[int, int]]] = [[] for _ in fis]
+        for i, fi in enumerate(fis):
+            for dst, w in sorted(wires[fi].items()):
+                incoming[idx[dst]].append((i, w))
+        base = (1.0 - damping) / n
+        rank = [1.0 / n] * n
+        for _ in range(iters):
+            dangling = sum(r for r, w in zip(rank, out_w) if w == 0)
+            spread = damping * dangling / n
+            nxt = [0.0] * n
+            for i in range(n):
+                s = base + spread
+                for src_i, w in incoming[i]:
+                    s += damping * w * rank[src_i] / out_w[src_i]
+                nxt[i] = s
+            rank = nxt
+        return {fi: rank[i] for i, fi in enumerate(fis)}
+
+    def _symbol_degrees(self) -> dict[str, dict[str, int]]:
+        """Per-file func name -> wire degree (out + in symbol edges).
+        SIGNAL:/VAR:/tscn pseudo-key names never match a func name, so
+        they fold out naturally."""
+        deg = {rel: dict.fromkeys(fs.funcs, 0) for rel, fs in self.files.items()}
+        for src in sorted(self.edges):
+            sp, _, sn = src.partition("::")
+            row = deg.setdefault(sp, {})
+            if sn in row:
+                row[sn] += len(self.edges[src])
+        for dst in sorted(self.reverse):
+            dp, _, dn = dst.partition("::")
+            row = deg.setdefault(dp, {})
+            if dn in row:
+                row[dn] += len(self.reverse[dst])
+        return deg
+
+    def repo_map(self, budget_tokens: int = 2048) -> str:
+        """Aider-style token-budgeted repo map: PageRank-ordered files,
+        tree-grouped by directory, each file capped to its top signatures
+        by symbol wire degree (god files get a slice, not the kitchen
+        sink — MAP_MAX_SIGS). Hard budget stop measured in _toks (1 token
+        ~= 4 chars). Byte-stable: same graph -> identical string."""
+        rank = self.pagerank()
+        deg = self._symbol_degrees()
+        files = sorted(self.files, key=lambda rel: (-rank.get(rel, 0.0), rel))
+        lines: list[str] = []
+        used = 0
+        dir_stack: list[str] = []
+        for rel in files:
+            fs = self.files[rel]
+            dparts = rel.split("/")[:-1]
+            # tree headers: emit only the directory parts that changed
+            keep = 0
+            while (
+                keep < len(dir_stack)
+                and keep < len(dparts)
+                and dir_stack[keep] == dparts[keep]
+            ):
+                keep += 1
+            block = [f"{'  ' * i}{p}/" for i, p in enumerate(dparts[keep:], start=keep)]
+            dir_stack = dparts
+            block.append(f"{'  ' * len(dparts)}{rel.split('/')[-1]}:")
+            names = sorted(
+                fs.funcs, key=lambda nm: (-deg.get(rel, {}).get(nm, 0), nm)
+            )[:MAP_MAX_SIGS]
+            sigs = [f"class {fs.class_name}"] if fs.class_name else []
+            sigs.extend(
+                f"{nm}({', '.join(p for p, _t in fs.funcs[nm].params)})" for nm in names
+            )
+            if sigs:
+                block.append(f"{'  ' * (len(dparts) + 1)}{', '.join(sigs)}")
+            for ln in block:
+                t = _toks(ln)
+                if used + t > budget_tokens:
+                    return "\n".join(lines)
+                lines.append(ln)
+                used += t
+        return "\n".join(lines)
+
 
 def _normalize_body(body: str) -> str:
     out = []
@@ -990,6 +1102,27 @@ def find_functions(query: str, n: int = 6) -> list[dict[str, object]]:
             }
         )
     return out
+
+
+# -- repo map: module surface + budget metric -----------------------------------
+
+MAP_MAX_SIGS = 8  # per-file signature cap: god files show a slice, not everything
+
+
+def _toks(s: str) -> int:
+    """Token estimate for repo-map budgeting: 1 token ~= 4 chars.
+    Deterministic; the map's budget contract is measured in this metric."""
+    return (len(s) + 3) // 4
+
+
+def pagerank(damping: float = 0.85, iters: int = 30) -> dict[str, float]:
+    """File-level PageRank over the shared graph singleton (wire-weighted)."""
+    return get_graph().pagerank(damping=damping, iters=iters)
+
+
+def repo_map(budget_tokens: int = 2048) -> str:
+    """Budgeted repo map over the shared graph singleton."""
+    return get_graph().repo_map(budget_tokens=budget_tokens)
 
 
 # -- module-level singleton ---------------------------------------------------
