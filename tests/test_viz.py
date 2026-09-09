@@ -178,12 +178,32 @@ def run_tests():
                                     c: d.fnLod.conduitsShown,
                                     ch: d.fnLod.chevShown,
                                     msb: d.fnLod.minServedBoxPx,
-                                    mch: d.fnLod.minChevPx } : null; }"""
+                                    mch: d.fnLod.minChevPx,
+                                    od: d.fnLod.oDot, oa: d.fnLod.oArrow } : null; }"""
         )
         check("focus at default camera serves the bus tier",
               lodf and lodf["b"] > 0 and lodf["c"] > 0 and lodf["msb"] > 0, str(lodf))
         check("default-cam chevrons at size or hidden",
               lodf and (lodf["ch"] == 0 or lodf["mch"] >= 8), str(lodf))
+        check("served layer at full legibility (opacity floors)",
+              lodf and lodf["od"] >= 0.8 and lodf["oa"] >= 0.8, str(lodf))
+
+        # 4-pre3. 3D vocabulary legend (user r5: the visual language
+        # explained itself nowhere): '?' chip toggles one-line legend.
+        lg = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const chip = document.getElementById('lg3d');
+                 const x = document.getElementById('lg3dx');
+                 if (!chip || !x) return null;
+                 chip.click();
+                 const open = x.style.display === 'flex' && d.legendOpen === true;
+                 const txt = (x.textContent || '').slice(0, 60);
+                 chip.click();
+                 const closed = x.style.display === 'none' && d.legendOpen === false;
+                 return { open, closed, txt }; }"""
+        )
+        check("legend chip toggles (trunk vocabulary self-explains)",
+              lg and lg["open"] and lg["closed"], str(lg))
         vic = page.evaluate(
             """() => { const d = window.__dbg; const nm = d.fnMesh, meta = d.fnMeta;
                  if (!nm || !meta || !meta.length) return { fail: 'no fn layer' };
@@ -1530,6 +1550,45 @@ def run_tests():
             page.wait_for_timeout(500)
             page.evaluate("() => document.getElementById('bMap').click()")  # collapse pane
             page.keyboard.press("Escape")
+
+        # 4-pre2 (tail). trunk click parity (user r5: colored bus wires
+        # were clickable, the white trunk conduits were not): every
+        # served bus element must resolve to the SAME rider-card
+        # affordance. Stateful probe — runs LAST so its focus/camera
+        # perturbations land after every other assertion.
+        page.fill("#search", tok)
+        page.dispatch_event("#search", "input")
+        page.wait_for_timeout(1500)
+        trk = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const el = d.renderer.domElement, r = el.getBoundingClientRect();
+                 for (let x = 16; x < r.width; x += 24)
+                   for (let y = 16; y < r.height; y += 24) {
+                     const m = d.pickWireMeta({ clientX: r.left + x,
+                                               clientY: r.top + y });
+                     if (m && m.kind === 'trunk')
+                       return { sx: r.left + x, sy: r.top + y,
+                                desc: d.wireDesc(m) };
+                   }
+                 return null; }"""
+        )
+        check("served trunks are pickable at default-cam focus",
+              bool(trk), (str(trk)[:80] if trk else "no trunk pick in scan"))
+        if trk:
+            page.evaluate(
+                """(s) => { const el = window.__dbg.renderer.domElement;
+                     const o = { clientX: s.sx, clientY: s.sy, bubbles: true };
+                     el.dispatchEvent(new PointerEvent('pointermove', o));
+                     el.dispatchEvent(new PointerEvent('pointerdown', o));
+                     el.dispatchEvent(new PointerEvent('pointerup', o));
+                     el.dispatchEvent(new MouseEvent('click', o)); }""", trk)
+            page.wait_for_timeout(300)
+            card = page.evaluate(
+                """() => { const t = document.getElementById('wireTip');
+                     return t && t.style.display === 'block' ? t.textContent : ''; }"""
+            )
+            check("trunk click opens the rider card",
+                  card.startswith("\U0001F68C bus ") and "→" in card, card[:80])
         # artifact: screenshot of the focused fn-layer state
         page.screenshot(path=str(ROOT / "tests" / "last_run.png"), scale="css", type="png")
         print("artifact: tests/last_run.png")
