@@ -4371,8 +4371,8 @@ function rebuildFnLayer(focusing) {
           const base = p0[1] + (p1[1] - p0[1]) * t;
           const n = (top + 4 - base) / (2*t*(1 - t));
           if (n > need) need = n;
-        }
       }
+    }
     }
     return need;
   };
@@ -4389,7 +4389,7 @@ function rebuildFnLayer(focusing) {
     const dist = Math.hypot(p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2]) || 1;
     const Ltier = (CONDUIT_LIFT_BASE + 0.03 * g.tier) * dist;
     const Lob = obsLift(p0, p1, tmeta.sf, tmeta.tf);
-    const cap = 0.80 * dist;   // 0.70 clipped 6 cu arcs THROUGH boxes (fnJclip)
+    const cap = 0.70 * dist;   // 0.80 bow cleared boxes but +2..6 TT at cu fan
     const lift = Math.min(cap, Math.max(0.11 * dist,
                     Math.max(Ltier, Lob) - 8 * (g.fanR || 0)));
     emitArc(tierB, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
