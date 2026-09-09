@@ -54,6 +54,24 @@ def run_tests():
         check("stats line", bool(m), stats.strip()[:90])
         n_files = int(m.group(1)) if m else 0
 
+        # 1c. boot-state LOD law: the default view gates the whole bus
+        # tier — junction bollards and trunk conduits render ONLY when
+        # their served boxes are resolvable (viewport-fraction floors).
+        # The boot camera must show no droplets, no open-ended buses
+        # (the round-5 user report, now pinned).
+        lod0 = page.evaluate(
+            """() => { const d = window.__dbg;
+                 return d.fnLod ? { b: d.fnLod.bollardsShown,
+                                    c: d.fnLod.conduitsShown,
+                                    ch: d.fnLod.chevShown,
+                                    mch: d.fnLod.minChevPx } : null; }"""
+        )
+        check("fnLod exposed in __dbg", bool(lod0), "boot read")
+        check("boot view gates bus tier (no droplets, no open buses)",
+              lod0 and lod0["b"] == 0 and lod0["c"] == 0, str(lod0))
+        check("boot chevrons meet the 8px floor or hide",
+              lod0 and (lod0["ch"] == 0 or lod0["mch"] >= 8), str(lod0))
+
         # 1b. strata reading order: stats must announce the depth channel
         strata = page.evaluate("() => window.__dbg.meta ? window.__dbg.meta.strata : false")
         if strata:
@@ -240,6 +258,25 @@ def run_tests():
               fnb["quiet"] == fnb["silent"] + fnb["qW"] + fnb["qN"] and
               fnb["bright"] + fnb["silent"] > 0, str(fnb))
         check("hub ring marks the focused hub", fnb["ring"], str(fnb))
+
+        # 4c-ter. LOD laws at focus (the densest state): the bus tier
+        # MUST read here — bollards and conduits shown, every served
+        # box resolvable, chevrons at size. Gating is a pure camera-pose
+        # function; the focus camera settles before this read.
+        lod1 = page.evaluate(
+            """() => { const d = window.__dbg;
+                 return d.fnLod ? { b: d.fnLod.bollardsShown,
+                                    c: d.fnLod.conduitsShown,
+                                    ch: d.fnLod.chevShown,
+                                    msb: d.fnLod.minServedBoxPx,
+                                    mch: d.fnLod.minChevPx } : null; }"""
+        )
+        check("focus shows the bus tier (no over-gate)",
+              lod1 and lod1["b"] > 0 and lod1["c"] > 0, str(lod1))
+        check("focus served boxes resolvable (>2 ref-px)",
+              lod1 and lod1["msb"] > 2, str(lod1))
+        check("focus chevrons at size (>=8 ref-px)",
+              lod1 and lod1["ch"] > 0 and lod1["mch"] >= 8, str(lod1))
 
         # 4c-bis. conduit lane law: bus conduits ALWAYS arc +Y over the
         # fn-box crowd (no -Y dives into the swarm), tiered by trunk
