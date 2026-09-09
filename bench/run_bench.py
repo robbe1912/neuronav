@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -43,8 +44,9 @@ from pathlib import Path
 BENCH_DIR = Path(__file__).resolve().parent
 DEFAULT_REPO = BENCH_DIR.parent
 K = 12  # contract: nav.search(q, k=12)
-CONFIGS = ("vec", "bm25", "expand", "both")
-NEEDS = {"vec": (), "bm25": ("bm25",), "expand": ("expand",), "both": ("bm25", "expand")}
+CONFIGS = ("vec", "bm25", "expand", "both", "wfused")
+NEEDS = {"vec": (), "bm25": ("bm25",), "expand": ("expand",), "both": ("bm25", "expand"), "wfused": ("bm25", "expand", "weights")}
+WFUSED_WEIGHTS = (1.0, 0.7)  # (vec, bm25) — Main-pinned weighted fusion vs unweighted RRF k=60
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -62,23 +64,46 @@ def _load_golden() -> list[dict]:
     assert len(queries) == 25, f"golden set must stay at 25 queries, got {len(queries)}"
     return queries
 
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _echo(query: str, hay: str) -> str | None:
+    """First contiguous 3-word echo of the query inside `hay`, if any."""
+    qt = _TOKEN_RE.findall(query.lower())
+    ht = _TOKEN_RE.findall(hay.lower())
+    tris = {tuple(ht[i : i + 3]) for i in range(len(ht) - 2)}
+    for i in range(len(qt) - 2):
+        tri = tuple(qt[i : i + 3])
+        if tri in tris:
+            return " ".join(tri)
+    return None
+
 
 def verify_golden(repo: Path) -> int:
-    """Every target must still contain its anchor substring — the mechanical
-    justification of the golden set. Fails loudly on drift."""
+    """Mechanical justification of the golden set: every target must still
+    contain its anchor substring, and prose/cross queries must not echo 3
+    contiguous words of any target file. Fails loudly on drift."""
     fails = 0
     for row in _load_golden():
         anchor = row["anchor"]
         anchors = anchor if isinstance(anchor, list) else [anchor] * len(row["targets"])
+        texts = {}
         for tgt, a in zip(row["targets"], anchors):
             path = repo / tgt
             if not path.is_file():
                 print(f"FAIL  target missing: {tgt} ({row['q']})")
                 fails += 1
                 continue
-            if a not in path.read_text(encoding="utf-8", errors="replace"):
+            texts[tgt] = path.read_text(encoding="utf-8", errors="replace")
+            if a not in texts[tgt]:
                 print(f"FAIL  anchor '{a}' not in {tgt} ({row['q']})")
                 fails += 1
+        if row["kind"] in ("prose", "cross"):
+            for tgt, text in texts.items():
+                hit = _echo(row["q"], text)
+                if hit:
+                    print(f"FAIL  echo '{hit}' vs {tgt} ({row['q']})")
+                    fails += 1
     print(f"golden verify: {25 - fails}/25 justified" if not fails else "golden verify: DRIFT — re-justify targets")
     return 1 if fails else 0
 
@@ -139,6 +164,20 @@ def _run_config(repo: Path, search_fn, config: str, queries: list[dict]) -> dict
             3,
         )
 
+    def by_kind() -> dict:
+        kinds = {}
+        for kind in ("exact", "symbol", "prose", "cross"):
+            rows = [r for r, q in zip(per_query, queries) if q["kind"] == kind]
+            m = len(rows)
+            kinds[kind] = {
+                "n": m,
+                "hit@1": round(sum(1 for r in rows if r["rank"] == 1) / m, 3),
+                "hit@5": round(sum(1 for r in rows if r["rank"] is not None and r["rank"] <= 5) / m, 3),
+                "hit@10": round(sum(1 for r in rows if r["rank"] is not None and r["rank"] <= 10) / m, 3),
+                "mrr": round(sum(1 / r["rank"] for r in rows if r["rank"]) / m, 3),
+            }
+        return kinds
+
     return {
         "config": config,
         "hit@1": hit_at(1),
@@ -147,6 +186,7 @@ def _run_config(repo: Path, search_fn, config: str, queries: list[dict]) -> dict
         "mrr": round(sum(1 / r["rank"] for r in per_query if r["rank"]) / n, 3),
         "reach@5": reach_at(5),
         "reach@10": reach_at(10),
+        "by_kind": by_kind(),
         "per_query": per_query,
     }
 
@@ -182,12 +222,14 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool) -> int:
     if verify_golden(repo):
         return 3
 
-    if repo != DEFAULT_REPO:
+    if fake and repo != DEFAULT_REPO:
         import shutil
 
-        db = repo / ".chroma"  # the worktree's OWN untracked db: wipe so each
-        if db.is_dir():  # run starts coherent (never mixes real/fake embeddings;
-            shutil.rmtree(db)  # sha-unchanged rescans would silently skip re-embed)
+        db = repo / ".chroma"  # the worktree's OWN untracked db: a real-populated
+        if db.is_dir():  # store would poison fake runs (sha-unchanged rescans skip
+            shutil.rmtree(db)  # re-embed -> fake queries vs real docs). Real runs
+            # keep the sha-incremental store: docs embed once, reruns only re-embed
+            # queries, so Ollama fp jitter cannot shift document-side near-ties.
 
     stats = nav.rescan()  # coherent index for this mode in this checkout's .chroma
     print(f"index: {nav.count()} files (rescan {stats['added']}+/{stats['updated']}~/{stats['deleted']}-)")
@@ -195,10 +237,14 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool) -> int:
     def make(flags):
         def search(query: str):
             if have_recall:
-                return recall.search(query, k=K, bm25="bm25" in flags, expand="expand" in flags)
+                kw = {"k": K, "bm25": "bm25" in flags, "expand": "expand" in flags}
+                if "weights" in flags:
+                    kw["weights"] = WFUSED_WEIGHTS
+                return recall.search(query, **kw)
             return nav.search(query, n=K)
 
         return search
+
 
     commit = _git(repo, "rev-parse", "--short", "HEAD") or "unknown"
     dirty = bool(_git(repo, "status", "--porcelain"))
@@ -265,6 +311,27 @@ def _set_table(prefix: str, recs: dict[str, dict], note: str) -> list[str]:
     lines += [_metrics_row(r) for r in present]
     return lines
 
+def _kind_table(prefix: str, recs: dict[str, dict]) -> list[str]:
+    present = [c for c in CONFIGS if f"{prefix}-{c}" in recs]
+    if not present:
+        return []
+    if "by_kind" not in recs[f"{prefix}-{present[0]}"]:
+        return []  # pre-by_kind record: nothing to break down
+    lines = [
+        "by kind (hit@5 / MRR):",
+        "",
+        "| kind | n | " + " | ".join(present) + " |",
+        "|---|---|" + "---|" * len(present),
+    ]
+    for kind in ("exact", "symbol", "prose", "cross"):
+        cells = []
+        for c in present:
+            m = recs[f"{prefix}-{c}"]["by_kind"][kind]
+            cells.append(f"{m['hit@5']:.3f} / {m['mrr']:.3f}")
+        n = recs[f"{prefix}-{present[0]}"]["by_kind"][kind]["n"]
+        lines.append(f"| {kind} | {n} | " + " | ".join(cells) + " |")
+    return lines + [""]
+
 
 def _per_query_table(prefix: str, recs: dict[str, dict]) -> list[str]:
     present = [c for c in CONFIGS if f"{prefix}-{c}" in recs]
@@ -301,18 +368,28 @@ def render() -> None:
         "hit@k = any golden target in the top-k ranked files; MRR over first-target",
         "rank; reach@k additionally credits a target appearing in the 1-hop ctx of a",
         "top-k hit (0 for configs without expansion). Metrics are rank-derived, so",
-        "reruns are byte-stable unless ranking changes.",
+        "FAKE-mode reruns are byte-identical. Real-mode reruns embed queries fresh",
+        "each time: Ollama fp non-determinism can flip a near-tie — observed once",
+        "on the baseline (hit@5 0.72 vs 0.76, MRR ±0.005, one query); docs embed",
+        "once (sha-incremental store), so document-side ranks stay fixed. Documented",
+        "±jitter is the ceiling; all committed records below were double-run.",
         "",
         "Configs: `vec` = cosine only · `bm25` = +BM25F reciprocal-rank fusion ·",
-        "`expand` = +bidirectional 1-hop ctx · `both` = the shipped default.",
+        "`expand` = +bidirectional 1-hop ctx · `both` = the shipped default ·",
+        "`wfused` = `both` with weighted RRF (vec 1.0 / bm25 0.7) instead of the",
+        "pinned unweighted k=60.",
         "",
     ]
-    real_rows = _set_table("before", recs, "Before — pre-fusion baseline (27c437b era, `nav.search`)")
-    after_rows = _set_table("after", recs, "After — recall-hybrid (`recall.search`)")
-    fake_rows = _set_table("fake", recs, "FAKE mode — `NEURONAV_EMBED_FAKE=1` plumbing battery")
-    for chunk in (real_rows, after_rows, fake_rows):
+    sets = [
+        ("before", "Before — pre-fusion baseline (27c437b era, `nav.search`)"),
+        ("after", "After — recall-hybrid (`recall.search`)"),
+        ("fake", "FAKE mode — `NEURONAV_EMBED_FAKE=1` plumbing battery"),
+    ]
+    for prefix, note in sets:
+        chunk = _set_table(prefix, recs, note)
         if chunk:
             lines += chunk + [""]
+        lines += _kind_table(prefix, recs)
     lines += _per_query_table("after", recs)
     lines += _per_query_table("before", recs)
     lines += [
@@ -328,7 +405,9 @@ def render() -> None:
         "",
         "Before/after are measured in detached worktrees (`git worktree add --detach",
         "<dir> <commit>`), each with its own `.chroma`, so the live shared index is",
-        "never touched and attribution is by commit.",
+        "never touched and attribution is by commit. Ordering: run real sets first,",
+        "fake last — fake mode wipes the worktree store for embed-mode coherence,",
+        "and a real run after it would embed queries against sha-equal fake docs.",
     ]
     (BENCH_DIR / "RESULTS.md").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     scratch = DEFAULT_REPO / ".team_scratch" / "bench"

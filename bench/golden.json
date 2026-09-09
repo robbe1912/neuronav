@@ -5,7 +5,9 @@
     "from code: `anchor` is a literal substring that MUST appear in each",
     "target file — one string (all targets) or a list matching targets order;",
     "bench/run_bench.py --verify-only re-checks this and fails loudly when",
-    "repo drift breaks a justification. Targets are never",
+    "repo drift breaks a justification. Prose/cross queries also pass a",
+    "no-echo check: no 3 contiguous query words appear verbatim in a target.",
+    "Targets are never",
     "opinions; they name the file that owns the identifier/behavior the",
     "query asks for. kinds: exact (fn identifier), symbol (class name),",
     "prose (natural-language), cross (cross-cutting concern)."
@@ -25,16 +27,16 @@
     {"q": "LabelContext", "kind": "symbol", "targets": ["clusters.py"], "anchor": "class LabelContext"},
     {"q": "FileSym", "kind": "symbol", "targets": ["extractors/model.py"], "anchor": "class FileSym"},
     {"q": "MagicPlayer", "kind": "symbol", "targets": ["clusters.py"], "anchor": "MagicPlayer"},
-    {"q": "where are tscn scene files parsed", "kind": "prose", "targets": ["extractors/gdscript.py"], "anchor": "def parse_tscn"},
-    {"q": "python imports resolved into graph edges", "kind": "prose", "targets": ["extractors/python.py"], "anchor": "def _record_import"},
-    {"q": "advisory cross-process writer lock", "kind": "prose", "targets": ["nav.py"], "anchor": "def _db_lock"},
-    {"q": "deterministic hash embeddings for CI", "kind": "prose", "targets": ["nav.py"], "anchor": "NEURONAV_EMBED_FAKE"},
-    {"q": "cluster labels via tfidf", "kind": "prose", "targets": ["clusters.py"], "anchor": "def label_cluster"},
-    {"q": "MCP server tools over stdio JSON-RPC", "kind": "prose", "targets": ["server.py"], "anchor": "mcp.run(transport=\"stdio\")"},
-    {"q": "one-call orientation tool for agents", "kind": "prose", "targets": ["explore.py", "server.py"], "anchor": ["def run(query", "def explore(query"]},
-    {"q": "export embeddings to tracked gz shards", "kind": "prose", "targets": ["nav.py"], "anchor": "def export_base"},
-    {"q": "readability declutter battery gate", "kind": "prose", "targets": ["tools/qa_readability.py"], "anchor": "def run_declut_battery"},
-    {"q": "dead code tier logic unreachable functions", "kind": "cross", "targets": ["graph.py"], "anchor": "def dead_code"},
-    {"q": "deterministic offline force layout seeded rng", "kind": "cross", "targets": ["viz.py"], "anchor": "default_rng(1234)"}
+    {"q": "where do godot scene resources get read", "kind": "prose", "targets": ["extractors/gdscript.py"], "anchor": "def parse_tscn"},
+    {"q": "how do cross-module references become caller edges", "kind": "prose", "targets": ["extractors/python.py"], "anchor": "def _record_import"},
+    {"q": "what stops two simultaneous rescans from corrupting the store", "kind": "prose", "targets": ["nav.py"], "anchor": "def _db_lock"},
+    {"q": "how do hermetic suites embed without a live model backend", "kind": "prose", "targets": ["nav.py"], "anchor": "NEURONAV_EMBED_FAKE"},
+    {"q": "how are subsystem names chosen from member vocabulary", "kind": "prose", "targets": ["clusters.py"], "anchor": "def label_cluster"},
+    {"q": "which module hosts the agent protocol on stdin and stdout", "kind": "prose", "targets": ["server.py"], "anchor": "mcp.run(transport=\"stdio\")"},
+    {"q": "single call that shows a newcomer how the codebase is organized", "kind": "prose", "targets": ["explore.py", "server.py"], "anchor": ["def run(query", "def explore(query"]},
+    {"q": "how is the embedding index archived inside the repository", "kind": "prose", "targets": ["nav.py"], "anchor": "def export_base"},
+    {"q": "how is visual clutter of the rendered page measured", "kind": "prose", "targets": ["tools/qa_readability.py"], "anchor": "def run_declut_battery"},
+    {"q": "unreachable deletion candidates and their confidence tiers", "kind": "cross", "targets": ["graph.py"], "anchor": "def dead_code"},
+    {"q": "how are node positions computed reproducibly before baking", "kind": "cross", "targets": ["viz.py"], "anchor": "default_rng(1234)"}
   ]
 }

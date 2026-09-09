@@ -1,39 +1,39 @@
 {
- "set": "before",
+ "set": "after",
  "config": "vec",
- "commit": "27c437b",
+ "commit": "e582a99",
  "dirty": false,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
- "files": 22,
+ "files": 25,
  "k": 12,
  "hit@1": 0.24,
- "hit@5": 0.76,
+ "hit@5": 0.68,
  "hit@10": 0.88,
- "mrr": 0.47,
- "reach@5": 0.76,
+ "mrr": 0.455,
+ "reach@5": 0.68,
  "reach@10": 0.88,
  "by_kind": {
   "exact": {
    "n": 10,
    "hit@1": 0.1,
-   "hit@5": 0.6,
+   "hit@5": 0.5,
    "hit@10": 0.8,
-   "mrr": 0.343
+   "mrr": 0.312
   },
   "symbol": {
    "n": 4,
    "hit@1": 0.25,
    "hit@5": 0.5,
    "hit@10": 0.75,
-   "mrr": 0.398
+   "mrr": 0.396
   },
   "prose": {
    "n": 9,
    "hit@1": 0.444,
-   "hit@5": 1.0,
+   "hit@5": 0.889,
    "hit@10": 1.0,
-   "mrr": 0.67
+   "mrr": 0.664
   },
   "cross": {
    "n": 2,
@@ -46,7 +46,7 @@
  "per_query": [
   {
    "q": "parse_tscn",
-   "rank": 2,
+   "rank": 3,
    "ctx5": false,
    "ctx10": false
   },
@@ -76,7 +76,7 @@
   },
   {
    "q": "_fold_continuations",
-   "rank": 8,
+   "rank": 7,
    "ctx5": false,
    "ctx10": false
   },
@@ -88,7 +88,7 @@
   },
   {
    "q": "_lexical_fallback",
-   "rank": 3,
+   "rank": 6,
    "ctx5": false,
    "ctx10": false
   },
@@ -124,7 +124,7 @@
   },
   {
    "q": "MagicPlayer",
-   "rank": 11,
+   "rank": 12,
    "ctx5": false,
    "ctx10": false
   },
@@ -136,7 +136,7 @@
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": 5,
+   "rank": 7,
    "ctx5": false,
    "ctx10": false
   },
@@ -148,7 +148,7 @@
   },
   {
    "q": "how do hermetic suites embed without a live model backend",
-   "rank": 3,
+   "rank": 2,
    "ctx5": false,
    "ctx10": false
   },
@@ -160,7 +160,7 @@
   },
   {
    "q": "which module hosts the agent protocol on stdin and stdout",
-   "rank": 2,
+   "rank": 3,
    "ctx5": false,
    "ctx10": false
   },
