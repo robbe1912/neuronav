@@ -7597,37 +7597,104 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
     }
     const stations = (fnStationsArr || []).map(S =>
       ({ fi: S.fi, id: S.id, p: [S.p[0], S.p[1], S.p[2]], trunks: 0, legs: 0 }));
-    const stOf = p => { let bi = -1, bd = 55;
-      for (let si = 0; si < stations.length; si++) {
-        const st = stations[si];
-        const d = Math.hypot(st.p[0] - p[0], st.p[1] - p[1], st.p[2] - p[2]);
-        if (d < bd) { bd = d; bi = si; } }
-      return bi; };
-    const boxOf = p => { let bf = -1, bd = 55;
-      for (let bi = 0; bi < fnMeta.length; bi++) {
-        const mb = fnMeta[bi];
-        if (!mb) continue;
-        const d = Math.hypot(mb.p[0] - p[0], mb.p[1] - p[1], mb.p[2] - p[2]);
-        if (d < bd) { bd = d; bf = mb.file; } }
-      return bf; };
+    // anchor matching is SCREEN-SPACE first (station 14px, box 12px, junction
+    // 12px) with world-unit fallbacks (55/55/20wu): depth foreshortening puts
+    // fan termini >20wu from their junction yet 1.8px apart on screen — the
+    // census must match what the eye matches, or harness pins report phantom
+    // unattached ends. All iteration is over fixed arrays (deterministic).
+    const proj = p => {
+      const v = new THREE.Vector3(p[0], p[1], p[2]).project(camera);
+      if (!isFinite(v.x) || !isFinite(v.y) || v.z >= 1) return null;
+      const r = renderer.domElement.getBoundingClientRect();
+      return { x: (v.x + 1) / 2 * r.width, y: (1 - v.y) / 2 * r.height };
+    };
+    const pickAnchor = (p, cands) => {
+      // cands: [{kind, idx, p, pxTol, wuTol}] — best qualifying by screen px,
+      // else by world distance. Candidate list order is fixed (deterministic).
+      const sp = proj(p);
+      let best = null, bestS = Infinity, bestW = Infinity;
+      for (const c of cands) {
+        const wu = Math.hypot(c.p[0] - p[0], c.p[1] - p[1], c.p[2] - p[2]);
+        if (wu > c.wuTol * 1.2) continue;   // hard world ceiling either way
+        let s = Infinity;
+        if (sp) { const q = proj(c.p);
+          if (q) s = Math.hypot(q.x - sp.x, q.y - sp.y); }
+        const okS = s <= c.pxTol, okW = wu <= c.wuTol;
+        if (!okS && !okW) continue;
+        if (okS && s < bestS) { best = c; bestS = s; }
+        else if (!okS && wu < bestW) { best = c; bestW = wu; }
+      }
+      return best;
+    };
+    const stCands = stations.map((st, si) => ({ kind: "station", idx: si, p: st.p, pxTol: 14, wuTol: 55 }));
+    const boxCands = [];
+    for (let bi = 0; bi < fnMeta.length; bi++) {
+      const mb = fnMeta[bi];
+      if (mb) boxCands.push({ kind: "box", idx: mb.file, p: mb.p, pxTol: 12, wuTol: 55 });
+    }
     // junction bollards (fnJDot instances): interior corridor heads — a leg
     // end landing on one is attached (part of the full-path unit), though
     // the UNIT termini still owe a file anchor elsewhere
-    const juncOf = p => { if (!fnJDot) return -1;
-      const jm = fnJDot.instanceMatrix.array; let bj = -1, bd = 20;
-      for (let ji = 0; ji < fnJDot.count; ji++) {
-        const d = Math.hypot(jm[ji * 16 + 12] - p[0], jm[ji * 16 + 13] - p[1], jm[ji * 16 + 14] - p[2]);
-        if (d < bd) { bd = d; bj = ji; } }
-      return bj; };
+    const juncCands = [];
+    if (fnJDot) {
+      const jm = fnJDot.instanceMatrix.array;
+      for (let ji = 0; ji < fnJDot.count; ji++)
+        juncCands.push({ kind: "junc", idx: ji, p: [jm[ji * 16 + 12], jm[ji * 16 + 13], jm[ji * 16 + 14]], pxTol: 12, wuTol: 20 });
+    }
+    const attach = (c, which) => {
+      const p = c[which];
+      for (const set of [stCands, boxCands, juncCands]) {
+        const a = pickAnchor(p, set);
+        if (!a) continue;
+        const rec = { type: a.kind };
+        if (a.kind === "station") {
+          rec.st = a.idx;
+          stations[a.idx].trunks += c.kind === "trunk" ? 1 : 0;
+          stations[a.idx].legs += c.kind === "leg" ? 1 : 0;
+          // screen-coincident stations share the feed: a fan-cluster can host
+          // several station objects within a few px, and nearest-wins
+          // assignment starved siblings of their trunk counts (census
+          // false "one-sided"). Count, don't claim — fixed order, deterministic.
+          if (c.kind === "trunk") {
+            const sp = proj(p);
+            if (sp) for (let si = 0; si < stations.length; si++) {
+              if (si === a.idx) continue;
+              if (Math.hypot(stations[si].p[0] - p[0], stations[si].p[1] - p[1], stations[si].p[2] - p[2]) > 66) continue;
+              const q = proj(stations[si].p);
+              if (q && Math.hypot(q.x - sp.x, q.y - sp.y) <= 14) stations[si].trunks++;
+            }
+          }
+        }
+        else if (a.kind === "box") rec.fi = a.idx;
+        else rec.j = a.idx;
+        c["anchor" + which.toUpperCase()] = rec;
+        return;
+      }
+    };
     for (const c of chains) {
       if (!c.served) continue;
-      const si = stOf(c.a), ti = stOf(c.b);
-      if (si >= 0) { c.anchorA = { type: "station", st: si }; stations[si].trunks += c.kind === "trunk" ? 1 : 0; stations[si].legs += c.kind === "leg" ? 1 : 0; }
-      else { const bf = boxOf(c.a); if (bf >= 0) c.anchorA = { type: "box", fi: bf };
-             else { const ji = juncOf(c.a); if (ji >= 0) c.anchorA = { type: "junc", j: ji }; } }
-      if (ti >= 0) { c.anchorB = { type: "station", st: ti }; stations[ti].trunks += c.kind === "trunk" ? 1 : 0; stations[ti].legs += c.kind === "leg" ? 1 : 0; }
-      else { const bf = boxOf(c.b); if (bf >= 0) c.anchorB = { type: "box", fi: bf };
-             else { const ji = juncOf(c.b); if (ji >= 0) c.anchorB = { type: "junc", j: ji }; } }
+      attach(c, "a");
+      attach(c, "b");
+    }
+    // per-station trunkNearPx: min screen px from the station to ANY served
+    // trunk endpoint. Fan spread puts termini 15-40px past the station dot —
+    // still leads-home (Amendment 4 bar <= 300px). One-sidedness derives as
+    // legs>0 && trunkNearPx>300 (fan without its trunk = the cut-bridge
+    // class); legs==0 stations are the no-fan ramp-bridged class (the file's
+    // own box anchors via fnLines ramps, which the census does not carry).
+    for (const st of stations) st.trunkNearPx = null;
+    for (const c of chains) {
+      if (!c.served || c.kind !== "trunk") continue;
+      for (const p of [c.a, c.b]) {
+        const sp = proj(p);
+        if (!sp) continue;
+        for (const st of stations) {
+          const q = proj(st.p);
+          if (!q) continue;
+          const d = Math.hypot(q.x - sp.x, q.y - sp.y);
+          if (st.trunkNearPx === null || d < st.trunkNearPx) st.trunkNearPx = Math.round(d * 10) / 10;
+        }
+      }
     }
     return { chains, stations };
   },
