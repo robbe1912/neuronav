@@ -2009,7 +2009,9 @@ function busLodInit() {
     }
     return v;
   };
-  const res = fi => pxOf(fi) >= 2.2;  // served box >= 2.2 REF-px (boot droplets die, d2 boxes ~2.45 live)
+  const res = fi => pxOf(fi) >= 2.5;  // served box >= 2.5 REF-px — 2 CSS px at
+  // the USER's 735h window (round-5b boot-straggler fix: pair census found
+  // 3-4 dots over 0.8-1.2px boxes; 2.2 ref-px = 1.8 CSS px there)
   const tkPx = tk => {
     const p = String(tk).split(">");
     return p.length === 2 ? Math.min(pxOf(+p[0]), pxOf(+p[1])) : pxOf(+String(tk).split("|")[1]);
@@ -3322,9 +3324,12 @@ function aimArrows() {
     const lodOk = !arrowFile || !arrowFile.length || arrowFile[i] < 0 || lod.res(arrowFile[i]);
     // viewport-fraction law (user directive): 12px on the nominal 900px
     // canvas at ANY window size — same fraction of frame, ref-px invariant
-    // viewport-FRACTION law: half-height 6px on the nominal 900 canvas at
-    // ANY window — same fraction of frame height, ref-px invariant
-    const s = 6 * (2 * Math.tan(camera.fov * Math.PI / 360) / 900) * d
+    // viewport-FRACTION law: half-height 8px on the nominal 900 canvas at
+    // ANY window — same fraction of frame height, ref-px invariant. 8 not 6:
+    // at the USER's 735px window the chunky V's saturated mass read ~6 CSS px
+    // (pair-engineer zoom-crop: 'direction not reliably readable at native');
+    // 16px@900 keeps the V-mass >= 8px at the smallest window we test
+    const s = 8 * (2 * Math.tan(camera.fov * Math.PI / 360) / 900) * d
              * ((lodOk && !_arrowOccl[i]) ? 1 : 0);
     fnArrowR[i] = s;
     if (fnLodV && s > 0.01) {
