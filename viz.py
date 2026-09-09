@@ -3333,8 +3333,10 @@ function updateFocusLabels() {
         stPts.push([(_flabV.x * 0.5 + 0.5) * w, (-_flabV.y * 0.5 + 0.5) * h]);
     }
   }
+  // 14px margin: at 0.72 kf the marginal label straddled the old 10px
+  // line and flickered 0<->1 overlap across settle frames
   const clearDots = r => stPts.every(q =>
-    q[0] < r.left - 10 || q[0] > r.right + 10 || q[1] < r.top - 10 || q[1] > r.bottom + 10);
+    q[0] < r.left - 14 || q[0] > r.right + 14 || q[1] < r.top - 14 || q[1] > r.bottom + 14);
   // delivery arrowheads are obstacles too (a label chip sat ON an arrow
   // in the r3 crop — direction markers must never be covered)
   if (fnArrows) {
