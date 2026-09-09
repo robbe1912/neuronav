@@ -20,13 +20,18 @@ import shutil
 import sys
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 import chromadb
 from filelock import FileLock
 import httpx
+
+# hybrid recall (BM25F + reciprocal-rank fusion + 1-hop context). Module-
+# level so the python extractor's import liveness keeps recall.py's funcs
+# alive in the self-index; recall.py binds nav/graph lazily inside its
+# functions, so `nav.py --config <profile> ...` still switches profiles.
+import recall
 
 TOOL_DIR = Path(__file__).resolve().parent
 
@@ -69,15 +74,6 @@ EMBED_BATCH = 32
 UPSERT_BATCH = 64
 SHARD_SIZE = 250
 MANIFEST_NAME = "manifest.json"
-
-
-@dataclass(frozen=True)
-class Hit:
-    path: str
-    score: float
-    class_name: str
-    extends: str
-    ext: str
 
 
 def embed(texts: list[str]) -> list[list[float]]:
@@ -266,32 +262,17 @@ def _rescan_locked() -> dict[str, int]:
     return stats
 
 
-def search(query: str, n: int = 8) -> list[Hit]:
-    col = _collection()
-    count = col.count()
-    if count == 0:
-        return []
-    vector = embed([query])[0]
-    got = col.query(
-        query_embeddings=[vector],
-        n_results=min(n, count),
-        include=["metadatas", "distances"],
-    )
-    hits: list[Hit] = []
-    for fid, dist, meta in zip(
-        got["ids"][0], got["distances"][0], got["metadatas"][0]
-    ):
-        meta = meta or {}
-        hits.append(
-            Hit(
-                path=fid,
-                score=round(1.0 - float(dist), 4),
-                class_name=str(meta.get("class_name", "")),
-                extends=str(meta.get("extends", "")),
-                ext=str(meta.get("ext", "")),
-            )
-        )
-    return hits
+def search(query: str, k: int = 12) -> list[dict[str, object]]:
+    """Hybrid recall: chroma vector ranks fused (reciprocal-rank fusion,
+    k=60) with BM25F lexical ranks over the structural graph; each hit
+    carries bidirectional 1-hop context labels.
+
+    Hit keys: file, score, src ("vec"|"bm25"|"both"), ctx (<=3 neighbor
+    paths) + class_name/extends/ext. If the vector side is unavailable
+    the results degrade LOUDLY to BM25F-only (stderr warning +
+    ``degraded: True`` on every hit) — see recall.search.
+    """
+    return recall.search(query, k=k)
 
 
 def count() -> int:
@@ -537,8 +518,9 @@ if __name__ == "__main__":
         dt = time.perf_counter() - t0
         print(f"{s} in {dt:.1f}s, total={count()}")
     elif cmd == "search":
-        for h in search(" ".join(sys.argv[2:]), n=8):
-            print(f"{h.score:0.3f}  {h.path}  class={h.class_name} extends={h.extends}")
+        for h in search(" ".join(sys.argv[2:])):
+            ctx = f"  ctx=[{', '.join(h['ctx'])}]" if h["ctx"] else ""
+            print(f"{h['score']:0.4f}  {h['file']}  src={h['src']}{ctx}")
     elif cmd == "count":
         print(count())
     elif cmd == "export-base":
