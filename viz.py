@@ -1504,13 +1504,19 @@ function syncFileMesh() {
       // ~sqrt(spread) so pulling apart leaves them readable without a
       let sc = sphR(i) * (deadOnly && nodes[i].dead > 0 ? 1.7 : 1) * hoverScale[i] * (0.45 + 0.55 * a);
       // perceptual anchor: if ink terminates on this node, hold the sprite
-      // at ANCHOR_PX screen radius (lift = floor/r, capped 2.6x so the size
-      // hierarchy survives — hubs stay dominant, specks stop vanishing)
+      // at ANCHOR_PX screen diameter — but floor the REST size and let
+      // hoverScale ease from the FLOORED rest. Flooring the post-hover size
+      // instead made the lift vanish the moment hover grew the sprite past
+      // the floor, so the eased 1.8x read as 1.1x of the visible rest
+      // (harness pin + user expectation: hover grows what the eye sees).
       if (anchorBoost[i] > 0) {
         const dist = camera.position.distanceTo(_dummy.position);
-        const rpx = sc * (renderer.domElement.clientHeight / 2) /
-                    (Math.tan(camera.fov * Math.PI / 360) * dist);
-        if (rpx > 0.001 && rpx < anchorBoost[i]) sc *= Math.min(4.0, anchorBoost[i] / rpx);
+        const hs = hoverScale[i] || 1;
+        const base = sc / hs;   // rest size (alpha included), hover lifted out
+        const rpxBase = base * (renderer.domElement.clientHeight / 2) /
+                        (Math.tan(camera.fov * Math.PI / 360) * dist);
+        if (rpxBase > 0.001 && rpxBase < anchorBoost[i])
+          sc = base * Math.min(4.0, anchorBoost[i] / rpxBase) * hs;
       }
       _dummy.scale.setScalar(sc);
     }
