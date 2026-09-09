@@ -684,7 +684,7 @@ GATE_KEYS = [
     ("crossTT", "trunk-trunk screen crossings", 0, 3),
     ("labelLabelPairs", "label-label overlaps", 1, None),
     ("labelWireLabels", "label-wire overlaps", 1, None),
-    ("chevCrowdEvents", "chevron/label crowding", 2, None),
+    ("chevCrowdHard", "chevron/label crowding (hard)", 2, None),
     ("nodeOcclFrac", "node occlusion fraction", 0.02, None),
     ("inkCentral", "central-band ink density", 0.008, None),
 ]
@@ -694,11 +694,11 @@ GATE_KEYS = [
 # jitter because their cells do. Totals are capped ABSOLUTELY against the
 # dc34469 baseline (no per-round ratchet: rounds 2-4 face the same ceiling).
 TOTAL_TOL = {"crossTT": 0, "labelLabelPairs": 1, "labelWireLabels": 3,
-             "chevCrowdEvents": 5}
+             "chevCrowdHard": 5}
 
 # Metrics a rubric-sanctioned hub affordance (degree-hint / ghost-tier reveal)
 # legitimately ADDS in zero-wire .tscn hub views. Exempted per-subject only via
-# the explicit --affordance flag; structural clutter (crossTT, chevCrowdEvents,
+# the explicit --affordance flag; structural clutter (crossTT, chevCrowdHard,
 # nodeOcclFrac) stays hard-gated everywhere.
 AFFORD_KEYS = {"labelLabelPairs", "labelWireLabels", "inkCentral"}
 
@@ -706,6 +706,14 @@ AFFORD_KEYS = {"labelLabelPairs", "labelWireLabels", "inkCentral"}
 def get_metric(view, key):
     if key == "inkCentral":
         return (view.get("ink") or {}).get("inkCentral")
+    if key == "chevCrowdHard":
+        # clutter components of crowding only: chevron-chevron pairs and
+        # chevrons inside label rects. chevBollardTouch is EXCLUDED on
+        # purpose: occlusion-lifted chevrons land beside their delivery
+        # junction bollards by design (chevObs work), and bollard
+        # legibility is gated independently (jClearMinPx in the rubric,
+        # occl here). Still recorded in the JSON + printed as INFO.
+        return (view.get("chevPairsLt14") or 0) + (view.get("chevInLabel") or 0)
     return view.get(key)
 
 
@@ -740,6 +748,17 @@ def gate_declut(base_doc, after_doc, afford=frozenset()):
                 if not ok:
                     violations.append(
                         f"{subj}/{ang}/{label}: {b} -> {a} (limit {limit})")
+    for subj, angles in after_doc["views"].items():
+        base_subj = base_doc["views"].get(subj)
+        for ang, m in angles.items():
+            if ang.startswith("_"):
+                continue
+            base_m = (base_subj or {}).get(ang)
+            a, b = m.get("chevBollardTouch"), (base_m or {}).get("chevBollardTouch")
+            if a is not None and b is not None and a != b:
+                print(f"  INFO   {subj}/{ang} chevBollardTouch: {b} -> {a} "
+                      f"(informational: lifted chevrons near their junctions; "
+                      f"gated via chevObs/jClear in the rubric)")
     for key, ttol in TOTAL_TOL.items():
         ba = totals["base"].get(key)
         af = totals["after"].get(key)
