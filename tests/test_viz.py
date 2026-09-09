@@ -325,6 +325,37 @@ def run_tests():
         check("focus chevrons at size (>=8 ref-px)",
               lod1 and lod1["ch"] > 0 and lod1["mch"] >= 8, str(lod1))
 
+        # 4c-quater. corridor-complete law (r7): the unit of render is
+        # the full path node->leg->station->trunk->station->leg->node.
+        # Every served leg anchors at >= ANCHOR_PX (8 ref-px diameter,
+        # boost included), every served chain carries both anchor
+        # registrations, and no station keeps a fan without its trunk
+        # (the cut-bridge regression class: legs>0 && trunks==0). The
+        # fi365-class ramp bridges (trunks>0, legs==0) are legitimate
+        # no-fan topology, not violations.
+        cor = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const c = d.corridorCensus, px = d.legAnchorPx;
+                 if (!c || !px) return null;
+                 const served = c.chains.filter(x => x.served);
+                 const noanch = served.filter(x => !x.anchorA || !x.anchorB);
+                 const cut = c.stations.filter(s => s.legs > 0 && s.trunks < 1);
+                 const spx = px.filter(p => p.alpha >= 0.5);
+                 return { legs: served.filter(x => x.kind === "leg").length,
+                          trunks: served.filter(x => x.kind === "trunk").length,
+                          minPx: spx.length ? Math.min(...spx.map(p => p.px)) : null,
+                          noAnchor: noanch.length, noAnchorSample:
+                            noanch.slice(0, 3).map(x => x.k),
+                          cutStations: cut.length }; }"""
+        )
+        check("corridor law: legs anchored >= 8 ref-px at focus",
+              cor and cor["legs"] >= 8 and cor["trunks"] >= 6 and
+              cor["minPx"] is not None and cor["minPx"] >= 8, str(cor))
+        check("corridor law: served chains carry both anchors",
+              cor and cor["noAnchor"] == 0, str(cor))
+        check("corridor law: no fan without its trunk",
+              cor and cor["cutStations"] == 0, str(cor))
+
         # 4c-bis. conduit lane law: bus conduits ALWAYS arc +Y over the
         # fn-box crowd (no -Y dives into the swarm), tiered by trunk
         # emission order so shared corridors separate. Per trunk the
