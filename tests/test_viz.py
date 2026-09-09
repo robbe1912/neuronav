@@ -356,6 +356,54 @@ def run_tests():
         check("corridor law: no fan without its trunk",
               cor and cor["cutStations"] == 0, str(cor))
 
+        # 4c-quinquies. zero-gap attachment law (r8): every served chain
+        # seam vertex EQUALS its anchor marker position (===, no tolerance
+        # — user ruling: near-enough reads as not-touching). Legs land on
+        # sub-junction dots + station centers; trunks on station centers.
+        zg = page.evaluate(
+            """() => { const d = window.__dbg;
+          const fa = d.fnBus ? d.fnBus.instanceMatrix.array : [];
+          if (!d.busPts || !d.fnStations) return { err: "no-layer" };
+          const served = [];
+          for (let i = 0; i < d.busPts.length; i++) {
+            if (Math.hypot(fa[i*16], fa[i*16+1], fa[i*16+2]) > 0.001) served.push(d.busPts[i]);
+          }
+          const first = new Map(), last = new Map();
+          for (const s of served) {
+            if (!first.has(s.k)) first.set(s.k, s);
+            last.set(s.k, s);
+          }
+          const stByFi = new Map();
+          for (const S of d.fnStations) {
+            if (!stByFi.has(S.fi)) stByFi.set(S.fi, []);
+            stByFi.get(S.fi).push(S);
+          }
+          const eq = (p, q) => p[0] === q[0] && p[1] === q[1] && p[2] === q[2];
+          const bad = [];
+          let legN = 0, trunkN = 0;
+          for (const [k, s0] of first) {
+            const s1 = last.get(k);
+            if (k.charCodeAt(0) === 76) {
+              legN++;
+              const pp = k.split("|");
+              const S = d.fnStations.find(x => x.id === +pp[2]);
+              if (!S) { bad.push(k + ":no-station"); continue; }
+              const sp = S.subJ[+pp[3]];
+              if (sp && !eq(s0.a, sp)) bad.push(k + ":a!=subJ");
+              if (!eq(s1.b, S.p)) bad.push(k + ":b!=station");
+            } else {
+              trunkN++;
+              const pp = k.split(">");
+              if (!(stByFi.get(+pp[0]) || []).some(S => eq(S.p, s0.a))) bad.push(k + ":a!=st");
+              if (!(stByFi.get(+pp[1]) || []).some(S => eq(S.p, s1.b))) bad.push(k + ":b!=st");
+            }
+          }
+          return { legN, trunkN, bad }; }"""
+        )
+        check("zero-gap law: chain vertices equal anchor markers exactly",
+              zg and zg.get("legN", 0) + zg.get("trunkN", 0) >= 10 and
+              not zg.get("bad"), str(zg)[:220])
+
         # 4c-bis. conduit lane law: bus conduits ALWAYS arc +Y over the
         # fn-box crowd (no -Y dives into the swarm), tiered by trunk
         # emission order so shared corridors separate. Per trunk the
