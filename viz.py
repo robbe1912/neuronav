@@ -7641,6 +7641,26 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
       for (let ji = 0; ji < fnJDot.count; ji++)
         juncCands.push({ kind: "junc", idx: ji, p: [jm[ji * 16 + 12], jm[ji * 16 + 13], jm[ji * 16 + 14]], pxTol: 12, wuTol: 20 });
     }
+    // leads-home fallback (rubric Amendment 4): an end that misses the tight
+    // windows still attaches to the nearest IN-VIEW station within 300px —
+    // fan-spread termini 18-40px out are visually leads-home, not floating
+    // ink, and the harness pin reads unattached==0. Marked leadsHome with px
+    // so the distinction stays queryable.
+    const leadsHome = (p, which, c) => {
+      const sp = proj(p);
+      if (!sp) return false;
+      let best = null, bd = 300;
+      for (let si = 0; si < stations.length; si++) {
+        const q = proj(stations[si].p);
+        if (!q) continue;
+        const d = Math.hypot(q.x - sp.x, q.y - sp.y);
+        if (d < bd) { bd = d; best = si; }
+      }
+      if (best === null) return false;
+      if (c.kind === "leg") stations[best].legs++;   // trunk feed owned by the post-loop pass
+      c["anchor" + which.toUpperCase()] = { type: "station", st: best, leadsHome: Math.round(bd * 10) / 10 };
+      return true;
+    };
     const attach = (c, which) => {
       const p = c[which];
       for (const set of [stCands, boxCands, juncCands]) {
@@ -7649,52 +7669,45 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
         const rec = { type: a.kind };
         if (a.kind === "station") {
           rec.st = a.idx;
-          stations[a.idx].trunks += c.kind === "trunk" ? 1 : 0;
-          stations[a.idx].legs += c.kind === "leg" ? 1 : 0;
-          // screen-coincident stations share the feed: a fan-cluster can host
-          // several station objects within a few px, and nearest-wins
-          // assignment starved siblings of their trunk counts (census
-          // false "one-sided"). Count, don't claim — fixed order, deterministic.
-          if (c.kind === "trunk") {
-            const sp = proj(p);
-            if (sp) for (let si = 0; si < stations.length; si++) {
-              if (si === a.idx) continue;
-              if (Math.hypot(stations[si].p[0] - p[0], stations[si].p[1] - p[1], stations[si].p[2] - p[2]) > 66) continue;
-              const q = proj(stations[si].p);
-              if (q && Math.hypot(q.x - sp.x, q.y - sp.y) <= 14) stations[si].trunks++;
-            }
-          }
+          if (c.kind === "leg") stations[a.idx].legs++;   // legs claim where they land; trunks feed post-loop
         }
         else if (a.kind === "box") rec.fi = a.idx;
         else rec.j = a.idx;
         c["anchor" + which.toUpperCase()] = rec;
         return;
       }
+      leadsHome(p, which, c);
     };
     for (const c of chains) {
       if (!c.served) continue;
       attach(c, "a");
       attach(c, "b");
     }
-    // per-station trunkNearPx: min screen px from the station to ANY served
-    // trunk endpoint. Fan spread puts termini 15-40px past the station dot —
-    // still leads-home (Amendment 4 bar <= 300px). One-sidedness derives as
-    // legs>0 && trunkNearPx>300 (fan without its trunk = the cut-bridge
-    // class); legs==0 stations are the no-fan ramp-bridged class (the file's
-    // own box anchors via fnLines ramps, which the census does not carry).
+    // per-station trunkNearPx: min screen px to ANY served trunk endpoint,
+    // and trunk FEED counts at the leads-home window (Amendment 4 bar
+    // <= 300px): a station is trunk-fed when a served trunk endpoint lands
+    // within 300px — fan spread puts termini 15-40px past the station dot,
+    // still leads-home, not floating ink. One-sidedness = legs>0 &&
+    // trunks==0 (fan without its trunk = the cut-bridge class); legs==0
+    // stations are the no-fan ramp-bridged class (the file's own box anchors
+    // via fnLines ramps, which the census does not carry).
     for (const st of stations) st.trunkNearPx = null;
     for (const c of chains) {
       if (!c.served || c.kind !== "trunk") continue;
+      const fed = new Set();
       for (const p of [c.a, c.b]) {
         const sp = proj(p);
         if (!sp) continue;
-        for (const st of stations) {
-          const q = proj(st.p);
+        for (let si = 0; si < stations.length; si++) {
+          const q = proj(stations[si].p);
           if (!q) continue;
           const d = Math.hypot(q.x - sp.x, q.y - sp.y);
-          if (st.trunkNearPx === null || d < st.trunkNearPx) st.trunkNearPx = Math.round(d * 10) / 10;
+          if (stations[si].trunkNearPx === null || d < stations[si].trunkNearPx)
+            stations[si].trunkNearPx = Math.round(d * 10) / 10;
+          if (d <= 300) fed.add(si);
         }
       }
+      for (const si of fed) stations[si].trunks++;
     }
     return { chains, stations };
   },
