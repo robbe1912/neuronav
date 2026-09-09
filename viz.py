@@ -2207,23 +2207,27 @@ function busLodInit() {
       else sp.b = s.b;                               // last segment's b = chain terminus
     }
     for (const [k, sp] of spans) {
+      // SIGHTING #10: both rejection clauses here were PROJECTION-based —
+      // a terminus sliding off-frame (|ndc|>1.05) or a projected span
+      // crossing 35% of the diagonal flipped the WHOLE chain off in one
+      // wheel click (en-bloc corridor+junction vanish: the cull also drops
+      // its stAttKey, so the bollard goes too). Zoom law is now monotonic:
+      // (a) terminus on-screen-ness is NOT a cull reason — ink is
+      // world-anchored (draws-to-anchor), a wire exiting the frame is a
+      // highway leaving view, not float; (b) the 35%-diagonal sprawl cap
+      // (ruling b) is evaluated at the NOMINAL focus framing
+      // (2.2·compactBallR, the serveAll reference distance), so it culls
+      // corridors that would sprawl where they are MEANT to be read, and
+      // zooming in can never cross it (px at nominal dist is
+      // zoom-invariant; pan-invariant by construction).
       let ok = true;
-      const ends = [];
-      for (const p of [sp.a, sp.b]) {
-        v3.set(p[0], p[1], p[2]).project(camera);
-        if (!isFinite(v3.x) || !isFinite(v3.y) || v3.z >= 1 ||
-            Math.abs(v3.x) > 1.05 || Math.abs(v3.y) > 1.05) { ok = false; break; }
-        ends.push([v3.x, v3.y]);
-      }
-      if (ok && ends.length === 2) {
-        // backstop (ruling b): a chain stretched past ~35% of the viewport
-        // diagonal is ink sprawl, not a connector — cull rather than draw a
-        // corridor-length "leg" across the view
+      const wu = Math.hypot(sp.b[0] - sp.a[0], sp.b[1] - sp.a[1], sp.b[2] - sp.a[2]);
+      if (isFinite(wu) && compactBallR > 0) {
         const cw = renderer.domElement.clientWidth || 1600;
-        const ch = renderer.domElement.clientHeight || 900;
-        const kx = (ends[1][0] - ends[0][0]) * cw / 2;
-        const ky = (ends[1][1] - ends[0][1]) * ch / 2;
-        if (Math.hypot(kx, ky) > 0.35 * Math.hypot(cw, ch)) ok = false;
+        const ch2 = renderer.domElement.clientHeight || 900;
+        const nominalD = 2.2 * compactBallR;
+        const pxN = wu * (ch2 / 2) / (Math.tan(camera.fov * Math.PI / 360) * nominalD);
+        if (pxN > 0.35 * Math.hypot(cw, ch2)) ok = false;
       }
       legTermOn.set(k, ok);
     }
@@ -2237,7 +2241,7 @@ function busLodInit() {
       if (p.length === 2) { anchorBoost[+p[0]] = ANCHOR_PX; anchorBoost[+p[1]] = ANCHOR_PX; }
     }
   if (fnBus && busPts) {
-    stAttKey.clear();
+    stAttKey.clear(); chainGate.clear();
     let dirty = false;
     const lod = _lod;
     const a = fnBus.instanceMatrix.array;
@@ -2268,6 +2272,12 @@ function busLodInit() {
           if (!(anch(+pp[0]) && anch(+pp[1]))) gateOk = false;
         }
       }
+      // sighting #10 forensic: first failing gate per chain (extend-only
+      // probe surface — 'served' | 'legOK' | 'termOn' | 'trOK' | 'bridgeAnch')
+      if (typeof s.k === "string" && !chainGate.has(s.k))
+        chainGate.set(s.k, gateOk ? "served" :
+          (isLeg ? (lod && !lod.legOK(s.k) ? "legOK" : "termOn")
+                 : (lod && !lod.trOK(s.k) ? "trOK" : "bridgeAnch")));
       if (gateOk && typeof s.k === "string") {
         // empty-station law: bollards render only against attachments that
         // ACTUALLY served this frame — heads key on trunk endpoints "T|fi",
@@ -3517,6 +3527,7 @@ function updateHubs() {
 let stubExits = [];     // EXPLAINED EXIT dissolve points this frame (focus-file
                         // chains culled by the termini law; labeled in tick)
 const legTermOn = new Map();  // per-leg chain-key -> terminus projects on-screen (tick fills)
+const chainGate = new Map();  // per-chain first failing gate this frame (sighting #10 probe)
 function updateStubLabs() {
   // EXPLAINED EXIT labels: compact "→ station · file" at each dissolve
   // point (cap 4). On-viewport stubs first (busPts order — deterministic);
@@ -4473,7 +4484,7 @@ function rebuildFnLayer(focusing) {
       // zoom). One closing segment lands the ink on the dot itself; it
       // shares k so the whole chain culls/serves atomically and picks as
       // a jleg. The junction end already lands on its subJ bollard (sp).
-      busSegs.push({ a: [lx, ly, lz], b: [S.p[0], S.p[1] + 1, S.p[2]],
+      busSegs.push({ a: [lx, ly, lz], b: [S.p[0], S.p[1], S.p[2]],
                      col: [BOL_COL[1].r, BOL_COL[1].g, BOL_COL[1].b],
                      k: "L|" + S.fi + "|" + S.id + "|" + li, rf: 0.55 });
       fnLegN++;
@@ -4831,7 +4842,7 @@ function rebuildFnLayer(focusing) {
     fnBus.frustumCulled = false;
     busPts = busSegs;
   busPtsMeta = busSegs.map(s => String(s.k).startsWith("L|")
-    ? { kind: "jleg", fi: +String(s.k).split("|")[1] }
+    ? { kind: "jleg", fi: +String(s.k).split("|")[1], k: String(s.k) }
     : (trunkMetaMap.get(s.k) || null));
     scene.add(fnBus);
   }
@@ -5223,6 +5234,27 @@ function strongPair(l) {
     (a[5] - b[5]));
   return pair;
 }
+// rider enumeration (tooltip semantics, user sighting on 7e334e3): the
+// fn→fn wires a file's bus actually holds. sid < 0 = all stations of fi.
+function riderWiresOf(fi, sid) {
+  const out = [], seen = new Set();
+  const stations = fnStationsArr || [];
+  for (const S of stations) {
+    if (S.fi !== fi || (sid >= 0 && S.id !== sid)) continue;
+    for (const tk of (S.tks || [])) {
+      const tm = trunkMetaMap && trunkMetaMap.get(tk);
+      if (!tm) continue;
+      for (const m of (tm.mates || [])) {
+        if (fnMeta[m.a].file !== fi && fnMeta[m.b].file !== fi) continue;
+        const kk = m.a + ">" + m.b + "@" + m.ln;
+        if (seen.has(kk)) continue;
+        seen.add(kk);
+        out.push(m);
+      }
+    }
+  }
+  return out;
+}
 function wireDesc(meta) {
   // what the wire contains and where it goes — fn names on both ends
   if (meta.kind === "link") {
@@ -5246,17 +5278,39 @@ function wireDesc(meta) {
       + (m.ln >= 0 ? "  @L" + m.ln : "")).join("\n");
     return head + (body ? "\n" + body : "");
   }
-  if (meta.kind === "jleg") {
-    return "🚌 junction leg\n" + nodes[meta.fi].path + "  (fan → station)";
+  if (meta.kind === "jleg" || meta.kind === "sub" || meta.kind === "jof") {
+    const pp = meta.k ? String(meta.k).split("|") : null;
+    const sid = pp ? +pp[2] : -1;
+    const mates = riderWiresOf(meta.fi, sid);
+    const srcs = [...new Set(mates.map(m =>
+      fnMeta[fnMeta[m.a].file === meta.fi ? m.a : m.b].name))];
+    const dests = [...new Set(mates.map(m =>
+      fnMeta[fnMeta[m.a].file === meta.fi ? m.b : m.a].file))];
+    const head = (meta.kind === "jleg" ? "🚌 junction leg · " : "🚌 bus fan · ") +
+      nodes[meta.fi].path + "\n" +
+      srcs.slice(0, 4).join(", ") + (srcs.length > 4 ? " +" + (srcs.length - 4) : "") +
+      "  →  bus to " + dests.slice(0, 3).map(fi2 => nodes[fi2].label).join(", ") +
+      (dests.length > 3 ? " +" + (dests.length - 3) : "") +
+      "  · " + mates.length + " wire" + (mates.length !== 1 ? "s" : "");
+    const body = mates.slice(0, 8).map(m =>
+      "  · " + fnMeta[m.a].name + "() → " + fnMeta[m.b].name + "()"
+      + (m.ln >= 0 ? "  @L" + m.ln : "")).join("\n");
+    return head + (body ? "\n" + body : "") +
+      (mates.length > 8 ? "\n+" + (mates.length - 8) + " more" : "");
   }
   if (meta.kind === "station") {
-    return "🚌 junction · " + nodes[meta.fi].path +
-      "\n" + meta.wires + " wires merge here → " + meta.trks + " trunk" + (meta.trks > 1 ? "s" : "") +
-      "\n(one trunk = one bundled corridor of calls)";
-  }
-  if (meta.kind === "sub" || meta.kind === "jof") {
-    return "🚌 sub-junction · " + nodes[meta.fi].path +
-      "\nfan of " + (meta.wires || 1) + " wire" + ((meta.wires || 1) > 1 ? "s" : "") + " joins the station here";
+    const mates = riderWiresOf(meta.fi, -1);
+    const dests = [...new Set(mates.map(m =>
+      fnMeta[fnMeta[m.a].file === meta.fi ? m.b : m.a].file))];
+    const head = "🚌 bus · " + nodes[meta.fi].path + "  (" + mates.length + " wires)";
+    const body = mates.slice(0, 8).map(m =>
+      "  · " + fnMeta[m.a].name + "() → " + fnMeta[m.b].name + "()"
+      + (m.ln >= 0 ? "  @L" + m.ln : "")).join("\n");
+    return head + (body ? "\n" + body : "") +
+      (mates.length > 8 ? "\n+" + (mates.length - 8) + " more" : "") +
+      "\n→ " + dests.length + " corridor" + (dests.length !== 1 ? "s" : "") +
+      ": " + dests.slice(0, 4).map(fi2 => nodes[fi2].label).join(", ") +
+      (dests.length > 4 ? " +" + (dests.length - 4) : "");
   }
   const a = fnMeta[meta.a], b = fnMeta[meta.b];
   const src = nodes[a.file], dst = nodes[b.file];
@@ -7532,12 +7586,26 @@ renderer.domElement.addEventListener("pointermove", e => {
       } else if (m.kind === "trunk") {
         txt = "🚌 bus " + nodes[m.sf].label + " → " + nodes[m.tf].label +
           "  (" + (m.mates || []).length + " wires)";
-      } else if (m.kind === "jleg") {
-        txt = "🚌 junction leg · " + nodes[m.fi].label;
+      } else if (m.kind === "jleg" || m.kind === "sub" || m.kind === "jof") {
+        const pp = m.k ? String(m.k).split("|") : null;
+        const mates = riderWiresOf(m.fi, pp ? +pp[2] : -1);
+        const srcs = [...new Set(mates.map(w =>
+          fnMeta[fnMeta[w.a].file === m.fi ? w.a : w.b].name))];
+        const dests = [...new Set(mates.map(w =>
+          fnMeta[fnMeta[w.a].file === m.fi ? w.b : w.a].file))];
+        txt = (m.kind === "jleg" ? "🚌 junction leg · " : "🚌 bus fan · ") +
+          nodes[m.fi].label + " · " +
+          srcs.slice(0, 3).join(", ") + (srcs.length > 3 ? "…" : "") +
+          "  →  " + dests.slice(0, 2).map(fi2 => nodes[fi2].label).join(", ") +
+          (dests.length > 2 ? " +" + (dests.length - 2) : "") +
+          "  · " + mates.length + " wires";
       } else if (m.kind === "station") {
-        txt = "🚌 junction · " + nodes[m.fi].label + "  (" + m.wires + " wires → " + m.trks + " trunks)";
-      } else if (m.kind === "sub" || m.kind === "jof") {
-        txt = "🚌 sub-junction · " + nodes[m.fi].label;
+        const mates = riderWiresOf(m.fi, -1);
+        const dests = [...new Set(mates.map(w =>
+          fnMeta[fnMeta[w.a].file === m.fi ? w.b : w.a].file))];
+        txt = "🚌 bus · " + nodes[m.fi].label + " · " + mates.length + " wires → " +
+          dests.slice(0, 3).map(fi2 => nodes[fi2].label).join(", ") +
+          (dests.length > 3 ? " +" + (dests.length - 3) : "");
       } else {
         const a = fnMeta[m.a], b = fnMeta[m.b];
         txt = nodes[a.file].label + "::" + a.name + "() → " +
@@ -7731,6 +7799,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get jDotArrays() { return { of: fnJDotOf, st: fnJDotSt, legs: fnJDotLegs, key: fnJDotKey }; },
   get stubExits() { return stubExits; },  // EXPLAINED EXIT dissolve points
   get anchorBoostArr() { return anchorBoost; },  // corridor-boost px per fi (probe hook)
+  get chainGates() { return [...chainGate.entries()]; },  // per-chain first failing gate (sighting #10)
   get taperDbg() {   // EXPLAINED EXIT probe: per-leg gate state this frame
     const out = [];
     if (_lod && legTermOn) {
