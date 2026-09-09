@@ -505,6 +505,7 @@ JS_DECLUT = r"""() => { const d = window.__dbg;
   // owned by that file) sits within 12 wu of either leg endpoint.
   // Informational until the next anchor cut gives it a baseline cell ----
   let legN = 0, oAny = 0, oBox = 0, oSt = 0, oBoth = 0, oSpeck = 0; const oSites = [];
+  let eSt = 0; const eSites = [];                    // empty-station law violations
   if (d.busPts && d.busPtsMeta) {
     // rendered bollards only: the render gate parks gated dots at
     // r=0.0001 (fnJDotR), so radius > 0.001 wu == visible ink
@@ -563,7 +564,73 @@ JS_DECLUT = r"""() => { const d = window.__dbg;
           oSites.push(((d.nodes[g.fi] && d.nodes[g.fi].path) || String(g.fi)) +
             ' @' + Math.round(c[0]) + ',' + Math.round(c[1])); } }
     }
+    // EMPTY-STATION LAW (viz 7e334e3): a bollard renders only against an
+    // attachment that actually served this frame. Geometric proxy (the
+    // law's own key set stAttKey is not exported): a rendered, on-screen
+    // bollard with NO rendered-conduit endpoint within 12 wu is floating
+    // anchor-less ink — the exact "empty station dot floating at the
+    // landing pose" sighting. Rendered conduit = fnBus instance scale >
+    // 0.001 (the serve loop parks culled segments at 0.0001; busPts[i] is
+    // parallel to fnBus instances).
+    if (d.fnBus && d.fnBus.instanceMatrix) {
+      const fa = d.fnBus.instanceMatrix.array;
+      const servedEnds = [];
+      for (let i = 0; i < d.busPts.length && i * 16 + 2 < fa.length; i++) {
+        const sc = Math.hypot(fa[i*16], fa[i*16+1], fa[i*16+2]);
+        if (sc <= 0.001) continue;
+        servedEnds.push(d.busPts[i].a, d.busPts[i].b);
+      }
+      // context tests in screen px. (1) bus-conduit endpoint within 20px —
+      // the terminus law's own bar (7e334e3 measured max gap 4.8px vs 20);
+      // (2) any color-filtered wire tier (wire/quiet/arc/link) passing
+      // within 12px — bollards lawfully ride non-bus wires too (mp site2:
+      // magenta dot ON a lit link line); (3) anchor-ink EDGE within 12px
+      // — depth-overlapped dots project onto big sprites whose centers
+      // are far but whose ink covers the dot (mp site1).
+      const distSeg = (px, py, s) => {
+        const dx = s.b[0] - s.a[0], dy = s.b[1] - s.a[1], L2 = dx*dx + dy*dy;
+        let t = L2 ? ((px - s.a[0])*dx + (py - s.a[1])*dy) / L2 : 0;
+        t = Math.max(0, Math.min(1, t));
+        return Math.hypot(px - (s.a[0] + t*dx), py - (s.a[1] + t*dy)); };
+      const inkSegs = segs.filter(s => s.k !== 'leg' && s.k !== 'trunk');
+      for (const bp of bols) {
+        const sp = P(bp);
+        if (!on(sp)) continue;                    // census covers visible ink
+        let served = false;
+        outer2: for (const e of servedEnds) { const q = P(e);
+          if (Math.hypot(q.x - sp.x, q.y - sp.y) < 20) { served = true; break outer2; } }
+        if (!served) for (const s of inkSegs)
+          if (distSeg(sp.x, sp.y, s) < 12) { served = true; break; }
+        if (!served) for (const [fi, px] of anchorPxOf) {
+          if (px < 2.5) continue;
+          const q = P([d.pos[fi*3], d.pos[fi*3+1], d.pos[fi*3+2]]);
+          if (Math.hypot(q.x - sp.x, q.y - sp.y) < 12 + px / 2) { served = true; break; }
+        }
+        if (!served) { eSt++;
+          if (eSites.length < 8) eSites.push('@' + Math.round(sp.x) + ',' + Math.round(sp.y)); }
+      }
+    }
   }
+  // DEPTH-OWNED LIT RADIUS (viz 7e334e3): the depth slider owns which
+  // sprites are lit — a lit file must sit at level <= depth (level -1 =
+  // outside the focus tree). Lit ink beyond the law = ghosts leaking
+  // outside the visible stratum.
+  let oLit = 0; const lSites = [];
+  // the law binds only when a focus tree exists — at rest (global, no
+  // search) every file is lit by design and level is all -1
+  if (d.alphaTgt && d.level && d.level.some(l => l >= 0)) {
+    const dv = +(document.getElementById('depth').value || 1);
+    for (let i = 0; i < d.alphaTgt.length; i++) {
+      if (d.alphaTgt[i] < 0.5) continue;
+      const lv = d.level[i];
+      if (lv >= 0 && lv <= dv) continue;
+      oLit++;
+      if (lSites.length < 8) lSites.push(((d.nodes[i] && d.nodes[i].path) || String(i)) +
+        ' lvl=' + lv + ' depth=' + dv);
+    }
+  }
+  out.emptyStViol = eSt; out.emptyStSites = eSites;
+  out.outsideLit = oLit; out.outsideLitSites = lSites;
   out.legN = legN; out.orphanJLegs = oAny;
   out.orphanJLegBoxFloor = oBox; out.orphanJLegStationGated = oSt;
   out.orphanJLegBothEnds = oBoth; out.orphanJLegSites = oSites;
@@ -705,7 +772,8 @@ def declut_subject(page, cdp, subject, prefix, qa):
               f" occl={m['nodeOcclFrac']} inkC={m['ink']['inkCentral']}"
               f" orphanJLegs={m['legN']}/{m['orphanJLegs']}"
               f" (box={m['orphanJLegBoxFloor']} st={m['orphanJLegStationGated']}"
-              f" both={m['orphanJLegBothEnds']}) anchorSpecks={m['anchorSpecks']}")
+              f" both={m['orphanJLegBothEnds']}) anchorSpecks={m['anchorSpecks']}"
+              f" emptySt={m['emptyStViol']} outsideLit={m['outsideLit']}")
     page.evaluate(CAM_RESTORE)
     return recs
 
@@ -766,6 +834,8 @@ GATE_KEYS = [
     # the v2 anchor skip them (get_metric returns None when base lacks it).
     ("orphanJLegs", "orphan junction legs", 0, 0),
     ("anchorSpecks", "speck-anchored legs (perceptual)", 0, 0),
+    ("emptyStViol", "anchor-less bollards (empty-station law)", 0, 0),
+    ("outsideLit", "lit beyond depth law", 0, 0),
 ]
 # net-total guard (same calibration, totals across three 469263d runs):
 # aggregate clutter must not regress beyond the instrument's resolution —
@@ -773,7 +843,8 @@ GATE_KEYS = [
 # jitter because their cells do. Totals are capped ABSOLUTELY against the
 # current anchor (no per-round ratchet: later rounds face the same ceiling).
 TOTAL_TOL = {"crossTT": 0, "labelLabelPairs": 1, "labelWireLabels": 3,
-             "chevCrowdHard": 5, "orphanJLegs": 0, "anchorSpecks": 0}
+             "chevCrowdHard": 5, "orphanJLegs": 0, "anchorSpecks": 0,
+             "emptyStViol": 0, "outsideLit": 0}
 
 # Metrics a rubric-sanctioned hub affordance (degree-hint / ghost-tier reveal)
 # legitimately ADDS in zero-wire .tscn hub views. Exempted per-subject only via
