@@ -3516,6 +3516,11 @@ function rebuildFnLayer(focusing) {
     fcol.push(colArr[ag.file*3], colArr[ag.file*3+1], colArr[ag.file*3+2]);
     fnMeta.push({ file: ag.file, name: "", p: ag.p, count: ag.count });
   }
+  // collapsed members (agg, no count) render at scale 0 — wires and
+  // chevrons that touch them must land on the file's VISIBLE aggregate
+  // box, else deliveries aim at invisible boxes and read as floating
+  const aggP = new Map();
+  for (const ag of aggs) aggP.set(ag.file, ag.p);
   // fn boxes: true 3D cubes on their owner arcs, colored by owning cluster hue
   const fdummy = new THREE.Object3D();
   fnMesh = new THREE.InstancedMesh(
@@ -4157,8 +4162,12 @@ function rebuildFnLayer(focusing) {
   for (let i = 0, p = 0; i < eidx.length; i += 2, p++) {
     const a = eidx[i], b = eidx[i+1];
     const T = wireTier[p] ? tierB : tierQ;
-    const ax = fpos[a*3], ay = fpos[a*3+1], az = fpos[a*3+2];
-    const bx = fpos[b*3], by = fpos[b*3+1], bz = fpos[b*3+2];
+    // collapsed members (scale-0) land on their file's VISIBLE aggregate
+    // box — deliveries must read at a rendered box, not open air
+    const ap = fnMeta[a].agg && !fnMeta[a].count ? aggP.get(fnMeta[a].file) : null;
+    const bp = fnMeta[b].agg && !fnMeta[b].count ? aggP.get(fnMeta[b].file) : null;
+    const ax = ap ? ap[0] : fpos[a*3], ay = ap ? ap[1] : fpos[a*3+1], az = ap ? ap[2] : fpos[a*3+2];
+    const bx = bp ? bp[0] : fpos[b*3], by = bp ? bp[1] : fpos[b*3+1], bz = bp ? bp[2] : fpos[b*3+2];
     cA.setRGB(fcol[a*3], fcol[a*3+1], fcol[a*3+2]);
     cB.setRGB(fcol[b*3], fcol[b*3+1], fcol[b*3+2]);
     const phase = ((i + 1) * 2654435761 >>> 3) % 911 / 911 * 13;
