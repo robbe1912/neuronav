@@ -213,6 +213,34 @@ def main() -> None:
             len(full) > len(small),
             f"{len(small)} -> {len(full)} chars",
         )
+
+        # semantic_search: hybrid recall surface — you-are-here header,
+        # src provenance per hit, 1-hop ctx neighbor labels
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 8,
+                "method": "tools/call",
+                "params": {
+                    "name": "semantic_search",
+                    "arguments": {"query": "player movement input", "n": 5},
+                },
+            }
+        )
+        sr = text_of(recv(8)["result"])
+        check(
+            "semantic_search: you-are-here header",
+            bool(re.match(r"you are here: .+ — \d+ files, \d+ clusters", sr)),
+            sr.splitlines()[:1],
+        )
+        body = [ln for ln in sr.splitlines() if "src=" in ln]
+        check(
+            "semantic_search: ranked hits with src provenance",
+            len(body) >= 1
+            and all(re.search(r"src=(vec|bm25|both)(?:\s|$)", ln) for ln in body),
+            sr.splitlines()[1:4],
+        )
+        check("semantic_search: ctx neighbor labels", "ctx=[" in sr, sr.splitlines()[1:2])
     finally:
         proc.kill()
         time.sleep(0.5)

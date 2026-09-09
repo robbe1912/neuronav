@@ -9,7 +9,8 @@ Tools:
 - repo_map(budget_tokens=2048): token-budget repo map — files ranked by
   structural PageRank with key signatures, tree-grouped by dir; the cheap
   orientation preamble to call before any search
-- semantic_search(query, n=8): nearest files by embedding similarity
+- semantic_search(query, n=8): hybrid recall — vector + BM25F ranks fused,
+  hits carry src provenance and 1-hop ctx neighbors
 - find_functions(query, n=6): semantic search over individual functions
 - symbol_graph(symbol, depth=1): callers/callees around a function or class
 - dead_code(): functions unreachable from any entry point (candidates only)
@@ -36,18 +37,23 @@ import nav
 
 mcp = FastMCP("swmg-nav")
 
-# clients (Cursor Ask mode etc.) gate write tools by this hint; every tool
 # below except rescan is pure read over the local index
 READONLY = ToolAnnotations(readOnlyHint=True)
 
 
-def _fmt(hits: list[nav.Hit]) -> str:
+def _fmt(hits: list[dict]) -> str:
+    """Format hybrid-recall hits: RRF-fused score, src provenance
+    (vec/bm25/both), bidirectional 1-hop ctx labels."""
     if not hits:
         return "no results (index empty — call rescan first)"
-    lines = []
+    lines: list[str] = []
+    if hits[0].get("degraded"):
+        lines.append("degraded: BM25F-only (vector index unavailable)")
     for h in hits:
-        label = h.class_name or h.extends or h.ext
-        lines.append(f"{h.score:0.3f}  res://{h.path}  [{label}]")
+        label = h.get("class_name") or h.get("extends") or h.get("ext") or ""
+        tag = f"  [{label}]" if label else ""
+        ctx = ", ".join(h.get("ctx") or [])
+        lines.append(f"{h['score']:0.4f}  {h['file']}  src={h['src']}  ctx=[{ctx}]{tag}")
     return "\n".join(lines)
 
 
@@ -94,12 +100,14 @@ def repo_map(budget_tokens: int = 2048) -> str:
 def semantic_search(query: str, n: int = 8) -> str:
     """Find code/scene files in this Godot project by meaning, not keywords.
 
-    Use before grep when hunting a concept: input handling, spell cooldowns,
-    save system, netcode, bot AI, inventory. Returns ranked res:// paths —
-    follow up with the Read tool on the best hits.
+    Hybrid recall: vector similarity fused with lexical BM25F ranks —
+    src=vec|bm25|both says which side found each hit, ctx= lists up to 3
+    structural neighbors worth a look while you are there. Use before
+    grep when hunting a concept: input handling, spell cooldowns, save
+    system, netcode, bot AI, inventory.
     """
     n = max(1, min(n, 25))
-    return _fmt(nav.search(query, n))
+    return _here(graph.get_graph()) + "\n" + _fmt(nav.search(query, n))
 
 
 @mcp.tool(annotations=READONLY)
