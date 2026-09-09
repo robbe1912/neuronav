@@ -513,12 +513,23 @@ JS_DECLUT = r"""() => { const d = window.__dbg;
       for (let i = 0; i < d.fnJDotR.length; i++) {
         if ((d.fnJDotR[i] || 0) <= 0.001) continue;
         bols.push([im[i*16+12], im[i*16+13], im[i*16+14]]); } }
-    const boxPxOf = new Map();                     // fi -> largest rendered box px
+    // ANCHOR INK px per fi: the endpoint ink a user actually reads — the
+    // node sprite when lit (alpha >= 0.5, the perceptual-anchor law's own
+    // exemption: a lit 19-56px sphere anchors a leg whose fn box is 2-3px),
+    // else the largest rendered fn-box px. Measuring the box alone
+    // miscounted lit-sprite legs as specks on the 51a4555 bake.
+    const anchorPxOf = new Map();
+    const put = (fi, px) => { if (!anchorPxOf.has(fi) || px > anchorPxOf.get(fi)) anchorPxOf.set(fi, px); };
     if (d.fnMeta) for (const m of d.fnMeta) {
       if (m.agg && !m.count) continue;
-      const px = (m.count ? 3 : 2) * pxwu(m.p);
-      if (!boxPxOf.has(m.file) || px > boxPxOf.get(m.file)) boxPxOf.set(m.file, px);
+      put(m.file, (m.count ? 6 : 4) * pxwu(m.p));  // pxOf units: DIAMETER px
     }
+    if (d.sphR && d.alphaTgt && d.pos)
+      for (let fi = 0; fi < d.nodes.length; fi++) {
+        if (d.alphaTgt[fi] < 0.5) continue;         // unlit sprite = not anchor ink
+        const p = [d.pos[fi*3], d.pos[fi*3+1], d.pos[fi*3+2]];
+        put(fi, 2 * d.sphR(fi) * pxwu(p));          // sprite diameter px
+      }
     const wuD = (a, b) => Math.hypot(a[0]-b[0], a[1]-b[1], a[2]-b[2]);
     // group chain pieces into one visual leg per station: key L|fi|st|li
     const chains = new Map();                      // "L|fi|st" -> {fi, ends:[], scr:[xy..]}
@@ -535,19 +546,19 @@ JS_DECLUT = r"""() => { const d = window.__dbg;
     for (const g of chains.values()) {
       if (!g.vis) continue;                        // census covers on-screen ink
       legN++;
-      const boxPx = boxPxOf.get(g.fi) || 0;
-      const boxOK = boxPx >= 2.5;
-      // anchor speck (perceptual anchor law, next round): passes the 2.5px
-      // geometric res() floor but lands under the ~6px PERCEPTUAL_ANCHOR —
-      // leg ink whose box end is lawfully served yet perceptually a speck
-      if (boxPx >= 2.5 && boxPx < 6) oSpeck++;
+      const anchorPx = anchorPxOf.get(g.fi) || 0;
+      const anchorOK = anchorPx >= 2.5;                // geometric res() floor
+      // anchor speck (perceptual anchor law): anchor ink passes the 2.5px
+      // geometric floor but lands under the ~6px PERCEPTUAL_ANCHOR — leg
+      // endpoint lawfully served yet perceptually a speck
+      if (anchorPx >= 2.5 && anchorPx < 6) oSpeck++;
       let stOK = false;
       outer: for (const e of g.ends) for (const b of bols)
         if (wuD(b, e) < 12) { stOK = true; break outer; }
-      if (!boxOK) oBox++;
+      if (!anchorOK) oBox++;
       if (!stOK) oSt++;
-      if (!boxOK || !stOK) oAny++;
-      if (!boxOK && !stOK) { oBoth++;
+      if (!anchorOK || !stOK) oAny++;
+      if (!anchorOK && !stOK) { oBoth++;
         if (oSites.length < 8) { const c = g.scr[0] || [0, 0];
           oSites.push(((d.nodes[g.fi] && d.nodes[g.fi].path) || String(g.fi)) +
             ' @' + Math.round(c[0]) + ',' + Math.round(c[1])); } }
@@ -749,14 +760,20 @@ GATE_KEYS = [
     ("chevCrowdHard", "chevron/label crowding (hard)", 2, None),
     ("nodeOcclFrac", "node occlusion fraction", 0.02, None),
     ("inkCentral", "central-band ink density", 0.008, None),
+    # chain-integrity + perceptual-anchor laws (51a4555 bake): hard bar 0 —
+    # no rendered leg may end unresolved (orphan) or at a speck anchor.
+    # Baselines for these keys exist only in the anchor2+ anchors; gates vs
+    # the v2 anchor skip them (get_metric returns None when base lacks it).
+    ("orphanJLegs", "orphan junction legs", 0, 0),
+    ("anchorSpecks", "speck-anchored legs (perceptual)", 0, 0),
 ]
 # net-total guard (same calibration, totals across three 469263d runs):
 # aggregate clutter must not regress beyond the instrument's resolution —
 # crossTT totals were bit-identical across runs; the label/crowd totals
 # jitter because their cells do. Totals are capped ABSOLUTELY against the
-# dc34469 baseline (no per-round ratchet: rounds 2-4 face the same ceiling).
+# current anchor (no per-round ratchet: later rounds face the same ceiling).
 TOTAL_TOL = {"crossTT": 0, "labelLabelPairs": 1, "labelWireLabels": 3,
-             "chevCrowdHard": 5}
+             "chevCrowdHard": 5, "orphanJLegs": 0, "anchorSpecks": 0}
 
 # Metrics a rubric-sanctioned hub affordance (degree-hint / ghost-tier reveal)
 # legitimately ADDS in zero-wire .tscn hub views. Exempted per-subject only via
@@ -791,10 +808,17 @@ def gate_declut(base_doc, after_doc, afford=frozenset()):
             for key, label, tol, bar in GATE_KEYS:
                 a = get_metric(m, key)
                 b = get_metric(base_m, key) if base_m else None
-                if a is None or b is None:
+                if a is None:
                     rows.append((subj, ang, key, b, a, "MISSING"))
-                    violations.append(f"{subj}/{ang}/{key}: missing value (base={b} after={a})")
+                    violations.append(f"{subj}/{ang}/{key}: probe missing value (after={a})")
                     continue
+                if b is None:
+                    # anchor predates this metric: no baseline cell, evaluate
+                    # against the hard bar alone (legacy anchors stay usable)
+                    if bar is None:
+                        rows.append((subj, ang, key, b, a, "NOBASE"))
+                        continue
+                    b = 0
                 exempt = subj in afford and key in AFFORD_KEYS
                 if key in TOTAL_TOL and not exempt:
                     for side, val in (("base", b), ("after", a)):
