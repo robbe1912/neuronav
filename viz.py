@@ -1437,12 +1437,13 @@ dpos.set(pos);
 // dim pass needs this to keep supernode-carried edges bright)
 const supCollapsed = new Map();
 // satellite allowance block moved above the eval-time syncFileMesh() call
-// PERCEPTUAL ANCHOR law (3rd user sighting): ink arriving at a node implies
-// that node's anchor READS — 2.5px resolves geometrically but a 2-6px speck
-// is "effectively invisible as an anchor" (VLM). anchorBoost[i] = minimum
-// screen-px the sprite must draw while ink terminates on it (0 = no demand);
+// PERCEPTUAL ANCHOR law (user sightings 3+4): ink arriving at a node implies
+// that node's anchor READS. anchorBoost[i] = minimum DIAMETER in REF-px
+// (normalized to 900px canvas height; the user's ~840h window shows 8 REF-px
+// as ~7.5 real px) the sprite must draw while ink terminates on it; 6 was
+// still speck-class to the eye, 8 REF-px diameter is the ruled bar.
 // syncFileMesh lifts scale to meet it (capped so hierarchy survives).
-const ANCHOR_PX = 6;
+const ANCHOR_PX = 8;   // endpoint anchor bar, DIAMETER ref-px
 const anchorBoost = new Float32Array(N);
 
 // true 3D node geometry (billboard sprites read flat on screen): files =
@@ -2123,11 +2124,14 @@ function busLodInit() {
   const trOK = tk => {
     const p = String(tk).split(">");
     return p.length === 2 ? res(+p[0]) && res(+p[1]) : res(+String(tk).split("|")[1]);
-  };
   const stOK = fi => {
     if (!res(fi)) return false;
     const tks = stationTks && stationTks.get(fi);
-    if (!tks || !tks.length) return true;
+    // no bare station heads: a station tree with NO trunk leaving it renders
+    // dots + legs connected to nothing ("node heads in the void", 4th user
+    // sighting) — the chain (legs + bollards) only serves when >=1 trunk
+    // beyond the station also serves
+    if (!tks || !tks.length) return false;
     for (const tk of tks) if (trOK(tk)) return true;
     return false;
   };
@@ -2152,6 +2156,13 @@ function busLodInit() {
              chevShown: 0, minChevPx: Infinity, minServedBoxPx: Infinity, minBollardPx: Infinity,
              serveFi: -1, servePx: -1, oDot: _oDot, oArrow: _oArrow };
   _lod = (fnBus || fnJDot) ? busLodInit() : null;   // after fnLodV: it stamps serveFi/servePx
+  // endpoint anchor demands are per-frame (camera-pose dependent): reset,
+  // then the serve loop adds leg far-files and arcs add their endpoints
+  anchorBoost.fill(0);
+  if (focusArcs && focusArcs.lines.visible && focusArcs.lines.userData.meta)
+    for (const m of focusArcs.lines.userData.meta) {
+      anchorBoost[links[m.li].s] = ANCHOR_PX; anchorBoost[links[m.li].t] = ANCHOR_PX;
+    }
   if (fnBus && busPts) {
     let dirty = false;
     const lod = _lod;
@@ -2168,6 +2179,8 @@ function busLodInit() {
           fnLodV.minServedBoxPx = Math.min(fnLodV.minServedBoxPx, lod ? lod.tkPx(s.k) : Infinity); }
         else fnLodV.conduitsGated++;
       }
+      if (gateOk && typeof s.k === "string" && s.k.charCodeAt(0) === 76)
+        anchorBoost[+s.k.split("|")[1]] = ANCHOR_PX;   // serving leg: far-file sprite anchors
       const rT = gateOk ? Math.max(0.05, Math.min(12, d * 0.0037 * (s.rf || 1))) : 0.0001;
       const f = rT / fnBusRi[i];
       if (Math.abs(f - 1) > 0.06) {
@@ -2761,7 +2774,6 @@ const TYPE_C3D = { call: 0xd9e2eb, signal: 0xffb347, var: 0x73e68c,
 let focusArcs = null;   // { lines, geo, mat }
 const ARC_SEG = 14;
 function rebuildFocusWires() {
-  anchorBoost.fill(0);   // anchor demands belong to the live arc set only
   const list = [];
   // zero-wire .tscn affordance (C2.2 ruling): a deg-57+ hub whose whole
   // neighborhood sits in the ghost tier renders NOTHING about its
@@ -2854,9 +2866,6 @@ function rebuildFocusWires() {
   // those) — hover/click must test THESE chords, or the collider stays on
   // the invisible pre-curve straight line
   flines.userData.seg = ARC_SEG;
-  // every arc terminates on a node: while this set is live, those sprites
-  // are perceptual anchors (affordance far-ends included) — demand ANCHOR_PX
-  for (const li of list) { anchorBoost[links[li].s] = ANCHOR_PX; anchorBoost[links[li].t] = ANCHOR_PX; }
   focusArcs.lines.visible = true;
 }
 function applyVisibility() {
