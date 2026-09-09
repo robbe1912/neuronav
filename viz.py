@@ -20,7 +20,6 @@ import sys
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-
 import nav
 import graph
 
@@ -1725,6 +1724,10 @@ function pickWireMeta(e) {
         (v.x + 1) / 2 * rect.width, (1 - v.y) / 2 * rect.height,
         (w.x + 1) / 2 * rect.width, (1 - w.y) / 2 * rect.height);
       const m = meta[Math.floor(i / per)];
+      // pick parity (sighting #11): a trunk meta on the wire tier must not
+      // answer the picker when its conduit is LOD-culled — the card would
+      // describe ink that isn't served (explanation without presence)
+      if (m && m.kind === "trunk" && fnBus && busPts && !inkKeys.has(String(m.k))) continue;
       const dd = d - (m.kind === "trunk" ? 2 : 1) + (quiet ? 3 : 0);
       if (dd < bestD) { bestD = dd; best = m; pickWireZ = v.z + segT * (w.z - v.z); }
     }
@@ -1784,6 +1787,11 @@ function pickWireMeta(e) {
         if (!m || !p) continue;
         v.set(p[i*3], p[i*3+1], p[i*3+2]).project(camera);
         if (v.z > 1) continue;
+        // pick-vs-render parity (sighting #11 class 2): a culled bollard
+        // (radius parked at 0.0001) must not answer the picker — a card on
+        // invisible ink is explanation without presence
+        if ((fnJDotR[i] || 0) <= 0.001) continue;
+        m.__ji = i;   // presence check keys the card to this dot's live radius
         const dx = (v.x + 1) / 2 * rect.width - px, dy = (1 - v.y) / 2 * rect.height - py;
         const dd = Math.hypot(dx, dy) - 8;   // dot radius + forgiveness
         if (dd < bestD) { bestD = dd; best = m; pickWireZ = v.z; }
@@ -2241,7 +2249,7 @@ function busLodInit() {
       if (p.length === 2) { anchorBoost[+p[0]] = ANCHOR_PX; anchorBoost[+p[1]] = ANCHOR_PX; }
     }
   if (fnBus && busPts) {
-    stAttKey.clear(); chainGate.clear();
+    stAttKey.clear(); chainGate.clear(); inkKeys.clear();
     let dirty = false;
     const lod = _lod;
     const a = fnBus.instanceMatrix.array;
@@ -2325,6 +2333,10 @@ function busLodInit() {
           stubPts.push({ nx: _sv.x, ny: _sv.y, fi: destFi, dest: String(s.k) });
       }
       const f = rT / fnBusRi[i];
+      // NO EXPLANATION WITHOUT PRESENCE (sighting #11): record which chains
+      // carry ink this frame — the pinned wireTip's lifetime checks against
+      // this set every tick and hides the moment its anchor loses ink
+      if (typeof s.k === "string" && rT > 0.002) inkKeys.add(s.k);
       if (Math.abs(f - 1) > 0.06) {
         const o = i * 16;
         a[o] *= f; a[o+1] *= f; a[o+2] *= f;
@@ -2386,6 +2398,21 @@ function busLodInit() {
       }
     }
     if (dirty) fnJDot.instanceMatrix.needsUpdate = true;
+  }
+  // NO EXPLANATION WITHOUT PRESENCE (sighting #11): the pinned card's
+  // lifetime is frame-synced to its anchor's rendered state — chain keys
+  // must carry ink (inkKeys), bollards must render (fnJDotR), plain wires
+  // keep at least one lit endpoint. Anchor gone -> card hides, no exceptions.
+  if (wireTipAnchor && wireTipEl.style.display !== "none") {
+    const a = wireTipAnchor;
+    let present = true;
+    if ((a.kind === "trunk" || a.kind === "jleg") && a.k !== undefined)
+      present = inkKeys.has(String(a.k));
+    else if (a.__ji !== undefined)
+      present = (fnJDotR[a.__ji] || 0) > 0.001;
+    else if (a.kind === "wire" && a.a !== undefined && a.b !== undefined)
+      present = (alphaTgt[a.a] || 0) > 0.5 || (alphaTgt[a.b] || 0) > 0.5;
+    if (!present) hideWireTip();
   }
   // chevron aim is camera-dependent: recompute every frame
   aimArrows();
@@ -3528,6 +3555,8 @@ let stubExits = [];     // EXPLAINED EXIT dissolve points this frame (focus-file
                         // chains culled by the termini law; labeled in tick)
 const legTermOn = new Map();  // per-leg chain-key -> terminus projects on-screen (tick fills)
 const chainGate = new Map();  // per-chain first failing gate this frame (sighting #10 probe)
+const inkKeys = new Set();    // chains carrying ink this frame (serve loop fills; sighting #11)
+let wireTipAnchor = null;     // pinned card's anchor meta — lifetime-tracked per frame
 function updateStubLabs() {
   // EXPLAINED EXIT labels: compact "→ station · file" at each dissolve
   // point (cap 4). On-viewport stubs first (busPts order — deterministic);
@@ -4379,7 +4408,6 @@ function rebuildFnLayer(focusing) {
   // stacking at 0 wu; trunks still read as leaving the dot. Sector stations
   // of one bollard CLUSTER are grouped by proximity (60 wu) — object
   // identity split the visual fan and left whole clusters unranked.
-  const stTerm = new Map();   // station id -> Map("k:end" -> offset point)
   const stTermR = new Map();  // "k:end" -> fan rank (0..n-1, by other-end bearing)
   const claimed = new Set();  // stations already ranked via an earlier cluster rep
   for (const S of stList) {
@@ -4397,14 +4425,11 @@ function rebuildFnLayer(focusing) {
     }
     if (terms.length < 2) continue;
     terms.sort((a, b) => brgOf(S.fi, a.other) - brgOf(S.fi, b.other));
-    const tx = -Math.sin(S.brg), tz = Math.cos(S.brg);
-    const m = new Map();
-    terms.forEach((t, r) => {
-      const off = (r - (terms.length - 1) / 2) * 9;
-      m.set(t.k + ":" + t.end, [S.p[0] + tx * off, S.p[1], S.p[2] + tz * off]);
-      stTermR.set(t.k + ":" + t.end, r);
-    });
-    stTerm.set(S.id, m);
+    // ZERO-GAP ATTACHMENT (user sighting #12): trunk termini land exactly
+    // ON the station bollard (S.p) — no tangent-line fan slots. Ranking is
+    // retained only as fanR, which terraces APEX HEIGHTS so stacked trunks
+    // still read over/under instead of braiding at the shared dot.
+    terms.forEach((t, r) => { stTermR.set(t.k + ":" + t.end, r); });
   }
   for (const k of trunked) {
     const parts = k.split(">");
@@ -4417,8 +4442,9 @@ function rebuildFnLayer(focusing) {
     // entry/exit = the two files' stations (shared per sector — ONE bollard
     // per sector, not one per pair). Delivery legs run station/subJ -> box
     // per wire; single-destination trunks need no special stop.
-    const p0 = (stTerm.get(stS.id) || new Map()).get(k + ":0") || stS.p;
-    const p1 = (stTerm.get(stT.id) || new Map()).get(k + ":1") || stT.p;
+    // ZERO-GAP (user sighting #12): trunk termini land exactly ON the
+    // station bollard — the vertex IS the marker position, no fan slots.
+    const p0 = stS.p, p1 = stT.p;
     // trunk color = DESTINATION FILE's cluster color (colArr is per-file;
     // fcol is per-fn-box — indexing it by file reads garbage => black tubes)
     const tc = [colArr[tf*3], colArr[tf*3+1], colArr[tf*3+2]];
@@ -4427,13 +4453,12 @@ function rebuildFnLayer(focusing) {
     const ck = stS.id + ">" + stT.id;
     if (!corridorTier.has(ck)) corridorTier.set(ck, corridorTier.size % 3);
     // depth-banding (skeptic B5/R5): trunks of ONE corridor fly at distinct
-    // heights — corridor seed + per-trunk ordinal over 6 tiers, so stacked
-    // trunks read over/under instead of braiding at one depth
+    // heights — corridor seed + per-trunk ordinal over 6 tiers
     const ord = corridorOrd.get(ck) || 0; corridorOrd.set(ck, ord + 1);
-    // fan terrace (declutter R1): sibling corridors sharing a bollard fan
-    // fly as a descending staircase in fan-rank order — rank-adjacent arcs
-    // hold 8 wu of apex separation on screen at every camera, where the old
-    // corridor-tier lottery let adjacent ranks share a band and braid
+    // apex terrace (declutter R1, sighting-#12 revision): sibling corridors
+    // sharing a bollard descend in fan-rank order via APEX height only —
+    // landings stay exactly on the dot, so ranks read over/under instead
+    // of braiding at a shared landing slot
     const fanR = (stTermR.get(k + ":0") || 0) + (stTermR.get(k + ":1") || 0);
     trunkGeom.push({ p0, p1, tc, tmeta, tier: (corridorTier.get(ck) + ord) % 6, fanR });
     trunkEnds.set(k, { e: p0, x: p1, c: tc, m: tmeta });
@@ -4707,27 +4732,21 @@ function rebuildFnLayer(focusing) {
         done = true;
         fnTrunkW++;
         const wmeta = { kind: "wire", a, b, ln, tk };
-        ends.m.mates.push(wmeta);
         const dc = [ends.c[0]*0.38, ends.c[1]*0.38, ends.c[2]*0.38];
         const stBoth = stations.get(tk);
-        // GAP HANDOFF (skeptic B2/R7): ramps stop 14 wu SHORT of their
-        // merge dot — the thick tree leg + bollard carry the merge, the
-        // individual rider ink ends in open moat instead of piling 34
-        // arcs onto the station/sub-junction disk
-        const shortOf = (from, to, g) => {
-          const L = Math.hypot(to[0]-from[0], to[1]-from[1], to[2]-from[2]) || 1;
-          const t = Math.max(0, (L - g) / L);
-          return [from[0]+(to[0]-from[0])*t, from[1]+(to[1]-from[1])*t, from[2]+(to[2]-from[2])*t];
-        };
-        const e0 = stBoth && stBoth[0] ? shortOf([ax,ay,az], stBoth[0].boxSub.get("0:"+a) || stBoth[0].p, 14) : ends.e;
+        ends.m.mates.push(wmeta);
+        // ZERO-GAP ATTACHMENT (user sighting #12): rider ink lands exactly
+        // ON the merge point — the sub-junction/station dot. The old 14wu
+        // moat (gap handoff) left visible gaps at every junction; the dot
+        // itself is the merge, so the arc ends on it.
+        const e0 = stBoth && stBoth[0] ? (stBoth[0].boxSub.get("0:" + a) || stBoth[0].p) : ends.e;
         emitArc(T, ax, ay, az, e0[0], e0[1], e0[2],
                 dc[0], dc[1], dc[2], dc[0], dc[1], dc[2], phase, 0.16, false, wmeta);
         // exit leg: delivery fan leaves from the target box's sub-junction
-        // (or the in-station directly on quiet merges), also gapped. Emitted
-        // BOX-FIRST (like the entry tap) so both ramp kinds read as leaving
-        // the box and joining the merge — not as strokes born on the dot.
-        const e1r = stBoth && stBoth[1] ? (stBoth[1].boxSub.get("1:" + b) || stBoth[1].p) : ends.x;
-        const e1 = shortOf([bx,by,bz], e1r, 14);
+        // (or the in-station directly on quiet merges), also landing exactly
+        // on the dot. Emitted BOX-FIRST (like the entry tap) so both ramp
+        // kinds read as leaving the box and joining the merge.
+        const e1 = stBoth && stBoth[1] ? (stBoth[1].boxSub.get("1:" + b) || stBoth[1].p) : ends.x;
         emitArc(T, bx, by, bz, e1[0], e1[1], e1[2],
                 cB.r, cB.g, cB.b, dc[0], dc[1], dc[2], phase + 2.5, 0.16, false, wmeta);
         // DELIVERY chevron (skeptic r4 #2): one per trunked TARGET BOX, at
@@ -5210,8 +5229,8 @@ function mapClosePick() { mapPickEl.style.display = "none"; mapPickRc = null; }
 // canvas; describes the picked fn wire or bus trunk)
 const wireTipEl = document.createElement("div");
 wireTipEl.id = "wireTip";
+function hideWireTip() { wireTipEl.style.display = "none"; wireTipAnchor = null; }
 document.body.appendChild(wireTipEl);
-function hideWireTip() { wireTipEl.style.display = "none"; }
 // 3D vocabulary legend (user r5): collapsed '?' chip bottom-left; one line
 // when open. legendOpen is harness-pinned via __dbg.
 const lg3dEl = document.getElementById("lg3d"), lg3dxEl = document.getElementById("lg3dx");
@@ -5322,6 +5341,7 @@ function wireDesc(meta) {
 function showWireTip(meta, cx, cy) {
   wireTipEl.textContent = wireDesc(meta);
   wireTipEl.style.display = "block";
+  wireTipAnchor = meta || null;   // sighting #11: lifetime-tracked anchor
   const pad = 14;
   let x = cx + pad, y = cy + pad;
   const r = wireTipEl.getBoundingClientRect();
@@ -7215,6 +7235,7 @@ function clearFocus() {
   frameGraph();   // the camera followed the focus in; it follows the reset out
 }
 addEventListener("keydown", e => {
+  if (e.key === "Escape" && wireTipEl.style.display !== "none") { hideWireTip(); return; }
   if (e.key === "Escape" && mapOvCloseOne()) return;   // map overlays own ESC first
   if (e.key === "Escape" && (focusSeeds.size || query)) clearFocus();
   else if (e.key === "Backspace" && e.target !== searchEl &&
