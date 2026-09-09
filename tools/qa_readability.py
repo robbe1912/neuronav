@@ -504,7 +504,7 @@ JS_DECLUT = r"""() => { const d = window.__dbg;
   // the 2.5 REF-px law) OR no RENDERED bollard (scale>0 fnJDot instance
   // owned by that file) sits within 12 wu of either leg endpoint.
   // Informational until the next anchor cut gives it a baseline cell ----
-  let legN = 0, oAny = 0, oBox = 0, oSt = 0, oBoth = 0; const oSites = [];
+  let legN = 0, oAny = 0, oBox = 0, oSt = 0, oBoth = 0, oSpeck = 0; const oSites = [];
   if (d.busPts && d.busPtsMeta) {
     // rendered bollards only: the render gate parks gated dots at
     // r=0.0001 (fnJDotR), so radius > 0.001 wu == visible ink
@@ -535,7 +535,12 @@ JS_DECLUT = r"""() => { const d = window.__dbg;
     for (const g of chains.values()) {
       if (!g.vis) continue;                        // census covers on-screen ink
       legN++;
-      const boxOK = (boxPxOf.get(g.fi) || 0) >= 2.5;
+      const boxPx = boxPxOf.get(g.fi) || 0;
+      const boxOK = boxPx >= 2.5;
+      // anchor speck (perceptual anchor law, next round): passes the 2.5px
+      // geometric res() floor but lands under the ~6px PERCEPTUAL_ANCHOR —
+      // leg ink whose box end is lawfully served yet perceptually a speck
+      if (boxPx >= 2.5 && boxPx < 6) oSpeck++;
       let stOK = false;
       outer: for (const e of g.ends) for (const b of bols)
         if (wuD(b, e) < 12) { stOK = true; break outer; }
@@ -551,6 +556,7 @@ JS_DECLUT = r"""() => { const d = window.__dbg;
   out.legN = legN; out.orphanJLegs = oAny;
   out.orphanJLegBoxFloor = oBox; out.orphanJLegStationGated = oSt;
   out.orphanJLegBothEnds = oBoth; out.orphanJLegSites = oSites;
+  out.anchorSpecks = oSpeck;                      // perceptual-anchor bar: 0
   return out; }"""
 
 
@@ -688,9 +694,7 @@ def declut_subject(page, cdp, subject, prefix, qa):
               f" occl={m['nodeOcclFrac']} inkC={m['ink']['inkCentral']}"
               f" orphanJLegs={m['legN']}/{m['orphanJLegs']}"
               f" (box={m['orphanJLegBoxFloor']} st={m['orphanJLegStationGated']}"
-              f" both={m['orphanJLegBothEnds']})")
-    page.evaluate(CAM_RESTORE)
-    return recs
+              f" both={m['orphanJLegBothEnds']}) anchorSpecks={m['anchorSpecks']}")
 
 
 def _stem(path):
