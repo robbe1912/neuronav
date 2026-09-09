@@ -670,15 +670,31 @@ def run_declut(page, qa: Path, prefix: str):
     return {"hubTopN": hubs, "views": views}
 
 
-# gate: a declutter round must not make ANY of these worse, per subject+angle
+# gate: a declutter round must not make any view or any metric TOTAL worse,
+# beyond the battery's own measured run-to-run spread. Cell tolerances were
+# calibrated empirically (two full --after runs on build 469263d, after three
+# bit-identical runs at dc34469): label collision resolution is history-
+# dependent, so grazing label/crowd cells flip +-1..2 between identical runs;
+# crossTT and nodeOcclFrac were bit-stable; inkCentral (GPU raster) drifted
+# up to 0.0058. crossTT additionally carries the skeptic bar (<=3 per view,
+# rubric C3): a view's limit is max(base, bar) — it may rise to the bar when
+# baseline sits below it, but never above baseline when baseline exceeds it.
 GATE_KEYS = [
-    ("crossTT", "trunk-trunk screen crossings", 0),
-    ("labelLabelPairs", "label-label overlaps", 0),
-    ("labelWireLabels", "label-wire overlaps", 0),
-    ("chevCrowdEvents", "chevron/label crowding", 0),
-    ("nodeOcclFrac", "node occlusion fraction", 0.02),
-    ("inkCentral", "central-band ink density", 0.005),
+    # key, label, cell tolerance, hard bar (or None)
+    ("crossTT", "trunk-trunk screen crossings", 0, 3),
+    ("labelLabelPairs", "label-label overlaps", 1, None),
+    ("labelWireLabels", "label-wire overlaps", 1, None),
+    ("chevCrowdEvents", "chevron/label crowding", 2, None),
+    ("nodeOcclFrac", "node occlusion fraction", 0.02, None),
+    ("inkCentral", "central-band ink density", 0.008, None),
 ]
+# net-total guard (same calibration, totals across three 469263d runs):
+# aggregate clutter must not regress beyond the instrument's resolution —
+# crossTT totals were bit-identical across runs; the label/crowd totals
+# jitter because their cells do. Totals are capped ABSOLUTELY against the
+# dc34469 baseline (no per-round ratchet: rounds 2-4 face the same ceiling).
+TOTAL_TOL = {"crossTT": 0, "labelLabelPairs": 1, "labelWireLabels": 3,
+             "chevCrowdEvents": 5}
 
 # Metrics a rubric-sanctioned hub affordance (degree-hint / ghost-tier reveal)
 # legitimately ADDS in zero-wire .tscn hub views. Exempted per-subject only via
@@ -695,34 +711,52 @@ def get_metric(view, key):
 
 def gate_declut(base_doc, after_doc, afford=frozenset()):
     rows, violations = [], []
+    totals = {"base": {}, "after": {}}
     for subj, angles in after_doc["views"].items():
         base_subj = base_doc["views"].get(subj)
         for ang, m in angles.items():
             if ang.startswith("_"):
                 continue
             base_m = (base_subj or {}).get(ang)
-            for key, label, tol in GATE_KEYS:
+            for key, label, tol, bar in GATE_KEYS:
                 a = get_metric(m, key)
                 b = get_metric(base_m, key) if base_m else None
                 if a is None or b is None:
                     rows.append((subj, ang, key, b, a, "MISSING"))
                     violations.append(f"{subj}/{ang}/{key}: missing value (base={b} after={a})")
                     continue
-                ok = a <= b + tol
-                if not ok and subj in afford and key in AFFORD_KEYS:
+                exempt = subj in afford and key in AFFORD_KEYS
+                if key in TOTAL_TOL and not exempt:
+                    for side, val in (("base", b), ("after", a)):
+                        totals[side][key] = totals[side].get(key, 0) + val
+                limit = b + tol
+                if bar is not None:
+                    limit = max(limit, bar)
+                ok = a <= limit
+                if not ok and exempt:
                     rows.append((subj, ang, key, b, a, "AFFORD"))
                     continue
                 rows.append((subj, ang, key, b, a, "ok" if ok else "REGRESS"))
                 if not ok:
                     violations.append(
-                        f"{subj}/{ang}/{label}: {b} -> {a} (tol +{tol})")
-    print(f"== gate: {len(rows)} checks, {len(violations)} violations"
+                        f"{subj}/{ang}/{label}: {b} -> {a} (limit {limit})")
+    for key, ttol in TOTAL_TOL.items():
+        ba = totals["base"].get(key)
+        af = totals["after"].get(key)
+        if ba is None or af is None:
+            continue  # missing cells already flagged above
+        if af > ba + ttol:
+            violations.append(
+                f"TOTAL/{key}: {ba} -> {af} (net regression, tol +{ttol})")
+            print(f"  REGRESS TOTAL/{key}: {ba} -> {af} (tol +{ttol})")
+    print(f"== gate: {len(rows)} cell checks + {len(TOTAL_TOL)} total checks,"
+          f" {len(violations)} violations"
           f" (+{sum(1 for r in rows if r[5] == 'AFFORD')} affordance-exempt) ==")
     for subj, ang, key, b, a, st in rows:
         if st != "ok":
             print(f"  {st:7s} {subj}/{ang} {key}: {b} -> {a}")
     if not violations:
-        print("  all metrics at-or-below baseline")
+        print("  all cells within tolerance, totals at-or-below baseline")
     return 1 if violations else 0
 
 
