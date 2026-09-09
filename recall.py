@@ -158,13 +158,16 @@ def _vector_ranks(query: str, depth: int) -> tuple[list[str], dict[str, dict]]:
     return ids, metas
 
 
-def _fuse(vec: list[str], lex: list[str]) -> list[tuple[str, float, str]]:
-    """Reciprocal-rank fusion (k=60) with src tagging. Sorted by
-    (-score, path) — byte-stable for identical rank lists."""
+def _fuse(
+    vec: list[str], lex: list[str], w_vec: float = 1.0, w_lex: float = 1.0
+) -> list[tuple[str, float, str]]:
+    """Reciprocal-rank fusion (k=60) with src tagging and optional
+    per-list weights (unweighted = the literal contract form). Sorted
+    by (-score, path) — byte-stable for identical rank lists."""
     score: dict[str, float] = {}
-    for ranks in (vec, lex):
+    for ranks, w in ((vec, w_vec), (lex, w_lex)):
         for i, doc in enumerate(ranks):
-            score[doc] = score.get(doc, 0.0) + 1.0 / (RRF_K + 1.0 + i)
+            score[doc] = score.get(doc, 0.0) + w / (RRF_K + 1.0 + i)
     in_vec = frozenset(vec)
     in_lex = frozenset(lex)
     fused = [
@@ -211,13 +214,19 @@ def hop_context(files: list[str], g, cap: int = CTX_CAP) -> dict[str, list[str]]
 
 
 def search(
-    query: str, k: int = 12, bm25: bool = True, expand: bool = True
+    query: str,
+    k: int = 12,
+    bm25: bool = True,
+    expand: bool = True,
+    weights: tuple[float, float] | None = None,
 ) -> list[dict[str, object]]:
     """Hybrid recall: chroma vector ranks fused with BM25F lexical
     ranks, each hit carrying 1-hop graph context labels. ``bm25`` /
     ``expand`` are the bench switches (False, False = the pure-vector
-    baseline behavior)."""
+    baseline behavior). ``weights`` = (vec, bm25) list weights for
+    fusion arbitration; None keeps the pinned unweighted RRF k=60."""
     k = max(1, min(k, 50))
+    w_vec, w_lex = weights if weights is not None else (1.0, 1.0)
     depth = max(16, 4 * k)
 
     vec: list[str] = []
@@ -245,7 +254,7 @@ def search(
             lex = [p for p, _s in BM25F(g.files).scores(query)[:depth]]
 
     hits: list[dict[str, object]] = []
-    for f, s, src in _fuse(vec, lex)[:k]:
+    for f, s, src in _fuse(vec, lex, w_vec, w_lex)[:k]:
         meta = metas.get(f, {})
         fs = g.files.get(f) if g is not None else None
         hit: dict[str, object] = {
