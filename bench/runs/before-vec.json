@@ -1,0 +1,168 @@
+{
+ "set": "before",
+ "config": "vec",
+ "commit": "27c437b",
+ "dirty": false,
+ "mode": "real",
+ "model": "qwen3-embedding:0.6b",
+ "files": 22,
+ "k": 12,
+ "hit@1": 0.28,
+ "hit@5": 0.76,
+ "hit@10": 0.88,
+ "mrr": 0.494,
+ "reach@5": 0.76,
+ "reach@10": 0.88,
+ "per_query": [
+  {
+   "q": "parse_tscn",
+   "rank": 2,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "sha256_of",
+   "rank": 2,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "titleize",
+   "rank": 2,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "registry_for",
+   "rank": null,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "sync_functions",
+   "rank": 7,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "_fold_continuations",
+   "rank": 8,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "_has_exact",
+   "rank": null,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "_lexical_fallback",
+   "rank": 3,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "import_base",
+   "rank": 3,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "find_functions",
+   "rank": 1,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "NoCacheHandler",
+   "rank": 1,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "LabelContext",
+   "rank": 3,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "FileSym",
+   "rank": 6,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "MagicPlayer",
+   "rank": 11,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "where are tscn scene files parsed",
+   "rank": 2,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "python imports resolved into graph edges",
+   "rank": 4,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "advisory cross-process writer lock",
+   "rank": 3,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "deterministic hash embeddings for CI",
+   "rank": 1,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "cluster labels via tfidf",
+   "rank": 1,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "MCP server tools over stdio JSON-RPC",
+   "rank": 2,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "one-call orientation tool for agents",
+   "rank": 1,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "export embeddings to tracked gz shards",
+   "rank": 1,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "readability declutter battery gate",
+   "rank": 1,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "dead code tier logic unreachable functions",
+   "rank": 4,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "deterministic offline force layout seeded rng",
+   "rank": 2,
+   "ctx5": false,
+   "ctx10": false
+  }
+ ]
+}

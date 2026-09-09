@@ -1,0 +1,40 @@
+{
+  "comment": [
+    "Golden query set for the recall benchmark, over the neuronav SELF-INDEX",
+    "(config/neuronav.json: this repo's .py files). Every target is verifiable",
+    "from code: `anchor` is a literal substring that MUST appear in each",
+    "target file — one string (all targets) or a list matching targets order;",
+    "bench/run_bench.py --verify-only re-checks this and fails loudly when",
+    "repo drift breaks a justification. Targets are never",
+    "opinions; they name the file that owns the identifier/behavior the",
+    "query asks for. kinds: exact (fn identifier), symbol (class name),",
+    "prose (natural-language), cross (cross-cutting concern)."
+  ],
+  "queries": [
+    {"q": "parse_tscn", "kind": "exact", "targets": ["extractors/gdscript.py"], "anchor": "def parse_tscn"},
+    {"q": "sha256_of", "kind": "exact", "targets": ["nav.py"], "anchor": "def sha256_of"},
+    {"q": "titleize", "kind": "exact", "targets": ["clusters.py"], "anchor": "def titleize"},
+    {"q": "registry_for", "kind": "exact", "targets": ["extractors/__init__.py"], "anchor": "def registry_for"},
+    {"q": "sync_functions", "kind": "exact", "targets": ["graph.py"], "anchor": "def sync_functions"},
+    {"q": "_fold_continuations", "kind": "exact", "targets": ["graph.py"], "anchor": "def _fold_continuations"},
+    {"q": "_has_exact", "kind": "exact", "targets": ["extractors/python.py"], "anchor": "def _has_exact"},
+    {"q": "_lexical_fallback", "kind": "exact", "targets": ["explore.py"], "anchor": "def _lexical_fallback"},
+    {"q": "import_base", "kind": "exact", "targets": ["nav.py"], "anchor": "def import_base"},
+    {"q": "find_functions", "kind": "exact", "targets": ["graph.py", "server.py"], "anchor": "def find_functions"},
+    {"q": "NoCacheHandler", "kind": "symbol", "targets": ["tools/serve.py"], "anchor": "class NoCacheHandler"},
+    {"q": "LabelContext", "kind": "symbol", "targets": ["clusters.py"], "anchor": "class LabelContext"},
+    {"q": "FileSym", "kind": "symbol", "targets": ["extractors/model.py"], "anchor": "class FileSym"},
+    {"q": "MagicPlayer", "kind": "symbol", "targets": ["clusters.py"], "anchor": "MagicPlayer"},
+    {"q": "where are tscn scene files parsed", "kind": "prose", "targets": ["extractors/gdscript.py"], "anchor": "def parse_tscn"},
+    {"q": "python imports resolved into graph edges", "kind": "prose", "targets": ["extractors/python.py"], "anchor": "def _record_import"},
+    {"q": "advisory cross-process writer lock", "kind": "prose", "targets": ["nav.py"], "anchor": "def _db_lock"},
+    {"q": "deterministic hash embeddings for CI", "kind": "prose", "targets": ["nav.py"], "anchor": "NEURONAV_EMBED_FAKE"},
+    {"q": "cluster labels via tfidf", "kind": "prose", "targets": ["clusters.py"], "anchor": "def label_cluster"},
+    {"q": "MCP server tools over stdio JSON-RPC", "kind": "prose", "targets": ["server.py"], "anchor": "mcp.run(transport=\"stdio\")"},
+    {"q": "one-call orientation tool for agents", "kind": "prose", "targets": ["explore.py", "server.py"], "anchor": ["def run(query", "def explore(query"]},
+    {"q": "export embeddings to tracked gz shards", "kind": "prose", "targets": ["nav.py"], "anchor": "def export_base"},
+    {"q": "readability declutter battery gate", "kind": "prose", "targets": ["tools/qa_readability.py"], "anchor": "def run_declut_battery"},
+    {"q": "dead code tier logic unreachable functions", "kind": "cross", "targets": ["graph.py"], "anchor": "def dead_code"},
+    {"q": "deterministic offline force layout seeded rng", "kind": "cross", "targets": ["viz.py"], "anchor": "default_rng(1234)"}
+  ]
+}
