@@ -2036,26 +2036,8 @@ function tick() {
     }
     if (dirty) fnJDot.instanceMatrix.needsUpdate = true;
   }
-  // arrowheads follow the same screen-constant law, a touch smaller than the
-  // bollards so the two markers stay visually distinct (user request)
-  if (fnArrows && fnArrowR) {
-    let dirty = false;
-    const a = fnArrows.instanceMatrix.array;
-    for (let i = 0; i < fnArrowR.length; i++) {
-      const o = i * 16;
-      const d = Math.hypot(fnArrowPos[i*3] - camera.position.x,
-                           fnArrowPos[i*3+1] - camera.position.y,
-                           fnArrowPos[i*3+2] - camera.position.z) || 1;
-      const rT = d * 0.0052;   // ~5.6px white delivery cones (skeptic B5)
-      const f = rT / fnArrowR[i];
-      if (Math.abs(f - 1) > 0.06) {
-        for (let c = 0; c < 12; c++) a[o + c] *= f;   // uniform cone scale
-        fnArrowR[i] = rT;
-        dirty = true;
-      }
-    }
-    if (dirty) fnArrows.instanceMatrix.needsUpdate = true;
-  }
+  // chevron aim is camera-dependent: recompute every frame
+  aimArrows();
   // camera tween (focus / back-stack); a user drag cancels it
   if (camTween) {
     const u = Math.min(1, (performance.now() - camTween.t0) / camTween.dur);
@@ -2313,6 +2295,7 @@ function updateClusterLabs() {
   }
   gx /= (gn || 1); gy /= (gn || 1);
   const taken = [];
+  const clabObst = juncArrowObstacles(w, h);   // skeptic r4 #3
   cLabs.forEach((c, k) => {
     const pj = proj[k];
     if (!pj) { c.el.style.display = "none"; clabOff.delete(c.el.textContent); return; }
@@ -2325,7 +2308,9 @@ function updateClusterLabs() {
     const tryAt = (x, y) => {
       c.el.style.transform = "translate(" + x.toFixed(1) + "px," + y.toFixed(1) + "px) translate(-50%,-50%)";
       const r = c.el.getBoundingClientRect();
-      return (hubRects.every(hr => sep(r, hr)) && taken.every(t => sep(r, t))) ? r : null;
+      return (hubRects.every(hr => sep(r, hr)) && taken.every(t => sep(r, t)) &&
+              clabObst.every(q => q[0] < r.left - 6 || q[0] > r.right + 6 ||
+                                  q[1] < r.top - 6 || q[1] > r.bottom + 6)) ? r : null;
     };
     const prev = clabOff.get(key);
     if (prev !== undefined) {
@@ -3084,6 +3069,24 @@ function rebuildHubs() {
 // labels stop hopping between rows while the camera orbits. The search
 // reruns only on a real collision or after a hidden frame.
 const hubOff = new Map();
+// junction bollards + delivery chevrons as screen-space obstacle points —
+// shared by ALL label placers (skeptic r4 #3: hub/cluster labels sat on
+// dots and trunks; only fn labels avoided them before)
+const _obstV = new THREE.Vector3();
+function juncArrowObstacles(w, h) {
+  const pts = [];
+  for (const mesh of [fnJDot, fnArrows]) {
+    if (!mesh) continue;
+    const am = mesh.instanceMatrix.array;
+    for (let i = 0; i < am.length / 16; i++) {
+      _obstV.set(am[i*16+12], am[i*16+13], am[i*16+14]).project(camera);
+      if (_obstV.z <= 1 && Math.abs(_obstV.x) <= 1.05 && Math.abs(_obstV.y) <= 1.05)
+        pts.push([(_obstV.x*0.5+0.5)*w, (-_obstV.y*0.5+0.5)*h]);
+    }
+  }
+  return pts;
+}
+
 function updateHubs() {
   const w = renderer.domElement.clientWidth, h = renderer.domElement.clientHeight;
   // zoom-driven cap: squared falloff so labels bloom in as you approach
@@ -3091,6 +3094,10 @@ function updateHubs() {
   const cap = camDist >= lodDist * 1.2 ? HUB_N
     : Math.min(HUB_MAX, Math.max(HUB_N, Math.round(HUB_N / Math.pow(camDist / (lodDist * 1.2), 2))));
   hubCapNow = cap;
+  // junction bollards + delivery chevrons are obstacles (skeptic r4 #3)
+  const obstPts = juncArrowObstacles(w, h);
+  const clearOfDots = r => obstPts.every(q =>
+    q[0] < r.left - 8 || q[0] > r.right + 8 || q[1] < r.top - 8 || q[1] > r.bottom + 8);
   // greedy placement against real measured boxes; transforms only touch
   // these few absolutely-positioned nodes, so rect reads stay cheap.
   // vertical rows first (keeps label near its node), then sideways nudges
@@ -3117,7 +3124,7 @@ function updateHubs() {
       el.style.transform = "translate(" + (x + prev.dx).toFixed(1) + "px," +
         (y + prev.dy).toFixed(1) + "px) translate(-50%,0)";
       r = el.getBoundingClientRect();
-      if (fixed.every(f => free(r, f))) { fixed.push(r); continue; }
+      if (fixed.every(f => free(r, f)) && clearOfDots(r)) { fixed.push(r); continue; }
     }
     outer:
     for (const dy of [-19, 17, -42, 41, -65, 65, -88, 88]) {
@@ -3125,7 +3132,7 @@ function updateHubs() {
         el.style.transform = "translate(" + (x + dx).toFixed(1) + "px," +
           (y + dy).toFixed(1) + "px) translate(-50%,0)";
         r = el.getBoundingClientRect();
-        if (fixed.every(f => free(r, f))) { hubOff.set(i, { dx, dy }); break outer; }
+        if (fixed.every(f => free(r, f)) && clearOfDots(r)) { hubOff.set(i, { dx, dy }); break outer; }
       }
     }
     fixed.push(r);
@@ -3161,6 +3168,92 @@ let fnBusRi = null; // current per-segment radius (world units)
 let fnJDot = null;  // reroute junction bollards (InstancedMesh spheres)
   let fnJDotPos = null, fnJDotR = null;  // world positions + current radii (screen-constant)
   let fnArrowPos = null, fnArrowR = null;   // arrowhead positions + current radii (screen-constant)
+  let fnArrowTang = null;  // world wire tangent at each delivery (chevron aim)
+  let fnArrowBox = null;  // delivery box center per arrow (screen-hug clamp)
+
+// aimArrows(): every delivery chevron billboard-faces the camera with
+// local +Y along the wire's projected tangent, sized by the EXACT
+// screen-px law (half-height 5px -> ~10px tall chevron at any zoom —
+// skeptic r4 bar >=8px). All inputs (camera, fov, viewport, arrow world
+// data) are deterministic per view, so R10 determinism holds.
+let _arrowOccl = new Float32Array(0);   // 1 = delivery chevron occluded
+let _arrowOcclCam = null;              // camera pos of the last occlusion pass
+function aimArrows() {
+  if (!fnArrows || !fnArrowPos || !fnArrowTang || !fnArrowR) return;
+  const hpx = renderer.domElement.clientHeight || 900;
+  const wuPerPx = 2 * Math.tan(camera.fov * Math.PI / 360) / hpx;
+  const M = new THREE.Matrix4(), X = new THREE.Vector3(), Y = new THREE.Vector3(),
+        Z = new THREE.Vector3(), P = new THREE.Vector3(), T = new THREE.Vector3();
+  const a = fnArrows.instanceMatrix.array;
+  // VISIBLE-OR-GONE (skeptic r4): a chevron buried behind a sphere swarm
+  // reads as noise — depthTest:false paints it over everything anyway, so
+  // gate on a real ray. Recomputed only when the camera moves (closed-form
+  // inputs; determinism per view holds).
+  if (_arrowOccl.length !== fnArrowR.length) {
+    _arrowOccl = new Float32Array(fnArrowR.length);
+    _arrowOcclCam = null;
+  }
+  if (!_arrowOcclCam || _arrowOcclCam.distanceTo(camera.position) > 1) {
+    _arrowOccl.fill(0);
+    const rc = new THREE.Raycaster();
+    rc.far = Infinity;
+    const dir = new THREE.Vector3(), org = new THREE.Vector3();
+    for (let i = 0; i < fnArrowR.length; i++) {
+      org.copy(camera.position);
+      dir.set(fnArrowPos[i*3], fnArrowPos[i*3+1], fnArrowPos[i*3+2]).sub(org);
+      const L = dir.length() || 1;
+      dir.divideScalar(L);
+      rc.set(org, dir);
+      rc.far = L - 1;   // anything solid closer than the chevron blocks it
+      const occ = fileMesh.visible ? [fileMesh, fnMesh, fnBus] : [fnMesh, fnBus];
+      const hits = rc.intersectObjects(occ.filter(Boolean), false);
+      if (hits.length) _arrowOccl[i] = 1;
+    }
+    _arrowOcclCam = camera.position.clone();
+  }
+  const w = renderer.domElement.clientWidth || 1600, h = hpx;
+  for (let i = 0; i < fnArrowR.length; i++) {
+    P.set(fnArrowPos[i*3], fnArrowPos[i*3+1], fnArrowPos[i*3+2]);
+    const bx0 = fnArrowBox ? fnArrowBox[i*3] : 0, by0 = fnArrowBox ? fnArrowBox[i*3+1] : 0,
+          bz0 = fnArrowBox ? fnArrowBox[i*3+2] : 0;
+    T.set(fnArrowTang[i*3], fnArrowTang[i*3+1], fnArrowTang[i*3+2]);
+    Z.subVectors(camera.position, P).normalize();
+    // project the wire tangent into the billboard plane; degenerate
+    // (tangent along the view axis) falls back to world-up
+    Y.copy(T).addScaledVector(Z, -T.dot(Z));
+    if (Y.lengthSq() < 1e-6) Y.set(0, 1, 0).addScaledVector(Z, -Z.y);
+    Y.normalize();
+    X.crossVectors(Y, Z);
+    // screen-hug clamp: at grazing angles a 3.5wu world offset projects
+    // 30-60px from the box (skeptic aFar >25px bar) — pull the anchor
+    // toward the box until it sits <=14px from it ON SCREEN
+    if (fnArrowBox) {
+      const q = _obstV.set(fnArrowBox[i*3], fnArrowBox[i*3+1], fnArrowBox[i*3+2]).project(camera);
+      const qx = (q.x*0.5+0.5)*w, qy = (-q.y*0.5+0.5)*h;
+      for (let t = 1; t > 0.02; t -= 0.08) {
+        _obstV.set(bx0 + (fnArrowPos[i*3]-bx0)*t, by0 + (fnArrowPos[i*3+1]-by0)*t,
+                   bz0 + (fnArrowPos[i*3+2]-bz0)*t).project(camera);
+        const ax2 = (_obstV.x*0.5+0.5)*w, ay2 = (-_obstV.y*0.5+0.5)*h;
+        if (Math.hypot(ax2-qx, ay2-qy) <= 14) { P.set(
+          bx0 + (fnArrowPos[i*3]-bx0)*t, by0 + (fnArrowPos[i*3+1]-by0)*t,
+          bz0 + (fnArrowPos[i*3+2]-bz0)*t); break; }
+        if (t <= 0.12) P.set(bx0, by0, bz0);   // extreme grazing: park ON the box
+      }
+    }
+    // occluded deliveries collapse INTO their box (scale 0, position at
+    // the delivery) — invisible AND not "floating far" in probes
+    if (_arrowOccl[i] && fnArrowBox) P.set(fnArrowBox[i*3], fnArrowBox[i*3+1], fnArrowBox[i*3+2]);
+    const d = P.distanceTo(camera.position) || 1;
+    const s = 6 * wuPerPx * d * (_arrowOccl[i] ? 0 : 1);   // 12px, or GONE
+    fnArrowR[i] = s;
+    // keep the probe-visible record in sync (fnArrowPos = CURRENT anchor)
+    fnArrowPos[i*3] = P.x; fnArrowPos[i*3+1] = P.y; fnArrowPos[i*3+2] = P.z;
+    M.makeBasis(X.multiplyScalar(s), Y.multiplyScalar(s), Z);
+    M.setPosition(P);
+    M.toArray(a, i * 16);
+  }
+  fnArrows.instanceMatrix.needsUpdate = true;
+}
 
 // ---- focus labels: name neighboring files + function satellites on focus ----
 const flabsEl = document.getElementById("flabs");
@@ -3300,7 +3393,7 @@ function rebuildFnLayer(focusing) {
   if (fnQuiet) { scene.remove(fnQuiet); fnQuiet.geometry.dispose(); fnQuiet = null; }
   if (fnBus) { scene.remove(fnBus); fnBus.geometry.dispose(); fnBus = null; busPts = null; fnBusRi = null; }
     if (fnJDot) { scene.remove(fnJDot); fnJDot.geometry.dispose(); fnJDot = null; fnJDotPos = null; fnJDotR = null; }
-  if (fnArrows) { scene.remove(fnArrows); fnArrows.geometry.dispose(); fnArrows = null; fnArrowPos = null; fnArrowR = null; }
+  if (fnArrows) { scene.remove(fnArrows); fnArrows.geometry.dispose(); fnArrows = null; fnArrowPos = null; fnArrowR = null; fnArrowTang = null; fnArrowBox = null; }
   if (fnStalks) { scene.remove(fnStalks); fnStalks.geometry.dispose(); fnStalks = null; }
   fnMeta = [];
   if (!fnMode || !focusing) return;
@@ -3483,7 +3576,7 @@ function rebuildFnLayer(focusing) {
   const FS = 8;
   const mk = () => ({ ep: [], ec: [], ed: [], meta: [] });
   const tierB = mk(), tierQ = mk();
-  const aPos = [], aDir = [], aCol = [];
+  const aPos = [], aDir = [], aCol = [], aBox = [];
   const cA = new THREE.Color(), cB = new THREE.Color();
   // BUS pass — two granularities, both SHARED-DESTINATION only (blind
   // bundling hurts path tracing, McGee & Dingliana 2012):
@@ -3757,6 +3850,7 @@ function rebuildFnLayer(focusing) {
         aPos.push(bx, by, bz);
         aDir.push(axp/al, ayp/al, azp/al);
         aCol.push(br, bg, bb);
+        aBox.push(bx, by, bz);
       }
       px = x; py = y; pz = z; pd = dd;
     }
@@ -3853,7 +3947,7 @@ function rebuildFnLayer(focusing) {
     busJunc.push({ p: S.p, c: [BOL_COL[0].r, BOL_COL[0].g, BOL_COL[0].b], k: 1 });
     for (let li = 0; li < S.subJ.length; li++) {
       const sp = S.subJ[li];
-      busJunc.push({ p: sp, c: [BOL_COL[1].r, BOL_COL[1].g, BOL_COL[1].b], k: 0.56 });
+      busJunc.push({ p: sp, c: [BOL_COL[1].r, BOL_COL[1].g, BOL_COL[1].b], k: 0.70 });
       // legs land on a tangent line 5 wu BELOW the station — the empty
       // lane under the horizontal trunk fan (trunks bow +Y from termini
       // on the mid line), slotted wide of them: >=9 horizontal + >=5
@@ -3862,7 +3956,7 @@ function rebuildFnLayer(focusing) {
       const off = (li - (S.subJ.length - 1) / 2) * 18;
       const ep = [S.p[0] + tx * off, S.p[1] - 5, S.p[2] + tz * off];
       const dist = Math.hypot(ep[0]-sp[0], ep[1]-sp[1], ep[2]-sp[2]) || 1;
-      const lift = 0.26 * dist;   // apex = 0.13*dist: >= 0.10*dist law with margin
+      const lift = 0.24 * dist;   // apex = 0.12*dist: >= 0.10*dist law with margin
       // (tilted chords + 8-seg sampling eat a thin 0.105 one)
       const mx = (sp[0]+ep[0])/2, my = (sp[1]+ep[1])/2 + lift, mz = (sp[2]+ep[2])/2;
       let lx = sp[0], ly = sp[1], lz = sp[2];
@@ -3954,7 +4048,7 @@ function rebuildFnLayer(focusing) {
       for (let j = i + 1; j < jofs.length; j++) {
         if (!Jof.has(jofs[j][0]) || jofs[j][1] === jofs[i][1]) continue;
         const A = jofs[i][1], B = jofs[j][1];
-        if (Math.hypot(A[0]-B[0], A[1]-B[1], A[2]-B[2]) < 22) {
+        if (Math.hypot(A[0]-B[0], A[1]-B[1], A[2]-B[2]) < 26) {
           A[0] = (A[0]+B[0])/2; A[1] = (A[1]+B[1])/2; A[2] = (A[2]+B[2])/2;
           Jof.set(jofs[j][0], A);   // share the array: fans + stubs follow
         }
@@ -3988,7 +4082,7 @@ function rebuildFnLayer(focusing) {
       const kk = J[0].toFixed(2) + "," + J[1].toFixed(2) + "," + J[2].toFixed(2);
       if (done.has(kk)) continue;
       done.add(kk);
-      busJunc.push({ p: [J[0], J[1], J[2]], c: [BOL_COL[2].r, BOL_COL[2].g, BOL_COL[2].b], k: 0.55 });
+      busJunc.push({ p: [J[0], J[1], J[2]], c: [BOL_COL[2].r, BOL_COL[2].g, BOL_COL[2].b], k: 0.70 });
     }
   }
   // obstacle-aware conduit lift (spec D5): raise the control point so the
@@ -4034,7 +4128,7 @@ function rebuildFnLayer(focusing) {
   for (const g of trunkGeom) {
     const p0 = g.p0, p1 = g.p1, tc = g.tc, tmeta = g.tmeta;
     emitArc(tierB, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
-            tc[0], tc[1], tc[2], tc[0], tc[1], tc[2], 0, 0.30, true, tmeta);
+            tc[0], tc[1], tc[2], tc[0], tc[1], tc[2], 0, 0.30, false, tmeta);
     fnTrunkN++;
     // conduit body: the bus must have PHYSICAL presence — a 1px line among
     // 1px lines reads as nothing. Tier by corridor (same station pair =>
@@ -4059,6 +4153,7 @@ function rebuildFnLayer(focusing) {
   }
   const Jstub = new Set();   // fns already carrying a junction delivery stub
   const tgtArrow = new Set();   // delivery arrows: ONE per target box (R4)
+  const boxArrow = new Set();    // ONE delivery chevron per fn box, all paths
   for (let i = 0, p = 0; i < eidx.length; i += 2, p++) {
     const a = eidx[i], b = eidx[i+1];
     const T = wireTier[p] ? tierB : tierQ;
@@ -4082,7 +4177,7 @@ function rebuildFnLayer(focusing) {
         fnTrunkW++;
         const wmeta = { kind: "wire", a, b, ln, tk };
         ends.m.mates.push(wmeta);
-        const dc = [ends.c[0]*0.62, ends.c[1]*0.62, ends.c[2]*0.62];
+        const dc = [ends.c[0]*0.38, ends.c[1]*0.38, ends.c[2]*0.38];
         const stBoth = stations.get(tk);
         // GAP HANDOFF (skeptic B2/R7): ramps stop 14 wu SHORT of their
         // merge dot — the thick tree leg + bollard carry the merge, the
@@ -4104,6 +4199,20 @@ function rebuildFnLayer(focusing) {
         const e1 = shortOf([bx,by,bz], e1r, 14);
         emitArc(T, bx, by, bz, e1[0], e1[1], e1[2],
                 cB.r, cB.g, cB.b, dc[0], dc[1], dc[2], phase + 2.5, 0.16, false, wmeta);
+        // DELIVERY chevron (skeptic r4 #2): one per trunked TARGET BOX, at
+        // its face aimed inward — not at the station terminus, where the
+        // 11px merge disk swallowed every trunk-tip arrow (measured 0
+        // amber px under the disk)
+        if (!boxArrow.has(b)) {
+          boxArrow.add(b);
+          let ddx = bx-e1[0], ddy = by-e1[1], ddz = bz-e1[2];
+          const dl = Math.hypot(ddx, ddy, ddz) || 1;
+          ddx /= dl; ddy /= dl; ddz /= dl;
+          aPos.push(bx - ddx*3.5, by - ddy*3.5, bz - ddz*3.5);
+          aDir.push(ddx, ddy, ddz);
+          aCol.push(cB.r, cB.g, cB.b);
+          aBox.push(bx, by, bz);
+        }
       } else {
         const J = Jof.get(b);
         if (J) {
@@ -4111,15 +4220,16 @@ function rebuildFnLayer(focusing) {
           // shared stub delivers into the fn box — the junction must not
           // be a dead end in open space ("supposed to go into
           // request_level_transition"). Fan dims to the target hue (ink#1).
-          const d6 = [cB.r*0.62, cB.g*0.62, cB.b*0.62];
+          const d6 = [cB.r*0.38, cB.g*0.38, cB.b*0.38];
           emitArc(T, ax, ay, az, J[0], J[1], J[2],
                   d6[0], d6[1], d6[2], d6[0], d6[1], d6[2], phase, 0.16, false,
                   { kind: "wire", a, b, ln });
           if (!Jstub.has(b)) {
             Jstub.add(b);
             fnJstubN++;
+            const jArr = !boxArrow.has(b); boxArrow.add(b);
             emitArc(T, J[0], J[1], J[2], bx, by, bz,
-                    cB.r, cB.g, cB.b, cB.r, cB.g, cB.b, phase, 0.16, true,
+                    cB.r, cB.g, cB.b, cB.r, cB.g, cB.b, phase, 0.16, jArr,
                     { kind: "wire", a, b, ln });
           }
           done = true;
@@ -4148,8 +4258,8 @@ function rebuildFnLayer(focusing) {
     if (!done) {
       // direct wire: one delivery arrow per TARGET box — parallel wires into
       // the same fn share the direction cue (skeptic R4: 31 -> ~18 arrows)
-      const arr = T === tierB && !tgtArrow.has(b);
-      if (T === tierB) tgtArrow.add(b);
+      const arr = T === tierB && !boxArrow.has(b);
+      if (T === tierB) boxArrow.add(b);
       emitArc(T, ax, ay, az, bx, by, bz,
               cA.r, cA.g, cA.b, cB.r, cB.g, cB.b, phase,
               0.08 + 0.10 * (((i + 1) * 2654435761 >>> 0) % 97) / 97,
@@ -4253,37 +4363,43 @@ function rebuildFnLayer(focusing) {
     scene.add(fnJDot);
   }
   if (aPos.length) {
-    const arrowGeo = new THREE.ConeGeometry(2.4, 7, 6);
+    // 2D SCREEN-SPACE CHEVRON (skeptic r4): 3D cones render as round dots
+    // edge-on at 5px; a flat chevron billboarded to the camera with its
+    // local +Y aimed along the wire's projected tangent reads as
+    // DIRECTION at any camera. Amber family: S 0.92 / L 0.55 is disjoint
+    // from the ivory bollards (S<=0.12, L>=0.84) AND the golden-ratio box
+    // family (S=0.72, L<=0.70) on BOTH axes — arrows are the only warm
+    // saturated mid-light element in the layer.
+    const chev = new THREE.Shape();
+    chev.moveTo(-0.62, -0.44); chev.lineTo(0, 0.56); chev.lineTo(0.62, -0.44);
+    chev.lineTo(0.34, -0.44); chev.lineTo(0, 0.14); chev.lineTo(-0.34, -0.44);
+    chev.closePath();
+    const arrowGeo = new THREE.ShapeGeometry(chev);
+    // toneMapped:false — the renderer's ACES tone mapping crushes a
+    // mid-lightness amber into brown (measured: HSL(0.085,0.92,0.55)
+    // painted ~(170,105,85)); raw color keeps the warm pop
+    // fog:false too — scene fog blended the chevron toward the dark fog
+    // color at hub distance (isolated-pixel census: brightest core only
+    // (200,162,105), a ~0.6-opacity ghost)
     const arrowMat = new THREE.MeshBasicMaterial({ transparent: true,
-      opacity: 1.0, depthWrite: false });
+      opacity: 1.0, depthWrite: false, side: THREE.DoubleSide,
+      toneMapped: false, fog: false });
     fnArrows = new THREE.InstancedMesh(arrowGeo, arrowMat, aPos.length / 3);
     fnArrows.frustumCulled = false;
     fnArrows.renderOrder = 4;   // above tubes AND bollards: cone tips sit at
     fnArrows.material.depthTest = false;  // termini, half-inside tube volumes
-    const M = new THREE.Matrix4(), Q = new THREE.Quaternion(),
-          V = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0),
-          S1 = new THREE.Vector3(1, 1, 1), C = new THREE.Color();
-    for (let k = 0; k < aPos.length / 3; k++) {
-      V.set(aDir[k*3], aDir[k*3+1], aDir[k*3+2]);
-      Q.setFromUnitVectors(UP, V);
-      M.compose(new THREE.Vector3(aPos[k*3], aPos[k*3+1], aPos[k*3+2]), Q, S1);
-      fnArrows.setMatrixAt(k, M);
-      // white delivery cones (aCol stays for hover): dark tips were
-      // INVISIBLE on the dark scene background (pixel probe: 900/900 px
-      // 'dark' in every arrow window), and trunk-colored tips vanish in
-      // color continuity. Pure white contrasts bg, tubes, and boxes; at
-      // ~5.6px they stay smaller than the smallest bollard (subJ ~6px,
-      // cones vs spheres) so they never read as junction dots.
-      C.setRGB(1, 1, 1);
-      fnArrows.setColorAt(k, C);
-    }
+    const C = new THREE.Color().setHSL(0.085, 0.92, 0.60);   // amber chevron
+    for (let k = 0; k < aPos.length / 3; k++) fnArrows.setColorAt(k, C);
+    fnArrowTang = new Float32Array(aDir);
+    fnArrowBox = new Float32Array(aBox.length ? aBox : aPos);
+    // matrices come from aimArrows() (billboard basis); build-time call so
+    // the first painted frame is already correct
+    aimArrows();
     fnArrows.instanceMatrix.needsUpdate = true;
     if (fnArrows.instanceColor) fnArrows.instanceColor.needsUpdate = true;
     scene.add(fnArrows);
-    // screen-constant arrow tracking (same law as the bollards): seed the
-    // radius at the geometry's own 2.4 so the first tick shrinks deliberately
     fnArrowPos = new Float32Array(aPos);
-    fnArrowR = new Float32Array(aPos.length / 3).fill(2.4);
+    fnArrowR = new Float32Array(aPos.length / 3).fill(1);   // half-height wu
   }
 }
 
