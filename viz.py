@@ -3452,8 +3452,9 @@ function aimArrows() {
         if (t <= 0.12) P.set(bx0, by0, bz0);   // extreme grazing: park ON the box
       }
     }
-    // occluded deliveries collapse INTO their box (scale 0, position at
-    // the delivery) — invisible AND not "floating far" in probes
+    // occluded deliveries collapse INTO their box (scale 0) — tested a 0.55x/
+    // 0.45x hint V to lift chevObs, but each un-hidden arrow adds chevCrowd
+    // pairs at delivery sites (hub6 zoomin 16->19, tol +2): hidden stays.
     if (_arrowOccl[i] && fnArrowBox) P.set(fnArrowBox[i*3], fnArrowBox[i*3+1], fnArrowBox[i*3+2]);
     const d = P.distanceTo(camera.position) || 1;
     const lodOk = !arrowFile || !arrowFile.length || arrowFile[i] < 0 || lod.resA(arrowFile[i]);
@@ -3466,7 +3467,6 @@ function aimArrows() {
     // 16px@900 keeps the V-mass >= 8px at the smallest window we test
     const s = 8 * (2 * Math.tan(camera.fov * Math.PI / 360) / 900) * d
              * ((lodOk && !_arrowOccl[i]) ? 1 : 0);
-    fnArrowR[i] = s;
     if (fnLodV && s > 0.01) {
       fnLodV.chevShown++;
       fnLodV.minChevPx = Math.min(fnLodV.minChevPx, ((2 * s) / (wuPerPx * d)) * (900 / hpx));
