@@ -1,4 +1,4 @@
-"""swmg-nav MCP server (stdio): semantic + structural code intelligence.
+"""neuronav MCP server (stdio): semantic + structural code intelligence.
 
 Works from any clone/worktree: paths resolve relative to the checkout the
 tool lives in. Clients: OpenCode, Claude Code, VS Code, Codex (all stdio MCP).
@@ -35,7 +35,7 @@ import explore as _explore
 import graph
 import nav
 
-mcp = FastMCP("swmg-nav")
+mcp = FastMCP("neuronav")
 
 # below except rescan is pure read over the local index
 READONLY = ToolAnnotations(readOnlyHint=True)
@@ -510,7 +510,7 @@ if __name__ == "__main__":
     import scipy.cluster.hierarchy  # noqa: F401
     import sklearn.cluster  # noqa: F401
     print(
-        f"swmg-nav: startup files {stats['added']}/{stats['updated']}/"
+        f"neuronav: startup files {stats['added']}/{stats['updated']}/"
         f"{stats['unchanged']}/{stats['deleted']}, "
         f"fns {fns['fns_upserted']}, "
         f"in {time.perf_counter() - t0:.1f}s",

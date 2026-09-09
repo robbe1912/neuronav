@@ -858,7 +858,7 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
     # again after the pushes (pushing can create new fusions).
     n0 = depenetrate()
     # pair pushes REJECTED: at 0.5 gain they created 112 new fusions on
-    # SWMG (nodes shoved into bystanders) while only marginally reducing
+    # target repos (nodes shoved into bystanders) while only marginally reducing
     # the exact-scale factor. Depenetration + exact scale alone is both
     # simpler and provably sufficient: scaling is linear in pos, so one
     # multiply clears every pair.

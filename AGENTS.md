@@ -10,9 +10,17 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 
 ## Non-negotiable invariants
 
+- **No target-repo data in tracked files** — the default config points at a
+  private repo; NOTHING derived from it may be committed: no file/class/
+  function names, no paths, no screenshots, no measured baselines (qa/ is
+  gitignored machine-local state). Tests and probes must be config-agnostic
+  (derive targets from the loaded index, see `test_viz`/`probe_showcase`/
+  `test_server_stdio`); regression canaries live in the gitignored
+  `config.json` under `regression_canaries`. Same rule for every future
+  target (the engine profile included).
 - **Determinism**: same DATA -> same layout byte-for-byte. `_layout` uses a
   seeded rng (1234); the regression suite over the target repo
-  (`test_swmg_regression`) pins range floors — >=630 files, 6500–8100 edges,
+  (`test_target_regression`) pins range floors — >=630 files, 6500–8100 edges,
   60–130 dead, plus liveness canaries (a known-dead func must stay dead,
   known-alive funcs must stay alive). The target repo drifts on the user side;
   re-pin the floor on user-side refactors, never to mask extractor regressions.
@@ -105,7 +113,7 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_pyhard` | python extractor edge cases | numpy + chromadb import only (hermetic fixture config) |
 | `test_mwires` | named-wire map exports (`mwires`/`fns`/`meta` contract, map-spec-v2 §0) | chromadb import only (suite self-sets `NEURONAV_EMBED_FAKE=1`, hermetic fixture config) |
 | `test_selfindex` | neuronav indexes itself | chromadb import (structural only) |
-| `test_swmg_regression` | byte-stability over the target repo | chromadb import + the target repo configured in `config.json` |
+| `test_target_regression` | byte-stability over the target repo | chromadb import + the target repo configured in `config.json` |
 | `test_explore` | explore() behavior incl. degraded mode | mcp + chroma + populated self-index |
 | `test_server_stdio` | MCP tool surface end-to-end (JSON-RPC over stdio) | mcp + default-config target repo |
 | `test_viz` | 90-check Playwright harness (real Chrome) | playwright + chrome + a fresh bake |

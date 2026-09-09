@@ -76,4 +76,4 @@ zero and server.py's MCP handlers stay in `review`.
    `test_pyhard.py`), and extend `test_crosslang.py` for the self-index
    integration.
 6. Rebuild and compare edges/dead before/after — the regression floors in
-   `test_swmg_regression` must not drift.
+   `test_target_regression` must not drift.

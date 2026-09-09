@@ -47,7 +47,7 @@ def _apply_config(path: Path) -> None:
         # relative roots resolve against the config file's own directory,
         # so shipped profiles (config/neuronav.json) stay machine-portable
         ROOT = (path.parent / ROOT).resolve()
-    COLLECTION = str(cfg.get("collection", "swmg"))
+    COLLECTION = str(cfg.get("collection", "main"))
     INCLUDE_DIRS = tuple(cfg.get("include_dirs", ("scripts", "scenes", "VFX", "ai", "tests", "tools")))
     EXTS = set(cfg.get("extensions", (".gd", ".tscn")))
     EXCLUDE_DIRS = frozenset(cfg.get("exclude_dirs", (".git", "__pycache__")))

@@ -1,4 +1,4 @@
-"""swmg-nav structural layer: function/signal graph, dead code, duplicates.
+"""neuronav structural layer: function/signal graph, dead code, duplicates.
 
 Parses GDScript + .tscn from the checkout into an in-memory graph (language
 parsers live in extractors/, dispatched via the suffix registry):

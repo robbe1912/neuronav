@@ -32,14 +32,14 @@ integration suite (needs Ollama up).
 ## Ground rules
 
 1. **Determinism is a contract.** Layout, exports, clusters: seeded and
-   ordered. The SWMG regression suite pins exact counts; if your change
+   ordered. The external-target regression suite pins exact counts; if your change
    legitimately shifts them, say so explicitly in the PR and update the pins
    with justification.
 2. **All suites green before commit.** Minimum bar for any change:
    `test_strata`, `test_crosslang`, `test_pyhard`. Touching nav/graph/index:
-   add `test_selfindex`, `test_swmg_regression`, `test_explore`,
+   add `test_selfindex`, `test_target_regression`, `test_explore`,
    `test_server_stdio`. Touching `viz.py`: regenerate + full Playwright
-   harness (`test_viz`) on BOTH the self-index and the SWMG profile.
+   harness (`test_viz`) on BOTH the self-index and the external-target profile.
 3. **No silent fallbacks.** Missing backend -> loud error or an explicitly
    marked degraded mode (see `explore.py` lexical fallback). Never swallow.
 4. **Read-only MCP tools carry `readOnlyHint`**; mutating behavior goes in
@@ -59,7 +59,7 @@ integration suite (needs Ollama up).
 ## Base index shards
 
 `nav.py export-base` writes `base/` (gitignored here — shards belong in the
-CONSUMING repo, e.g. SWMG's `.neuronav/base/`). `import-base` seeds an empty
+CONSUMING repo, e.g. the consuming repo's `.neuronav/base/`). `import-base` seeds an empty
 chroma from shards and guards on embedding model + dim.
 
 ## Commit / PR style

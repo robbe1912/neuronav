@@ -21,7 +21,7 @@ with `NEURONAV_EMBED_FAKE=1`; the rest are local gates.
 | `test_pyhard` | python extractor edge cases on `fixtures/pyhard` | numpy + chromadb import only (hermetic fixture config) |
 | `test_mwires` | named-wire map exports (`mwires`/`fns`/`meta`, map-spec-v2 §0) on `fixtures/mwires` | chromadb import only (self-sets `NEURONAV_EMBED_FAKE=1`, hermetic fixture config) |
 | `test_selfindex` | self-index structural invariants: likely-dead zero, handlers stay review, deterministic rebuild | chromadb import (structural only) |
-| `test_swmg_regression` | byte-stability over the target repo: floor pins + liveness canaries | chromadb import + the target repo configured in `config.json` |
+| `test_target_regression` | byte-stability over the target repo: floor pins + liveness canaries | chromadb import + the target repo configured in `config.json` |
 | `test_explore` | explore() happy/degraded/no-hit paths + MCP tool annotations | mcp + chroma + populated self-index |
 | `test_server_stdio` | MCP stdio end-to-end: spawns server.py, drives JSON-RPC, asserts the context tool answers | mcp + default-config target repo |
 | `test_viz` | 90-check Playwright harness over the real baked page | playwright + chrome + a fresh `graph.html` bake |
@@ -42,7 +42,7 @@ Suites pick their own config; the shell must not pre-export one:
   the real index.
 - `test_server_stdio` strips `NEURONAV_CONFIG` from the child env so the
   server binds the default profile.
-- `test_swmg_regression` / `test_viz` use the default `config.json` — the
+- `test_target_regression` / `test_viz` use the default `config.json` — the
   target repo must exist at its configured path.
 
 ## Playwright harness gotchas (`test_viz`)
@@ -73,7 +73,7 @@ Suites pick their own config; the shell must not pre-export one:
 
 ## Pin-update policy
 
-`test_swmg_regression` pins range floors (files, edges, dead) + canaries.
+`test_target_regression` pins range floors (files, edges, dead) + canaries.
 They exist to catch extractor/graph regressions. The target repo drifts on
 the user side — re-pin floors only for that drift, saying so in the commit;
 never re-pin to make a regression disappear. Same rule for count windows in

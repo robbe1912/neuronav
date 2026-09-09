@@ -21,7 +21,7 @@ project gets a profile here and its MCP entry pins the profile via
 | field | default | meaning |
 |---|---|---|
 | `root` | parent of the install | target repo root (relative -> resolve against the profile's dir) |
-| `collection` | `"swmg"` | chroma collection name; fn-level index lives at `<collection>-fns` |
+| `collection` | `"main"` | chroma collection name; fn-level index lives at `<collection>-fns` |
 | `include_dirs` | `scripts, scenes, VFX, ai, tests, tools` | walked under root |
 | `extensions` | `.gd, .tscn` | suffixes kept (must be registered in `extractors/` to parse) |
 | `exclude_dirs` | `.git, __pycache__` | pruned from the directory walk |
