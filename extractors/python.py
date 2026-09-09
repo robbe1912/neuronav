@@ -47,6 +47,16 @@ MODULE_CALL_SKIP = {
     "lambda", "not", "await", "with", "except", "raise", "yield",
 }
 
+# stdlib/framework dispatch hooks: methods http.server-style machinery
+# invokes reflectively on a handler subclass (base resolves outside the
+# repo, so no static caller exists). Dead-scan classifies these as
+# review, mirroring the .gd VIRTUALS rule — they are overrides, not
+# orphans. Kept minimal: only names the serving machinery itself calls.
+PY_HOOKS = frozenset({
+    "end_headers", "log_message", "log_error", "log_request",
+    "send_head", "translate_path", "guess_type", "list_directory",
+})
+
 
 def _module_rel(mod: str, cur: Path) -> str:
     """Rel-posix path of a repo module for an import in `cur`, or ''.

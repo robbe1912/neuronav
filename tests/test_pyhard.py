@@ -116,5 +116,27 @@ alive(
 )
 stays_dead("async: control stays dead", "async_bodies.py", "unused_async")
 
+# --- fixture: stdlib_overrides.py ---------------------------------------
+# http.server handler hooks on an unresolved base are framework
+# dispatch (review tier, not likely); the unrelated control stays likely
+_tiers = {
+    (d["func"]): d["tier"]
+    for d in dead["candidates"]
+    if d["path"] == "stdlib_overrides.py"
+}
+check(
+    "overrides: stdlib hooks demoted to review",
+    _tiers.get("end_headers") == "review"
+    and _tiers.get("log_message") == "review"
+    and _tiers.get("do_GET") == "review",
+    f"tiers={_tiers}",
+)
+stays_dead("overrides: non-hook control stays dead", "stdlib_overrides.py", "scratch_helper")
+check(
+    "overrides: control is likely tier (exemption not blanket)",
+    _tiers.get("scratch_helper") == "likely",
+    f"tiers={_tiers}",
+)
+
 print(f"{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)
