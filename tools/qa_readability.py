@@ -680,6 +680,12 @@ GATE_KEYS = [
     ("inkCentral", "central-band ink density", 0.005),
 ]
 
+# Metrics a rubric-sanctioned hub affordance (degree-hint / ghost-tier reveal)
+# legitimately ADDS in zero-wire .tscn hub views. Exempted per-subject only via
+# the explicit --affordance flag; structural clutter (crossTT, chevCrowdEvents,
+# nodeOcclFrac) stays hard-gated everywhere.
+AFFORD_KEYS = {"labelLabelPairs", "labelWireLabels", "inkCentral"}
+
 
 def get_metric(view, key):
     if key == "inkCentral":
@@ -687,7 +693,7 @@ def get_metric(view, key):
     return view.get(key)
 
 
-def gate_declut(base_doc, after_doc):
+def gate_declut(base_doc, after_doc, afford=frozenset()):
     rows, violations = [], []
     for subj, angles in after_doc["views"].items():
         base_subj = base_doc["views"].get(subj)
@@ -703,17 +709,39 @@ def gate_declut(base_doc, after_doc):
                     violations.append(f"{subj}/{ang}/{key}: missing value (base={b} after={a})")
                     continue
                 ok = a <= b + tol
+                if not ok and subj in afford and key in AFFORD_KEYS:
+                    rows.append((subj, ang, key, b, a, "AFFORD"))
+                    continue
                 rows.append((subj, ang, key, b, a, "ok" if ok else "REGRESS"))
                 if not ok:
                     violations.append(
                         f"{subj}/{ang}/{label}: {b} -> {a} (tol +{tol})")
-    print(f"== gate: {len(rows)} checks, {len(violations)} violations ==")
+    print(f"== gate: {len(rows)} checks, {len(violations)} violations"
+          f" (+{sum(1 for r in rows if r[5] == 'AFFORD')} affordance-exempt) ==")
     for subj, ang, key, b, a, st in rows:
         if st != "ok":
             print(f"  {st:7s} {subj}/{ang} {key}: {b} -> {a}")
     if not violations:
         print("  all metrics at-or-below baseline")
     return 1 if violations else 0
+
+
+def expand_affordance(spec, base_doc):
+    """'tscn' -> every hub subject whose hub file is .tscn; 'hubs' -> all
+    hub subjects; otherwise comma-separated literal subject names."""
+    names = set()
+    for item in (spec or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if item in ("tscn", "hubs"):
+            for subj, rec in base_doc["views"].items():
+                p = (rec.get("_hub") or {}).get("p", "")
+                if item == "hubs" or (item == "tscn" and p.endswith(".tscn")):
+                    names.add(subj)
+        else:
+            names.add(item)
+    return frozenset(names)
 
 
 class ReuseTCPServer(socketserver.TCPServer):
@@ -763,6 +791,11 @@ def main():
                     help="run the battery and gate it against the baseline")
     ap.add_argument("--base", default="qa/declutter_base.json",
                     help="baseline JSON for --after (default %(default)s)")
+    ap.add_argument("--affordance", default="", metavar="SUBJECTS",
+                    help="with --after: comma list of subjects whose sanctioned "
+                         "hub-affordance ink (labelLabelPairs/labelWireLabels/"
+                         "inkCentral) is exempt from the gate; 'tscn' expands to "
+                         "all .tscn hub subjects, 'hubs' to all hub subjects")
     args = ap.parse_args()
     QA.mkdir(parents=True, exist_ok=True)
     httpd = _serve()
@@ -784,10 +817,13 @@ def main():
             if not Path(args.base).is_absolute() and not basep.exists():
                 basep = Path(args.base).resolve()
             base_doc = json.loads(Path(basep).read_text(encoding="utf-8"))
+            afford = expand_affordance(args.affordance, base_doc)
+            if afford:
+                print(f"affordance-exempt subjects: {', '.join(sorted(afford))}")
             doc = run_declut_battery("after")
             (QA / "declutter_after.json").write_text(
                 json.dumps(doc, indent=1), encoding="utf-8")
-            sys.exit(gate_declut(base_doc, doc))
+            sys.exit(gate_declut(base_doc, doc, afford))
         run(QA)
     finally:
         httpd.shutdown()
