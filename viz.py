@@ -4250,7 +4250,12 @@ function rebuildFnLayer(focusing) {
   }
   const Jstub = new Set();   // fns already carrying a junction delivery stub
   const tgtArrow = new Set();   // delivery arrows: ONE per target box (R4)
-  const boxArrow = new Set();    // ONE delivery chevron per fn box, all paths
+  // ONE delivery chevron per RENDERED box, all paths. Key must be the
+  // RENDERED position, not the original box index: collapsed members remap
+  // to their file's aggregate box, and keying on `b` stacked five chevrons
+  // on one projected point (pair-engineer census, round 5b)
+  const boxKey = b => (fnMeta[b].agg && !fnMeta[b].count) ? "agg" + fnMeta[b].file : "b" + b;
+  const boxArrow = new Set();
   for (let i = 0, p = 0; i < eidx.length; i += 2, p++) {
     const a = eidx[i], b = eidx[i+1];
     const T = wireTier[p] ? tierB : tierQ;
@@ -4304,8 +4309,8 @@ function rebuildFnLayer(focusing) {
         // its face aimed inward — not at the station terminus, where the
         // 11px merge disk swallowed every trunk-tip arrow (measured 0
         // amber px under the disk)
-        if (!boxArrow.has(b)) {
-          boxArrow.add(b);
+        if (!boxArrow.has(boxKey(b))) {
+          boxArrow.add(boxKey(b));
           let ddx = bx-e1[0], ddy = by-e1[1], ddz = bz-e1[2];
           const dl = Math.hypot(ddx, ddy, ddz) || 1;
           ddx /= dl; ddy /= dl; ddz /= dl;
@@ -4328,7 +4333,7 @@ function rebuildFnLayer(focusing) {
           if (!Jstub.has(b)) {
             Jstub.add(b);
             fnJstubN++;
-            const jArr = !boxArrow.has(b); boxArrow.add(b);
+            const jArr = !boxArrow.has(boxKey(b)); boxArrow.add(boxKey(b));
             emitArc(T, J[0], J[1], J[2], bx, by, bz,
                     cB.r, cB.g, cB.b, cB.r, cB.g, cB.b, phase, 0.16, jArr,
                     { kind: "wire", a, b, ln });
@@ -4359,8 +4364,8 @@ function rebuildFnLayer(focusing) {
     if (!done) {
       // direct wire: one delivery arrow per TARGET box — parallel wires into
       // the same fn share the direction cue (skeptic R4: 31 -> ~18 arrows)
-      const arr = T === tierB && !boxArrow.has(b);
-      if (T === tierB) boxArrow.add(b);
+      const arr = T === tierB && !boxArrow.has(boxKey(b));
+      if (T === tierB) boxArrow.add(boxKey(b));
       emitArc(T, ax, ay, az, bx, by, bz,
               cA.r, cA.g, cA.b, cB.r, cB.g, cB.b, phase,
               0.08 + 0.10 * (((i + 1) * 2654435761 >>> 0) % 97) / 97,
