@@ -3308,7 +3308,9 @@ let fnMesh = null, fnLines = null, fnStalks = null, fnMeta = [], fnArrows = null
   // corridor trunks (trunkGeom order = deterministic visEdges order) get
   // tiered control lifts, so quadratic apexes sit 0.11/0.135/0.16*dist
   // above the midpoint and never stack on each other.
-  const CONDUIT_LIFT_BASE = 0.22;  // tier step 0.03 below (apex law >= 0.11*dist holds)
+  const CONDUIT_LIFT_BASE = 0.14;  // band 0.14-0.29 over 6 tiers, step 0.03
+  // below (apex law >= 0.11*dist holds); 0.22 was overflight — the hills
+  // interleaved on screen and read as braid even where chords never cross
   // quiet-tier consolidation: file pairs with >= QUIET_TRUNK_MIN quiet
   // wires collapse into ONE background trunk (QUIET_LIFT_FRAC apex lift)
   const QUIET_TRUNK_MIN = 3, QUIET_LIFT_FRAC = 0.22;
@@ -4034,7 +4036,6 @@ function rebuildFnLayer(focusing) {
           md.p[2] = pos[md.fi*3+2] + Math.sin(nb) * md.r;
         }
       }
-  }
   // shared arc emitter: 8 quadratic segments (16 verts — the harness
   // counts wires as verts/16), optional arrowhead at the end tangent
   const emitArc = (T, ax, ay, az, bx, by, bz,
@@ -4101,15 +4102,24 @@ function rebuildFnLayer(focusing) {
   // fan trunk termini out of shared stations: corridors leaving/arriving at
   // one bollard offset along the station tangent (ranked by the OTHER end's
   // bearing) so coincident first/last conduit segments separate instead of
-  // stacking at 0 wu; trunks still read as leaving the dot
+  // stacking at 0 wu; trunks still read as leaving the dot. Sector stations
+  // of one bollard CLUSTER are grouped by proximity (60 wu) — object
+  // identity split the visual fan and left whole clusters unranked.
   const stTerm = new Map();   // station id -> Map("k:end" -> offset point)
+  const stTermR = new Map();  // "k:end" -> fan rank (0..n-1, by other-end bearing)
+  const claimed = new Set();  // stations already ranked via an earlier cluster rep
   for (const S of stList) {
+    if (claimed.has(S)) continue;
     const terms = [];
-    for (const k of trunked) {
-      const stB = stations.get(k);
-      if (!stB) continue;
-      if (stB[0] === S) terms.push({ k, end: 0, other: stB[1].p });
-      if (stB[1] === S) terms.push({ k, end: 1, other: stB[0].p });
+    for (const S2 of stList) {
+      if (Math.hypot(S2.p[0]-S.p[0], S2.p[1]-S.p[1], S2.p[2]-S.p[2]) > 60) continue;
+      claimed.add(S2);
+      for (const k of trunked) {
+        const stB = stations.get(k);
+        if (!stB) continue;
+        if (stB[0] === S2) terms.push({ k, end: 0, other: stB[1].p });
+        if (stB[1] === S2) terms.push({ k, end: 1, other: stB[0].p });
+      }
     }
     if (terms.length < 2) continue;
     terms.sort((a, b) => brgOf(S.fi, a.other) - brgOf(S.fi, b.other));
@@ -4118,6 +4128,7 @@ function rebuildFnLayer(focusing) {
     terms.forEach((t, r) => {
       const off = (r - (terms.length - 1) / 2) * 9;
       m.set(t.k + ":" + t.end, [S.p[0] + tx * off, S.p[1], S.p[2] + tz * off]);
+      stTermR.set(t.k + ":" + t.end, r);
     });
     stTerm.set(S.id, m);
   }
@@ -4145,7 +4156,12 @@ function rebuildFnLayer(focusing) {
     // heights — corridor seed + per-trunk ordinal over 6 tiers, so stacked
     // trunks read over/under instead of braiding at one depth
     const ord = corridorOrd.get(ck) || 0; corridorOrd.set(ck, ord + 1);
-    trunkGeom.push({ p0, p1, tc, tmeta, tier: (corridorTier.get(ck) + ord) % 6 });
+    // fan terrace (declutter R1): sibling corridors sharing a bollard fan
+    // fly as a descending staircase in fan-rank order — rank-adjacent arcs
+    // hold 8 wu of apex separation on screen at every camera, where the old
+    // corridor-tier lottery let adjacent ranks share a band and braid
+    const fanR = (stTermR.get(k + ":0") || 0) + (stTermR.get(k + ":1") || 0);
+    trunkGeom.push({ p0, p1, tc, tmeta, tier: (corridorTier.get(ck) + ord) % 6, fanR });
     trunkEnds.set(k, { e: p0, x: p1, c: tc, m: tmeta });
   }
   // station bollards: a DISJOINT ivory family (S<=0.12, L>=0.84) — cluster
@@ -4345,19 +4361,23 @@ function rebuildFnLayer(focusing) {
   // the shared reroute ends all read the final junction positions
   for (const g of trunkGeom) {
     const p0 = g.p0, p1 = g.p1, tc = g.tc, tmeta = g.tmeta;
-    emitArc(tierB, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
-            tc[0], tc[1], tc[2], tc[0], tc[1], tc[2], 0, 0.30, false, tmeta);
-    fnTrunkN++;
-    // conduit body: the bus must have PHYSICAL presence — a 1px line among
     // 1px lines reads as nothing. Tier by corridor (same station pair =>
-    // same corridor), raised by the obstacle law; apex stays >= 0.11*dist
-    // and ALWAYS +Y (conduit lane law).
+    // same corridor), raised by the obstacle law, then TERRACED down by fan
+    // rank (fanR, declutter R1) so siblings sharing a bollard read as a
+    // staircase instead of interleaved hills; apex stays >= 0.11*dist and
+    // ALWAYS +Y (conduit lane law). The guide arc rides the SAME lift as
+    // the tube — one path, two inks.
     const dist = Math.hypot(p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2]) || 1;
     const Ltier = (CONDUIT_LIFT_BASE + 0.03 * g.tier) * dist;
     const Lob = obsLift(p0, p1, tmeta.sf, tmeta.tf);
     const cap = 0.70 * dist;
     if (Lob > cap) fnJclip++;
-    const lift = Math.min(cap, Math.max(Ltier, Lob));
+    const lift = Math.min(cap, Math.max(0.11 * dist,
+                    Math.max(Ltier, Lob) - 8 * (g.fanR || 0)));
+    emitArc(tierB, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
+            tc[0], tc[1], tc[2], tc[0], tc[1], tc[2], 0, lift / dist, false,
+            tmeta);
+    fnTrunkN++;
     const qx = (p0[0]+p1[0])/2, qy = (p0[1]+p1[1])/2 + lift, qz = (p0[2]+p1[2])/2;
     let bx2 = p0[0], by2 = p0[1], bz2 = p0[2];
     for (let s = 1; s <= FS; s++) {
