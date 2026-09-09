@@ -3948,7 +3948,7 @@ function rebuildFnLayer(focusing) {
     busJunc.push({ p: S.p, c: [BOL_COL[0].r, BOL_COL[0].g, BOL_COL[0].b], k: 1 });
     for (let li = 0; li < S.subJ.length; li++) {
       const sp = S.subJ[li];
-      busJunc.push({ p: sp, c: [BOL_COL[1].r, BOL_COL[1].g, BOL_COL[1].b], k: 0.70 });
+      busJunc.push({ p: sp, c: [BOL_COL[1].r, BOL_COL[1].g, BOL_COL[1].b], k: 0.72 });
       // legs land on a tangent line 5 wu BELOW the station — the empty
       // lane under the horizontal trunk fan (trunks bow +Y from termini
       // on the mid line), slotted wide of them: >=9 horizontal + >=5
@@ -4083,7 +4083,7 @@ function rebuildFnLayer(focusing) {
       const kk = J[0].toFixed(2) + "," + J[1].toFixed(2) + "," + J[2].toFixed(2);
       if (done.has(kk)) continue;
       done.add(kk);
-      busJunc.push({ p: [J[0], J[1], J[2]], c: [BOL_COL[2].r, BOL_COL[2].g, BOL_COL[2].b], k: 0.70 });
+      busJunc.push({ p: [J[0], J[1], J[2]], c: [BOL_COL[2].r, BOL_COL[2].g, BOL_COL[2].b], k: 0.72 });
     }
   }
   // obstacle-aware conduit lift (spec D5): raise the control point so the
