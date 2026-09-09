@@ -1984,15 +1984,68 @@ function tick() {
   }
   // conduit width is SCREEN-CONSTANT per segment: radius ∝ each segment's own
   // distance to the camera (~2.4px on screen at every depth, next to 1px wires)
+// round-5 LOD gate (user-acceptance): a bus element is visible only when
+// the boxes it serves RESOLVE on screen — at far zoom whole trunks read
+// as "nowhere to nowhere" and sub-junction dots as droplets on wires.
+// Pure function of camera pose + build data; no layout change.
+function busLodInit() {
+  const hpx = renderer.domElement.clientHeight || 900;
+  const wuPerPx = 2 * Math.tan(camera.fov * Math.PI / 360) / hpx;
+  const memo = new Map();
+  // REF-normalized px (user directive, round 5): all screen laws live in
+  // REFERENCE pixels — px a size would have on a nominal 900px-tall canvas.
+  // Thresholds become resolution-independent; a probe at any viewport reads
+  // the same numbers.
+  const REFH = 900, refK = REFH / hpx;
+  const pxOf = fi => {
+    let v = memo.get("px" + fi);
+    if (v === undefined) {
+      const sc = (fnBoxScale && fnBoxScale.get(fi)) || 4;
+      const d = Math.hypot(pos[fi*3] - camera.position.x,
+                           pos[fi*3+1] - camera.position.y,
+                           pos[fi*3+2] - camera.position.z) || 1;
+      v = (sc / (wuPerPx * d)) * refK;
+      memo.set("px" + fi, v);
+    }
+    return v;
+  };
+  const res = fi => pxOf(fi) >= 2.2;  // served box >= 2.2 REF-px (boot droplets die, d2 boxes ~2.45 live)
+  const tkPx = tk => {
+    const p = String(tk).split(">");
+    return p.length === 2 ? Math.min(pxOf(+p[0]), pxOf(+p[1])) : pxOf(+String(tk).split("|")[1]);
+  };
+  const trOK = tk => {
+    const p = String(tk).split(">");
+    return p.length === 2 ? res(+p[0]) && res(+p[1]) : res(+String(tk).split("|")[1]);
+  };
+  const stOK = fi => {
+    if (!res(fi)) return false;
+    const tks = stationTks && stationTks.get(fi);
+    if (!tks || !tks.length) return true;
+    for (const tk of tks) if (trOK(tk)) return true;
+    return false;
+  };
+  return { res, trOK, stOK, pxOf, tkPx };
+}
+  _lod = (fnBus || fnJDot) ? busLodInit() : null;
+  fnLodV = { bollardsShown: 0, bollardsGated: 0, conduitsShown: 0, conduitsGated: 0,
+             chevShown: 0, minChevPx: Infinity, minServedBoxPx: Infinity, minBollardPx: Infinity };
   if (fnBus && busPts) {
     let dirty = false;
+    const lod = _lod;
     const a = fnBus.instanceMatrix.array;
     for (let i = 0; i < busPts.length; i++) {
       const s = busPts[i];
       const d = Math.hypot((s.a[0]+s.b[0])/2 - camera.position.x,
                            (s.a[1]+s.b[1])/2 - camera.position.y,
                            (s.a[2]+s.b[2])/2 - camera.position.z);
-      const rT = Math.max(0.05, Math.min(12, d * 0.0037 * (s.rf || 1)));
+      const gateOk = lod ? lod.trOK(s.k) : true;
+      if (fnLodV) {
+        if (gateOk) { fnLodV.conduitsShown++;
+          fnLodV.minServedBoxPx = Math.min(fnLodV.minServedBoxPx, lod ? lod.tkPx(s.k) : Infinity); }
+        else fnLodV.conduitsGated++;
+      }
+      const rT = gateOk ? Math.max(0.05, Math.min(12, d * 0.0037 * (s.rf || 1))) : 0.0001;
       const f = rT / fnBusRi[i];
       if (Math.abs(f - 1) > 0.06) {
         const o = i * 16;
@@ -2021,7 +2074,22 @@ function tick() {
       // clearly subordinate (round-3 crop verdict: "cluster of mid-sized
       // balls" with 9px/6px was still too flat).
       const kf = fnJDotK ? fnJDotK[i] : 1;
-      const rT = d * 0.0102 * kf;
+      const lod = _lod;
+      const hpxr = renderer.domElement.clientHeight || 900;
+      const gateOk = lod ? (fnJDotSt[i] ? lod.stOK(fnJDotOf[i]) : lod.res(fnJDotOf[i])) : true;
+      // viewport-FRACTION law (user directive r5): the world-slope law
+      // r = kf*0.0102*d keeps every element a constant FRACTION of the
+      // frame height — px-at-nominal-900 (ref-px) is invariant; the
+      // skeptic's 1600x900 numbers are exactly the round-4 values
+      const rRef = d * 0.0102 * kf;
+      if (fnLodV) {
+        if (gateOk) { fnLodV.bollardsShown++;
+          fnLodV.minServedBoxPx = Math.min(fnLodV.minServedBoxPx, lod ? lod.pxOf(fnJDotOf[i]) : Infinity);
+          const wpp = 2 * Math.tan(camera.fov * Math.PI / 360) / hpxr;
+          fnLodV.minBollardPx = Math.min(fnLodV.minBollardPx, ((2 * rRef) / (wpp * d)) * (900 / hpxr)); }
+        else fnLodV.bollardsGated++;
+      }
+      const rT = gateOk ? rRef : 0.0001;
       const f = rT / fnJDotR[i];
       if (Math.abs(f - 1) > 0.06) {
         const o = i * 16;
@@ -3155,6 +3223,13 @@ let fnStationsArr = [];  // per-file bus stations of the current fn layer (via _
 let fnJclearV = -1; // min world junction->box-center distance (via __dbg)
 let fnLegN = 0;     // station tree legs (thin conduits, via __dbg)
 let fnJDotK = null;  // per-junction bollard size factor (screen-constant law)
+let fnJDotOf = null;   // owner FILE index per bollard (round-5 LOD gate)
+let fnJDotSt = null;   // 1 = station-class gate, 0 = own-file resolved gate
+let fnBoxScale = null; // fi -> largest rendered fn-box world size
+let stationTks = null; // fi -> trunk keys leaving that file's stations
+let arrowFile = null;  // owner FILE index per delivery chevron
+let _lod = null;       // per-frame LOD closures (res / trOK / stOK)
+let fnLodV = null;     // per-frame LOD report (via __dbg.fnLod, round-5)
 let fnJclip = 0;    // conduits whose obstacle lift hit the cap (via __dbg)
 let fnQuietTrunkN = 0;  // quiet-tier trunk arcs (via __dbg)
 let fnQuietTrunkW = 0;  // quiet wires absorbed into trunks (via __dbg)
@@ -3181,6 +3256,7 @@ function aimArrows() {
   const M = new THREE.Matrix4(), X = new THREE.Vector3(), Y = new THREE.Vector3(),
         Z = new THREE.Vector3(), P = new THREE.Vector3(), T = new THREE.Vector3();
   const a = fnArrows.instanceMatrix.array;
+  const lod = _lod || busLodInit();   // round-5: no chevrons on sub-pixel boxes
   // VISIBLE-OR-GONE (skeptic r4): a chevron buried behind a sphere swarm
   // reads as noise — depthTest:false paints it over everything anyway, so
   // gate on a real ray. Recomputed only when the camera moves (closed-form
@@ -3189,7 +3265,10 @@ function aimArrows() {
     _arrowOccl = new Float32Array(fnArrowR.length);
     _arrowOcclCam = null;
   }
-  if (!_arrowOcclCam || _arrowOcclCam.distanceTo(camera.position) > 1) {
+  // recompute EVERY frame: the settle-moment state must be a pure function
+  // of the final camera pose (determinism — chevShown differed 16 vs 5 across
+  // reloads when the last pass ran mid-damping). Cost ~1ms for 45 rays.
+  if (true) {
     _arrowOccl.fill(0);
     const rc = new THREE.Raycaster();
     rc.far = Infinity;
@@ -3240,8 +3319,18 @@ function aimArrows() {
     // the delivery) — invisible AND not "floating far" in probes
     if (_arrowOccl[i] && fnArrowBox) P.set(fnArrowBox[i*3], fnArrowBox[i*3+1], fnArrowBox[i*3+2]);
     const d = P.distanceTo(camera.position) || 1;
-    const s = 6 * wuPerPx * d * (_arrowOccl[i] ? 0 : 1);   // 12px, or GONE
+    const lodOk = !arrowFile || !arrowFile.length || arrowFile[i] < 0 || lod.res(arrowFile[i]);
+    // viewport-fraction law (user directive): 12px on the nominal 900px
+    // canvas at ANY window size — same fraction of frame, ref-px invariant
+    // viewport-FRACTION law: half-height 6px on the nominal 900 canvas at
+    // ANY window — same fraction of frame height, ref-px invariant
+    const s = 6 * (2 * Math.tan(camera.fov * Math.PI / 360) / 900) * d
+             * ((lodOk && !_arrowOccl[i]) ? 1 : 0);
     fnArrowR[i] = s;
+    if (fnLodV && s > 0.01) {
+      fnLodV.chevShown++;
+      fnLodV.minChevPx = Math.min(fnLodV.minChevPx, ((2 * s) / (wuPerPx * d)) * (900 / hpx));
+    }
     // keep the probe-visible record in sync (fnArrowPos = CURRENT anchor)
     fnArrowPos[i*3] = P.x; fnArrowPos[i*3+1] = P.y; fnArrowPos[i*3+2] = P.z;
     M.makeBasis(X.multiplyScalar(s), Y.multiplyScalar(s), Z);
@@ -3391,7 +3480,7 @@ function rebuildFnLayer(focusing) {
   if (fnQuiet) { scene.remove(fnQuiet); fnQuiet.geometry.dispose(); fnQuiet = null; }
   if (fnBus) { scene.remove(fnBus); fnBus.geometry.dispose(); fnBus = null; busPts = null; fnBusRi = null; }
     if (fnJDot) { scene.remove(fnJDot); fnJDot.geometry.dispose(); fnJDot = null; fnJDotPos = null; fnJDotR = null; }
-  if (fnArrows) { scene.remove(fnArrows); fnArrows.geometry.dispose(); fnArrows = null; fnArrowPos = null; fnArrowR = null; fnArrowTang = null; fnArrowBox = null; }
+  if (fnArrows) { scene.remove(fnArrows); fnArrows.geometry.dispose(); fnArrows = null; fnArrowPos = null; fnArrowR = null; fnArrowTang = null; fnArrowBox = null; arrowFile = null; }
   if (fnStalks) { scene.remove(fnStalks); fnStalks.geometry.dispose(); fnStalks = null; }
   fnMeta = [];
   if (!fnMode || !focusing) return;
@@ -3947,10 +4036,10 @@ function rebuildFnLayer(focusing) {
                     new THREE.Color().setHSL(0.12, 0.07, 0.87),   // sub-junction
                     new THREE.Color().setHSL(0.12, 0.05, 0.84) ]; // Jof
   for (const S of stList) {
-    busJunc.push({ p: S.p, c: [BOL_COL[0].r, BOL_COL[0].g, BOL_COL[0].b], k: 1 });
+    busJunc.push({ p: S.p, c: [BOL_COL[0].r, BOL_COL[0].g, BOL_COL[0].b], k: 1, of: S.fi, st: 1 });
     for (let li = 0; li < S.subJ.length; li++) {
       const sp = S.subJ[li];
-      busJunc.push({ p: sp, c: [BOL_COL[1].r, BOL_COL[1].g, BOL_COL[1].b], k: 0.72 });
+      busJunc.push({ p: sp, c: [BOL_COL[1].r, BOL_COL[1].g, BOL_COL[1].b], k: 0.72, of: S.fi, st: 1 });
       // legs land on a tangent line 5 wu BELOW the station — the empty
       // lane under the horizontal trunk fan (trunks bow +Y from termini
       // on the mid line), slotted wide of them: >=9 horizontal + >=5
@@ -4085,7 +4174,7 @@ function rebuildFnLayer(focusing) {
       const kk = J[0].toFixed(2) + "," + J[1].toFixed(2) + "," + J[2].toFixed(2);
       if (done.has(kk)) continue;
       done.add(kk);
-      busJunc.push({ p: [J[0], J[1], J[2]], c: [BOL_COL[2].r, BOL_COL[2].g, BOL_COL[2].b], k: 0.72 });
+      busJunc.push({ p: [J[0], J[1], J[2]], c: [BOL_COL[2].r, BOL_COL[2].g, BOL_COL[2].b], k: 0.72, of: fnMeta[b].file, st: 0 });
     }
   }
   // obstacle-aware conduit lift (spec D5): raise the control point so the
@@ -4335,6 +4424,23 @@ function rebuildFnLayer(focusing) {
     if (isFinite(jmin)) fnJclearV = jmin;
   }
   // per-junction size factors (screen-constant bollard law in the tick)
+  fnJDotOf = null; fnJDotSt = null; stationTks = null; fnBoxScale = null; arrowFile = null; _lod = null;
+  if (busJunc.length) {
+    fnJDotOf = Int32Array.from(busJunc, j => j.of | 0);
+    fnJDotSt = Uint8Array.from(busJunc, j => j.st | 0);
+  }
+  stationTks = new Map();
+  for (const S of stList) {
+    let tks = stationTks.get(S.fi);
+    if (!tks) stationTks.set(S.fi, tks = []);
+    for (const tk of S.tks) tks.push(tk);
+  }
+  fnBoxScale = new Map();
+  for (const m of fnMeta) {
+    if (m.agg && !m.count) continue;
+    const sc = m.count ? 6 : 4;
+    if (sc > (fnBoxScale.get(m.file) || 0)) fnBoxScale.set(m.file, sc);
+  }
   fnJDotK = null;
   if (busJunc.length)
     fnJDotK = Float32Array.from(busJunc, j => j.k || 1);
@@ -4377,9 +4483,13 @@ function rebuildFnLayer(focusing) {
     // from the ivory bollards (S<=0.12, L>=0.84) AND the golden-ratio box
     // family (S=0.72, L<=0.70) on BOTH axes — arrows are the only warm
     // saturated mid-light element in the layer.
+    // CHUNKY chevron: the r4 shape (arms 0.30 wide) painted only ~5px of
+    // saturated amber inside its 12px vertex span at the USER's window —
+    // the V read as a small dot (pair-engineer pixel census). Fat arms +
+    // a short notch keep the V legible at any viewport
     const chev = new THREE.Shape();
-    chev.moveTo(-0.62, -0.44); chev.lineTo(0, 0.56); chev.lineTo(0.62, -0.44);
-    chev.lineTo(0.34, -0.44); chev.lineTo(0, 0.14); chev.lineTo(-0.34, -0.44);
+    chev.moveTo(-0.72, -0.42); chev.lineTo(0, 0.62); chev.lineTo(0.72, -0.42);
+    chev.lineTo(0.30, -0.42); chev.lineTo(0, 0.10); chev.lineTo(-0.30, -0.42);
     chev.closePath();
     const arrowGeo = new THREE.ShapeGeometry(chev);
     // toneMapped:false — the renderer's ACES tone mapping crushes a
@@ -4399,6 +4509,21 @@ function rebuildFnLayer(focusing) {
     for (let k = 0; k < aPos.length / 3; k++) fnArrows.setColorAt(k, C);
     fnArrowTang = new Float32Array(aDir);
     fnArrowBox = new Float32Array(aBox.length ? aBox : aPos);
+    // round-5 LOD: owning FILE per chevron (nearest rendered box — aBox
+    // may carry the remapped aggregate position)
+    arrowFile = new Int32Array(aPos.length / 3);
+    const rBoxes = [];
+    for (const m of fnMeta) if (!(m.agg && !m.count)) rBoxes.push(m);
+    for (let ai = 0; ai < arrowFile.length; ai++) {
+      let best = -1, bd = Infinity;
+      for (let bi = 0; bi < rBoxes.length; bi++) {
+        const dd = Math.hypot(rBoxes[bi].p[0]-fnArrowBox[ai*3],
+                              rBoxes[bi].p[1]-fnArrowBox[ai*3+1],
+                              rBoxes[bi].p[2]-fnArrowBox[ai*3+2]);
+        if (dd < bd) { bd = dd; best = bi; }
+      }
+      arrowFile[ai] = best >= 0 ? rBoxes[best].file : -1;
+    }
     // matrices come from aimArrows() (billboard basis); build-time call so
     // the first painted frame is already correct
     aimArrows();
@@ -6758,7 +6883,8 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get camera() { return camera; },
   get fnTrunkW() { return fnTrunkW; }, get fnJstubN() { return fnJstubN; },
   get fnQuietTrunkW() { return fnQuietTrunkW; },
-  get fnStations() { return fnStationsArr; }, get fnJclear() { return fnJclearV; },
+  get fnStations() { return fnStationsArr; },
+  get fnLod() { return fnLodV ? Object.assign({}, fnLodV) : null; }, get fnJclear() { return fnJclearV; },
   get fnJclip() { return fnJclip; }, get fnLegN() { return fnLegN; },
   // probe hook: world -> screen px through the live camera + canvas rect
   projectPoint(x, y, z) {
