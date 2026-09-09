@@ -695,6 +695,8 @@ def declut_subject(page, cdp, subject, prefix, qa):
               f" orphanJLegs={m['legN']}/{m['orphanJLegs']}"
               f" (box={m['orphanJLegBoxFloor']} st={m['orphanJLegStationGated']}"
               f" both={m['orphanJLegBothEnds']}) anchorSpecks={m['anchorSpecks']}")
+    page.evaluate(CAM_RESTORE)
+    return recs
 
 
 def _stem(path):
