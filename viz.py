@@ -7324,6 +7324,13 @@ function frameQueryCamera() {
     if (level[i] === 0 && !supMem[i] && alphaTgt[i] > 0.5) arr.push(i);
   if (!arr.length) return;
   if (arr.length === 1) { focus(arr[0]); return; }
+  // multi-match with an active fn focus: the bus tier and its pickable
+  // trunks live around the focused hub's compact ball — frame THAT ball
+  // (focus() already does), not a centroid of all seeds. Fn-name matches
+  // can sit hundreds of world-units outside the ball (degree-0 owners),
+  // and after an Escape interlude the in-flight pos[] mix pushes the
+  // centroid off the ball entirely: geometry off-screen, picking dead.
+  if (focusFileIdx >= 0 && arr.includes(focusFileIdx)) { focus(focusFileIdx); return; }
   const c = new THREE.Vector3();
   arr.forEach(i => c.add(new THREE.Vector3(pos[i*3], pos[i*3+1], pos[i*3+2])));
   c.divideScalar(arr.length);
@@ -7457,6 +7464,10 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get litSet() { return compactIdx; }, get compactScale() { return compactScale; },
   get overlaps() { return compactOverlaps; },
   get camTween() { return camTween; }, get focusStack() { return focusStack; },
+  get focusFileIdx() { return focusFileIdx; }, get compactAnim() { return !!compactAnim; },
+  get posSavedLive() { return posSaved !== null; },
+  posAt: i => [pos[i*3], pos[i*3+1], pos[i*3+2]],
+  compactTgtAt: i => compactTgt ? [compactTgt[i*3], compactTgt[i*3+1], compactTgt[i*3+2]] : null,
   get fileMesh() { return fileMesh; }, get fnMesh() { return fnMesh; },
   get controls() { return controls; },
   get fnMeta() { return fnMeta; }, get fnStalks() { return fnStalks; },
