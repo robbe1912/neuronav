@@ -1744,6 +1744,7 @@ let compactIdx = [];      // lit-set node indices the ease animates
 let compactAnim = null;   // { t0, dur } while the ease runs, else null
 let compactScale = 1;     // exact-scale finisher factor (via __dbg)
 let compactBallR = 0;     // focus ball radius — LOD gate for the fn-wire layer
+let focusFileIdx = -1;   // the level-0 seed of the active focus (compaction)
 let compactOverlaps = 0;  // residual violations after the pass (must be 0)
 // attachment trim at node i's CURRENT body: its own sphere (world radius
 // sizes*1.1*sqrt(spread) + 2 margin), or the supernode (4 + sqrt(members)
@@ -2013,9 +2014,27 @@ function busLodInit() {
     }
     return v;
   };
-  const res = fi => pxOf(fi) >= 2.5;  // served box >= 2.5 REF-px — 2 CSS px at
+  // FOCUS-STATE master gate (skeptic r5 objection): when the user asks for
+  // the fn layer (focus active) and the FOCUS file's own box is readable,
+  // serve the whole bus tier — camera distance alone gated the busiest
+  // hub's d2 state (vfx_preload: 21/21 bollards at radius 0 because its
+  // neighborhood shells sit farther out than world_manager's). Zoomed-out
+  // overview (user's droplet state) still gates: focus box < floor there.
+  // SERVE_FLOOR 2.0 (harness floor) vs BOOT_FLOOR 2.5: when the user
+  // REQUESTED the fn layer the focus box need only be visible, not
+  // comfortable — the default focus camera parks the busiest hub's seed
+  // box at ~2.4 ref-px (vfx_preload d2), which must serve (skeptic r5);
+  // the user's zoomed-out droplet state reads ~0.9 ref-px and stays gated
+  const serveAll = focusFileIdx >= 0 && pxOf(focusFileIdx) >= 2.0;
+  if (fnLodV) { fnLodV.serveFi = focusFileIdx; fnLodV.servePx = focusFileIdx >= 0 ? pxOf(focusFileIdx) : -1; }
+  const res = fi => serveAll || pxOf(fi) >= 2.5;  // served box >= 2.5 REF-px — 2 CSS px at
   // the USER's 735h window (round-5b boot-straggler fix: pair census found
   // 3-4 dots over 0.8-1.2px boxes; 2.2 ref-px = 1.8 CSS px there)
+  // chevron floor is LOWER: a delivery mark may ride a 1.5-2.5px box —
+  // visible at probe-d2 zooms, where the 2.5 floor thinned on-screen
+  // chevrons 18->3 (too sparse for route tracing). Below 1.5 the box is
+  // a speck and the mark reads as noise on nothing
+  const resA = fi => pxOf(fi) >= 1.5;
   const tkPx = tk => {
     const p = String(tk).split(">");
     return p.length === 2 ? Math.min(pxOf(+p[0]), pxOf(+p[1])) : pxOf(+String(tk).split("|")[1]);
@@ -2031,11 +2050,12 @@ function busLodInit() {
     for (const tk of tks) if (trOK(tk)) return true;
     return false;
   };
-  return { res, trOK, stOK, pxOf, tkPx };
+  return { res, resA, trOK, stOK, pxOf, tkPx };
 }
-  _lod = (fnBus || fnJDot) ? busLodInit() : null;
   fnLodV = { bollardsShown: 0, bollardsGated: 0, conduitsShown: 0, conduitsGated: 0,
-             chevShown: 0, minChevPx: Infinity, minServedBoxPx: Infinity, minBollardPx: Infinity };
+             chevShown: 0, minChevPx: Infinity, minServedBoxPx: Infinity, minBollardPx: Infinity,
+             serveFi: -1, servePx: -1 };
+  _lod = (fnBus || fnJDot) ? busLodInit() : null;   // after fnLodV: it stamps serveFi/servePx
   if (fnBus && busPts) {
     let dirty = false;
     const lod = _lod;
@@ -2503,6 +2523,7 @@ function compactLitSet() {
   // sized so adjacent points start above min spacing - the depenetration +
   // exact-scale passes below guarantee the final no-overlap state.
   const fi = lit.find(i => level[i] === 0) ?? lit[0];
+  focusFileIdx = fi;
   const cx = work[fi*3], cy = work[fi*3+1], cz = work[fi*3+2];
   let maxRad = 0;
   for (const i of lit) maxRad = Math.max(maxRad, rad(i));
@@ -2765,7 +2786,7 @@ function applyVisibility() {
   } else if (posSaved) {
     pos.set(posSaved); posSaved = null; compactTgt = null;
     compactIdx = []; compactAnim = null; compactScale = 1; compactOverlaps = 0;
-    compactBallR = 0;
+    compactBallR = 0; focusFileIdx = -1;
   }
   // collapse pass: re-derives dpos + the supernode set from the targets
   // just computed; zeroes member alphaTgt (existing hide path fades the
@@ -3288,7 +3309,17 @@ function aimArrows() {
       rc.far = L - 1;   // anything solid closer than the chevron blocks it
       const occ = fileMesh.visible ? [fileMesh, fnMesh, fnBus] : [fnMesh, fnBus];
       const hits = rc.intersectObjects(occ.filter(Boolean), false);
-      if (hits.length) _arrowOccl[i] = 1;
+      // the delivery chevron rides 3.5wu off its TARGET box center — when
+      // the wire arrives from the far side, the box's near face legitimately
+      // sits between camera and chevron. That is the DELIVERY, not an
+      // occluder: ignore hits on the own target box (within 4wu of it)
+      let blocked = false;
+      const bo = fnArrowBox ? [fnArrowBox[i*3], fnArrowBox[i*3+1], fnArrowBox[i*3+2]] : null;
+      for (const h of hits) {
+        if (bo && h.point.distanceTo(new THREE.Vector3(bo[0], bo[1], bo[2])) < 4) continue;
+        blocked = true; break;
+      }
+      if (blocked) _arrowOccl[i] = 1;
     }
     _arrowOcclCam = camera.position.clone();
   }
@@ -3325,7 +3356,7 @@ function aimArrows() {
     // the delivery) — invisible AND not "floating far" in probes
     if (_arrowOccl[i] && fnArrowBox) P.set(fnArrowBox[i*3], fnArrowBox[i*3+1], fnArrowBox[i*3+2]);
     const d = P.distanceTo(camera.position) || 1;
-    const lodOk = !arrowFile || !arrowFile.length || arrowFile[i] < 0 || lod.res(arrowFile[i]);
+    const lodOk = !arrowFile || !arrowFile.length || arrowFile[i] < 0 || lod.resA(arrowFile[i]);
     // viewport-fraction law (user directive): 12px on the nominal 900px
     // canvas at ANY window size — same fraction of frame, ref-px invariant
     // viewport-FRACTION law: half-height 8px on the nominal 900 canvas at
