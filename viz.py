@@ -1005,6 +1005,22 @@ _TEMPLATE = r"""<!DOCTYPE html>
   #tip { position:fixed; z-index:20; pointer-events:none; display:none;
     background:#000d; border:1px solid #1de9b644; color:#eee; font-size:11px;
     padding:4px 8px; border-radius:6px; white-space:pre-line; }
+  #lg3d { position:fixed; left:10px; bottom:10px; z-index:21; width:22px; height:22px;
+    display:flex; align-items:center; justify-content:center; cursor:pointer;
+    background:rgba(10,14,18,.82); border:1px solid #1de9b644; border-radius:50%;
+    color:#80cbc4; font-size:12px; font-weight:700; user-select:none; }
+  #lg3dx { position:fixed; left:38px; bottom:8px; z-index:21; display:none;
+    align-items:center; gap:14px; padding:4px 10px;
+    background:rgba(10,14,18,.88); border:1px solid #1de9b633; border-radius:12px;
+    font-size:10.5px; color:#b0bec5; white-space:nowrap; }
+  #lg3dx span { display:flex; align-items:center; gap:5px; }
+  #lg3dx i { display:inline-block; }
+  .lgTrunk { width:16px; height:4px; border-radius:2px;
+    background:linear-gradient(90deg,#e8996d,#e8b084); }
+  .lgDot { width:9px; height:9px; border-radius:50%; background:#f2efe4; }
+  .lgChev { width:0; height:0; border-left:5px solid transparent;
+    border-right:5px solid transparent; border-bottom:9px solid #f5a623; }
+  .lgDash { width:16px; border-top:2px dashed #546e7a; }
   #edgeLegend { display:flex; flex-wrap:wrap; gap:3px 10px; margin-top:6px;
     font-size:10px; color:#78909c; }
   .eKey { display:flex; align-items:center; gap:4px; }
@@ -1164,6 +1180,13 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <ul id="iUsedBy"></ul>
 </div>
 <div id="tip"></div>
+<div id="lg3d" title="what am I looking at?">?</div>
+<div id="lg3dx">
+  <span><i class="lgTrunk"></i>trunk = bundled calls (one corridor)</span>
+  <span><i class="lgDot"></i>ivory dot = junction (wires merge)</span>
+  <span><i class="lgChev"></i>amber chevron = delivery direction</span>
+  <span><i class="lgDash"></i>dashed = quiet (many thin calls)</span>
+</div>
 <div id="hubs"></div>
 <div id="elabs"></div>
 <div id="xtlabs"></div>
@@ -1694,6 +1717,40 @@ function pickWireMeta(e) {
         (w.x + 1) / 2 * rect.width, (1 - w.y) / 2 * rect.height);
       const dd = d - 1;
       if (dd < bestD) { bestD = dd; best = { kind: "link", li: i }; pickWireZ = v.z + segT * (w.z - v.z); }
+    }
+  }
+  // click-parity pass (user r5): the WHITE trunk conduits + ivory junction
+  // dots pick exactly like the colored bus wires — same metas, same tip.
+  // Conduits get a wider forgiveness (tubes are 2-3x wire width); dots match
+  // by projected center. Only while the tier actually renders (serve gate).
+  if (fnBus && fnBus.visible && _lodServe) {
+    if (busPts && busPtsMeta) {
+      for (let i = 0; i < busPts.length; i++) {
+        const m = busPtsMeta[i];
+        if (!m) continue;
+        const s = busPts[i];
+        v.set(s.a[0], s.a[1], s.a[2]).project(camera);
+        if (v.z > 1) continue;
+        w.set(s.b[0], s.b[1], s.b[2]).project(camera);
+        if (w.z > 1) continue;
+        const d = segHit(px, py,
+          (v.x + 1) / 2 * rect.width, (1 - v.y) / 2 * rect.height,
+          (w.x + 1) / 2 * rect.width, (1 - w.y) / 2 * rect.height);
+        const dd = d - 3;   // thick target: generous forgiveness
+        if (dd < bestD) { bestD = dd; best = m; pickWireZ = v.z + segT * (w.z - v.z); }
+      }
+    }
+    if (juncPickInfo) {
+      for (let i = 0; i < juncPickInfo.length; i++) {
+        const m = juncPickInfo[i];
+        const p = fnJDotPos;
+        if (!m || !p) continue;
+        v.set(p[i*3], p[i*3+1], p[i*3+2]).project(camera);
+        if (v.z > 1) continue;
+        const dx = (v.x + 1) / 2 * rect.width - px, dy = (1 - v.y) / 2 * rect.height - py;
+        const dd = Math.hypot(dx, dy) - 8;   // dot radius + forgiveness
+        if (dd < bestD) { bestD = dd; best = m; pickWireZ = v.z; }
+      }
     }
   }
   return best;
@@ -3269,6 +3326,12 @@ let _lodServe = false; // focus-state master gate (busLodInit) — clamps the
                        // serving d2 state illegible — geometry served, paint
                        // faded)
 let _oDot = 0, _oArrow = 0;   // effective opacities for fnLod reporting
+// click-parity (user r5): the white trunk conduits + ivory junction dots
+// must pick EXACTLY like the colored bus wires — same metas, same tip card
+let trunkMetaMap = null;   // busPts key "a>b" -> {kind:"trunk", sf, tf, mates}
+let busPtsMeta = null;     // parallel to busPts: per-conduit pick meta
+let juncPickInfo = null;   // parallel to busJunc: per-dot pick meta
+let legendOpen = false;    // 3D legend chip state (harness-pinned)
 let fnLodV = null;     // per-frame LOD report (via __dbg.fnLod, round-5)
 let fnJclip = 0;    // conduits whose obstacle lift hit the cap (via __dbg)
 let fnQuietTrunkN = 0;  // quiet-tier trunk arcs (via __dbg)
@@ -3531,7 +3594,7 @@ function rebuildFnLayer(focusing) {
   if (fnMesh) { scene.remove(fnMesh); fnMesh.geometry.dispose(); fnMesh.dispose(); fnMesh = null; }
   if (fnLines) { scene.remove(fnLines); fnLines.geometry.dispose(); fnLines = null; }
   if (fnQuiet) { scene.remove(fnQuiet); fnQuiet.geometry.dispose(); fnQuiet = null; }
-  if (fnBus) { scene.remove(fnBus); fnBus.geometry.dispose(); fnBus = null; busPts = null; fnBusRi = null; }
+  if (fnBus) { scene.remove(fnBus); fnBus.geometry.dispose(); fnBus = null; busPts = null; fnBusRi = null; busPtsMeta = null; trunkMetaMap = null; juncPickInfo = null; }
     if (fnJDot) { scene.remove(fnJDot); fnJDot.geometry.dispose(); fnJDot = null; fnJDotPos = null; fnJDotR = null; }
   if (fnArrows) { scene.remove(fnArrows); fnArrows.geometry.dispose(); fnArrows = null; fnArrowPos = null; fnArrowR = null; fnArrowTang = null; fnArrowBox = null; arrowFile = null; }
   if (fnStalks) { scene.remove(fnStalks); fnStalks.geometry.dispose(); fnStalks = null; }
@@ -4019,6 +4082,7 @@ function rebuildFnLayer(focusing) {
   const trunkEnds = new Map();  // reroute junctions: {e, x, c, m: trunk meta}
   const busSegs = [];   // {a:[x,y,z], b:[x,y,z], col:[r,g,b], k} conduit pieces
   const busJunc = [];   // junction bollards: {p:[x,y,z], c:[r,g,b]}
+  trunkMetaMap = new Map();
   const jcons = [];     // junction constraints: {p, kind:"box", b, r}
   const trunkGeom = []; // deferred trunk emission (after junction separation)
   fnTrunkN = 0;
@@ -4070,6 +4134,7 @@ function rebuildFnLayer(focusing) {
     // fcol is per-fn-box — indexing it by file reads garbage => black tubes)
     const tc = [colArr[tf*3], colArr[tf*3+1], colArr[tf*3+2]];
     const tmeta = { kind: "trunk", k, sf, tf, mates: [] };
+    trunkMetaMap.set(k, tmeta);
     const ck = stS.id + ">" + stT.id;
     if (!corridorTier.has(ck)) corridorTier.set(ck, corridorTier.size % 3);
     // depth-banding (skeptic B5/R5): trunks of ONE corridor fly at distinct
@@ -4089,10 +4154,12 @@ function rebuildFnLayer(focusing) {
                     new THREE.Color().setHSL(0.12, 0.07, 0.87),   // sub-junction
                     new THREE.Color().setHSL(0.12, 0.05, 0.84) ]; // Jof
   for (const S of stList) {
-    busJunc.push({ p: S.p, c: [BOL_COL[0].r, BOL_COL[0].g, BOL_COL[0].b], k: 1, of: S.fi, st: 1 });
+    busJunc.push({ p: S.p, c: [BOL_COL[0].r, BOL_COL[0].g, BOL_COL[0].b], k: 1, of: S.fi, st: 1,
+      info: { kind: "station", fi: S.fi, wires: S.wires, trks: S.tks.length } });
     for (let li = 0; li < S.subJ.length; li++) {
       const sp = S.subJ[li];
-      busJunc.push({ p: sp, c: [BOL_COL[1].r, BOL_COL[1].g, BOL_COL[1].b], k: 0.72, of: S.fi, st: 1 });
+      busJunc.push({ p: sp, c: [BOL_COL[1].r, BOL_COL[1].g, BOL_COL[1].b], k: 0.72, of: S.fi, st: 1,
+        info: { kind: "sub", fi: S.fi, wires: S.wires } });
       // legs land on a tangent line 5 wu BELOW the station — the empty
       // lane under the horizontal trunk fan (trunks bow +Y from termini
       // on the mid line), slotted wide of them: >=9 horizontal + >=5
@@ -4132,6 +4199,7 @@ function rebuildFnLayer(focusing) {
     const p1 = surf(tf, [c1[0]/fnCnt.get(tf), c1[1]/fnCnt.get(tf), c1[2]/fnCnt.get(tf)]);
     const tc = [colArr[tf*3], colArr[tf*3+1], colArr[tf*3+2]];
     const tm = { kind: "trunk", k, sf, tf, mates: [] };
+    trunkMetaMap.set(k, tm);
     emitArc(tierQ, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
             tc[0], tc[1], tc[2], tc[0], tc[1], tc[2], 0,
             QUIET_LIFT_FRAC, false, tm);
@@ -4227,7 +4295,8 @@ function rebuildFnLayer(focusing) {
       const kk = J[0].toFixed(2) + "," + J[1].toFixed(2) + "," + J[2].toFixed(2);
       if (done.has(kk)) continue;
       done.add(kk);
-      busJunc.push({ p: [J[0], J[1], J[2]], c: [BOL_COL[2].r, BOL_COL[2].g, BOL_COL[2].b], k: 0.72, of: fnMeta[b].file, st: 0 });
+      busJunc.push({ p: [J[0], J[1], J[2]], c: [BOL_COL[2].r, BOL_COL[2].g, BOL_COL[2].b], k: 0.72, of: fnMeta[b].file, st: 0,
+        info: { kind: "jof", fi: fnMeta[b].file } });
     }
   }
   // obstacle-aware conduit lift (spec D5): raise the control point so the
@@ -4464,6 +4533,9 @@ function rebuildFnLayer(focusing) {
     if (fnBus.instanceColor) fnBus.instanceColor.needsUpdate = true;
     fnBus.frustumCulled = false;
     busPts = busSegs;
+  busPtsMeta = busSegs.map(s => String(s.k).startsWith("L|")
+    ? { kind: "jleg", fi: +String(s.k).split("|")[1] }
+    : (trunkMetaMap.get(s.k) || null));
     scene.add(fnBus);
   }
   // probe surfaces (extend-only __dbg contract): the station map + the
@@ -4483,6 +4555,7 @@ function rebuildFnLayer(focusing) {
   }
   // per-junction size factors (screen-constant bollard law in the tick)
   fnJDotOf = null; fnJDotSt = null; stationTks = null; fnBoxScale = null; arrowFile = null; _lod = null;
+  juncPickInfo = busJunc.map(j => j.info || null);
   if (busJunc.length) {
     fnJDotOf = Int32Array.from(busJunc, j => j.of | 0);
     fnJDotSt = Uint8Array.from(busJunc, j => j.st | 0);
@@ -4827,6 +4900,13 @@ const wireTipEl = document.createElement("div");
 wireTipEl.id = "wireTip";
 document.body.appendChild(wireTipEl);
 function hideWireTip() { wireTipEl.style.display = "none"; }
+// 3D vocabulary legend (user r5): collapsed '?' chip bottom-left; one line
+// when open. legendOpen is harness-pinned via __dbg.
+const lg3dEl = document.getElementById("lg3d"), lg3dxEl = document.getElementById("lg3dx");
+if (lg3dEl) lg3dEl.addEventListener("click", () => {
+  legendOpen = !legendOpen;
+  lg3dxEl.style.display = legendOpen ? "flex" : "none";
+});
 // strongest named wires for a file-level link — shared by edge hover and
 // wire-click descriptions
 function strongPair(l) {
@@ -4867,6 +4947,15 @@ function wireDesc(meta) {
   }
   if (meta.kind === "jleg") {
     return "🚌 junction leg\n" + nodes[meta.fi].path + "  (fan → station)";
+  }
+  if (meta.kind === "station") {
+    return "🚌 junction · " + nodes[meta.fi].path +
+      "\n" + meta.wires + " wires merge here → " + meta.trks + " trunk" + (meta.trks > 1 ? "s" : "") +
+      "\n(one trunk = one bundled corridor of calls)";
+  }
+  if (meta.kind === "sub" || meta.kind === "jof") {
+    return "🚌 sub-junction · " + nodes[meta.fi].path +
+      "\nfan of " + (meta.wires || 1) + " wire" + ((meta.wires || 1) > 1 ? "s" : "") + " joins the station here";
   }
   const a = fnMeta[meta.a], b = fnMeta[meta.b];
   const src = nodes[a.file], dst = nodes[b.file];
@@ -6763,6 +6852,10 @@ renderer.domElement.addEventListener("pointermove", e => {
           "  (" + (m.mates || []).length + " wires)";
       } else if (m.kind === "jleg") {
         txt = "🚌 junction leg · " + nodes[m.fi].label;
+      } else if (m.kind === "station") {
+        txt = "🚌 junction · " + nodes[m.fi].label + "  (" + m.wires + " wires → " + m.trks + " trunks)";
+      } else if (m.kind === "sub" || m.kind === "jof") {
+        txt = "🚌 sub-junction · " + nodes[m.fi].label;
       } else {
         const a = fnMeta[m.a], b = fnMeta[m.b];
         txt = nodes[a.file].label + "::" + a.name + "() → " +
@@ -6943,6 +7036,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnQuietTrunkW() { return fnQuietTrunkW; },
   get fnStations() { return fnStationsArr; },
   get fnLod() { return fnLodV ? Object.assign({}, fnLodV) : null; }, get fnJclear() { return fnJclearV; },
+  get legendOpen() { return legendOpen; }, get busPtsMeta() { return busPtsMeta; },
   get fnJclip() { return fnJclip; }, get fnLegN() { return fnLegN; },
   // probe hook: world -> screen px through the live camera + canvas rect
   projectPoint(x, y, z) {
