@@ -1079,6 +1079,11 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .flab:hover { color:#fff; background:rgba(20,30,38,.92); }
   .flab.fn { font-size:10px; color:#8fa3ad; background:rgba(8,12,16,.6); }
   .flab.fn:hover { color:#d0f2ea; background:rgba(14,26,24,.9); }
+  #stubLabs { position:fixed; inset:0; z-index:6; pointer-events:none;
+    overflow:hidden; }
+  .stublab { position:absolute; left:0; top:0; display:none; white-space:nowrap;
+    font-size:10px; color:#8fa3ad; padding:0 5px; border-radius:5px;
+    background:rgba(8,12,16,.75); }
   /* 3D region: canvas pinned left of the map pane; renderer.setSize keeps
      its style box in sync on every divider/resize event */
   canvas#gl { position:fixed; top:0; left:0; display:block; }
@@ -1194,6 +1199,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <span><i class="lgDash"></i>dashed = quiet (many thin calls)</span>
 </div>
 <div id="hubs"></div>
+<div id="stubLabs"></div>
 <div id="elabs"></div>
 <div id="xtlabs"></div>
 <div id="flabs"></div>
@@ -1760,6 +1766,14 @@ function pickWireMeta(e) {
           (v.x + 1) / 2 * rect.width, (1 - v.y) / 2 * rect.height,
           (w.x + 1) / 2 * rect.width, (1 - w.y) / 2 * rect.height);
         const dd = d - 3;   // thick target: generous forgiveness
+        // pick-vs-render parity (skeptic A8b): a culled chain (instance
+        // scale parked at 0.0001) must not answer the picker — hovering
+        // invisible ink is the tooltip-over-nothing class. Tapered EXPLAINED
+        // EXIT stubs keep scale > 0 and stay pickable.
+        const _sc = Math.hypot(fnBus.instanceMatrix.array[i*16],
+                               fnBus.instanceMatrix.array[i*16+1],
+                               fnBus.instanceMatrix.array[i*16+2]);
+        if (_sc <= 0.001) continue;
         if (dd < bestD) { bestD = dd; best = m; pickWireZ = v.z + segT * (w.z - v.z); }
       }
     }
@@ -2114,14 +2128,19 @@ function busLodInit() {
     camera.position.distanceTo(controls.target) <= 2.2 * compactBallR;
   _lodServe = serveAll;
   if (fnLodV) { fnLodV.serveFi = focusFileIdx; fnLodV.servePx = focusFileIdx >= 0 ? pxOf(focusFileIdx) : -1; }
-  const res = fi => serveAll || pxOf(fi) >= 2.5;  // served box >= 2.5 REF-px — 2 CSS px at
+  // TIER/NODE UNIFICATION (sighting #9 + slider regression): res() is the
+  // ONE focus-set oracle — a file serves the wire tier iff it is LIT
+  // (alphaTgt > 0.5 encodes depth + filters + the 1-hop ghost law) AND its
+  // box resolves. Before this, a depth-3 ghost (alpha 0.04) with a big box
+  // still served corridors = wires to invisible files at any zoom.
+  const res = fi => (serveAll || pxOf(fi) >= 2.5) && alphaTgt[fi] > 0.5;
   // the USER's 735h window (round-5b boot-straggler fix: pair census found
   // 3-4 dots over 0.8-1.2px boxes; 2.2 ref-px = 1.8 CSS px there)
   // chevron floor is LOWER: a delivery mark may ride a 1.5-2.5px box —
   // visible at probe-d2 zooms, where the 2.5 floor thinned on-screen
   // chevrons 18->3 (too sparse for route tracing). Below 1.5 the box is
   // a speck and the mark reads as noise on nothing
-  const resA = fi => pxOf(fi) >= 1.5;
+  const resA = fi => pxOf(fi) >= 1.5 && alphaTgt[fi] > 0.5;
   const tkPx = tk => {
     const p = String(tk).split(">");
     return p.length === 2 ? Math.min(pxOf(+p[0]), pxOf(+p[1])) : pxOf(+String(tk).split("|")[1]);
@@ -2172,11 +2191,43 @@ function busLodInit() {
     for (const m of focusArcs.lines.userData.meta) {
       anchorBoost[links[m.li].s] = ANCHOR_PX; anchorBoost[links[m.li].t] = ANCHOR_PX;
     }
-  // corridor-complete law (user sighting #6): the unit of render is the
-  // full path node->leg->station->trunk->station->leg->node. A serving
-  // trunk boosts BOTH its endpoint file sprites to the floor so their leg
-  // chains measure up and render — a trunk must never stand beside a speck
-  // with no visible bridge (the 8px cull cut the bridges and kept the
+  // leg termini must LAND: a served leg whose BOTH ends project outside the
+  // viewport renders as floating mid-view debris ("starting nowhere and
+  // ending nowhere", user sighting #8 — orbit sweep found up to 11 such legs
+  // at close zooms az 120-180). Build the per-key on-screen map before the
+  // serve loop; legs failing it cull whole-chain (all FS segments share k).
+  // Trunks stay exempt (edge-exiting highways read as leaving; user ruling).
+  legTermOn.clear();   // module-scope Map (probe hook): chain-key -> terminus on-screen
+  if (fnBus && busPts) {
+    const v3 = new THREE.Vector3();
+    const spans = new Map();
+    for (const s of busPts) {
+      let sp = spans.get(s.k);
+      if (!sp) spans.set(s.k, { a: s.a, b: s.b });   // first segment's a = chain start
+      else sp.b = s.b;                               // last segment's b = chain terminus
+    }
+    for (const [k, sp] of spans) {
+      let ok = true;
+      const ends = [];
+      for (const p of [sp.a, sp.b]) {
+        v3.set(p[0], p[1], p[2]).project(camera);
+        if (!isFinite(v3.x) || !isFinite(v3.y) || v3.z >= 1 ||
+            Math.abs(v3.x) > 1.05 || Math.abs(v3.y) > 1.05) { ok = false; break; }
+        ends.push([v3.x, v3.y]);
+      }
+      if (ok && ends.length === 2) {
+        // backstop (ruling b): a chain stretched past ~35% of the viewport
+        // diagonal is ink sprawl, not a connector — cull rather than draw a
+        // corridor-length "leg" across the view
+        const cw = renderer.domElement.clientWidth || 1600;
+        const ch = renderer.domElement.clientHeight || 900;
+        const kx = (ends[1][0] - ends[0][0]) * cw / 2;
+        const ky = (ends[1][1] - ends[0][1]) * ch / 2;
+        if (Math.hypot(kx, ky) > 0.35 * Math.hypot(cw, ch)) ok = false;
+      }
+      legTermOn.set(k, ok);
+    }
+  }
   // highways). Trunk keys are "sf>tf".
   if (_lod && fnBus && busPts)
     for (const s of busPts) {
@@ -2186,22 +2237,83 @@ function busLodInit() {
       if (p.length === 2) { anchorBoost[+p[0]] = ANCHOR_PX; anchorBoost[+p[1]] = ANCHOR_PX; }
     }
   if (fnBus && busPts) {
+    stAttKey.clear();
     let dirty = false;
     const lod = _lod;
     const a = fnBus.instanceMatrix.array;
+    const stubPts = [];
+    let curK = null, curJ = 0;
+    const _sv = new THREE.Vector3();
+    // per-key segment totals (bridge taper runs from the focus-side end)
+    const segN = new Map();
+    for (const s of busPts)
+      if (typeof s.k === "string") segN.set(s.k, (segN.get(s.k) || 0) + 1);
     for (let i = 0; i < busPts.length; i++) {
       const s = busPts[i];
       const d = Math.hypot((s.a[0]+s.b[0])/2 - camera.position.x,
                            (s.a[1]+s.b[1])/2 - camera.position.y,
                            (s.a[2]+s.b[2])/2 - camera.position.z);
-      const gateOk = lod ? (typeof s.k === "string" && s.k.charCodeAt(0) === 76
-                            ? lod.legOK(s.k) : lod.trOK(s.k)) : true;
+      const isLeg = typeof s.k === "string" && s.k.charCodeAt(0) === 76;
+      const termOk = !isLeg || legTermOn.get(s.k) !== false;
+      let gateOk = lod ? (isLeg ? (lod.legOK(s.k) && termOk) : lod.trOK(s.k)) : true;
+      if (!isLeg && gateOk && lod) {
+        // sighting #9: bridge trunks (station↔station arcs whose files
+        // attach directly, no fan) read as wire-in-the-void once either
+        // anchor box drops below the 8px perceptual floor. The corridor
+        // law now points BOTH ways: a trunk renders only when BOTH its
+        // stations' file anchors read (box >= ANCHOR_PX or boosted).
+        const pp = String(s.k).split(">");
+        if (pp.length === 2) {
+          const anch = fi => lod.pxOf(fi) >= ANCHOR_PX || anchorBoost[fi] > 0;
+          if (!(anch(+pp[0]) && anch(+pp[1]))) gateOk = false;
+        }
+      }
+      if (gateOk && typeof s.k === "string") {
+        // empty-station law: bollards render only against attachments that
+        // ACTUALLY served this frame — heads key on trunk endpoints "T|fi",
+        // sub dots on their leg key (all FS segments of a chain share k)
+        if (isLeg) stAttKey.add(s.k);
+        else { const tp = String(s.k).split(">");
+          if (tp.length === 2) { stAttKey.add("T|" + (+tp[0])); stAttKey.add("T|" + (+tp[1])); } }
+      }
       if (fnLodV) {
         if (gateOk) { fnLodV.conduitsShown++;
           fnLodV.minServedBoxPx = Math.min(fnLodV.minServedBoxPx, lod ? lod.tkPx(s.k) : Infinity); }
         else fnLodV.conduitsGated++;
       }
-      const rT = gateOk ? Math.max(0.05, Math.min(12, d * 0.0037 * (s.rf || 1))) : 0.0001;
+      // EXPLAINED EXIT (user amendment): a chain culled while the user has
+      // interaction context on it must not vanish silently — taper a short
+      // stub from its attached end (radius ramping to 0 over 3 segments)
+      // and label the dissolve point. Context = the chain's rider file is
+      // LIT (focus file itself, or within the focus..depth visible set —
+      // a fan's riders ARE the focus callees). Three legal states only:
+      // ATTACHED / ABSENT / EXPLAINED EXIT. Overview stays quiet.
+      if (s.k !== curK) { curK = s.k; curJ = 0; } else curJ++;
+      const base = Math.max(0.05, Math.min(12, d * 0.0037 * (s.rf || 1)));
+      let taperF = 0, destFi = -1, jx = curJ;
+      if (!gateOk && focusFileIdx >= 0 && lod) {
+        if (isLeg && lod.legOK(s.k)) {
+          const pp = String(s.k).split("|");
+          if (alphaTgt[+pp[1]] > 0.5) {
+            taperF = Math.max(0, 1 - curJ / 3); destFi = +pp[1];
+          }
+        } else if (!isLeg && lod.trOK(s.k)) {
+          const pp = String(s.k).split(">");
+          if (pp.length === 2 && (+pp[0] === focusFileIdx || +pp[1] === focusFileIdx)) {
+            // taper from the FOCUS-side end of the bridge
+            const n = segN.get(s.k) || 1;
+            jx = +pp[1] === focusFileIdx ? (n - 1 - curJ) : curJ;
+            taperF = Math.max(0, 1 - jx / 3);
+            destFi = +pp[0] === focusFileIdx ? +pp[1] : +pp[0];
+          }
+        }
+      }
+      const rT = gateOk ? base : (taperF > 0 ? base * taperF : 0.0001);
+      if (taperF > 0 && jx === 2) {
+        _sv.set((s.a[0]+s.b[0])/2, (s.a[1]+s.b[1])/2, (s.a[2]+s.b[2])/2).project(camera);
+        if (isFinite(_sv.x) && _sv.z < 1)
+          stubPts.push({ nx: _sv.x, ny: _sv.y, fi: destFi, dest: String(s.k) });
+      }
       const f = rT / fnBusRi[i];
       if (Math.abs(f - 1) > 0.06) {
         const o = i * 16;
@@ -2212,7 +2324,9 @@ function busLodInit() {
       }
     }
     if (dirty) fnBus.instanceMatrix.needsUpdate = true;
+    stubExits = stubPts;
   }
+  updateStubLabs();
   // bollards read at ANY camera distance: a 1-2px dot in a dark knot is not
   // a reroute node you can see — radius ∝ camera distance (~2.5-4px on screen)
   if (fnJDot && fnJDotPos) {
@@ -2232,7 +2346,14 @@ function busLodInit() {
       const kf = fnJDotK ? fnJDotK[i] : 1;
       const lod = _lod;
       const hpxr = renderer.domElement.clientHeight || 900;
-      const gateOk = lod ? (fnJDotSt[i] ? lod.stOK(fnJDotOf[i]) : lod.res(fnJDotOf[i])) : true;
+      let gateOk = lod ? (fnJDotSt[i] ? lod.stOK(fnJDotOf[i]) : lod.res(fnJDotOf[i])) : true;
+      // sighting #9 (2) + empty-station law (user report): a bollard renders
+      // only when its attachment ACTUALLY SERVED this frame — station heads
+      // need a serving trunk endpoint ("T|fi" in stAttKey), sub dots their
+      // own leg chain. Inventory legs/trunks do NOT earn ink (the user saw
+      // fully-empty station bollards floating at the landing pose).
+      if (gateOk && fnJDotKey && fnJDotKey[i] && !stAttKey.has(fnJDotKey[i]))
+        gateOk = false;
       // viewport-FRACTION law (user directive r5): the world-slope law
       // r = kf*0.0102*d keeps every element a constant FRACTION of the
       // frame height — px-at-nominal-900 (ref-px) is invariant; the
@@ -2331,6 +2452,16 @@ function busLodInit() {
   } else if (hubRing) hubRing.visible = false;
   // hub ring billboards toward the camera every frame
   if (hubRing && hubRing.visible) hubRing.quaternion.copy(camera.quaternion);
+  // DYNAMIC NEAR PLANE (user report: junction legs/trunks pop out mid-view
+  // when zooming in — the static near=1 swallowed corridor geometry passing
+  // close to the camera). Tie near to the orbit distance with hysteresis so
+  // the projection matrix isn't rebuilt every frame; far stays 20000 (depth
+  // precision is fine: near tracks dist*0.01, ratio bounded per pose).
+  const camD = camera.position.distanceTo(controls.target);
+  const wantNear = Math.max(0.01, camD * 0.01);
+  if (Math.abs(camera.near - wantNear) > wantNear * 0.25) {
+    camera.near = wantNear; camera.updateProjectionMatrix();
+  }
   renderer.render(scene, camera);
   requestAnimationFrame(tick);
 }
@@ -2903,7 +3034,7 @@ function applyVisibility() {
   for (let i = 0; i < N; i++) {
     let a;
     if (!nodeVisible(nodes[i])) a = 0.0;   // size-0 gate = true disable
-    else if (focusing) a = level[i] < 0 ? 0.0 : (level[i] <= 1 ? 1 : 0.04);   // lit set = focus + 1-hop; deeper strata ghost near-zero (0.04 < the 0.05 ghost kill, so their deep-deep wires collapse outright)
+    else if (focusing) a = level[i] < 0 ? 0.0 : (level[i] <= depth ? 1 : 0.04);   // lit set = focus..`depth` hops (slider-owned radius); strata beyond ghost near-zero (0.04 < the 0.05 ghost kill, so their deep-deep wires collapse outright)
     else a = 1;
     alphaTgt[i] = a;
     if (a > 0.5) {
@@ -3383,6 +3514,46 @@ function updateHubs() {
     fixed.push(r);
   }
 }
+let stubExits = [];     // EXPLAINED EXIT dissolve points this frame (focus-file
+                        // chains culled by the termini law; labeled in tick)
+const legTermOn = new Map();  // per-leg chain-key -> terminus projects on-screen (tick fills)
+function updateStubLabs() {
+  // EXPLAINED EXIT labels: compact "→ station · file" at each dissolve
+  // point (cap 4). On-viewport stubs first (busPts order — deterministic);
+  // off-screen dissolve points get no label — nothing to explain where
+  // there is no ink. Hidden when no exits.
+  const host = document.getElementById("stubLabs");
+  if (!host) return;
+  const vw = renderer.domElement.clientWidth || 1600, vh = renderer.domElement.clientHeight || 900;
+  // NDC -> px at LABEL time (canvas may resize between capture and draw;
+  // map pane shifts #gl width — glW() — so live conversion stays true)
+  const px = stubExits.map(e => ({ x: (e.nx + 1) / 2 * vw, y: (1 - e.ny) / 2 * vh, fi: e.fi, dest: e.dest }));
+  // #panel (z10) and the map pane occlude canvas ink — a dissolve point
+  // hidden under them has no visible terminus, so no label either (the
+  // law binds labels to VISIBLE dissolve ink, not to geometry)
+  const panel = document.getElementById("panel");
+  const pr = panel ? panel.getBoundingClientRect() : null;
+  const mapP = document.getElementById("mapPane");
+  const mr = mapP && document.body.classList.contains("mapOpen") ? mapP.getBoundingClientRect() : null;
+  const occl = (x, y) => (pr && x > pr.left - 8 && x < pr.right + 8 && y > pr.top - 8 && y < pr.bottom + 8) ||
+                         (mr && x > mr.left - 8 && x < mr.right + 8);
+  const on = px.filter(e => e.x > 8 && e.x < vw - 8 && e.y > 8 && e.y < vh - 8 && !occl(e.x, e.y));
+  const want = (on.length ? on : []).slice(0, 4);
+  while (host.children.length < want.length) {
+    const el = document.createElement("div");
+    el.className = "stublab"; host.appendChild(el);
+  }
+  for (let i = 0; i < host.children.length; i++) {
+    const el = host.children[i];
+    if (i < want.length) {
+      const nm = nodes[want[i].fi] && nodes[want[i].fi].label || "?";
+      el.style.display = "block";
+      el.style.transform = "translate(" + Math.round(want[i].x + 8) + "px," +
+                           Math.round(want[i].y - 8) + "px)";
+      el.textContent = "→ station · " + nm;
+    } else el.style.display = "none";
+  }
+}
 // boot rebuildHubs() deleted - boot applyVisibility() re-runs it before the
 // first render
 
@@ -3408,6 +3579,11 @@ let fnLegN = 0;     // station tree legs (thin conduits, via __dbg)
 let fnJDotK = null;  // per-junction bollard size factor (screen-constant law)
 let fnJDotOf = null;   // owner FILE index per bollard (round-5 LOD gate)
 let fnJDotSt = null;   // 1 = station-class gate, 0 = own-file resolved gate
+let fnJDotLegs = null;  // legs per STATION (0 = bridge class; sighting #9 gate)
+let fnJDotKey = null;   // per-bollard attachment key: heads "T|fi" (serving trunk
+                        // endpoint), subs their leg key — a bollard renders only
+                        // when its attachment SERVED this frame (empty-station law)
+const stAttKey = new Set();  // served attachment keys (serve loop fills, jDot gate reads)
 let fnBoxScale = null; // fi -> largest rendered fn-box world size
 let stationTks = null; // fi -> trunk keys leaving that file's stations
 let arrowFile = null;  // owner FILE index per delivery chevron
@@ -4262,10 +4438,12 @@ function rebuildFnLayer(focusing) {
                     new THREE.Color().setHSL(0.12, 0.05, 0.84) ]; // Jof
   for (const S of stList) {
     busJunc.push({ p: S.p, c: [BOL_COL[0].r, BOL_COL[0].g, BOL_COL[0].b], k: 1, of: S.fi, st: 1,
+      nl: S.subJ.length, hd: 1,
       info: { kind: "station", fi: S.fi, wires: S.wires, trks: S.tks.length } });
     for (let li = 0; li < S.subJ.length; li++) {
       const sp = S.subJ[li];
       busJunc.push({ p: sp, c: [BOL_COL[1].r, BOL_COL[1].g, BOL_COL[1].b], k: 0.72, of: S.fi, st: 1,
+        nl: 1, lk: "L|" + S.fi + "|" + S.id + "|" + li,
         info: { kind: "sub", fi: S.fi, wires: S.wires } });
       // legs land on a tangent line 5 wu BELOW the station — the empty
       // lane under the horizontal trunk fan (trunks bow +Y from termini
@@ -4289,6 +4467,15 @@ function rebuildFnLayer(focusing) {
                        k: "L|" + S.fi + "|" + S.id + "|" + li, rf: 0.55 });
         lx = x; ly = y; lz = z;
       }
+      // DRAWS-TO-ITS-ANCHOR (user sighting #8 ruling): the leg's terminus
+      // IS the station bollard — the tangent-offset ep was a visual seam
+      // the leads-home clause legalized as float (up to 262px at close
+      // zoom). One closing segment lands the ink on the dot itself; it
+      // shares k so the whole chain culls/serves atomically and picks as
+      // a jleg. The junction end already lands on its subJ bollard (sp).
+      busSegs.push({ a: [lx, ly, lz], b: [S.p[0], S.p[1] + 1, S.p[2]],
+                     col: [BOL_COL[1].r, BOL_COL[1].g, BOL_COL[1].b],
+                     k: "L|" + S.fi + "|" + S.id + "|" + li, rf: 0.55 });
       fnLegN++;
     }
   }
@@ -4650,7 +4837,7 @@ function rebuildFnLayer(focusing) {
   }
   // probe surfaces (extend-only __dbg contract): the station map + the
   // worst junction->box clearance, so QA can assert open-air placement
-  fnStationsArr = stList.map(S => ({ fi: S.fi, p: S.p,
+  fnStationsArr = stList.map(S => ({ fi: S.fi, p: S.p, id: S.id,
     brg: S.brg, wires: S.wires, tks: S.tks.slice(), subJ: S.subJ.map(p => [p[0], p[1], p[2]]) }));
   fnJclearV = -1;
   if (busJunc.length) {
@@ -4664,11 +4851,13 @@ function rebuildFnLayer(focusing) {
     if (isFinite(jmin)) fnJclearV = jmin;
   }
   // per-junction size factors (screen-constant bollard law in the tick)
-  fnJDotOf = null; fnJDotSt = null; stationTks = null; fnBoxScale = null; arrowFile = null; _lod = null;
+  fnJDotOf = null; fnJDotSt = null; stationTks = null; fnBoxScale = null; arrowFile = null; _lod = null; fnJDotKey = null;
   juncPickInfo = busJunc.map(j => j.info || null);
   if (busJunc.length) {
     fnJDotOf = Int32Array.from(busJunc, j => j.of | 0);
     fnJDotSt = Uint8Array.from(busJunc, j => j.st | 0);
+    fnJDotLegs = Int32Array.from(busJunc, j => j.nl | 0);
+    fnJDotKey = busJunc.map(j => j.hd ? "T|" + (j.of | 0) : (j.lk || null));
   }
   stationTks = new Map();
   for (const S of stList) {
@@ -7538,6 +7727,22 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnLod() { return fnLodV ? Object.assign({}, fnLodV) : null; }, get fnJclear() { return fnJclearV; },
   get lodServe() { return _lodServe; },   // serveAll master gate (chain-integrity census)
   get lodPxOf() { return _lod ? _lod.pxOf : null; },   // per-file box ref-px (probe hook)
+  get alphaTgt() { return alphaTgt; },   // lit-set oracle (tier unification pin)
+  get jDotArrays() { return { of: fnJDotOf, st: fnJDotSt, legs: fnJDotLegs, key: fnJDotKey }; },
+  get stubExits() { return stubExits; },  // EXPLAINED EXIT dissolve points
+  get anchorBoostArr() { return anchorBoost; },  // corridor-boost px per fi (probe hook)
+  get taperDbg() {   // EXPLAINED EXIT probe: per-leg gate state this frame
+    const out = [];
+    if (_lod && legTermOn) {
+      for (const s of busPts) {
+        if (typeof s.k !== "string" || s.k.charCodeAt(0) !== 76) continue;
+        if (out.some(o => o.k === s.k)) continue;
+        const p = s.k.split("|");
+        out.push({ k: s.k, legOK: _lod.legOK(s.k), termOn: legTermOn.get(s.k),
+                   ctx: focusFileIdx >= 0 && alphaTgt[+p[1]] > 0.5 });
+      }
+    }
+    return out; },
   get legAnchorPx() {
     // rendered L| chains' own-file ANCHOR size: {k, fi, px, boxPx, boosted}
     // for chains actually serving THIS frame. px = max(fn-box px, live
