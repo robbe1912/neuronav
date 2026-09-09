@@ -496,6 +496,61 @@ JS_DECLUT = r"""() => { const d = window.__dbg;
   }
   out.jClearMinPx = jClear === null ? null : R1(jClear);
   out.jjPairsLt10 = jjLt10; out.arrowFarFromDelivery = aFar;
+
+  // ---- orphan junction-leg census (user defect 2026-09-09: rendered leg
+  // ink whose end context is unresolved under serveAll). A station tree
+  // leg (busPtsMeta kind 'jleg', key L|fi|station|li) is orphaned when its
+  // OWN-FILE box resolves under the res() floor (probe-px approximation of
+  // the 2.5 REF-px law) OR no RENDERED bollard (scale>0 fnJDot instance
+  // owned by that file) sits within 12 wu of either leg endpoint.
+  // Informational until the next anchor cut gives it a baseline cell ----
+  let legN = 0, oAny = 0, oBox = 0, oSt = 0, oBoth = 0; const oSites = [];
+  if (d.busPts && d.busPtsMeta) {
+    // rendered bollards only: the render gate parks gated dots at
+    // r=0.0001 (fnJDotR), so radius > 0.001 wu == visible ink
+    const bols = [];
+    if (d.fnJDot && d.fnJDotR) { const im = d.fnJDot.instanceMatrix.array;
+      for (let i = 0; i < d.fnJDotR.length; i++) {
+        if ((d.fnJDotR[i] || 0) <= 0.001) continue;
+        bols.push([im[i*16+12], im[i*16+13], im[i*16+14]]); } }
+    const boxPxOf = new Map();                     // fi -> largest rendered box px
+    if (d.fnMeta) for (const m of d.fnMeta) {
+      if (m.agg && !m.count) continue;
+      const px = (m.count ? 3 : 2) * pxwu(m.p);
+      if (!boxPxOf.has(m.file) || px > boxPxOf.get(m.file)) boxPxOf.set(m.file, px);
+    }
+    const wuD = (a, b) => Math.hypot(a[0]-b[0], a[1]-b[1], a[2]-b[2]);
+    // group chain pieces into one visual leg per station: key L|fi|st|li
+    const chains = new Map();                      // "L|fi|st" -> {fi, ends:[], scr:[xy..]}
+    for (let i = 0; i < d.busPts.length; i++) {
+      const m = d.busPtsMeta[i]; if (!m || m.kind !== 'jleg') continue;
+      const s = d.busPts[i], qa = P(s.a), qb = P(s.b);
+      const vis = on(qa) || on(qb);
+      const gk = String(d.busPts[i].k).split('|').slice(0, 3).join('|');
+      let g = chains.get(gk);
+      if (!g) chains.set(gk, g = { fi: m.fi, ends: [], scr: [], vis: false });
+      g.ends.push(s.a, s.b);
+      if (vis) { g.vis = true; g.scr.push([qa.x, qa.y], [qb.x, qb.y]); }
+    }
+    for (const g of chains.values()) {
+      if (!g.vis) continue;                        // census covers on-screen ink
+      legN++;
+      const boxOK = (boxPxOf.get(g.fi) || 0) >= 2.5;
+      let stOK = false;
+      outer: for (const e of g.ends) for (const b of bols)
+        if (wuD(b, e) < 12) { stOK = true; break outer; }
+      if (!boxOK) oBox++;
+      if (!stOK) oSt++;
+      if (!boxOK || !stOK) oAny++;
+      if (!boxOK && !stOK) { oBoth++;
+        if (oSites.length < 8) { const c = g.scr[0] || [0, 0];
+          oSites.push(((d.nodes[g.fi] && d.nodes[g.fi].path) || String(g.fi)) +
+            ' @' + Math.round(c[0]) + ',' + Math.round(c[1])); } }
+    }
+  }
+  out.legN = legN; out.orphanJLegs = oAny;
+  out.orphanJLegBoxFloor = oBox; out.orphanJLegStationGated = oSt;
+  out.orphanJLegBothEnds = oBoth; out.orphanJLegSites = oSites;
   return out; }"""
 
 
@@ -585,8 +640,6 @@ def settle(page, rounds=14):
             return
         prev = cur
         page.wait_for_timeout(200)
-
-
 def probe(page):
     """Settled JS_DECLUT read; two consecutive identical reads required."""
     b = None
@@ -632,7 +685,10 @@ def declut_subject(page, cdp, subject, prefix, qa):
         recs[name] = m
         print(f"  {subject}/{name}: crossTT={m['crossTT']} llPairs={m['labelLabelPairs']}"
               f" lwLabels={m['labelWireLabels']} crowd={m['chevCrowdEvents']}"
-              f" occl={m['nodeOcclFrac']} inkC={m['ink']['inkCentral']}")
+              f" occl={m['nodeOcclFrac']} inkC={m['ink']['inkCentral']}"
+              f" orphanJLegs={m['legN']}/{m['orphanJLegs']}"
+              f" (box={m['orphanJLegBoxFloor']} st={m['orphanJLegStationGated']}"
+              f" both={m['orphanJLegBothEnds']})")
     page.evaluate(CAM_RESTORE)
     return recs
 
