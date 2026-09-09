@@ -12,6 +12,8 @@ Usage:  python viz.py            # writes graph.html next to this file
 from __future__ import annotations
 
 import os
+import base64
+import re
 import json
 import subprocess
 import sys
@@ -1200,10 +1202,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <div id="divider" title="drag to resize the map pane"></div>
 
 <script type="importmap">
-{ "imports": {
-  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
-} }
+__IMPORTMAP__
 </script>
 <script type="module">
 import * as THREE from "three";
@@ -2124,6 +2123,7 @@ function busLodInit() {
   const trOK = tk => {
     const p = String(tk).split(">");
     return p.length === 2 ? res(+p[0]) && res(+p[1]) : res(+String(tk).split("|")[1]);
+  };
   const stOK = fi => {
     if (!res(fi)) return false;
     const tks = stationTks && stationTks.get(fi);
@@ -2865,6 +2865,7 @@ function rebuildFocusWires() {
   // the arcs REPLACE the budget links' straight bucket chords (k-pass blacks
   // those) — hover/click must test THESE chords, or the collider stays on
   // the invisible pre-curve straight line
+  flines.userData.meta = list.map(li => ({ kind: "link", li }));
   flines.userData.seg = ARC_SEG;
   focusArcs.lines.visible = true;
 }
@@ -7511,6 +7512,28 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnLod() { return fnLodV ? Object.assign({}, fnLodV) : null; }, get fnJclear() { return fnJclearV; },
   get lodServe() { return _lodServe; },   // serveAll master gate (chain-integrity census)
   get lodPxOf() { return _lod ? _lod.pxOf : null; },   // per-file box ref-px (probe hook)
+  get legAnchorPx() {
+    // rendered L| chains' own-file anchors: {k, fi, px, alpha} for chains
+    // actually serving THIS frame. busPts keeps culled chains as inventory
+    // (render cull = instance scale 0.0001), so filter by served scale —
+    // presence in busPts is NOT serve state. Harness pins min(px) >= ANCHOR_PX.
+    if (!busPts || !fnBus) return [];
+    const m = fnBus.instanceMatrix.array, seen = new Map();
+    for (let i = 0; i < busPts.length; i++) {
+      const k = busPts[i].k;
+      if (typeof k !== "string" || k.charCodeAt(0) !== 76) continue;
+      if (seen.has(k)) continue;
+      const r = Math.hypot(m[i * 16], m[i * 16 + 1], m[i * 16 + 2]);
+      seen.set(k, r > 0.001);
+    }
+    const out = [];
+    for (const [k, served] of seen) {
+      if (!served) continue;
+      const fi = +k.split("|")[1];
+      out.push({ k, fi, px: _lod ? _lod.pxOf(fi) : null, alpha: alphaTgt[fi] });
+    }
+    return out;
+  },
   get legendOpen() { return legendOpen; }, get busPtsMeta() { return busPtsMeta; },
   get fnJclip() { return fnJclip; }, get fnLegN() { return fnLegN; },
   // probe hook: world -> screen px through the live camera + canvas rect
@@ -7562,13 +7585,42 @@ tick();
 """
 
 
+
+_VENDOR = Path(__file__).resolve().parent / "vendor" / "three-0.160.0"
+_ADDONS = {   # keys the template imports; keep in sync with its import lines
+    "three/addons/controls/OrbitControls.js": "controls/OrbitControls.js",
+    "three/addons/lines/LineSegments2.js": "lines/LineSegments2.js",
+    "three/addons/lines/LineSegmentsGeometry.js": "lines/LineSegmentsGeometry.js",
+    "three/addons/lines/LineMaterial.js": "lines/LineMaterial.js",
+}
+
+
+def _data_uri(js: str) -> str:
+    return "data:text/javascript;base64," + base64.b64encode(js.encode("utf-8")).decode("ascii")
+
+
+def _importmap() -> str:
+    """Zero-network artifact: three + the addons the template imports are
+    vendored (pinned 0.160.0, sha-pinned in vendor/) and embedded as data:
+    URIs at build time. data: modules cannot resolve RELATIVE specifiers, so
+    the addons' relative imports are rewritten to their importmap keys."""
+    core = (_VENDOR / "three.module.js").read_text(encoding="utf-8")
+    imports = {"three": _data_uri(core)}
+    for key, rel in _ADDONS.items():
+        src = (_VENDOR / rel).read_text(encoding="utf-8")
+        src = re.sub(r"from\s+'\.\./(controls|lines)/([A-Za-z0-9_.]+)'",
+                     r"from 'three/addons/\1/\2'", src)
+        imports[key] = _data_uri(src)
+    return json.dumps({"imports": imports}, separators=(",", ":"))
+
+
 def generate(out: str | Path | None = None) -> Path:
     out = Path(out) if out else Path(__file__).resolve().parent / "graph.html"
     data = _build_data()
-    html = _TEMPLATE.replace("__DATA__", json.dumps(data, separators=(",", ":")))
+    html = (_TEMPLATE.replace("__DATA__", json.dumps(data, separators=(",", ":")))
+                    .replace("__IMPORTMAP__", _importmap()))
     out.write_text(html, encoding="utf-8")
     return out
-
 
 if __name__ == "__main__":
     path = generate(sys.argv[1] if len(sys.argv) > 1 else None)
