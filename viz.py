@@ -2150,11 +2150,14 @@ function busLodInit() {
   // Both ends resolved or the whole chain culls (all FS segments share k).
   const legOK = tk => {
     const fi = +String(tk).split("|")[1];
-    // PERCEPTUAL_ANCHOR: 2.5px resolves geometrically but reads as a speck —
-    // a leg chained to a 2.5-6px box is floating ink (3rd user sighting,
-    // VLM-confirmed). Cull the whole chain below ANCHOR_PX; also require the
-    // file node alpha-visible (a faded-out owner cannot anchor connector ink).
-    return pxOf(fi) >= ANCHOR_PX && alphaTgt[fi] >= 0.5 && stOK(fi);
+    // PERCEPTUAL_ANCHOR: 2.5px resolves geometrically but reads as a
+    // speck — a leg chained to a sub-8px box is floating ink (3rd user
+    // sighting, VLM-confirmed). Anchor READS when the box naturally
+    // measures ANCHOR_PX OR a serving corridor has boosted the file's
+    // SPRITE to the floor (corridor-complete law: size, not brightness —
+    // dim files keep their dim color). Plus station context (stOK):
+    // no leg without its trunk, no trunk without both ends.
+    return (pxOf(fi) >= ANCHOR_PX || anchorBoost[fi] > 0) && stOK(fi);
   };
   return { res, resA, trOK, stOK, legOK, pxOf, tkPx };
 }
@@ -2163,11 +2166,24 @@ function busLodInit() {
              serveFi: -1, servePx: -1, oDot: _oDot, oArrow: _oArrow };
   _lod = (fnBus || fnJDot) ? busLodInit() : null;   // after fnLodV: it stamps serveFi/servePx
   // endpoint anchor demands are per-frame (camera-pose dependent): reset,
-  // then the serve loop adds leg far-files and arcs add their endpoints
+  // then arcs, serving corridors and serving legs add theirs
   anchorBoost.fill(0);
   if (focusArcs && focusArcs.lines.visible && focusArcs.lines.userData.meta)
     for (const m of focusArcs.lines.userData.meta) {
       anchorBoost[links[m.li].s] = ANCHOR_PX; anchorBoost[links[m.li].t] = ANCHOR_PX;
+    }
+  // corridor-complete law (user sighting #6): the unit of render is the
+  // full path node->leg->station->trunk->station->leg->node. A serving
+  // trunk boosts BOTH its endpoint file sprites to the floor so their leg
+  // chains measure up and render — a trunk must never stand beside a speck
+  // with no visible bridge (the 8px cull cut the bridges and kept the
+  // highways). Trunk keys are "sf>tf".
+  if (_lod && fnBus && busPts)
+    for (const s of busPts) {
+      if (typeof s.k !== "string" || s.k.charCodeAt(0) === 76) continue;
+      if (!_lod.trOK(s.k)) continue;
+      const p = s.k.split(">");
+      if (p.length === 2) { anchorBoost[+p[0]] = ANCHOR_PX; anchorBoost[+p[1]] = ANCHOR_PX; }
     }
   if (fnBus && busPts) {
     let dirty = false;
@@ -2185,8 +2201,6 @@ function busLodInit() {
           fnLodV.minServedBoxPx = Math.min(fnLodV.minServedBoxPx, lod ? lod.tkPx(s.k) : Infinity); }
         else fnLodV.conduitsGated++;
       }
-      if (gateOk && typeof s.k === "string" && s.k.charCodeAt(0) === 76)
-        anchorBoost[+s.k.split("|")[1]] = ANCHOR_PX;   // serving leg: far-file sprite anchors
       const rT = gateOk ? Math.max(0.05, Math.min(12, d * 0.0037 * (s.rf || 1))) : 0.0001;
       const f = rT / fnBusRi[i];
       if (Math.abs(f - 1) > 0.06) {
@@ -2953,11 +2967,17 @@ function applyVisibility() {
     if (hoverEdgeLi >= 0) budgetLit.add(hoverEdgeLi);
     // endpoint-hover reveal: hovering a node admits every surviving link
     // incident to it (the ghost layer hides by default; hover = show the
-    // fan). Filters mirror the candidate loop minus the ghost/dead-end
-    // checks — both endpoints are lit by construction here.
+    // fan). Filters mirror the candidate loop INCLUDING the dead-end bar:
+    // under hover greyout the far end can sit at alphaTgt 0.12, and a lit
+    // arc into a near-invisible speck is the "signal wire with no visible
+    // terminus" class (user sighting #6, upper-left) — focus-lit plain
+    // links render only onto anchors that read (alpha above the lit
+    // threshold; the arc endpoint's sprite gets the ANCHOR_PX floor).
+    const fanLit = j => alphaTgt[j] > 0.5 || supMem[j];
     if (hovered >= 0) links.forEach((l, i) => {
       if (l.s !== hovered && l.t !== hovered) return;
       if (!typeVisible(l.ty) || nodeFiltered(nodes[l.s]) || nodeFiltered(nodes[l.t])) return;
+      if (!fanLit(l.s) || !fanLit(l.t)) return;
       if (fnMode && l.ty === "call" && level[l.s] >= 0 && level[l.t] >= 0) return;
       budgetLit.add(i);
     });
@@ -7519,10 +7539,13 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get lodServe() { return _lodServe; },   // serveAll master gate (chain-integrity census)
   get lodPxOf() { return _lod ? _lod.pxOf : null; },   // per-file box ref-px (probe hook)
   get legAnchorPx() {
-    // rendered L| chains' own-file anchors: {k, fi, px, alpha} for chains
-    // actually serving THIS frame. busPts keeps culled chains as inventory
-    // (render cull = instance scale 0.0001), so filter by served scale —
-    // presence in busPts is NOT serve state. Harness pins min(px) >= ANCHOR_PX.
+    // rendered L| chains' own-file ANCHOR size: {k, fi, px, boxPx, boosted}
+    // for chains actually serving THIS frame. px = max(fn-box px, live
+    // sprite px incl. the corridor anchorBoost lift) — the corridor law
+    // anchors legs on the SPRITE (size, not brightness), so the pin is
+    // min(px) >= ANCHOR_PX. busPts keeps culled chains as inventory
+    // (render cull = instance scale 0.0001): filter by served scale,
+    // presence is NOT serve state.
     if (!busPts || !fnBus) return [];
     const m = fnBus.instanceMatrix.array, seen = new Map();
     for (let i = 0; i < busPts.length; i++) {
@@ -7532,13 +7555,81 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
       const r = Math.hypot(m[i * 16], m[i * 16 + 1], m[i * 16 + 2]);
       seen.set(k, r > 0.001);
     }
+    const mat = new THREE.Matrix4();
+    const tanH = Math.tan(camera.fov * Math.PI / 360);
     const out = [];
     for (const [k, served] of seen) {
       if (!served) continue;
       const fi = +k.split("|")[1];
-      out.push({ k, fi, px: _lod ? _lod.pxOf(fi) : null, alpha: alphaTgt[fi] });
+      fileMesh.getMatrixAt(fi, mat);
+      const dist = camera.position.distanceTo(
+        new THREE.Vector3(pos[fi * 3], pos[fi * 3 + 1], pos[fi * 3 + 2]));
+      const sprPx = mat.elements[0] * 900 / (tanH * dist);   // diameter, REF-px
+      const boxPx = _lod ? _lod.pxOf(fi) : null;
+      out.push({ k, fi, px: Math.max(sprPx, boxPx || 0), boxPx, boosted: anchorBoost[fi] > 0,
+                 alpha: alphaTgt[fi] });
     }
     return out;
+  },
+  get corridorCensus() {
+    // corridor-complete law census for independent harness verification:
+    // every busPts chain (leg "L|fi|st|li" / trunk "sf>tf") with endpoint
+    // world coords, serve state (instance scale; culled chains stay in the
+    // inventory at scale 0.0001) and the anchor each SERVED end registers
+    // to — nearest station within 55wu (station fan termini spread up to
+    // ~45wu on the tangent line), else nearest fn box within 55wu, else
+    // null = unattached. Stations carry attached serving-chain counts per
+    // side. Node positions: d.pos[i*3..]; box screen px: d.lodPxOf(fi).
+    if (!busPts) return null;
+    const m = fnBus ? fnBus.instanceMatrix.array : null;
+    const seen = new Map(), chains = [];
+    for (let i = 0; i < busPts.length; i++) {
+      const s = busPts[i];
+      if (typeof s.k !== "string") continue;
+      let e = seen.get(s.k);
+      if (!e) {
+        e = { k: s.k, kind: s.k.charCodeAt(0) === 76 ? "leg" : "trunk",
+              a: [s.a[0], s.a[1], s.a[2]], b: [s.b[0], s.b[1], s.b[2]],
+              served: false, anchorA: null, anchorB: null };
+        seen.set(s.k, e); chains.push(e);
+      }
+      if (m) { const r = Math.hypot(m[i * 16], m[i * 16 + 1], m[i * 16 + 2]); if (r > 0.001) e.served = true; }
+    }
+    const stations = (fnStationsArr || []).map(S =>
+      ({ fi: S.fi, id: S.id, p: [S.p[0], S.p[1], S.p[2]], trunks: 0, legs: 0 }));
+    const stOf = p => { let bi = -1, bd = 55;
+      for (let si = 0; si < stations.length; si++) {
+        const st = stations[si];
+        const d = Math.hypot(st.p[0] - p[0], st.p[1] - p[1], st.p[2] - p[2]);
+        if (d < bd) { bd = d; bi = si; } }
+      return bi; };
+    const boxOf = p => { let bf = -1, bd = 55;
+      for (let bi = 0; bi < fnMeta.length; bi++) {
+        const mb = fnMeta[bi];
+        if (!mb) continue;
+        const d = Math.hypot(mb.p[0] - p[0], mb.p[1] - p[1], mb.p[2] - p[2]);
+        if (d < bd) { bd = d; bf = mb.file; } }
+      return bf; };
+    // junction bollards (fnJDot instances): interior corridor heads — a leg
+    // end landing on one is attached (part of the full-path unit), though
+    // the UNIT termini still owe a file anchor elsewhere
+    const juncOf = p => { if (!fnJDot) return -1;
+      const jm = fnJDot.instanceMatrix.array; let bj = -1, bd = 20;
+      for (let ji = 0; ji < fnJDot.count; ji++) {
+        const d = Math.hypot(jm[ji * 16 + 12] - p[0], jm[ji * 16 + 13] - p[1], jm[ji * 16 + 14] - p[2]);
+        if (d < bd) { bd = d; bj = ji; } }
+      return bj; };
+    for (const c of chains) {
+      if (!c.served) continue;
+      const si = stOf(c.a), ti = stOf(c.b);
+      if (si >= 0) { c.anchorA = { type: "station", st: si }; stations[si].trunks += c.kind === "trunk" ? 1 : 0; stations[si].legs += c.kind === "leg" ? 1 : 0; }
+      else { const bf = boxOf(c.a); if (bf >= 0) c.anchorA = { type: "box", fi: bf };
+             else { const ji = juncOf(c.a); if (ji >= 0) c.anchorA = { type: "junc", j: ji }; } }
+      if (ti >= 0) { c.anchorB = { type: "station", st: ti }; stations[ti].trunks += c.kind === "trunk" ? 1 : 0; stations[ti].legs += c.kind === "leg" ? 1 : 0; }
+      else { const bf = boxOf(c.b); if (bf >= 0) c.anchorB = { type: "box", fi: bf };
+             else { const ji = juncOf(c.b); if (ji >= 0) c.anchorB = { type: "junc", j: ji }; } }
+    }
+    return { chains, stations };
   },
   get legendOpen() { return legendOpen; }, get busPtsMeta() { return busPtsMeta; },
   get fnJclip() { return fnJclip; }, get fnLegN() { return fnLegN; },
