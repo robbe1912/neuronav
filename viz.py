@@ -2733,13 +2733,30 @@ let focusArcs = null;   // { lines, geo, mat }
 const ARC_SEG = 14;
 function rebuildFocusWires() {
   const list = [];
+  // zero-wire .tscn affordance (C2.2 ruling): a deg-57+ hub whose whole
+  // neighborhood sits in the ghost tier renders NOTHING about its
+  // connectedness. Reveal the focused .tscn hub's top-8 budget links as
+  // dim-but-traceable arcs — countable ink, not a full wire re-add.
+  const revealed = new Set();
+  const fi = focusFileIdx;
+  const tscn = fi >= 0 && /\.tscn$/i.test(nodes[fi].path || "");
+  if (tscn) for (let i = 0; i < links.length; i++) {
+    const l = links[i];
+    if (l.s !== fi && l.t !== fi) continue;
+    if (budgetLit && budgetLit.size && budgetLit.has(i)) continue;  // budget ink
+    revealed.add(i);
+  }
   if (focusActive && budgetLit) budgetLit.forEach(i => {
     const l = links[i];
     if (alphaTgt[l.s] <= 0.05 && alphaTgt[l.t] <= 0.05) return;   // ghost pair
     list.push(i);
   });
-  list.sort((a, b) => a - b);   // deterministic vertex order
-  if (!list.length) {
+  if (revealed.size) {
+    const top = [...revealed].sort((a, b) => links[b].w - links[a].w || a - b).slice(0, 8);
+    top.forEach(i => { revealed.delete(i); list.push(i); });
+    top.forEach(i => revealed.add(i));
+    list.sort((a, b) => a - b);   // deterministic vertex order
+  } else if (!list.length) {
     if (focusArcs) {
       scene.remove(focusArcs.lines); focusArcs.lines.geometry.dispose();
       focusArcs = null;
@@ -2766,7 +2783,8 @@ function rebuildFocusWires() {
     const mx = (ax + bx) / 2, my = (ay + by) / 2 + dist * 0.14, mz = (az + bz) / 2;
     const vis = Math.min(alphaTgt[l.s], alphaTgt[l.t]);
     col.setHex(TYPE_C3D[l.ty] || 0xd9e2eb);
-    if (vis < 0.5) col.multiplyScalar(0.12);   // dead-end / ghost endpoint
+    if (revealed.has(li)) col.multiplyScalar(0.42);   // C2.2 dim-but-traceable
+    else if (vis < 0.5) col.multiplyScalar(0.12);   // dead-end / ghost endpoint
     const phase = ((li * 2654435761) % 997) / 997 * 13;   // per-link dash phase
     let px = 0, py = 0, pz = 0, pd = 0;
     for (let s = 0; s <= ARC_SEG; s++) {
@@ -4371,8 +4389,7 @@ function rebuildFnLayer(focusing) {
     const dist = Math.hypot(p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2]) || 1;
     const Ltier = (CONDUIT_LIFT_BASE + 0.03 * g.tier) * dist;
     const Lob = obsLift(p0, p1, tmeta.sf, tmeta.tf);
-    const cap = 0.70 * dist;
-    if (Lob > cap) fnJclip++;
+    const cap = 0.80 * dist;   // 0.70 clipped 6 cu arcs THROUGH boxes (fnJclip)
     const lift = Math.min(cap, Math.max(0.11 * dist,
                     Math.max(Ltier, Lob) - 8 * (g.fanR || 0)));
     emitArc(tierB, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
@@ -7493,7 +7510,8 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get mapRects() { return mapRects; },
   get routeAudit() { return mapLayout && mapLayout.audit; },
   sphR,
-  get focusArcRef() { return focusArcs; } };
+  get focusArcRef() { return focusArcs; },
+  get rfwProbe() { return { fa: !!focusArcs, focusActive, budgetN: budgetLit ? budgetLit.size : null, fi: focusFileIdx }; } };
 tick();
 </script>
 </body>
