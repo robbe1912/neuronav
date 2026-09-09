@@ -2118,7 +2118,18 @@ function busLodInit() {
     for (const tk of tks) if (trOK(tk)) return true;
     return false;
   };
-  return { res, resA, trOK, stOK, pxOf, tkPx };
+  // CHAIN-INTEGRITY law (user defect: orphan junction legs): a leg ("L|fi|…")
+  // is connector ink between a file box and its station — it may serve ONLY
+  // when its OWN file's box resolves on screen (strict px floor, never
+  // serveAll-blind: the waiver exists for the FOCUS file's tier, and keying
+  // it on the leg's own file keeps that accommodation intact) AND its
+  // station context serves (stOK: station bollard + >=1 serving trunk).
+  // Both ends resolved or the whole chain culls (all FS segments share k).
+  const legOK = tk => {
+    const fi = +String(tk).split("|")[1];
+    return pxOf(fi) >= 2.5 && stOK(fi);
+  };
+  return { res, resA, trOK, stOK, legOK, pxOf, tkPx };
 }
   fnLodV = { bollardsShown: 0, bollardsGated: 0, conduitsShown: 0, conduitsGated: 0,
              chevShown: 0, minChevPx: Infinity, minServedBoxPx: Infinity, minBollardPx: Infinity,
@@ -2133,7 +2144,8 @@ function busLodInit() {
       const d = Math.hypot((s.a[0]+s.b[0])/2 - camera.position.x,
                            (s.a[1]+s.b[1])/2 - camera.position.y,
                            (s.a[2]+s.b[2])/2 - camera.position.z);
-      const gateOk = lod ? lod.trOK(s.k) : true;
+      const gateOk = lod ? (typeof s.k === "string" && s.k.charCodeAt(0) === 76
+                            ? lod.legOK(s.k) : lod.trOK(s.k)) : true;
       if (fnLodV) {
         if (gateOk) { fnLodV.conduitsShown++;
           fnLodV.minServedBoxPx = Math.min(fnLodV.minServedBoxPx, lod ? lod.tkPx(s.k) : Infinity); }
@@ -7468,6 +7480,8 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnQuietTrunkW() { return fnQuietTrunkW; },
   get fnStations() { return fnStationsArr; },
   get fnLod() { return fnLodV ? Object.assign({}, fnLodV) : null; }, get fnJclear() { return fnJclearV; },
+  get lodServe() { return _lodServe; },   // serveAll master gate (chain-integrity census)
+  get lodPxOf() { return _lod ? _lod.pxOf : null; },   // per-file box ref-px (probe hook)
   get legendOpen() { return legendOpen; }, get busPtsMeta() { return busPtsMeta; },
   get fnJclip() { return fnJclip; }, get fnLegN() { return fnLegN; },
   // probe hook: world -> screen px through the live camera + canvas rect
