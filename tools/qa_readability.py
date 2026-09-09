@@ -629,6 +629,49 @@ JS_DECLUT = r"""() => { const d = window.__dbg;
         ' lvl=' + lv + ' depth=' + dv);
     }
   }
+  // ZERO-GAP ATTACHMENT (viz 73f6b2b): every served chain seam vertex must
+  // equal its anchor marker position EXACTLY (=== on world floats). Semantics
+  // mirror Lead's s12_zerogap.py: served = busPts[i] with fnBus instance
+  // scale > 0.001; chains grouped by key; legs "L|fi|sid|li" — first.a ===
+  // fnStations[sid].subJ[li], last.b === station p; trunks "sf>tf" —
+  // first.a equals some station p of sf, last.b equals some station p of tf.
+  // Taper stubs (explained exits) are culled (scale <= 0.001) and excluded.
+  let zG = 0; const zSites = [];
+  if (d.busPts && d.fnBus && d.fnBus.instanceMatrix && d.fnStations) {
+    const fa2 = d.fnBus.instanceMatrix.array;
+    const first = new Map(), last = new Map();
+    for (let i = 0; i < d.busPts.length; i++) {
+      if (Math.hypot(fa2[i*16], fa2[i*16+1], fa2[i*16+2]) <= 0.001) continue;
+      const s = d.busPts[i], k = String(s.k);
+      if (!first.has(k)) first.set(k, s);
+      last.set(k, s);
+    }
+    const eq = (p, q) => p && q && p[0] === q[0] && p[1] === q[1] && p[2] === q[2];
+    const stByFi = new Map();
+    for (const S of d.fnStations) {
+      if (!stByFi.has(S.fi)) stByFi.set(S.fi, []);
+      stByFi.get(S.fi).push(S);
+    }
+    const stById = new Map(d.fnStations.map(S => [S.id, S]));
+    for (const [k, s0] of first) {
+      const s1 = last.get(k);
+      const bad = why => { zG++;
+        if (zSites.length < 8) zSites.push(k.slice(0, 24) + ' ' + why); };
+      if (k.charCodeAt(0) === 76) {           // leg "L|fi|sid|li"
+        const pp = k.split('|'), sid = +pp[2], li = +pp[3];
+        const S = stById.get(sid);
+        if (!S) { bad('no-station'); continue; }
+        const sp = S.subJ && S.subJ[li];
+        if (sp && !eq(s0.a, sp)) bad('a!=subJ');
+        if (!eq(s1.b, S.p)) bad('b!=station');
+      } else {                                 // trunk "sf>tf"
+        const pp = k.split('>'), sf = +pp[0], tf = +pp[1];
+        if (!(stByFi.get(sf) || []).some(S => eq(S.p, s0.a))) bad('a!=station(sf)');
+        if (!(stByFi.get(tf) || []).some(S => eq(S.p, s1.b))) bad('b!=station(tf)');
+      }
+    }
+  }
+  out.zeroGapViol = zG; out.zeroGapSites = zSites;
   out.emptyStViol = eSt; out.emptyStSites = eSites;
   out.outsideLit = oLit; out.outsideLitSites = lSites;
   out.legN = legN; out.orphanJLegs = oAny;
@@ -773,7 +816,7 @@ def declut_subject(page, cdp, subject, prefix, qa):
               f" orphanJLegs={m['legN']}/{m['orphanJLegs']}"
               f" (box={m['orphanJLegBoxFloor']} st={m['orphanJLegStationGated']}"
               f" both={m['orphanJLegBothEnds']}) anchorSpecks={m['anchorSpecks']}"
-              f" emptySt={m['emptyStViol']} outsideLit={m['outsideLit']}")
+              f" emptySt={m['emptyStViol']} outsideLit={m['outsideLit']} zeroGap={m['zeroGapViol']}")
     page.evaluate(CAM_RESTORE)
     return recs
 
@@ -836,15 +879,19 @@ GATE_KEYS = [
     ("anchorSpecks", "speck-anchored legs (perceptual)", 0, 0),
     ("emptyStViol", "anchor-less bollards (empty-station law)", 0, 0),
     ("outsideLit", "lit beyond depth law", 0, 0),
+    ("zeroGapViol", "seam != anchor (zero-gap law)", 0, 0),
 ]
 # net-total guard (same calibration, totals across three 469263d runs):
 # aggregate clutter must not regress beyond the instrument's resolution —
 # crossTT totals were bit-identical across runs; the label/crowd totals
 # jitter because their cells do. Totals are capped ABSOLUTELY against the
 # current anchor (no per-round ratchet: later rounds face the same ceiling).
-TOTAL_TOL = {"crossTT": 0, "labelLabelPairs": 1, "labelWireLabels": 3,
+# llPairs total tol 2 = MEASURED same-build spread: anchor5 cut vs --after on
+# the identical 73f6b2b bake read totals 5 vs 7 (four ±1 hub5 grazing-label
+# cell flips; chromafix-era A/B also read [5,7]). Cells stay at +1.
+TOTAL_TOL = {"crossTT": 0, "labelLabelPairs": 2, "labelWireLabels": 3,
              "chevCrowdHard": 5, "orphanJLegs": 0, "anchorSpecks": 0,
-             "emptyStViol": 0, "outsideLit": 0}
+             "emptyStViol": 0, "outsideLit": 0, "zeroGapViol": 0}
 
 # Metrics a rubric-sanctioned hub affordance (degree-hint / ghost-tier reveal)
 # legitimately ADDS in zero-wire .tscn hub views. Exempted per-subject only via
