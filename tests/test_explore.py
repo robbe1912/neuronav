@@ -55,6 +55,20 @@ def main() -> int:
     out3 = s.explore("zzz_no_such_concept_qq", n=3)
     check("no-hit returns next-step guidance", "rescan" in out3 or "grep" in out3.lower(), out3[:150])
 
+    # Funnel shape: constant repo-map preamble and cluster map precede the
+    # query-dependent file shortlist and symbol slices. Preamble must not
+    # vary with seed mode (degraded) or seed absence (no-hit path).
+    pre = out.split("== clusters ==")[0]
+    check("repo map preamble present and map-shaped",
+          pre.startswith("== repo map ==") and ".py:" in pre and "(" in pre)
+    check("preamble constant across seed modes (vector vs degraded)",
+          pre == out2.split("== clusters ==")[0])
+    check("no-hit path still carries the orientation preamble",
+          out3.startswith("== repo map =="))
+    check("cluster map section present", "== clusters ==" in out and "- " in out)
+    check("file shortlist section present", "== file shortlist ==" in out)
+    check("symbol section header present", "== symbols ==" in out)
+
     # Tool annotations: readOnlyHint must reach the MCP surface (client
     # permission gates read it).
     import asyncio

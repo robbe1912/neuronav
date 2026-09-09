@@ -1,4 +1,5 @@
-"""explore(): one call = line-numbered source + call flow + budget discipline.
+"""explore(): one call = repo map + cluster map + file shortlist + source
+slices with call flow, under a hard total budget (Agentless funnel).
 
 Steals codegraph's measured agent-wayfinding rules (colbymchenry/codegraph,
 CLAUDE.md): Read-equivalent `cat -n` slices so output is Edit-safe,
@@ -22,6 +23,9 @@ MIN_HIT_CAP = 1_200
 MAX_HIT_CAP = 6_000
 CLIFF_FRACTION = 0.15       # hits below this share of top score: pointer only
 _TOKEN_RE = re.compile(r"[a-zA-Z_]{4,}")
+PREAMBLE_TOKENS = 900           # repo-map orientation slice; constant per repo
+CLUSTER_CAP = 1_800             # chars: cluster map section
+SHORTLIST_CAP = 1_200           # chars: file shortlist section
 
 
 def _tokens(q: str) -> set[str]:
@@ -99,18 +103,42 @@ def _slice(path: str, fn_line: int, body: str, cap: int) -> str | None:
     return "\n".join(out)
 
 
-def run(query: str, n: int = 4) -> str:
-    n = max(1, min(n, 8))
-    g = graph.get_graph()
-    seeds, degraded = _seed_hits(query, n)
+def _cluster_map() -> str:
+    """Funnel stage 1 (constant per repo): subsystem layout, biggest
+    first — the Agentless structure map the shortlists narrow into."""
+    try:
+        cs = nav.clusters()
+    except Exception:
+        return "== clusters == (unavailable - embedding index unreachable)"
+    lines = [
+        f"- {c['label']} ({c['size']} files): "
+        + ", ".join(p for p, _cls in c["paths"][:3])
+        for c in cs[:8]
+    ]
+    body = "\n".join(lines)[:CLUSTER_CAP]
+    return f"== clusters ==\n{body}" if body else "== clusters == (none)"
 
-    if not seeds:
-        return (
-            f"no hits for '{query}'. Next steps: find_functions with a symbol "
-            "name you saw in the code; semantic_search for file-level recall; "
-            "rescan() if files were just created."
-        )
 
+def _file_shortlist(seeds: list[dict]) -> str:
+    """Funnel stage 2: collapse fn hits to files, best score first."""
+    agg: dict[str, list[dict]] = {}
+    for h in seeds:
+        agg.setdefault(h["path"], []).append(h)
+    rows = sorted(
+        agg.items(),
+        key=lambda kv: (-max(h["score"] for h in kv[1]), kv[0]),
+    )
+    lines = [
+        f"{i}. {p} - {len(hs)} hit(s): {', '.join(h['func'] for h in hs[:4])}"
+        for i, (p, hs) in enumerate(rows, 1)
+    ]
+    return "== file shortlist ==\n" + "\n".join(lines)[:SHORTLIST_CAP]
+
+
+def _symbol_slices(g, seeds: list[dict], degraded: bool, budget: int) -> str:
+    """Funnel leaf: Read-equivalent `cat -n` slices + call flow under the
+    codegraph budget discipline (score-proportional caps, cliff to pointer
+    lines for weak hits)."""
     top = seeds[0]["score"]
     labels = _cluster_labels()
     total = 0
@@ -121,11 +149,10 @@ def run(query: str, n: int = 4) -> str:
         total += len(note)
 
     for h in seeds:
-        key = f"{h['path']}::{h['func']}"
-        if total >= TOTAL_CAP:
+        if total >= budget:
             break
         weak = h["score"] < CLIFF_FRACTION * top
-        per_cap = max(MIN_HIT_CAP, min(MAX_HIT_CAP, (TOTAL_CAP - total) // max(1, len(seeds))))
+        per_cap = max(MIN_HIT_CAP, min(MAX_HIT_CAP, (budget - total) // max(1, len(seeds))))
         if weak or per_cap < MIN_HIT_CAP:
             parts.append(f"- {h['path']}::{h['func']}:{h['line']} (score {h['score']:.3f} - not shown; find_functions('{h['func']}') for source)")
             total += 90
@@ -143,6 +170,32 @@ def run(query: str, n: int = 4) -> str:
         parts.append(block)
         total += len(block) + 2
 
+    return "== symbols ==\n" + "\n\n".join(parts)
+
+
+def run(query: str, n: int = 4) -> str:
+    n = max(1, min(n, 8))
+    g = graph.get_graph()
+    seeds, degraded = _seed_hits(query, n)
+
+    # Agentless funnel: constant orientation first (repo map, clusters),
+    # then query-dependent narrowing (file shortlist -> symbol slices).
+    # Every stage degrades loudly or returns guidance, never an error.
+    parts = [
+        "== repo map ==\n" + g.repo_map(budget_tokens=PREAMBLE_TOKENS),
+        _cluster_map(),
+    ]
+    if not seeds:
+        parts.append(
+            f"no hits for '{query}'. Next steps: find_functions with a symbol "
+            "name you saw in the map; semantic_search for file-level recall; "
+            "rescan() if files were just created."
+        )
+        return "\n\n".join(parts)[:TOTAL_CAP]
+
+    parts.append(_file_shortlist(seeds))
+    used = sum(len(p) + 2 for p in parts)
+    parts.append(_symbol_slices(g, seeds, degraded, TOTAL_CAP - used))
     return "\n\n".join(parts)[:TOTAL_CAP]
 
 
