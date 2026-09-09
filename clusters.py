@@ -211,7 +211,7 @@ def communities_graph(
         if j is not None and j not in tests:
             _union(i, j, None)
     # pass 2: remaining script welds capped — a heavily-shared script
-    # (equipment.gd sits on half the HUD scenes) must not transitively
+    # (a hub component can sit on half the HUD scenes) must not transitively
     # glue dozens of scenes into one mega-unit
     for rel, i in sorted(id_of.items()):
         if not rel.endswith(".tscn") or i in tests or rel not in g.files:
@@ -349,8 +349,8 @@ def communities_graph(
 
     # pack routing: a unit whose scenes all belong to one Pfx_Seg pack
     # whose plurality home is a DIFFERENT community joins that home —
-    # pack identity beats embedding ties (audit: VFX_Fire_*SUBemitter*
-    # in Blood, Wind_VFX_showcase in Earth)
+    # pack identity beats embedding ties (audit: fire subemitter scenes
+    # landed in the blood pack, wind scenes in the earth pack)
     pack_comm: dict[str, Counter] = {}
     for ci, comm in enumerate(comms):
         for r in comm:
@@ -1002,7 +1002,7 @@ def finalize(
     parts = _merge_small(parts, rows, mat)
 
     # pack consolidation: the split/merge passes above can leave pack
-    # scenes strayed into other parts (audit: 5 VFX_Fire_* in Earth,
+    # scenes strayed into other parts (audit: five fire scenes in earth,
     # earth files in the world blob). Each pack joins the part holding
     # its plurality (>=3 files, >=50% of the pack) whenever the strayed
     # part is not itself pack-dominated (<20% pack share); scenes move
@@ -1135,10 +1135,10 @@ def finalize(
     # scene structural majority: a scene whose weighted structural ties
     # (both directions, whole welded unit) overwhelmingly point into ONE
     # other part belongs there, embedding similarity notwithstanding
-    # (user report: showcase_earth_effects sat in the showcase blob while
-    # every instancing wire crossed the Earth cluster). Requires >=60% of
+    # (field report: an element showcase sat in the showcase blob while
+    # every instancing wire crossed its element cluster). Requires >=60% of
     # edge weight into the target and >=10 total, and the scene must not
-    # already hold more of its own ties (hubs like MagicPlayer stay home).
+    # already hold more of its own ties (wired hubs stay home).
     # NOTE: iterate ALL .tscn paths — pure composition scenes have no
     # attached script and therefore no welded unit.
     if adj:

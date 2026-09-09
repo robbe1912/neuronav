@@ -20,6 +20,9 @@ and measures clutter metrics from `window.__dbg` in both layers.
   plus a sha-suffixed snapshot copy and per-subject PNGs.
 - **`--after`**: reruns the same battery against the current build, prints a
   per-metric delta table, exits 1 on any clutter regression (ratchet mode).
+- everything under `qa/` is gitignored machine-local state (baselines +
+  screenshots measured against whichever target the local config selects) —
+  NEVER commit baselines; they embed private-target measurements.
 - **`--affordance SUBJECTS`** (with `--after`): comma list of subjects whose
   sanctioned hub-affordance ink (`labelLabelPairs`/`labelWireLabels`/
   `inkCentral`) is exempt from the gate; `'tscn'` expands to all .tscn hub

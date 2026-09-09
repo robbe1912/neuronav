@@ -26,7 +26,7 @@
     {"q": "NoCacheHandler", "kind": "symbol", "targets": ["tools/serve.py"], "anchor": "class NoCacheHandler"},
     {"q": "LabelContext", "kind": "symbol", "targets": ["clusters.py"], "anchor": "class LabelContext"},
     {"q": "FileSym", "kind": "symbol", "targets": ["extractors/model.py"], "anchor": "class FileSym"},
-    {"q": "MagicPlayer", "kind": "symbol", "targets": ["clusters.py"], "anchor": "MagicPlayer"},
+    {"q": "Func", "kind": "symbol", "targets": ["extractors/model.py"], "anchor": "class Func"},
     {"q": "where do godot scene resources get read", "kind": "prose", "targets": ["extractors/gdscript.py"], "anchor": "def parse_tscn"},
     {"q": "how do cross-module references become caller edges", "kind": "prose", "targets": ["extractors/python.py"], "anchor": "def _record_import"},
     {"q": "what stops two simultaneous rescans from corrupting the store", "kind": "prose", "targets": ["nav.py"], "anchor": "def _db_lock"},

@@ -764,8 +764,8 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
             np.add.at(vel, mb, fms)
         # cluster gravity toward per-cluster centroid, scaled by degree:
         # hubs carry huge repulsion coefficients, so a flat gravity lets the
-        # repulsion evict them from their own cluster (Blood_showcase drifted
-        # 310 units from Blood into the sparse pocket next to Gameplay).
+        # repulsion evict them from their own cluster (one showcase scene
+        # drifted 310 units from its pack into a sparse neighbor pocket).
         # Degree-scaled anchor keeps hubs home; average nodes barely move.
         csum = np.zeros((nc, 3), dtype=np.float32)
         np.add.at(csum, cinv, pos)

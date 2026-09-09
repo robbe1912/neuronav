@@ -441,7 +441,7 @@ class Graph:
         for m in BARE_HANDLER_RE.finditer(scan_text):
             self.referenced_names.add(m.group(0))
         # bare method-ref as full assignment RHS (property-assignment
-        # wiring): `magic_system.cb = _connect_equipped_signal` — scanned
+        # wiring): `hub.cb = _connect_signal_handler` — scanned
         # on the RAW body because the $ anchor needs real line ends
         for m in ASSIGN_RHS_RE.finditer(fn.body):
             nm = m.group(1)

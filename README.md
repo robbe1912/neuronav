@@ -89,8 +89,8 @@ nav.py import-base     # seeds an empty .chroma from shards; skips deleted files
 ```
 
 `import-base` guards on model/dim; `rescan` heals to the current worktree.
-Example consumer: SWMG's `.neuronav/wire-neuronav.ps1` (copies shards in,
-imports, rescans, wires all client configs in one command).
+Example consumer wiring: a target repo's `.neuronav/` helper script (copies
+shards in, imports, rescans, wires all client configs in one command).
 
 ## 3D visualizer
 

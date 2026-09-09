@@ -4,7 +4,8 @@
 # Spawns server.py as a real subprocess, drives JSON-RPC over stdio
 # (newline-delimited, MCP stdio transport): initialize -> initialized ->
 # tools/list -> tools/call context{...}. Asserts the context tool is
-# advertised and answers with a real subsystem map on a known SWMG file.
+# advertised and answers with a real subsystem map on the index's
+# most-wired file (config-agnostic — no hardcoded target paths).
 import json
 import os
 import queue
@@ -16,7 +17,18 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]
-TARGET = "scripts/magic/magicplayer.gd"
+sys.path.insert(0, str(HERE))
+import graph  # noqa: E402  (repo root on path)
+
+_g = graph.get_graph()
+_call_wires: dict[str, int] = {}
+for (_s, _d), _tys in _g.edge_types.items():
+    if "call" in _tys:
+        _sfi = _s.partition("::")[0]
+        _call_wires[_sfi] = _call_wires.get(_sfi, 0) + 1
+# most call-wired file: guarantees the context tool's edge-type section
+# shows a call row on ANY config (config-agnostic, no hardcoded paths)
+TARGET = max(sorted(_call_wires), key=lambda p: _call_wires[p])
 
 FAILS = []
 

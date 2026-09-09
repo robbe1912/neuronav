@@ -154,7 +154,7 @@ def run_tests():
         # sphere (arc placement) instead of sitting on the wire midpoints.
         # The focus token must exist in THIS index (harness is config-agnostic
         # since the self-index landed): aim at the highest-degree node's
-        # path stem — 'magicplayer' hardcoding died when config left SWMG.
+        # path stem — hardcoded target stems died with config profiles.
         tok = page.evaluate(
             """() => { const d = window.__dbg;
                  let best = 0;
