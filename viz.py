@@ -4036,6 +4036,7 @@ function rebuildFnLayer(focusing) {
           md.p[2] = pos[md.fi*3+2] + Math.sin(nb) * md.r;
         }
       }
+  }
   // shared arc emitter: 8 quadratic segments (16 verts — the harness
   // counts wires as verts/16), optional arrowhead at the end tangent
   const emitArc = (T, ax, ay, az, bx, by, bz,
