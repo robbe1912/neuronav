@@ -7602,6 +7602,7 @@ _ADDONS = {   # keys the template imports; keep in sync with its import lines
 
 
 def _data_uri(js: str) -> str:
+    js = js.replace("\r\n", "\n")   # byte-stable embed across LF/CRLF checkouts
     return "data:text/javascript;base64," + base64.b64encode(js.encode("utf-8")).decode("ascii")
 
 
