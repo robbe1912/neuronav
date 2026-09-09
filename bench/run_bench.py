@@ -182,6 +182,13 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool) -> int:
     if verify_golden(repo):
         return 3
 
+    if repo != DEFAULT_REPO:
+        import shutil
+
+        db = repo / ".chroma"  # the worktree's OWN untracked db: wipe so each
+        if db.is_dir():  # run starts coherent (never mixes real/fake embeddings;
+            shutil.rmtree(db)  # sha-unchanged rescans would silently skip re-embed)
+
     stats = nav.rescan()  # coherent index for this mode in this checkout's .chroma
     print(f"index: {nav.count()} files (rescan {stats['added']}+/{stats['updated']}~/{stats['deleted']}-)")
 
