@@ -1976,13 +1976,20 @@ function tick() {
   }
   if (fnLines && compactBallR > 0 && hubRing) {
     const cd = camera.position.distanceTo(hubRing.position);
-    const lod = Math.max(0, Math.min(1, (2.8 * compactBallR - cd) / (0.9 * compactBallR)));
+    let lod = Math.max(0, Math.min(1, (2.8 * compactBallR - cd) / (0.9 * compactBallR)));
+    // the fade is a FAR-ZOOM noise control; when the focus-state gate
+    // serves the tier the paint must be FULL — dim dots at the default
+    // focus camera (0.60/0.40) made a geometrically-served state read
+    // as spheres-only (skeptic r5-final objection)
+    if (_lodServe) lod = 1;
     fnLines.material.opacity = 0.75 * lod;
     if (fnQuiet) fnQuiet.material.opacity = 0.16 * lod;
     if (fnBus) fnBus.material.opacity = 0.35 + 0.65 * lod;
-  if (fnJDot) fnJDot.material.opacity = 0.35 + 0.55 * lod;
+    if (fnJDot) fnJDot.material.opacity = 0.35 + 0.55 * lod;
     if (fnArrows) fnArrows.material.opacity = 0.9 * lod;
-  }
+    _oDot = fnJDot ? 0.35 + 0.55 * lod : 0;
+    _oArrow = fnArrows ? 0.9 * lod : 0;
+  } else { _oDot = 0; _oArrow = 0; }
   // conduit width is SCREEN-CONSTANT per segment: radius ∝ each segment's own
   // distance to the camera (~2.4px on screen at every depth, next to 1px wires)
 // round-5 LOD gate (user-acceptance): a bus element is visible only when
@@ -2016,12 +2023,16 @@ function busLodInit() {
   // hub's d2 state (vfx_preload: 21/21 bollards at radius 0 because its
   // neighborhood shells sit farther out than world_manager's). Zoomed-out
   // overview (user's droplet state) still gates: focus box < floor there.
-  // SERVE_FLOOR 2.0 (harness floor) vs BOOT_FLOOR 2.5: when the user
-  // REQUESTED the fn layer the focus box need only be visible, not
-  // comfortable — the default focus camera parks the busiest hub's seed
-  // box at ~2.4 ref-px (vfx_preload d2), which must serve (skeptic r5);
-  // the user's zoomed-out droplet state reads ~0.9 ref-px and stays gated
-  const serveAll = focusFileIdx >= 0 && pxOf(focusFileIdx) >= 2.0;
+  // Rotation-invariant master gate: autoRotate orbits the camera at constant
+  // camDist, so a sphere-relative px floor oscillates with spin phase and
+  // the tier flickers gate<->serve (measured: servePx 2.34 vs 1.80 across
+  // reloads at the same nominal state). camDist-to-target is orbit-stable:
+  // serve iff the camera is inside 2.2 compact-ball radii of the focus
+  // (default focus camera = 1.69R serves; the user's droplet state = 7.9R
+  // stays gated; ~1.5x default zoom-out is the cutoff)
+  const serveAll = focusFileIdx >= 0 && compactBallR > 0 &&
+    camera.position.distanceTo(controls.target) <= 2.2 * compactBallR;
+  _lodServe = serveAll;
   if (fnLodV) { fnLodV.serveFi = focusFileIdx; fnLodV.servePx = focusFileIdx >= 0 ? pxOf(focusFileIdx) : -1; }
   const res = fi => serveAll || pxOf(fi) >= 2.5;  // served box >= 2.5 REF-px — 2 CSS px at
   // the USER's 735h window (round-5b boot-straggler fix: pair census found
@@ -2050,7 +2061,7 @@ function busLodInit() {
 }
   fnLodV = { bollardsShown: 0, bollardsGated: 0, conduitsShown: 0, conduitsGated: 0,
              chevShown: 0, minChevPx: Infinity, minServedBoxPx: Infinity, minBollardPx: Infinity,
-             serveFi: -1, servePx: -1 };
+             serveFi: -1, servePx: -1, oDot: _oDot, oArrow: _oArrow };
   _lod = (fnBus || fnJDot) ? busLodInit() : null;   // after fnLodV: it stamps serveFi/servePx
   if (fnBus && busPts) {
     let dirty = false;
@@ -3252,6 +3263,12 @@ let fnBoxScale = null; // fi -> largest rendered fn-box world size
 let stationTks = null; // fi -> trunk keys leaving that file's stations
 let arrowFile = null;  // owner FILE index per delivery chevron
 let _lod = null;       // per-frame LOD closures (res / trOK / stOK)
+let _lodServe = false; // focus-state master gate (busLodInit) — clamps the
+                       // distance fade below: served layer renders at full
+                       // opacity (skeptic r5-final: 0.60/0.40 dims made the
+                       // serving d2 state illegible — geometry served, paint
+                       // faded)
+let _oDot = 0, _oArrow = 0;   // effective opacities for fnLod reporting
 let fnLodV = null;     // per-frame LOD report (via __dbg.fnLod, round-5)
 let fnJclip = 0;    // conduits whose obstacle lift hit the cap (via __dbg)
 let fnQuietTrunkN = 0;  // quiet-tier trunk arcs (via __dbg)
