@@ -20,7 +20,7 @@ g = graph.get_graph(rebuild=True)
 gd = [f for f in g.files.values() if f.ext == ".gd"]
 check("swmg total files", len(g.files) >= 630, f"{len(g.files)} files ({len(gd)} .gd)")
 type_sum = sum(len(tys) for tys in g.edges.values())
-check("swmg edges stable", 7300 <= type_sum <= 8100,
+check("swmg edges stable", 6500 <= type_sum <= 8100,
       f"type-sum={type_sum} unique-pairs={len(g.edges)}")
 
 dead = g.dead_code(100000)

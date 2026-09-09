@@ -16,6 +16,8 @@ dist/
 # generated output
 graph.html
 graph_neuronav.html
+# graph_stable.html: second generated viz bake (~3.4MB), sibling of graph.html — never commit
+graph_stable.html
 *.log
 
 # generated screenshots (tests + manual QA)

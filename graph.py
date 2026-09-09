@@ -28,6 +28,7 @@ from extractors import registry_for
 from extractors.model import FileSym, Func  # noqa: F401  (re-export)
 # language fact needed by the dead-code tier heuristic (native dispatch names)
 from extractors.gdscript import VIRTUALS, GUT_ROOTS, ADDON_VIRTUALS, MANUAL_BASES, parse_gd, parse_tscn
+from extractors.python import PY_HOOKS  # stdlib dispatch hooks (dead-scan tier)
 
 # ---- constants ---------------------------------------------------------------
 # Language-owned constants and entry-point rules (VIRTUALS, GUT_ROOTS,
@@ -771,8 +772,14 @@ class Graph:
                     tier == "likely"
                     and fs.extends
                     and fs.extends not in self.class_map
-                    and name.startswith("_")
                     and name not in VIRTUALS
+                    and (
+                        name.startswith("_")
+                        # python: stdlib serving machinery (http.server et al)
+                        # invokes handler overrides reflectively — PY_HOOKS is
+                        # the python analogue of the .gd underscore-virtual rule
+                        or (fs.ext == ".py" and (name in PY_HOOKS or name.startswith("do_")))
+                    )
                 ):
                     tier = "review"
                 dead.append({"path": rel, "func": name, "line": fn.line, "tier": tier})

@@ -3,5 +3,5 @@
   "collection": "neuronav",
   "include_dirs": ["."],
   "extensions": [".py"],
-  "exclude_dirs": [".git", "__pycache__", ".venv", ".chroma", "base", ".codegraph", "fixtures"]
+  "exclude_dirs": [".git", "__pycache__", ".venv", ".chroma", "base", ".codegraph", "fixtures", ".team_scratch"]
 }

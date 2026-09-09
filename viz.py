@@ -12,13 +12,14 @@ Usage:  python viz.py            # writes graph.html next to this file
 from __future__ import annotations
 
 import os
+import base64
+import re
 import json
 import subprocess
 import sys
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-
 import nav
 import graph
 
@@ -1077,6 +1078,11 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .flab:hover { color:#fff; background:rgba(20,30,38,.92); }
   .flab.fn { font-size:10px; color:#8fa3ad; background:rgba(8,12,16,.6); }
   .flab.fn:hover { color:#d0f2ea; background:rgba(14,26,24,.9); }
+  #stubLabs { position:fixed; inset:0; z-index:6; pointer-events:none;
+    overflow:hidden; }
+  .stublab { position:absolute; left:0; top:0; display:none; white-space:nowrap;
+    font-size:10px; color:#8fa3ad; padding:0 5px; border-radius:5px;
+    background:rgba(8,12,16,.75); }
   /* 3D region: canvas pinned left of the map pane; renderer.setSize keeps
      its style box in sync on every divider/resize event */
   canvas#gl { position:fixed; top:0; left:0; display:block; }
@@ -1192,6 +1198,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <span><i class="lgDash"></i>dashed = quiet (many thin calls)</span>
 </div>
 <div id="hubs"></div>
+<div id="stubLabs"></div>
 <div id="elabs"></div>
 <div id="xtlabs"></div>
 <div id="flabs"></div>
@@ -1200,10 +1207,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <div id="divider" title="drag to resize the map pane"></div>
 
 <script type="importmap">
-{ "imports": {
-  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
-} }
+__IMPORTMAP__
 </script>
 <script type="module">
 import * as THREE from "three";
@@ -1437,6 +1441,14 @@ dpos.set(pos);
 // dim pass needs this to keep supernode-carried edges bright)
 const supCollapsed = new Map();
 // satellite allowance block moved above the eval-time syncFileMesh() call
+// PERCEPTUAL ANCHOR law (user sightings 3+4): ink arriving at a node implies
+// that node's anchor READS. anchorBoost[i] = minimum DIAMETER in REF-px
+// (normalized to 900px canvas height; the user's ~840h window shows 8 REF-px
+// as ~7.5 real px) the sprite must draw while ink terminates on it; 6 was
+// still speck-class to the eye, 8 REF-px diameter is the ruled bar.
+// syncFileMesh lifts scale to meet it (capped so hierarchy survives).
+const ANCHOR_PX = 8;   // endpoint anchor bar, DIAMETER ref-px
+const anchorBoost = new Float32Array(N);
 
 // true 3D node geometry (billboard sprites read flat on screen): files =
 // shaded spheres, functions = boxes orbiting their owner file sphere,
@@ -1495,14 +1507,26 @@ function syncFileMesh() {
       // dead-only mode boosts the survivors so the red set reads at overview distance
       // sqrt(spread) size compensation: gaps scale ~spread, nodes scale
       // ~sqrt(spread) so pulling apart leaves them readable without a
-      // camera reframe (reframing was the "systems completely change" bug)
-      // focus-context nodes shrink with their alpha instead of staying
-      // full-size black occluders
-      _dummy.scale.setScalar(sphR(i) * (deadOnly && nodes[i].dead > 0 ? 1.7 : 1) * hoverScale[i] * (0.45 + 0.55 * a));
+      let sc = sphR(i) * (deadOnly && nodes[i].dead > 0 ? 1.7 : 1) * hoverScale[i] * (0.45 + 0.55 * a);
+      // perceptual anchor: if ink terminates on this node, hold the sprite
+      // at ANCHOR_PX screen diameter — but floor the REST size and let
+      // hoverScale ease from the FLOORED rest. Flooring the post-hover size
+      // instead made the lift vanish the moment hover grew the sprite past
+      // the floor, so the eased 1.8x read as 1.1x of the visible rest
+      // (harness pin + user expectation: hover grows what the eye sees).
+      if (anchorBoost[i] > 0) {
+        const dist = camera.position.distanceTo(_dummy.position);
+        const hs = hoverScale[i] || 1;
+        const base = sc / hs;   // rest size (alpha included), hover lifted out
+        const rpxBase = base * (renderer.domElement.clientHeight / 2) /
+                        (Math.tan(camera.fov * Math.PI / 360) * dist);
+        if (rpxBase > 0.001 && rpxBase < anchorBoost[i])
+          sc = base * Math.min(4.0, anchorBoost[i] / rpxBase) * hs;
+      }
+      _dummy.scale.setScalar(sc);
     }
     _dummy.updateMatrix();
     fileMesh.setMatrixAt(i, _dummy.matrix);
-    // dim = darken (scale keeps silhouette, color carries the focus gradient);
     // hovered nodes also lift slightly in brightness alongside the scale ease
     const lift = a * (1 + 0.35 * (hoverScale[i] - 1)) * (i === fnOwner ? 1.9 : 1);
     _col.setRGB(colArr[i*3] * lift, colArr[i*3+1] * lift, colArr[i*3+2] * lift);
@@ -1700,6 +1724,10 @@ function pickWireMeta(e) {
         (v.x + 1) / 2 * rect.width, (1 - v.y) / 2 * rect.height,
         (w.x + 1) / 2 * rect.width, (1 - w.y) / 2 * rect.height);
       const m = meta[Math.floor(i / per)];
+      // pick parity (sighting #11): a trunk meta on the wire tier must not
+      // answer the picker when its conduit is LOD-culled — the card would
+      // describe ink that isn't served (explanation without presence)
+      if (m && m.kind === "trunk" && fnBus && busPts && !inkKeys.has(String(m.k))) continue;
       const dd = d - (m.kind === "trunk" ? 2 : 1) + (quiet ? 3 : 0);
       if (dd < bestD) { bestD = dd; best = m; pickWireZ = v.z + segT * (w.z - v.z); }
     }
@@ -1741,6 +1769,14 @@ function pickWireMeta(e) {
           (v.x + 1) / 2 * rect.width, (1 - v.y) / 2 * rect.height,
           (w.x + 1) / 2 * rect.width, (1 - w.y) / 2 * rect.height);
         const dd = d - 3;   // thick target: generous forgiveness
+        // pick-vs-render parity (skeptic A8b): a culled chain (instance
+        // scale parked at 0.0001) must not answer the picker — hovering
+        // invisible ink is the tooltip-over-nothing class. Tapered EXPLAINED
+        // EXIT stubs keep scale > 0 and stay pickable.
+        const _sc = Math.hypot(fnBus.instanceMatrix.array[i*16],
+                               fnBus.instanceMatrix.array[i*16+1],
+                               fnBus.instanceMatrix.array[i*16+2]);
+        if (_sc <= 0.001) continue;
         if (dd < bestD) { bestD = dd; best = m; pickWireZ = v.z + segT * (w.z - v.z); }
       }
     }
@@ -1751,6 +1787,11 @@ function pickWireMeta(e) {
         if (!m || !p) continue;
         v.set(p[i*3], p[i*3+1], p[i*3+2]).project(camera);
         if (v.z > 1) continue;
+        // pick-vs-render parity (sighting #11 class 2): a culled bollard
+        // (radius parked at 0.0001) must not answer the picker — a card on
+        // invisible ink is explanation without presence
+        if ((fnJDotR[i] || 0) <= 0.001) continue;
+        m.__ji = i;   // presence check keys the card to this dot's live radius
         const dx = (v.x + 1) / 2 * rect.width - px, dy = (1 - v.y) / 2 * rect.height - py;
         const dd = Math.hypot(dx, dy) - 8;   // dot radius + forgiveness
         if (dd < bestD) { bestD = dd; best = m; pickWireZ = v.z; }
@@ -2095,14 +2136,19 @@ function busLodInit() {
     camera.position.distanceTo(controls.target) <= 2.2 * compactBallR;
   _lodServe = serveAll;
   if (fnLodV) { fnLodV.serveFi = focusFileIdx; fnLodV.servePx = focusFileIdx >= 0 ? pxOf(focusFileIdx) : -1; }
-  const res = fi => serveAll || pxOf(fi) >= 2.5;  // served box >= 2.5 REF-px — 2 CSS px at
+  // TIER/NODE UNIFICATION (sighting #9 + slider regression): res() is the
+  // ONE focus-set oracle — a file serves the wire tier iff it is LIT
+  // (alphaTgt > 0.5 encodes depth + filters + the 1-hop ghost law) AND its
+  // box resolves. Before this, a depth-3 ghost (alpha 0.04) with a big box
+  // still served corridors = wires to invisible files at any zoom.
+  const res = fi => (serveAll || pxOf(fi) >= 2.5) && alphaTgt[fi] > 0.5;
   // the USER's 735h window (round-5b boot-straggler fix: pair census found
   // 3-4 dots over 0.8-1.2px boxes; 2.2 ref-px = 1.8 CSS px there)
   // chevron floor is LOWER: a delivery mark may ride a 1.5-2.5px box —
   // visible at probe-d2 zooms, where the 2.5 floor thinned on-screen
   // chevrons 18->3 (too sparse for route tracing). Below 1.5 the box is
   // a speck and the mark reads as noise on nothing
-  const resA = fi => pxOf(fi) >= 1.5;
+  const resA = fi => pxOf(fi) >= 1.5 && alphaTgt[fi] > 0.5;
   const tkPx = tk => {
     const p = String(tk).split(">");
     return p.length === 2 ? Math.min(pxOf(+p[0]), pxOf(+p[1])) : pxOf(+String(tk).split("|")[1]);
@@ -2114,33 +2160,183 @@ function busLodInit() {
   const stOK = fi => {
     if (!res(fi)) return false;
     const tks = stationTks && stationTks.get(fi);
-    if (!tks || !tks.length) return true;
+    // no bare station heads: a station tree with NO trunk leaving it renders
+    // dots + legs connected to nothing ("node heads in the void", 4th user
+    // sighting) — the chain (legs + bollards) only serves when >=1 trunk
+    // beyond the station also serves
+    if (!tks || !tks.length) return false;
     for (const tk of tks) if (trOK(tk)) return true;
     return false;
   };
-  return { res, resA, trOK, stOK, pxOf, tkPx };
+  // CHAIN-INTEGRITY law (user defect: orphan junction legs): a leg ("L|fi|…")
+  // is connector ink between a file box and its station — it may serve ONLY
+  // when its OWN file's box resolves on screen (strict px floor, never
+  // serveAll-blind: the waiver exists for the FOCUS file's tier, and keying
+  // it on the leg's own file keeps that accommodation intact) AND its
+  // station context serves (stOK: station bollard + >=1 serving trunk).
+  // Both ends resolved or the whole chain culls (all FS segments share k).
+  const legOK = tk => {
+    const fi = +String(tk).split("|")[1];
+    // PERCEPTUAL_ANCHOR: 2.5px resolves geometrically but reads as a
+    // speck — a leg chained to a sub-8px box is floating ink (3rd user
+    // sighting, VLM-confirmed). Anchor READS when the box naturally
+    // measures ANCHOR_PX OR a serving corridor has boosted the file's
+    // SPRITE to the floor (corridor-complete law: size, not brightness —
+    // dim files keep their dim color). Plus station context (stOK):
+    // no leg without its trunk, no trunk without both ends.
+    return (pxOf(fi) >= ANCHOR_PX || anchorBoost[fi] > 0) && stOK(fi);
+  };
+  return { res, resA, trOK, stOK, legOK, pxOf, tkPx };
 }
   fnLodV = { bollardsShown: 0, bollardsGated: 0, conduitsShown: 0, conduitsGated: 0,
              chevShown: 0, minChevPx: Infinity, minServedBoxPx: Infinity, minBollardPx: Infinity,
              serveFi: -1, servePx: -1, oDot: _oDot, oArrow: _oArrow };
   _lod = (fnBus || fnJDot) ? busLodInit() : null;   // after fnLodV: it stamps serveFi/servePx
+  // endpoint anchor demands are per-frame (camera-pose dependent): reset,
+  // then arcs, serving corridors and serving legs add theirs
+  anchorBoost.fill(0);
+  if (focusArcs && focusArcs.lines.visible && focusArcs.lines.userData.meta)
+    for (const m of focusArcs.lines.userData.meta) {
+      anchorBoost[links[m.li].s] = ANCHOR_PX; anchorBoost[links[m.li].t] = ANCHOR_PX;
+    }
+  // leg termini must LAND: a served leg whose BOTH ends project outside the
+  // viewport renders as floating mid-view debris ("starting nowhere and
+  // ending nowhere", user sighting #8 — orbit sweep found up to 11 such legs
+  // at close zooms az 120-180). Build the per-key on-screen map before the
+  // serve loop; legs failing it cull whole-chain (all FS segments share k).
+  // Trunks stay exempt (edge-exiting highways read as leaving; user ruling).
+  legTermOn.clear();   // module-scope Map (probe hook): chain-key -> terminus on-screen
   if (fnBus && busPts) {
+    const v3 = new THREE.Vector3();
+    const spans = new Map();
+    for (const s of busPts) {
+      let sp = spans.get(s.k);
+      if (!sp) spans.set(s.k, { a: s.a, b: s.b });   // first segment's a = chain start
+      else sp.b = s.b;                               // last segment's b = chain terminus
+    }
+    for (const [k, sp] of spans) {
+      // SIGHTING #10: both rejection clauses here were PROJECTION-based —
+      // a terminus sliding off-frame (|ndc|>1.05) or a projected span
+      // crossing 35% of the diagonal flipped the WHOLE chain off in one
+      // wheel click (en-bloc corridor+junction vanish: the cull also drops
+      // its stAttKey, so the bollard goes too). Zoom law is now monotonic:
+      // (a) terminus on-screen-ness is NOT a cull reason — ink is
+      // world-anchored (draws-to-anchor), a wire exiting the frame is a
+      // highway leaving view, not float; (b) the 35%-diagonal sprawl cap
+      // (ruling b) is evaluated at the NOMINAL focus framing
+      // (2.2·compactBallR, the serveAll reference distance), so it culls
+      // corridors that would sprawl where they are MEANT to be read, and
+      // zooming in can never cross it (px at nominal dist is
+      // zoom-invariant; pan-invariant by construction).
+      let ok = true;
+      const wu = Math.hypot(sp.b[0] - sp.a[0], sp.b[1] - sp.a[1], sp.b[2] - sp.a[2]);
+      if (isFinite(wu) && compactBallR > 0) {
+        const cw = renderer.domElement.clientWidth || 1600;
+        const ch2 = renderer.domElement.clientHeight || 900;
+        const nominalD = 2.2 * compactBallR;
+        const pxN = wu * (ch2 / 2) / (Math.tan(camera.fov * Math.PI / 360) * nominalD);
+        if (pxN > 0.35 * Math.hypot(cw, ch2)) ok = false;
+      }
+      legTermOn.set(k, ok);
+    }
+  }
+  // highways). Trunk keys are "sf>tf".
+  if (_lod && fnBus && busPts)
+    for (const s of busPts) {
+      if (typeof s.k !== "string" || s.k.charCodeAt(0) === 76) continue;
+      if (!_lod.trOK(s.k)) continue;
+      const p = s.k.split(">");
+      if (p.length === 2) { anchorBoost[+p[0]] = ANCHOR_PX; anchorBoost[+p[1]] = ANCHOR_PX; }
+    }
+  if (fnBus && busPts) {
+    stAttKey.clear(); chainGate.clear(); inkKeys.clear();
     let dirty = false;
     const lod = _lod;
     const a = fnBus.instanceMatrix.array;
+    const stubPts = [];
+    let curK = null, curJ = 0;
+    const _sv = new THREE.Vector3();
+    // per-key segment totals (bridge taper runs from the focus-side end)
+    const segN = new Map();
+    for (const s of busPts)
+      if (typeof s.k === "string") segN.set(s.k, (segN.get(s.k) || 0) + 1);
     for (let i = 0; i < busPts.length; i++) {
       const s = busPts[i];
       const d = Math.hypot((s.a[0]+s.b[0])/2 - camera.position.x,
                            (s.a[1]+s.b[1])/2 - camera.position.y,
                            (s.a[2]+s.b[2])/2 - camera.position.z);
-      const gateOk = lod ? lod.trOK(s.k) : true;
+      const isLeg = typeof s.k === "string" && s.k.charCodeAt(0) === 76;
+      const termOk = !isLeg || legTermOn.get(s.k) !== false;
+      let gateOk = lod ? (isLeg ? (lod.legOK(s.k) && termOk) : lod.trOK(s.k)) : true;
+      if (!isLeg && gateOk && lod) {
+        // sighting #9: bridge trunks (station↔station arcs whose files
+        // attach directly, no fan) read as wire-in-the-void once either
+        // anchor box drops below the 8px perceptual floor. The corridor
+        // law now points BOTH ways: a trunk renders only when BOTH its
+        // stations' file anchors read (box >= ANCHOR_PX or boosted).
+        const pp = String(s.k).split(">");
+        if (pp.length === 2) {
+          const anch = fi => lod.pxOf(fi) >= ANCHOR_PX || anchorBoost[fi] > 0;
+          if (!(anch(+pp[0]) && anch(+pp[1]))) gateOk = false;
+        }
+      }
+      // sighting #10 forensic: first failing gate per chain (extend-only
+      // probe surface — 'served' | 'legOK' | 'termOn' | 'trOK' | 'bridgeAnch')
+      if (typeof s.k === "string" && !chainGate.has(s.k))
+        chainGate.set(s.k, gateOk ? "served" :
+          (isLeg ? (lod && !lod.legOK(s.k) ? "legOK" : "termOn")
+                 : (lod && !lod.trOK(s.k) ? "trOK" : "bridgeAnch")));
+      if (gateOk && typeof s.k === "string") {
+        // empty-station law: bollards render only against attachments that
+        // ACTUALLY served this frame — heads key on trunk endpoints "T|fi",
+        // sub dots on their leg key (all FS segments of a chain share k)
+        if (isLeg) stAttKey.add(s.k);
+        else { const tp = String(s.k).split(">");
+          if (tp.length === 2) { stAttKey.add("T|" + (+tp[0])); stAttKey.add("T|" + (+tp[1])); } }
+      }
       if (fnLodV) {
         if (gateOk) { fnLodV.conduitsShown++;
           fnLodV.minServedBoxPx = Math.min(fnLodV.minServedBoxPx, lod ? lod.tkPx(s.k) : Infinity); }
         else fnLodV.conduitsGated++;
       }
-      const rT = gateOk ? Math.max(0.05, Math.min(12, d * 0.0037 * (s.rf || 1))) : 0.0001;
+      // EXPLAINED EXIT (user amendment): a chain culled while the user has
+      // interaction context on it must not vanish silently — taper a short
+      // stub from its attached end (radius ramping to 0 over 3 segments)
+      // and label the dissolve point. Context = the chain's rider file is
+      // LIT (focus file itself, or within the focus..depth visible set —
+      // a fan's riders ARE the focus callees). Three legal states only:
+      // ATTACHED / ABSENT / EXPLAINED EXIT. Overview stays quiet.
+      if (s.k !== curK) { curK = s.k; curJ = 0; } else curJ++;
+      const base = Math.max(0.05, Math.min(12, d * 0.0037 * (s.rf || 1)));
+      let taperF = 0, destFi = -1, jx = curJ;
+      if (!gateOk && focusFileIdx >= 0 && lod) {
+        if (isLeg && lod.legOK(s.k)) {
+          const pp = String(s.k).split("|");
+          if (alphaTgt[+pp[1]] > 0.5) {
+            taperF = Math.max(0, 1 - curJ / 3); destFi = +pp[1];
+          }
+        } else if (!isLeg && lod.trOK(s.k)) {
+          const pp = String(s.k).split(">");
+          if (pp.length === 2 && (+pp[0] === focusFileIdx || +pp[1] === focusFileIdx)) {
+            // taper from the FOCUS-side end of the bridge
+            const n = segN.get(s.k) || 1;
+            jx = +pp[1] === focusFileIdx ? (n - 1 - curJ) : curJ;
+            taperF = Math.max(0, 1 - jx / 3);
+            destFi = +pp[0] === focusFileIdx ? +pp[1] : +pp[0];
+          }
+        }
+      }
+      const rT = gateOk ? base : (taperF > 0 ? base * taperF : 0.0001);
+      if (taperF > 0 && jx === 2) {
+        _sv.set((s.a[0]+s.b[0])/2, (s.a[1]+s.b[1])/2, (s.a[2]+s.b[2])/2).project(camera);
+        if (isFinite(_sv.x) && _sv.z < 1)
+          stubPts.push({ nx: _sv.x, ny: _sv.y, fi: destFi, dest: String(s.k) });
+      }
       const f = rT / fnBusRi[i];
+      // NO EXPLANATION WITHOUT PRESENCE (sighting #11): record which chains
+      // carry ink this frame — the pinned wireTip's lifetime checks against
+      // this set every tick and hides the moment its anchor loses ink
+      if (typeof s.k === "string" && rT > 0.002) inkKeys.add(s.k);
       if (Math.abs(f - 1) > 0.06) {
         const o = i * 16;
         a[o] *= f; a[o+1] *= f; a[o+2] *= f;
@@ -2150,7 +2346,9 @@ function busLodInit() {
       }
     }
     if (dirty) fnBus.instanceMatrix.needsUpdate = true;
+    stubExits = stubPts;
   }
+  updateStubLabs();
   // bollards read at ANY camera distance: a 1-2px dot in a dark knot is not
   // a reroute node you can see — radius ∝ camera distance (~2.5-4px on screen)
   if (fnJDot && fnJDotPos) {
@@ -2170,7 +2368,14 @@ function busLodInit() {
       const kf = fnJDotK ? fnJDotK[i] : 1;
       const lod = _lod;
       const hpxr = renderer.domElement.clientHeight || 900;
-      const gateOk = lod ? (fnJDotSt[i] ? lod.stOK(fnJDotOf[i]) : lod.res(fnJDotOf[i])) : true;
+      let gateOk = lod ? (fnJDotSt[i] ? lod.stOK(fnJDotOf[i]) : lod.res(fnJDotOf[i])) : true;
+      // sighting #9 (2) + empty-station law (user report): a bollard renders
+      // only when its attachment ACTUALLY SERVED this frame — station heads
+      // need a serving trunk endpoint ("T|fi" in stAttKey), sub dots their
+      // own leg chain. Inventory legs/trunks do NOT earn ink (the user saw
+      // fully-empty station bollards floating at the landing pose).
+      if (gateOk && fnJDotKey && fnJDotKey[i] && !stAttKey.has(fnJDotKey[i]))
+        gateOk = false;
       // viewport-FRACTION law (user directive r5): the world-slope law
       // r = kf*0.0102*d keeps every element a constant FRACTION of the
       // frame height — px-at-nominal-900 (ref-px) is invariant; the
@@ -2193,6 +2398,21 @@ function busLodInit() {
       }
     }
     if (dirty) fnJDot.instanceMatrix.needsUpdate = true;
+  }
+  // NO EXPLANATION WITHOUT PRESENCE (sighting #11): the pinned card's
+  // lifetime is frame-synced to its anchor's rendered state — chain keys
+  // must carry ink (inkKeys), bollards must render (fnJDotR), plain wires
+  // keep at least one lit endpoint. Anchor gone -> card hides, no exceptions.
+  if (wireTipAnchor && wireTipEl.style.display !== "none") {
+    const a = wireTipAnchor;
+    let present = true;
+    if ((a.kind === "trunk" || a.kind === "jleg") && a.k !== undefined)
+      present = inkKeys.has(String(a.k));
+    else if (a.__ji !== undefined)
+      present = (fnJDotR[a.__ji] || 0) > 0.001;
+    else if (a.kind === "wire" && a.a !== undefined && a.b !== undefined)
+      present = (alphaTgt[a.a] || 0) > 0.5 || (alphaTgt[a.b] || 0) > 0.5;
+    if (!present) hideWireTip();
   }
   // chevron aim is camera-dependent: recompute every frame
   aimArrows();
@@ -2269,6 +2489,16 @@ function busLodInit() {
   } else if (hubRing) hubRing.visible = false;
   // hub ring billboards toward the camera every frame
   if (hubRing && hubRing.visible) hubRing.quaternion.copy(camera.quaternion);
+  // DYNAMIC NEAR PLANE (user report: junction legs/trunks pop out mid-view
+  // when zooming in — the static near=1 swallowed corridor geometry passing
+  // close to the camera). Tie near to the orbit distance with hysteresis so
+  // the projection matrix isn't rebuilt every frame; far stays 20000 (depth
+  // precision is fine: near tracks dist*0.01, ratio bounded per pose).
+  const camD = camera.position.distanceTo(controls.target);
+  const wantNear = Math.max(0.01, camD * 0.01);
+  if (Math.abs(camera.near - wantNear) > wantNear * 0.25) {
+    camera.near = wantNear; camera.updateProjectionMatrix();
+  }
   renderer.render(scene, camera);
   requestAnimationFrame(tick);
 }
@@ -2733,13 +2963,30 @@ let focusArcs = null;   // { lines, geo, mat }
 const ARC_SEG = 14;
 function rebuildFocusWires() {
   const list = [];
+  // zero-wire .tscn affordance (C2.2 ruling): a deg-57+ hub whose whole
+  // neighborhood sits in the ghost tier renders NOTHING about its
+  // connectedness. Reveal the focused .tscn hub's top-8 budget links as
+  // dim-but-traceable arcs — countable ink, not a full wire re-add.
+  const revealed = new Set();
+  const fi = focusFileIdx;
+  const tscn = fi >= 0 && /\.tscn$/i.test(nodes[fi].path || "");
+  if (tscn) for (let i = 0; i < links.length; i++) {
+    const l = links[i];
+    if (l.s !== fi && l.t !== fi) continue;
+    if (budgetLit && budgetLit.size && budgetLit.has(i)) continue;  // budget ink
+    revealed.add(i);
+  }
   if (focusActive && budgetLit) budgetLit.forEach(i => {
     const l = links[i];
     if (alphaTgt[l.s] <= 0.05 && alphaTgt[l.t] <= 0.05) return;   // ghost pair
     list.push(i);
   });
-  list.sort((a, b) => a - b);   // deterministic vertex order
-  if (!list.length) {
+  if (revealed.size) {
+    const top = [...revealed].sort((a, b) => links[b].w - links[a].w || a - b).slice(0, 8);
+    top.forEach(i => { revealed.delete(i); list.push(i); });
+    top.forEach(i => revealed.add(i));
+    list.sort((a, b) => a - b);   // deterministic vertex order
+  } else if (!list.length) {
     if (focusArcs) {
       scene.remove(focusArcs.lines); focusArcs.lines.geometry.dispose();
       focusArcs = null;
@@ -2766,7 +3013,8 @@ function rebuildFocusWires() {
     const mx = (ax + bx) / 2, my = (ay + by) / 2 + dist * 0.14, mz = (az + bz) / 2;
     const vis = Math.min(alphaTgt[l.s], alphaTgt[l.t]);
     col.setHex(TYPE_C3D[l.ty] || 0xd9e2eb);
-    if (vis < 0.5) col.multiplyScalar(0.12);   // dead-end / ghost endpoint
+    if (revealed.has(li)) col.multiplyScalar(0.42);   // C2.2 dim-but-traceable
+    else if (vis < 0.5) col.multiplyScalar(0.12);   // dead-end / ghost endpoint
     const phase = ((li * 2654435761) % 997) / 997 * 13;   // per-link dash phase
     let px = 0, py = 0, pz = 0, pd = 0;
     for (let s = 0; s <= ARC_SEG; s++) {
@@ -2823,7 +3071,7 @@ function applyVisibility() {
   for (let i = 0; i < N; i++) {
     let a;
     if (!nodeVisible(nodes[i])) a = 0.0;   // size-0 gate = true disable
-    else if (focusing) a = level[i] < 0 ? 0.0 : (level[i] <= 1 ? 1 : 0.04);   // lit set = focus + 1-hop; deeper strata ghost near-zero (0.04 < the 0.05 ghost kill, so their deep-deep wires collapse outright)
+    else if (focusing) a = level[i] < 0 ? 0.0 : (level[i] <= depth ? 1 : 0.04);   // lit set = focus..`depth` hops (slider-owned radius); strata beyond ghost near-zero (0.04 < the 0.05 ghost kill, so their deep-deep wires collapse outright)
     else a = 1;
     alphaTgt[i] = a;
     if (a > 0.5) {
@@ -2887,11 +3135,17 @@ function applyVisibility() {
     if (hoverEdgeLi >= 0) budgetLit.add(hoverEdgeLi);
     // endpoint-hover reveal: hovering a node admits every surviving link
     // incident to it (the ghost layer hides by default; hover = show the
-    // fan). Filters mirror the candidate loop minus the ghost/dead-end
-    // checks — both endpoints are lit by construction here.
+    // fan). Filters mirror the candidate loop INCLUDING the dead-end bar:
+    // under hover greyout the far end can sit at alphaTgt 0.12, and a lit
+    // arc into a near-invisible speck is the "signal wire with no visible
+    // terminus" class (user sighting #6, upper-left) — focus-lit plain
+    // links render only onto anchors that read (alpha above the lit
+    // threshold; the arc endpoint's sprite gets the ANCHOR_PX floor).
+    const fanLit = j => alphaTgt[j] > 0.5 || supMem[j];
     if (hovered >= 0) links.forEach((l, i) => {
       if (l.s !== hovered && l.t !== hovered) return;
       if (!typeVisible(l.ty) || nodeFiltered(nodes[l.s]) || nodeFiltered(nodes[l.t])) return;
+      if (!fanLit(l.s) || !fanLit(l.t)) return;
       if (fnMode && l.ty === "call" && level[l.s] >= 0 && level[l.t] >= 0) return;
       budgetLit.add(i);
     });
@@ -3297,6 +3551,49 @@ function updateHubs() {
     fixed.push(r);
   }
 }
+let stubExits = [];     // EXPLAINED EXIT dissolve points this frame (focus-file
+                        // chains culled by the termini law; labeled in tick)
+const legTermOn = new Map();  // per-leg chain-key -> terminus projects on-screen (tick fills)
+const chainGate = new Map();  // per-chain first failing gate this frame (sighting #10 probe)
+const inkKeys = new Set();    // chains carrying ink this frame (serve loop fills; sighting #11)
+let wireTipAnchor = null;     // pinned card's anchor meta — lifetime-tracked per frame
+function updateStubLabs() {
+  // EXPLAINED EXIT labels: compact "→ station · file" at each dissolve
+  // point (cap 4). On-viewport stubs first (busPts order — deterministic);
+  // off-screen dissolve points get no label — nothing to explain where
+  // there is no ink. Hidden when no exits.
+  const host = document.getElementById("stubLabs");
+  if (!host) return;
+  const vw = renderer.domElement.clientWidth || 1600, vh = renderer.domElement.clientHeight || 900;
+  // NDC -> px at LABEL time (canvas may resize between capture and draw;
+  // map pane shifts #gl width — glW() — so live conversion stays true)
+  const px = stubExits.map(e => ({ x: (e.nx + 1) / 2 * vw, y: (1 - e.ny) / 2 * vh, fi: e.fi, dest: e.dest }));
+  // #panel (z10) and the map pane occlude canvas ink — a dissolve point
+  // hidden under them has no visible terminus, so no label either (the
+  // law binds labels to VISIBLE dissolve ink, not to geometry)
+  const panel = document.getElementById("panel");
+  const pr = panel ? panel.getBoundingClientRect() : null;
+  const mapP = document.getElementById("mapPane");
+  const mr = mapP && document.body.classList.contains("mapOpen") ? mapP.getBoundingClientRect() : null;
+  const occl = (x, y) => (pr && x > pr.left - 8 && x < pr.right + 8 && y > pr.top - 8 && y < pr.bottom + 8) ||
+                         (mr && x > mr.left - 8 && x < mr.right + 8);
+  const on = px.filter(e => e.x > 8 && e.x < vw - 8 && e.y > 8 && e.y < vh - 8 && !occl(e.x, e.y));
+  const want = (on.length ? on : []).slice(0, 4);
+  while (host.children.length < want.length) {
+    const el = document.createElement("div");
+    el.className = "stublab"; host.appendChild(el);
+  }
+  for (let i = 0; i < host.children.length; i++) {
+    const el = host.children[i];
+    if (i < want.length) {
+      const nm = nodes[want[i].fi] && nodes[want[i].fi].label || "?";
+      el.style.display = "block";
+      el.style.transform = "translate(" + Math.round(want[i].x + 8) + "px," +
+                           Math.round(want[i].y - 8) + "px)";
+      el.textContent = "→ station · " + nm;
+    } else el.style.display = "none";
+  }
+}
 // boot rebuildHubs() deleted - boot applyVisibility() re-runs it before the
 // first render
 
@@ -3308,7 +3605,9 @@ let fnMesh = null, fnLines = null, fnStalks = null, fnMeta = [], fnArrows = null
   // corridor trunks (trunkGeom order = deterministic visEdges order) get
   // tiered control lifts, so quadratic apexes sit 0.11/0.135/0.16*dist
   // above the midpoint and never stack on each other.
-  const CONDUIT_LIFT_BASE = 0.22;  // tier step 0.03 below (apex law >= 0.11*dist holds)
+  const CONDUIT_LIFT_BASE = 0.14;  // band 0.14-0.29 over 6 tiers, step 0.03
+  // below (apex law >= 0.11*dist holds); 0.22 was overflight — the hills
+  // interleaved on screen and read as braid even where chords never cross
   // quiet-tier consolidation: file pairs with >= QUIET_TRUNK_MIN quiet
   // wires collapse into ONE background trunk (QUIET_LIFT_FRAC apex lift)
   const QUIET_TRUNK_MIN = 3, QUIET_LIFT_FRAC = 0.22;
@@ -3320,6 +3619,11 @@ let fnLegN = 0;     // station tree legs (thin conduits, via __dbg)
 let fnJDotK = null;  // per-junction bollard size factor (screen-constant law)
 let fnJDotOf = null;   // owner FILE index per bollard (round-5 LOD gate)
 let fnJDotSt = null;   // 1 = station-class gate, 0 = own-file resolved gate
+let fnJDotLegs = null;  // legs per STATION (0 = bridge class; sighting #9 gate)
+let fnJDotKey = null;   // per-bollard attachment key: heads "T|fi" (serving trunk
+                        // endpoint), subs their leg key — a bollard renders only
+                        // when its attachment SERVED this frame (empty-station law)
+const stAttKey = new Set();  // served attachment keys (serve loop fills, jDot gate reads)
 let fnBoxScale = null; // fi -> largest rendered fn-box world size
 let stationTks = null; // fi -> trunk keys leaving that file's stations
 let arrowFile = null;  // owner FILE index per delivery chevron
@@ -3432,8 +3736,9 @@ function aimArrows() {
         if (t <= 0.12) P.set(bx0, by0, bz0);   // extreme grazing: park ON the box
       }
     }
-    // occluded deliveries collapse INTO their box (scale 0, position at
-    // the delivery) — invisible AND not "floating far" in probes
+    // occluded deliveries collapse INTO their box (scale 0) — tested a 0.55x/
+    // 0.45x hint V to lift chevObs, but each un-hidden arrow adds chevCrowd
+    // pairs at delivery sites (hub6 zoomin 16->19, tol +2): hidden stays.
     if (_arrowOccl[i] && fnArrowBox) P.set(fnArrowBox[i*3], fnArrowBox[i*3+1], fnArrowBox[i*3+2]);
     const d = P.distanceTo(camera.position) || 1;
     const lodOk = !arrowFile || !arrowFile.length || arrowFile[i] < 0 || lod.resA(arrowFile[i]);
@@ -3446,7 +3751,6 @@ function aimArrows() {
     // 16px@900 keeps the V-mass >= 8px at the smallest window we test
     const s = 8 * (2 * Math.tan(camera.fov * Math.PI / 360) / 900) * d
              * ((lodOk && !_arrowOccl[i]) ? 1 : 0);
-    fnArrowR[i] = s;
     if (fnLodV && s > 0.01) {
       fnLodV.chevShown++;
       fnLodV.minChevPx = Math.min(fnLodV.minChevPx, ((2 * s) / (wuPerPx * d)) * (900 / hpx));
@@ -4101,25 +4405,31 @@ function rebuildFnLayer(focusing) {
   // fan trunk termini out of shared stations: corridors leaving/arriving at
   // one bollard offset along the station tangent (ranked by the OTHER end's
   // bearing) so coincident first/last conduit segments separate instead of
-  // stacking at 0 wu; trunks still read as leaving the dot
-  const stTerm = new Map();   // station id -> Map("k:end" -> offset point)
+  // stacking at 0 wu; trunks still read as leaving the dot. Sector stations
+  // of one bollard CLUSTER are grouped by proximity (60 wu) — object
+  // identity split the visual fan and left whole clusters unranked.
+  const stTermR = new Map();  // "k:end" -> fan rank (0..n-1, by other-end bearing)
+  const claimed = new Set();  // stations already ranked via an earlier cluster rep
   for (const S of stList) {
+    if (claimed.has(S)) continue;
     const terms = [];
-    for (const k of trunked) {
-      const stB = stations.get(k);
-      if (!stB) continue;
-      if (stB[0] === S) terms.push({ k, end: 0, other: stB[1].p });
-      if (stB[1] === S) terms.push({ k, end: 1, other: stB[0].p });
+    for (const S2 of stList) {
+      if (Math.hypot(S2.p[0]-S.p[0], S2.p[1]-S.p[1], S2.p[2]-S.p[2]) > 60) continue;
+      claimed.add(S2);
+      for (const k of trunked) {
+        const stB = stations.get(k);
+        if (!stB) continue;
+        if (stB[0] === S2) terms.push({ k, end: 0, other: stB[1].p });
+        if (stB[1] === S2) terms.push({ k, end: 1, other: stB[0].p });
+      }
     }
     if (terms.length < 2) continue;
     terms.sort((a, b) => brgOf(S.fi, a.other) - brgOf(S.fi, b.other));
-    const tx = -Math.sin(S.brg), tz = Math.cos(S.brg);
-    const m = new Map();
-    terms.forEach((t, r) => {
-      const off = (r - (terms.length - 1) / 2) * 9;
-      m.set(t.k + ":" + t.end, [S.p[0] + tx * off, S.p[1], S.p[2] + tz * off]);
-    });
-    stTerm.set(S.id, m);
+    // ZERO-GAP ATTACHMENT (user sighting #12): trunk termini land exactly
+    // ON the station bollard (S.p) — no tangent-line fan slots. Ranking is
+    // retained only as fanR, which terraces APEX HEIGHTS so stacked trunks
+    // still read over/under instead of braiding at the shared dot.
+    terms.forEach((t, r) => { stTermR.set(t.k + ":" + t.end, r); });
   }
   for (const k of trunked) {
     const parts = k.split(">");
@@ -4132,8 +4442,9 @@ function rebuildFnLayer(focusing) {
     // entry/exit = the two files' stations (shared per sector — ONE bollard
     // per sector, not one per pair). Delivery legs run station/subJ -> box
     // per wire; single-destination trunks need no special stop.
-    const p0 = (stTerm.get(stS.id) || new Map()).get(k + ":0") || stS.p;
-    const p1 = (stTerm.get(stT.id) || new Map()).get(k + ":1") || stT.p;
+    // ZERO-GAP (user sighting #12): trunk termini land exactly ON the
+    // station bollard — the vertex IS the marker position, no fan slots.
+    const p0 = stS.p, p1 = stT.p;
     // trunk color = DESTINATION FILE's cluster color (colArr is per-file;
     // fcol is per-fn-box — indexing it by file reads garbage => black tubes)
     const tc = [colArr[tf*3], colArr[tf*3+1], colArr[tf*3+2]];
@@ -4142,10 +4453,14 @@ function rebuildFnLayer(focusing) {
     const ck = stS.id + ">" + stT.id;
     if (!corridorTier.has(ck)) corridorTier.set(ck, corridorTier.size % 3);
     // depth-banding (skeptic B5/R5): trunks of ONE corridor fly at distinct
-    // heights — corridor seed + per-trunk ordinal over 6 tiers, so stacked
-    // trunks read over/under instead of braiding at one depth
+    // heights — corridor seed + per-trunk ordinal over 6 tiers
     const ord = corridorOrd.get(ck) || 0; corridorOrd.set(ck, ord + 1);
-    trunkGeom.push({ p0, p1, tc, tmeta, tier: (corridorTier.get(ck) + ord) % 6 });
+    // apex terrace (declutter R1, sighting-#12 revision): sibling corridors
+    // sharing a bollard descend in fan-rank order via APEX height only —
+    // landings stay exactly on the dot, so ranks read over/under instead
+    // of braiding at a shared landing slot
+    const fanR = (stTermR.get(k + ":0") || 0) + (stTermR.get(k + ":1") || 0);
+    trunkGeom.push({ p0, p1, tc, tmeta, tier: (corridorTier.get(ck) + ord) % 6, fanR });
     trunkEnds.set(k, { e: p0, x: p1, c: tc, m: tmeta });
   }
   // station bollards: a DISJOINT ivory family (S<=0.12, L>=0.84) — cluster
@@ -4159,10 +4474,12 @@ function rebuildFnLayer(focusing) {
                     new THREE.Color().setHSL(0.12, 0.05, 0.84) ]; // Jof
   for (const S of stList) {
     busJunc.push({ p: S.p, c: [BOL_COL[0].r, BOL_COL[0].g, BOL_COL[0].b], k: 1, of: S.fi, st: 1,
+      nl: S.subJ.length, hd: 1,
       info: { kind: "station", fi: S.fi, wires: S.wires, trks: S.tks.length } });
     for (let li = 0; li < S.subJ.length; li++) {
       const sp = S.subJ[li];
       busJunc.push({ p: sp, c: [BOL_COL[1].r, BOL_COL[1].g, BOL_COL[1].b], k: 0.72, of: S.fi, st: 1,
+        nl: 1, lk: "L|" + S.fi + "|" + S.id + "|" + li,
         info: { kind: "sub", fi: S.fi, wires: S.wires } });
       // legs land on a tangent line 5 wu BELOW the station — the empty
       // lane under the horizontal trunk fan (trunks bow +Y from termini
@@ -4186,6 +4503,15 @@ function rebuildFnLayer(focusing) {
                        k: "L|" + S.fi + "|" + S.id + "|" + li, rf: 0.55 });
         lx = x; ly = y; lz = z;
       }
+      // DRAWS-TO-ITS-ANCHOR (user sighting #8 ruling): the leg's terminus
+      // IS the station bollard — the tangent-offset ep was a visual seam
+      // the leads-home clause legalized as float (up to 262px at close
+      // zoom). One closing segment lands the ink on the dot itself; it
+      // shares k so the whole chain culls/serves atomically and picks as
+      // a jleg. The junction end already lands on its subJ bollard (sp).
+      busSegs.push({ a: [lx, ly, lz], b: [S.p[0], S.p[1], S.p[2]],
+                     col: [BOL_COL[1].r, BOL_COL[1].g, BOL_COL[1].b],
+                     k: "L|" + S.fi + "|" + S.id + "|" + li, rf: 0.55 });
       fnLegN++;
     }
   }
@@ -4336,8 +4662,8 @@ function rebuildFnLayer(focusing) {
           const base = p0[1] + (p1[1] - p0[1]) * t;
           const n = (top + 4 - base) / (2*t*(1 - t));
           if (n > need) need = n;
-        }
       }
+    }
     }
     return need;
   };
@@ -4345,19 +4671,22 @@ function rebuildFnLayer(focusing) {
   // the shared reroute ends all read the final junction positions
   for (const g of trunkGeom) {
     const p0 = g.p0, p1 = g.p1, tc = g.tc, tmeta = g.tmeta;
-    emitArc(tierB, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
-            tc[0], tc[1], tc[2], tc[0], tc[1], tc[2], 0, 0.30, false, tmeta);
-    fnTrunkN++;
-    // conduit body: the bus must have PHYSICAL presence — a 1px line among
     // 1px lines reads as nothing. Tier by corridor (same station pair =>
-    // same corridor), raised by the obstacle law; apex stays >= 0.11*dist
-    // and ALWAYS +Y (conduit lane law).
+    // same corridor), raised by the obstacle law, then TERRACED down by fan
+    // rank (fanR, declutter R1) so siblings sharing a bollard read as a
+    // staircase instead of interleaved hills; apex stays >= 0.11*dist and
+    // ALWAYS +Y (conduit lane law). The guide arc rides the SAME lift as
+    // the tube — one path, two inks.
     const dist = Math.hypot(p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2]) || 1;
     const Ltier = (CONDUIT_LIFT_BASE + 0.03 * g.tier) * dist;
     const Lob = obsLift(p0, p1, tmeta.sf, tmeta.tf);
-    const cap = 0.70 * dist;
-    if (Lob > cap) fnJclip++;
-    const lift = Math.min(cap, Math.max(Ltier, Lob));
+    const cap = 0.70 * dist;   // 0.80 bow cleared boxes but +2..6 TT at cu fan
+    const lift = Math.min(cap, Math.max(0.11 * dist,
+                    Math.max(Ltier, Lob) - 8 * (g.fanR || 0)));
+    emitArc(tierB, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
+            tc[0], tc[1], tc[2], tc[0], tc[1], tc[2], 0, lift / dist, false,
+            tmeta);
+    fnTrunkN++;
     const qx = (p0[0]+p1[0])/2, qy = (p0[1]+p1[1])/2 + lift, qz = (p0[2]+p1[2])/2;
     let bx2 = p0[0], by2 = p0[1], bz2 = p0[2];
     for (let s = 1; s <= FS; s++) {
@@ -4403,27 +4732,21 @@ function rebuildFnLayer(focusing) {
         done = true;
         fnTrunkW++;
         const wmeta = { kind: "wire", a, b, ln, tk };
-        ends.m.mates.push(wmeta);
         const dc = [ends.c[0]*0.38, ends.c[1]*0.38, ends.c[2]*0.38];
         const stBoth = stations.get(tk);
-        // GAP HANDOFF (skeptic B2/R7): ramps stop 14 wu SHORT of their
-        // merge dot — the thick tree leg + bollard carry the merge, the
-        // individual rider ink ends in open moat instead of piling 34
-        // arcs onto the station/sub-junction disk
-        const shortOf = (from, to, g) => {
-          const L = Math.hypot(to[0]-from[0], to[1]-from[1], to[2]-from[2]) || 1;
-          const t = Math.max(0, (L - g) / L);
-          return [from[0]+(to[0]-from[0])*t, from[1]+(to[1]-from[1])*t, from[2]+(to[2]-from[2])*t];
-        };
-        const e0 = stBoth && stBoth[0] ? shortOf([ax,ay,az], stBoth[0].boxSub.get("0:"+a) || stBoth[0].p, 14) : ends.e;
+        ends.m.mates.push(wmeta);
+        // ZERO-GAP ATTACHMENT (user sighting #12): rider ink lands exactly
+        // ON the merge point — the sub-junction/station dot. The old 14wu
+        // moat (gap handoff) left visible gaps at every junction; the dot
+        // itself is the merge, so the arc ends on it.
+        const e0 = stBoth && stBoth[0] ? (stBoth[0].boxSub.get("0:" + a) || stBoth[0].p) : ends.e;
         emitArc(T, ax, ay, az, e0[0], e0[1], e0[2],
                 dc[0], dc[1], dc[2], dc[0], dc[1], dc[2], phase, 0.16, false, wmeta);
         // exit leg: delivery fan leaves from the target box's sub-junction
-        // (or the in-station directly on quiet merges), also gapped. Emitted
-        // BOX-FIRST (like the entry tap) so both ramp kinds read as leaving
-        // the box and joining the merge — not as strokes born on the dot.
-        const e1r = stBoth && stBoth[1] ? (stBoth[1].boxSub.get("1:" + b) || stBoth[1].p) : ends.x;
-        const e1 = shortOf([bx,by,bz], e1r, 14);
+        // (or the in-station directly on quiet merges), also landing exactly
+        // on the dot. Emitted BOX-FIRST (like the entry tap) so both ramp
+        // kinds read as leaving the box and joining the merge.
+        const e1 = stBoth && stBoth[1] ? (stBoth[1].boxSub.get("1:" + b) || stBoth[1].p) : ends.x;
         emitArc(T, bx, by, bz, e1[0], e1[1], e1[2],
                 cB.r, cB.g, cB.b, dc[0], dc[1], dc[2], phase + 2.5, 0.16, false, wmeta);
         // DELIVERY chevron (skeptic r4 #2): one per trunked TARGET BOX, at
@@ -4538,13 +4861,13 @@ function rebuildFnLayer(focusing) {
     fnBus.frustumCulled = false;
     busPts = busSegs;
   busPtsMeta = busSegs.map(s => String(s.k).startsWith("L|")
-    ? { kind: "jleg", fi: +String(s.k).split("|")[1] }
+    ? { kind: "jleg", fi: +String(s.k).split("|")[1], k: String(s.k) }
     : (trunkMetaMap.get(s.k) || null));
     scene.add(fnBus);
   }
   // probe surfaces (extend-only __dbg contract): the station map + the
   // worst junction->box clearance, so QA can assert open-air placement
-  fnStationsArr = stList.map(S => ({ fi: S.fi, p: S.p,
+  fnStationsArr = stList.map(S => ({ fi: S.fi, p: S.p, id: S.id,
     brg: S.brg, wires: S.wires, tks: S.tks.slice(), subJ: S.subJ.map(p => [p[0], p[1], p[2]]) }));
   fnJclearV = -1;
   if (busJunc.length) {
@@ -4558,11 +4881,13 @@ function rebuildFnLayer(focusing) {
     if (isFinite(jmin)) fnJclearV = jmin;
   }
   // per-junction size factors (screen-constant bollard law in the tick)
-  fnJDotOf = null; fnJDotSt = null; stationTks = null; fnBoxScale = null; arrowFile = null; _lod = null;
+  fnJDotOf = null; fnJDotSt = null; stationTks = null; fnBoxScale = null; arrowFile = null; _lod = null; fnJDotKey = null;
   juncPickInfo = busJunc.map(j => j.info || null);
   if (busJunc.length) {
     fnJDotOf = Int32Array.from(busJunc, j => j.of | 0);
     fnJDotSt = Uint8Array.from(busJunc, j => j.st | 0);
+    fnJDotLegs = Int32Array.from(busJunc, j => j.nl | 0);
+    fnJDotKey = busJunc.map(j => j.hd ? "T|" + (j.of | 0) : (j.lk || null));
   }
   stationTks = new Map();
   for (const S of stList) {
@@ -4904,8 +5229,8 @@ function mapClosePick() { mapPickEl.style.display = "none"; mapPickRc = null; }
 // canvas; describes the picked fn wire or bus trunk)
 const wireTipEl = document.createElement("div");
 wireTipEl.id = "wireTip";
+function hideWireTip() { wireTipEl.style.display = "none"; wireTipAnchor = null; }
 document.body.appendChild(wireTipEl);
-function hideWireTip() { wireTipEl.style.display = "none"; }
 // 3D vocabulary legend (user r5): collapsed '?' chip bottom-left; one line
 // when open. legendOpen is harness-pinned via __dbg.
 const lg3dEl = document.getElementById("lg3d"), lg3dxEl = document.getElementById("lg3dx");
@@ -4927,6 +5252,27 @@ function strongPair(l) {
     (a[2] < b[2] ? -1 : a[2] > b[2] ? 1 : 0) ||
     (a[5] - b[5]));
   return pair;
+}
+// rider enumeration (tooltip semantics, user sighting on 7e334e3): the
+// fn→fn wires a file's bus actually holds. sid < 0 = all stations of fi.
+function riderWiresOf(fi, sid) {
+  const out = [], seen = new Set();
+  const stations = fnStationsArr || [];
+  for (const S of stations) {
+    if (S.fi !== fi || (sid >= 0 && S.id !== sid)) continue;
+    for (const tk of (S.tks || [])) {
+      const tm = trunkMetaMap && trunkMetaMap.get(tk);
+      if (!tm) continue;
+      for (const m of (tm.mates || [])) {
+        if (fnMeta[m.a].file !== fi && fnMeta[m.b].file !== fi) continue;
+        const kk = m.a + ">" + m.b + "@" + m.ln;
+        if (seen.has(kk)) continue;
+        seen.add(kk);
+        out.push(m);
+      }
+    }
+  }
+  return out;
 }
 function wireDesc(meta) {
   // what the wire contains and where it goes — fn names on both ends
@@ -4951,17 +5297,39 @@ function wireDesc(meta) {
       + (m.ln >= 0 ? "  @L" + m.ln : "")).join("\n");
     return head + (body ? "\n" + body : "");
   }
-  if (meta.kind === "jleg") {
-    return "🚌 junction leg\n" + nodes[meta.fi].path + "  (fan → station)";
+  if (meta.kind === "jleg" || meta.kind === "sub" || meta.kind === "jof") {
+    const pp = meta.k ? String(meta.k).split("|") : null;
+    const sid = pp ? +pp[2] : -1;
+    const mates = riderWiresOf(meta.fi, sid);
+    const srcs = [...new Set(mates.map(m =>
+      fnMeta[fnMeta[m.a].file === meta.fi ? m.a : m.b].name))];
+    const dests = [...new Set(mates.map(m =>
+      fnMeta[fnMeta[m.a].file === meta.fi ? m.b : m.a].file))];
+    const head = (meta.kind === "jleg" ? "🚌 junction leg · " : "🚌 bus fan · ") +
+      nodes[meta.fi].path + "\n" +
+      srcs.slice(0, 4).join(", ") + (srcs.length > 4 ? " +" + (srcs.length - 4) : "") +
+      "  →  bus to " + dests.slice(0, 3).map(fi2 => nodes[fi2].label).join(", ") +
+      (dests.length > 3 ? " +" + (dests.length - 3) : "") +
+      "  · " + mates.length + " wire" + (mates.length !== 1 ? "s" : "");
+    const body = mates.slice(0, 8).map(m =>
+      "  · " + fnMeta[m.a].name + "() → " + fnMeta[m.b].name + "()"
+      + (m.ln >= 0 ? "  @L" + m.ln : "")).join("\n");
+    return head + (body ? "\n" + body : "") +
+      (mates.length > 8 ? "\n+" + (mates.length - 8) + " more" : "");
   }
   if (meta.kind === "station") {
-    return "🚌 junction · " + nodes[meta.fi].path +
-      "\n" + meta.wires + " wires merge here → " + meta.trks + " trunk" + (meta.trks > 1 ? "s" : "") +
-      "\n(one trunk = one bundled corridor of calls)";
-  }
-  if (meta.kind === "sub" || meta.kind === "jof") {
-    return "🚌 sub-junction · " + nodes[meta.fi].path +
-      "\nfan of " + (meta.wires || 1) + " wire" + ((meta.wires || 1) > 1 ? "s" : "") + " joins the station here";
+    const mates = riderWiresOf(meta.fi, -1);
+    const dests = [...new Set(mates.map(m =>
+      fnMeta[fnMeta[m.a].file === meta.fi ? m.b : m.a].file))];
+    const head = "🚌 bus · " + nodes[meta.fi].path + "  (" + mates.length + " wires)";
+    const body = mates.slice(0, 8).map(m =>
+      "  · " + fnMeta[m.a].name + "() → " + fnMeta[m.b].name + "()"
+      + (m.ln >= 0 ? "  @L" + m.ln : "")).join("\n");
+    return head + (body ? "\n" + body : "") +
+      (mates.length > 8 ? "\n+" + (mates.length - 8) + " more" : "") +
+      "\n→ " + dests.length + " corridor" + (dests.length !== 1 ? "s" : "") +
+      ": " + dests.slice(0, 4).map(fi2 => nodes[fi2].label).join(", ") +
+      (dests.length > 4 ? " +" + (dests.length - 4) : "");
   }
   const a = fnMeta[meta.a], b = fnMeta[meta.b];
   const src = nodes[a.file], dst = nodes[b.file];
@@ -4973,6 +5341,7 @@ function wireDesc(meta) {
 function showWireTip(meta, cx, cy) {
   wireTipEl.textContent = wireDesc(meta);
   wireTipEl.style.display = "block";
+  wireTipAnchor = meta || null;   // sighting #11: lifetime-tracked anchor
   const pad = 14;
   let x = cx + pad, y = cy + pad;
   const r = wireTipEl.getBoundingClientRect();
@@ -6866,6 +7235,7 @@ function clearFocus() {
   frameGraph();   // the camera followed the focus in; it follows the reset out
 }
 addEventListener("keydown", e => {
+  if (e.key === "Escape" && wireTipEl.style.display !== "none") { hideWireTip(); return; }
   if (e.key === "Escape" && mapOvCloseOne()) return;   // map overlays own ESC first
   if (e.key === "Escape" && (focusSeeds.size || query)) clearFocus();
   else if (e.key === "Backspace" && e.target !== searchEl &&
@@ -7237,12 +7607,26 @@ renderer.domElement.addEventListener("pointermove", e => {
       } else if (m.kind === "trunk") {
         txt = "🚌 bus " + nodes[m.sf].label + " → " + nodes[m.tf].label +
           "  (" + (m.mates || []).length + " wires)";
-      } else if (m.kind === "jleg") {
-        txt = "🚌 junction leg · " + nodes[m.fi].label;
+      } else if (m.kind === "jleg" || m.kind === "sub" || m.kind === "jof") {
+        const pp = m.k ? String(m.k).split("|") : null;
+        const mates = riderWiresOf(m.fi, pp ? +pp[2] : -1);
+        const srcs = [...new Set(mates.map(w =>
+          fnMeta[fnMeta[w.a].file === m.fi ? w.a : w.b].name))];
+        const dests = [...new Set(mates.map(w =>
+          fnMeta[fnMeta[w.a].file === m.fi ? w.b : w.a].file))];
+        txt = (m.kind === "jleg" ? "🚌 junction leg · " : "🚌 bus fan · ") +
+          nodes[m.fi].label + " · " +
+          srcs.slice(0, 3).join(", ") + (srcs.length > 3 ? "…" : "") +
+          "  →  " + dests.slice(0, 2).map(fi2 => nodes[fi2].label).join(", ") +
+          (dests.length > 2 ? " +" + (dests.length - 2) : "") +
+          "  · " + mates.length + " wires";
       } else if (m.kind === "station") {
-        txt = "🚌 junction · " + nodes[m.fi].label + "  (" + m.wires + " wires → " + m.trks + " trunks)";
-      } else if (m.kind === "sub" || m.kind === "jof") {
-        txt = "🚌 sub-junction · " + nodes[m.fi].label;
+        const mates = riderWiresOf(m.fi, -1);
+        const dests = [...new Set(mates.map(w =>
+          fnMeta[fnMeta[w.a].file === m.fi ? w.b : w.a].file))];
+        txt = "🚌 bus · " + nodes[m.fi].label + " · " + mates.length + " wires → " +
+          dests.slice(0, 3).map(fi2 => nodes[fi2].label).join(", ") +
+          (dests.length > 3 ? " +" + (dests.length - 3) : "");
       } else {
         const a = fnMeta[m.a], b = fnMeta[m.b];
         txt = nodes[a.file].label + "::" + a.name + "() → " +
@@ -7303,6 +7687,13 @@ function frameQueryCamera() {
     if (level[i] === 0 && !supMem[i] && alphaTgt[i] > 0.5) arr.push(i);
   if (!arr.length) return;
   if (arr.length === 1) { focus(arr[0]); return; }
+  // multi-match with an active fn focus: the bus tier and its pickable
+  // trunks live around the focused hub's compact ball — frame THAT ball
+  // (focus() already does), not a centroid of all seeds. Fn-name matches
+  // can sit hundreds of world-units outside the ball (degree-0 owners),
+  // and after an Escape interlude the in-flight pos[] mix pushes the
+  // centroid off the ball entirely: geometry off-screen, picking dead.
+  if (focusFileIdx >= 0 && arr.includes(focusFileIdx)) { focus(focusFileIdx); return; }
   const c = new THREE.Vector3();
   arr.forEach(i => c.add(new THREE.Vector3(pos[i*3], pos[i*3+1], pos[i*3+2])));
   c.divideScalar(arr.length);
@@ -7423,6 +7814,198 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnQuietTrunkW() { return fnQuietTrunkW; },
   get fnStations() { return fnStationsArr; },
   get fnLod() { return fnLodV ? Object.assign({}, fnLodV) : null; }, get fnJclear() { return fnJclearV; },
+  get lodServe() { return _lodServe; },   // serveAll master gate (chain-integrity census)
+  get lodPxOf() { return _lod ? _lod.pxOf : null; },   // per-file box ref-px (probe hook)
+  get alphaTgt() { return alphaTgt; },   // lit-set oracle (tier unification pin)
+  get jDotArrays() { return { of: fnJDotOf, st: fnJDotSt, legs: fnJDotLegs, key: fnJDotKey }; },
+  get stubExits() { return stubExits; },  // EXPLAINED EXIT dissolve points
+  get anchorBoostArr() { return anchorBoost; },  // corridor-boost px per fi (probe hook)
+  get chainGates() { return [...chainGate.entries()]; },  // per-chain first failing gate (sighting #10)
+  get taperDbg() {   // EXPLAINED EXIT probe: per-leg gate state this frame
+    const out = [];
+    if (_lod && legTermOn) {
+      for (const s of busPts) {
+        if (typeof s.k !== "string" || s.k.charCodeAt(0) !== 76) continue;
+        if (out.some(o => o.k === s.k)) continue;
+        const p = s.k.split("|");
+        out.push({ k: s.k, legOK: _lod.legOK(s.k), termOn: legTermOn.get(s.k),
+                   ctx: focusFileIdx >= 0 && alphaTgt[+p[1]] > 0.5 });
+      }
+    }
+    return out; },
+  get legAnchorPx() {
+    // rendered L| chains' own-file ANCHOR size: {k, fi, px, boxPx, boosted}
+    // for chains actually serving THIS frame. px = max(fn-box px, live
+    // sprite px incl. the corridor anchorBoost lift) — the corridor law
+    // anchors legs on the SPRITE (size, not brightness), so the pin is
+    // min(px) >= ANCHOR_PX. busPts keeps culled chains as inventory
+    // (render cull = instance scale 0.0001): filter by served scale,
+    // presence is NOT serve state.
+    if (!busPts || !fnBus) return [];
+    const m = fnBus.instanceMatrix.array, seen = new Map();
+    for (let i = 0; i < busPts.length; i++) {
+      const k = busPts[i].k;
+      if (typeof k !== "string" || k.charCodeAt(0) !== 76) continue;
+      if (seen.has(k)) continue;
+      const r = Math.hypot(m[i * 16], m[i * 16 + 1], m[i * 16 + 2]);
+      seen.set(k, r > 0.001);
+    }
+    const mat = new THREE.Matrix4();
+    const tanH = Math.tan(camera.fov * Math.PI / 360);
+    const out = [];
+    for (const [k, served] of seen) {
+      if (!served) continue;
+      const fi = +k.split("|")[1];
+      fileMesh.getMatrixAt(fi, mat);
+      const dist = camera.position.distanceTo(
+        new THREE.Vector3(pos[fi * 3], pos[fi * 3 + 1], pos[fi * 3 + 2]));
+      const sprPx = mat.elements[0] * 900 / (tanH * dist);   // diameter, REF-px
+      const boxPx = _lod ? _lod.pxOf(fi) : null;
+      out.push({ k, fi, px: Math.max(sprPx, boxPx || 0), boxPx, boosted: anchorBoost[fi] > 0,
+                 alpha: alphaTgt[fi] });
+    }
+    return out;
+  },
+  get corridorCensus() {
+    // corridor-complete law census for independent harness verification:
+    // every busPts chain (leg "L|fi|st|li" / trunk "sf>tf") with endpoint
+    // world coords, serve state (instance scale; culled chains stay in the
+    // inventory at scale 0.0001) and the anchor each SERVED end registers
+    // to — nearest station within 55wu (station fan termini spread up to
+    // ~45wu on the tangent line), else nearest fn box within 55wu, else
+    // null = unattached. Stations carry attached serving-chain counts per
+    // side. Node positions: d.pos[i*3..]; box screen px: d.lodPxOf(fi).
+    if (!busPts) return null;
+    const m = fnBus ? fnBus.instanceMatrix.array : null;
+    const seen = new Map(), chains = [];
+    for (let i = 0; i < busPts.length; i++) {
+      const s = busPts[i];
+      if (typeof s.k !== "string") continue;
+      let e = seen.get(s.k);
+      if (!e) {
+        e = { k: s.k, kind: s.k.charCodeAt(0) === 76 ? "leg" : "trunk",
+              a: [s.a[0], s.a[1], s.a[2]], b: [s.b[0], s.b[1], s.b[2]],
+              served: false, anchorA: null, anchorB: null };
+        seen.set(s.k, e); chains.push(e);
+      }
+      if (m) { const r = Math.hypot(m[i * 16], m[i * 16 + 1], m[i * 16 + 2]); if (r > 0.001) e.served = true; }
+    }
+    const stations = (fnStationsArr || []).map(S =>
+      ({ fi: S.fi, id: S.id, p: [S.p[0], S.p[1], S.p[2]], trunks: 0, legs: 0 }));
+    // anchor matching is SCREEN-SPACE first (station 14px, box 12px, junction
+    // 12px) with world-unit fallbacks (55/55/20wu): depth foreshortening puts
+    // fan termini >20wu from their junction yet 1.8px apart on screen — the
+    // census must match what the eye matches, or harness pins report phantom
+    // unattached ends. All iteration is over fixed arrays (deterministic).
+    const proj = p => {
+      const v = new THREE.Vector3(p[0], p[1], p[2]).project(camera);
+      if (!isFinite(v.x) || !isFinite(v.y) || v.z >= 1) return null;
+      const r = renderer.domElement.getBoundingClientRect();
+      return { x: (v.x + 1) / 2 * r.width, y: (1 - v.y) / 2 * r.height };
+    };
+    const pickAnchor = (p, cands) => {
+      // cands: [{kind, idx, p, pxTol, wuTol}] — best qualifying by screen px,
+      // else by world distance. Candidate list order is fixed (deterministic).
+      const sp = proj(p);
+      let best = null, bestS = Infinity, bestW = Infinity;
+      for (const c of cands) {
+        const wu = Math.hypot(c.p[0] - p[0], c.p[1] - p[1], c.p[2] - p[2]);
+        if (wu > c.wuTol * 1.2) continue;   // hard world ceiling either way
+        let s = Infinity;
+        if (sp) { const q = proj(c.p);
+          if (q) s = Math.hypot(q.x - sp.x, q.y - sp.y); }
+        const okS = s <= c.pxTol, okW = wu <= c.wuTol;
+        if (!okS && !okW) continue;
+        if (okS && s < bestS) { best = c; bestS = s; }
+        else if (!okS && wu < bestW) { best = c; bestW = wu; }
+      }
+      return best;
+    };
+    const stCands = stations.map((st, si) => ({ kind: "station", idx: si, p: st.p, pxTol: 14, wuTol: 55 }));
+    const boxCands = [];
+    for (let bi = 0; bi < fnMeta.length; bi++) {
+      const mb = fnMeta[bi];
+      if (mb) boxCands.push({ kind: "box", idx: mb.file, p: mb.p, pxTol: 12, wuTol: 55 });
+    }
+    // junction bollards (fnJDot instances): interior corridor heads — a leg
+    // end landing on one is attached (part of the full-path unit), though
+    // the UNIT termini still owe a file anchor elsewhere
+    const juncCands = [];
+    if (fnJDot) {
+      const jm = fnJDot.instanceMatrix.array;
+      for (let ji = 0; ji < fnJDot.count; ji++)
+        juncCands.push({ kind: "junc", idx: ji, p: [jm[ji * 16 + 12], jm[ji * 16 + 13], jm[ji * 16 + 14]], pxTol: 12, wuTol: 20 });
+    }
+    // leads-home fallback (rubric Amendment 4): an end that misses the tight
+    // windows still attaches to the nearest IN-VIEW station within 300px —
+    // fan-spread termini 18-40px out are visually leads-home, not floating
+    // ink, and the harness pin reads unattached==0. Marked leadsHome with px
+    // so the distinction stays queryable.
+    const leadsHome = (p, which, c) => {
+      const sp = proj(p);
+      if (!sp) return false;
+      let best = null, bd = 300;
+      for (let si = 0; si < stations.length; si++) {
+        const q = proj(stations[si].p);
+        if (!q) continue;
+        const d = Math.hypot(q.x - sp.x, q.y - sp.y);
+        if (d < bd) { bd = d; best = si; }
+      }
+      if (best === null) return false;
+      if (c.kind === "leg") stations[best].legs++;   // trunk feed owned by the post-loop pass
+      c["anchor" + which.toUpperCase()] = { type: "station", st: best, leadsHome: Math.round(bd * 10) / 10 };
+      return true;
+    };
+    const attach = (c, which) => {
+      const p = c[which];
+      for (const set of [stCands, boxCands, juncCands]) {
+        const a = pickAnchor(p, set);
+        if (!a) continue;
+        const rec = { type: a.kind };
+        if (a.kind === "station") {
+          rec.st = a.idx;
+          if (c.kind === "leg") stations[a.idx].legs++;   // legs claim where they land; trunks feed post-loop
+        }
+        else if (a.kind === "box") rec.fi = a.idx;
+        else rec.j = a.idx;
+        c["anchor" + which.toUpperCase()] = rec;
+        return;
+      }
+      leadsHome(p, which, c);
+    };
+    for (const c of chains) {
+      if (!c.served) continue;
+      attach(c, "a");
+      attach(c, "b");
+    }
+    // per-station trunkNearPx: min screen px to ANY served trunk endpoint,
+    // and trunk FEED counts at the leads-home window (Amendment 4 bar
+    // <= 300px): a station is trunk-fed when a served trunk endpoint lands
+    // within 300px — fan spread puts termini 15-40px past the station dot,
+    // still leads-home, not floating ink. One-sidedness = legs>0 &&
+    // trunks==0 (fan without its trunk = the cut-bridge class); legs==0
+    // stations are the no-fan ramp-bridged class (the file's own box anchors
+    // via fnLines ramps, which the census does not carry).
+    for (const st of stations) st.trunkNearPx = null;
+    for (const c of chains) {
+      if (!c.served || c.kind !== "trunk") continue;
+      const fed = new Set();
+      for (const p of [c.a, c.b]) {
+        const sp = proj(p);
+        if (!sp) continue;
+        for (let si = 0; si < stations.length; si++) {
+          const q = proj(stations[si].p);
+          if (!q) continue;
+          const d = Math.hypot(q.x - sp.x, q.y - sp.y);
+          if (stations[si].trunkNearPx === null || d < stations[si].trunkNearPx)
+            stations[si].trunkNearPx = Math.round(d * 10) / 10;
+          if (d <= 300) fed.add(si);
+        }
+      }
+      for (const si of fed) stations[si].trunks++;
+    }
+    return { chains, stations };
+  },
   get legendOpen() { return legendOpen; }, get busPtsMeta() { return busPtsMeta; },
   get fnJclip() { return fnJclip; }, get fnLegN() { return fnLegN; },
   // probe hook: world -> screen px through the live camera + canvas rect
@@ -7436,6 +8019,10 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get litSet() { return compactIdx; }, get compactScale() { return compactScale; },
   get overlaps() { return compactOverlaps; },
   get camTween() { return camTween; }, get focusStack() { return focusStack; },
+  get focusFileIdx() { return focusFileIdx; }, get compactAnim() { return !!compactAnim; },
+  get posSavedLive() { return posSaved !== null; },
+  posAt: i => [pos[i*3], pos[i*3+1], pos[i*3+2]],
+  compactTgtAt: i => compactTgt ? [compactTgt[i*3], compactTgt[i*3+1], compactTgt[i*3+2]] : null,
   get fileMesh() { return fileMesh; }, get fnMesh() { return fnMesh; },
   get controls() { return controls; },
   get fnMeta() { return fnMeta; }, get fnStalks() { return fnStalks; },
@@ -7461,7 +8048,8 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get mapRects() { return mapRects; },
   get routeAudit() { return mapLayout && mapLayout.audit; },
   sphR,
-  get focusArcRef() { return focusArcs; } };
+  get focusArcRef() { return focusArcs; },
+  get rfwProbe() { return { fa: !!focusArcs, focusActive, budgetN: budgetLit ? budgetLit.size : null, fi: focusFileIdx }; } };
 tick();
 </script>
 </body>
@@ -7469,13 +8057,43 @@ tick();
 """
 
 
+
+_VENDOR = Path(__file__).resolve().parent / "vendor" / "three-0.160.0"
+_ADDONS = {   # keys the template imports; keep in sync with its import lines
+    "three/addons/controls/OrbitControls.js": "controls/OrbitControls.js",
+    "three/addons/lines/LineSegments2.js": "lines/LineSegments2.js",
+    "three/addons/lines/LineSegmentsGeometry.js": "lines/LineSegmentsGeometry.js",
+    "three/addons/lines/LineMaterial.js": "lines/LineMaterial.js",
+}
+
+
+def _data_uri(js: str) -> str:
+    js = js.replace("\r\n", "\n")   # byte-stable embed across LF/CRLF checkouts
+    return "data:text/javascript;base64," + base64.b64encode(js.encode("utf-8")).decode("ascii")
+
+
+def _importmap() -> str:
+    """Zero-network artifact: three + the addons the template imports are
+    vendored (pinned 0.160.0, sha-pinned in vendor/) and embedded as data:
+    URIs at build time. data: modules cannot resolve RELATIVE specifiers, so
+    the addons' relative imports are rewritten to their importmap keys."""
+    core = (_VENDOR / "three.module.js").read_text(encoding="utf-8")
+    imports = {"three": _data_uri(core)}
+    for key, rel in _ADDONS.items():
+        src = (_VENDOR / rel).read_text(encoding="utf-8")
+        src = re.sub(r"from\s+'\.\./(controls|lines)/([A-Za-z0-9_.]+)'",
+                     r"from 'three/addons/\1/\2'", src)
+        imports[key] = _data_uri(src)
+    return json.dumps({"imports": imports}, separators=(",", ":"))
+
+
 def generate(out: str | Path | None = None) -> Path:
     out = Path(out) if out else Path(__file__).resolve().parent / "graph.html"
     data = _build_data()
-    html = _TEMPLATE.replace("__DATA__", json.dumps(data, separators=(",", ":")))
+    html = (_TEMPLATE.replace("__DATA__", json.dumps(data, separators=(",", ":")))
+                    .replace("__IMPORTMAP__", _importmap()))
     out.write_text(html, encoding="utf-8")
     return out
-
 
 if __name__ == "__main__":
     path = generate(sys.argv[1] if len(sys.argv) > 1 else None)
