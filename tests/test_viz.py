@@ -166,6 +166,24 @@ def run_tests():
         page.dispatch_event("#search", "input")
         page.check("#cbFn")
         page.wait_for_timeout(1200)
+
+        # 4-pre. LOD law at default-camera focus (the eighth view):
+        # search focus + fn layer on, camera NOT moved — the bus tier
+        # must serve here regardless of hub shell radius. A distance-
+        # only gate passed this on topology luck (close-shelled hubs
+        # serve, far-shelled gate); focus-state keying makes it law.
+        lodf = page.evaluate(
+            """() => { const d = window.__dbg;
+                 return d.fnLod ? { b: d.fnLod.bollardsShown,
+                                    c: d.fnLod.conduitsShown,
+                                    ch: d.fnLod.chevShown,
+                                    msb: d.fnLod.minServedBoxPx,
+                                    mch: d.fnLod.minChevPx } : null; }"""
+        )
+        check("focus at default camera serves the bus tier",
+              lodf and lodf["b"] > 0 and lodf["c"] > 0 and lodf["msb"] > 0, str(lodf))
+        check("default-cam chevrons at size or hidden",
+              lodf and (lodf["ch"] == 0 or lodf["mch"] >= 8), str(lodf))
         vic = page.evaluate(
             """() => { const d = window.__dbg; const nm = d.fnMesh, meta = d.fnMeta;
                  if (!nm || !meta || !meta.length) return { fail: 'no fn layer' };
