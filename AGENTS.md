@@ -8,7 +8,9 @@ stdlib-first; chromadb/httpx are the only heavy deps.
 
 - **Determinism**: same DATA -> same layout byte-for-byte. `_layout` uses a
   seeded rng (1234); SWMG regression (`test_swmg_regression`) pins
-  1653 files / 7705 edges / dead 90 {28,62}. Never introduce unordered
+  ~1606 files / ~6735 edges / dead ~90 (range floors — the SWMG target
+  repo drifts; re-pin the floor on user-side refactors, never to mask
+  extractor regressions). Never introduce unordered
   iteration into layout or export paths.
 - **Gate before every commit** — all suites, 0 failures:
   `.venv/Scripts/python.exe -X utf8 tests/test_<name>.py`
