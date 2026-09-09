@@ -138,5 +138,20 @@ check(
     f"tiers={_tiers}",
 )
 
+# --- fixture: module_consts.py ------------------------------------------
+_mc = g.files["module_consts.py"].consts
+check("consts: UPPER_CASE module assigns harvested",
+      {"STRINGNAME_LIT_RE", "CONFIG_PATH", "BUDGET_TOKENS"} <= set(_mc), str(sorted(_mc)))
+check("consts: res:// string literal keeps path value",
+      _mc.get("CONFIG_PATH") == "config/default.json", str(_mc))
+check("consts: annotated/non-literal RHS stores ''",
+      _mc.get("BUDGET_TOKENS") == "" and _mc.get("STRINGNAME_LIT_RE") == "", str(_mc))
+check("consts: lowercase module assign excluded", "lower_counter" not in _mc)
+check("consts: stay out of fs.funcs",
+      not {"STRINGNAME_LIT_RE", "CONFIG_PATH", "BUDGET_TOKENS"}
+      & set(g.files["module_consts.py"].funcs))
+alive("consts: const-consuming func alive", "module_consts.py", ["use_consts"])
+stays_dead("consts: control stays dead", "module_consts.py", "unused_const_helper")
+
 print(f"{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)

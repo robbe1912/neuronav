@@ -41,6 +41,7 @@ CLASS_FIELD_RE = re.compile(r"^([ \t]+)([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*(?:\[[^
 FROM_IMPORT_RE = re.compile(r"^\s*from\s+([\w.]+)\s+import\s+(.+)$")
 PLAIN_IMPORT_RE = re.compile(r"^\s*import\s+([\w.,\s]+)$")
 MAIN_GUARD_RE = re.compile(r"^(\s*)if\s+__name__\s*==\s*['\"]__main__['\"]\s*:")
+MODULE_CONST_RE = re.compile(r"^([A-Z][A-Z0-9_]*)\s*(?::[^=]*)?=(?!=)\s*(.*)$")
 MODULE_CALL_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*\(")
 MODULE_CALL_SKIP = {
     "if", "for", "while", "elif", "return", "assert", "del", "print",
@@ -341,6 +342,21 @@ def parse(path: Path, rel: str) -> FileSym:
                 fs.entry_hints.add(em.group(1))
             i = j
             continue
+
+        # module-level SCREAMING_SNAKE assigns are the module's public
+        # constants — harvest into fs.consts so recall hits them as exact
+        # identifiers. Values keep the consts contract: a res://-stripped
+        # string literal stays a path (mirrors .gd const preload paths);
+        # anything else stores '' (graph resolves consts values as file
+        # relpaths and safely misses on ''). `==`/augmented ops never
+        # match (name-to-= adjacency), class fields were caught above.
+        if ind == 0:
+            cm = MODULE_CONST_RE.match(line)
+            if cm:
+                vm = re.match(r"[\"']([^\"']+)[\"']\s*$", cm.group(2))
+                fs.consts[cm.group(1)] = (
+                    vm.group(1).removeprefix("res://") if vm else ""
+                )
 
         if not class_indents and (ind == 0 or (main_guard_indent >= 0 and ind > main_guard_indent)):
             for cm in MODULE_CALL_RE.finditer(line):
