@@ -5694,6 +5694,8 @@ const MAP_MAX = 40;            // lit-node cap: past this the pane refuses
 const FN_PORT_MAX = 4;          // roster rows per expanded box, then "+N more"
 const NH = 22, RH = 13, GAPX = 12, TOP = 46;   // header / row / wrap gap / first-row Y
 const GAPX_MAX = 120;   // placement stretches band gaps up to this (spread)
+const CLUSTER_GAP_X = 32;    // horizontal air between cluster blocks in a band
+const MAP_HUB_T1 = 8;        // hub degree threshold (median damping, trunks)
 const MAP_FONT = sz => sz + "px ui-monospace, Menlo, Consolas, monospace";
 // type glyphs (spec section 3): stroke color / dash pattern / terminator.
 // one font constant (above) covers ALL map text.
@@ -6268,28 +6270,110 @@ function mapRender() {
   }
   const rows = [];
   lit.forEach(i => (rows[fd.get(i)] = rows[fd.get(i)] || []).push(i));
-  const preds = new Map();
+  // [issue #78] ordering: the plain 3-sweep barycenter is replaced by
+  // degree-damped TSE93 weighted-median sweeps + a transpose pass. Undamped
+  // means ARE the cram cause (every hub neighbour averaged toward the hub's
+  // column): hubs (deg >= MAP_HUB_T1) hold the plain median so their many
+  // wires keep spread, the rest take the fig 3-2 weighted median. Cluster
+  // blocks then regroup contiguously (block order = median position) so
+  // CLUSTER_GAP_X can separate them in placement.
+  const preds = new Map(), succs = new Map();
   edges.forEach(l => {
     if (!preds.has(l.t)) preds.set(l.t, []);
     preds.get(l.t).push(l.s);
+    if (!succs.has(l.s)) succs.set(l.s, []);
+    succs.get(l.s).push(l.t);
   });
+  const degOf = new Map();
+  edges.forEach(l => {
+    degOf.set(l.s, (degOf.get(l.s) || 0) + 1);
+    degOf.set(l.t, (degOf.get(l.t) || 0) + 1);
+  });
+  const cidOf = i => nodes[i].cluster;
+  const gRow = new Map();         // node -> row index
+  rows.forEach((row, r) => row.forEach(i => gRow.set(i, r)));
   const col = new Map();
-  for (let r = 0; r < rows.length; r++) if (rows[r]) rows[r].forEach((i, k) => col.set(i, k));
-  for (let sw = 0; sw < 3; sw++) {
+  rows.forEach(row => row.forEach((i, k) => col.set(i, k)));
+  const wmed = (i, down) => {     // TSE93 weighted median of neighbour cols
+    const src = down ? preds.get(i) : succs.get(i);
+    const ps = (src || []).map(p => col.get(p)).sort((x, y) => x - y);
+    if (!ps.length) return col.get(i);
+    if (degOf.get(i) >= MAP_HUB_T1) return ps[ps.length >> 1];   // hub: plain median
+    const m = ps.length >> 1;
+    if (ps.length === 1) return ps[0];
+    if (ps.length === 2) return (ps[0] + ps[1]) / 2;
+    const left = ps[m - 1] - ps[0], right = ps[ps.length - 1] - ps[m];
+    return left + right > 0 ? (ps[m - 1] * right + ps[m] * left) / (left + right) : ps[m];
+  };
+  for (let sw = 0; sw < 4; sw++) {
+    const down = sw % 2 === 0;
+    const seq = [];
+    for (let r = 0; r < rows.length; r++) (down ? seq.push(r) : seq.unshift(r));
+    seq.forEach(r => {
+      const row = rows[r];
+      if (!row || row.length < 2) return;   // fd rows can have holes
+      const nb = row.map(i => ({ i, b: wmed(i, down) }));
+      nb.sort((a, b) => a.b - b.b || a.i - b.i);
+      rows[r] = nb.map(x => x.i);
+      rows[r].forEach((i, k) => col.set(i, k));
+    });
+  }
+  // cluster regroup: blocks (same cluster) become contiguous, block order =
+  // the members' median swept position, so the regroup preserves the sweep
+  // optimum while giving placement a clean cluster boundary to pad
+  rows.forEach(row => {
+    if (row.length < 2) return;
+    const pos = new Map(row.map((i, k) => [i, k]));
+    const blocks = new Map();     // cid -> [{i, p}] in swept order
+    row.forEach(i => {
+      const c = cidOf(i);
+      if (!blocks.has(c)) blocks.set(c, []);
+      blocks.get(c).push({ i, p: pos.get(i) });
+    });
+    const bl = [...blocks.entries()].map(([c, ms]) => {
+      const ps = ms.map(m => m.p).sort((x, y) => x - y);
+      return { c, med: ps[ps.length >> 1], ms };
+    }).sort((a, b) => a.med - b.med || a.c - b.c);
+    const out = [];
+    bl.forEach(b => {
+      b.ms.sort((x, y) => x.p - y.p || x.i - y.i);
+      b.ms.forEach(m => out.push(m.i));
+    });
+    row.length = 0; row.push(...out);
+  });
+  rows.forEach(row => row.forEach((i, k) => col.set(i, k)));
+  // transpose: swap adjacent pairs while their incident-edge inversion count
+  // strictly drops (TSE93 transpose, bounded 2 passes, re-checks swaps)
+  const pairCross = (a, b) => {   // a-left crossings minus b-left crossings
+    let d = 0;
+    const oa = [], ob = [];
+    edges.forEach(l => {
+      if (l.s === a) oa.push(l.t); else if (l.t === a) oa.push(l.s);
+      if (l.s === b) ob.push(l.t); else if (l.t === b) ob.push(l.s);
+    });
+    oa.forEach(x => ob.forEach(y => {
+      if (x === y || gRow.get(x) !== gRow.get(y)) return;
+      d += col.get(x) > col.get(y) ? 1 : -1;
+    }));
+    return d;                     // > 0: swapping strictly reduces crossings
+  };
+  for (let pass = 0; pass < 2; pass++) {
+    let swapped = false;
     for (let r = 0; r < rows.length; r++) {
       const row = rows[r];
-      if (!row || row.length < 2) continue;
-      const bc = row.map(i => {
-        const ps = preds.get(i);
-        if (!ps || !ps.length) return { i, b: col.get(i) };
-        let s = 0; for (const p of ps) s += col.get(p);
-        return { i, b: s / ps.length };
-      });
-      bc.sort((a, b) => a.b - b.b || a.i - b.i);
-      rows[r] = bc.map(x => x.i);
-      rows[r].forEach((i, k) => col.set(i, k));
+      if (!row) continue;   // fd rows can have holes
+      for (let k = 0; k + 1 < row.length; k++) {
+        if (pairCross(row[k], row[k + 1]) > 0) {
+          const t = row[k]; row[k] = row[k + 1]; row[k + 1] = t;
+          swapped = true; k--;    // re-examine after the swap
+        }
+      }
     }
+    if (!swapped) break;
   }
+  rows.forEach(row => row.forEach((i, k) => col.set(i, k)));
+
+  rows.forEach(row => row.forEach((i, k) => col.set(i, k)));
   // rows WRAP to world width against the resolved box widths. The world
   // width is CHOSEN: a narrow world wraps into more/taller chunks, a wide
   // one into fewer/flatter - the fit zoom z(W) saturates once W stops
@@ -6384,20 +6468,35 @@ function mapRender() {
   // [issue #78] slack spreading: wrapping stays tight (GAPX) so the scan
   // sees the flattest world, but PLACEMENT stretches each band's gaps up
   // to GAPX_MAX so a wide world reads as full-width bands instead of a
-  // centered column with dead side margins. Leftover centers the band.
+  // centered column with dead side margins. Cluster boundaries take
+  // CLUSTER_GAP_X (block separation); leftover centers the band.
   const place = new Map();
   chunks.forEach((chunk, rr) => {
     const sw = chunk.reduce((a, i) => a + geo.get(i).w, 0);
     const n = chunk.length;
-    // slackEach can exceed GAPX_MAX (center the leftover) but the stretch
-    // never exceeds the world: extent = sw + gap*(n-1) <= cwL - 16
-    const gap = n > 1
-      ? Math.min(GAPX_MAX, Math.max(GAPX, (cwL - 16 - sw) / (n - 1))) : GAPX;
-    let x = Math.max(8, (cwL - (sw + gap * (n - 1))) / 2);
+    const cbnd = [];               // cluster change at gap k (between k, k+1)
+    let nb = 0;
+    for (let k = 0; k + 1 < n; k++) {
+      const chg = cidOf(chunk[k]) !== cidOf(chunk[k + 1]);
+      cbnd.push(chg); if (chg) nb++;
+    }
+    // cluster gaps must never push the extent past the world; if they
+    // would, they degrade to the spread gap (band stays inside cwL - 16)
+    let cg = CLUSTER_GAP_X;
+    let gap = n > 1
+      ? Math.min(GAPX_MAX, Math.max(GAPX, (cwL - 16 - sw - cg * nb) / (n - 1))) : GAPX;
+    if (sw + cg * nb + gap * (n - 1 - nb) > cwL - 16) {
+      cg = GAPX;
+      gap = n > 1
+        ? Math.min(GAPX_MAX, Math.max(GAPX, (cwL - 16 - sw) / (n - 1))) : GAPX;
+    }
+    let ext = sw;
+    for (let k = 0; k < n - 1; k++) ext += cbnd[k] ? cg : gap;
+    let x = Math.max(8, (cwL - ext) / 2);
     const y = chunkY[rr];
-    chunk.forEach(i => {
+    chunk.forEach((i, k) => {
       place.set(i, { x, y, w: geo.get(i).w, h: geo.get(i).h, row: rr });
-      x += geo.get(i).w + gap;
+      if (k + 1 < n) x += geo.get(i).w + (cbnd[k] ? cg : gap);
     });
   });
   if (!mapZ) {   // focus change / first draw: fit BOTH dims [F15 rev2]
