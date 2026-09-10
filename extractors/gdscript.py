@@ -310,13 +310,26 @@ def parse_gd(path: Path, rel: str) -> FileSym:
             base = _indent(line)
             j = body_start
             body_lines: list[str] = []
+            # triple-quoted strings can contain column-0 content that
+            # only LOOKS like a dedent — same string-state tracking as
+            # the func body scan below
+            in_tq = False
             while j < len(lines):
                 nxt = lines[j]
+                if in_tq:
+                    body_lines.append(nxt)
+                    if nxt.count('"""') % 2 == 1 or nxt.count("'''") % 2 == 1:
+                        in_tq = False
+                    j += 1
+                    continue
                 if nxt.strip() == "":
+                    body_lines.append(nxt)
                     j += 1
                     continue
                 if _indent(nxt) > base:
                     body_lines.append(nxt)
+                    if nxt.count('"""') % 2 == 1 or nxt.count("'''") % 2 == 1:
+                        in_tq = True
                     j += 1
                     continue
                 break
