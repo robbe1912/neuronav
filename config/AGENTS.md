@@ -26,6 +26,7 @@ project gets a profile here and its MCP entry pins the profile via
 | `include_dirs` | `scripts, scenes, VFX, ai, tests, tools` | walked under root |
 | `extensions` | `.gd, .tscn` | suffixes kept (must be registered in `extractors/` to parse) |
 | `exclude_dirs` | `.git, __pycache__` | pruned from the directory walk |
+| `watch_interval_s` | `0` (off) | >0: the MCP server polls the stat gate every N seconds and auto-rescans without waiting for a tool call (issue #19) |
 | `embed_url` / `embed_model` / `embed_dim` | local Ollama `/api/embed`, `qwen3-embedding:0.6b`, 1024 | embedding backend |
 
 ## exclude_dirs semantics — read before adding a profile
@@ -41,3 +42,18 @@ the per-project state store (`.neuronav/`), and fixture trees.
 
 `include_dirs` and `extensions` are additive filters on top; `collection`
 namespacing means two profiles never share vectors.
+
+
+## Auto-rescan stat gate (issue #19)
+
+Read tools never answer from a stale index silently: each call first runs
+`nav.stat_fingerprint()` — a stat-only (mtime_ns, size) walk mirroring
+`iter_files`' include/exclude rules, TTL-cached for `nav.STAT_TTL_S` (3s)
+so bursts of tool calls do not re-stat the tree — and a drifted worktree
+triggers the sha-gated `nav.rescan()` (unchanged files embed nothing) plus
+the graph/fns sync before the tool answers. Embedding failures never crash
+the call: one stderr warning, a 60s retry cooldown, and the tool answers
+from the current index. `watch_interval_s` > 0 moves the polling into a
+daemon thread (~2s quiet debounce before each rescan) so indexing happens
+even with no tool traffic; absent or `0` keeps gate-on-read only. Stdlib
+`threading`/`time`/`os` throughout — no watchdog dependency.

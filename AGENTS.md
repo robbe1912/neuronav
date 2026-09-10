@@ -2,9 +2,10 @@
 
 Local code-intelligence tool: vector recall (chroma + Ollama), call/signal
 graph, clusters, dead-code tiers, 3D visualizer, stdio MCP server. Python 3.11,
-stdlib-first; chromadb/httpx are the only heavy deps — plus the pinned C++
-front-end pair tree-sitter==0.26.0 / tree-sitter-cpp==0.23.4 (issue #13).
-Standalone repo — point it
+stdlib-first; heavy deps: chromadb/httpx (vector store + embed transport), mcp
+(stdio server), numpy/networkx/scipy/scikit-learn (the cluster/graph math the
+read tools ride), plus the pinned C++ front-end pair tree-sitter==0.26.0 /
+tree-sitter-cpp==0.23.4 (issue #13). Standalone repo — point it
 at any project via config; nothing is vendored into target projects.
 
 Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`,
@@ -33,9 +34,11 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
   `setdefault`. NEVER export `NEURONAV_CONFIG` in the shell before running
   them — the env var overrides and silently points suites at the wrong index.
 - **Loud failures**: a failed offline layout aborts the build (`RuntimeError`);
-  the browser re-validates baked DATA. No silent fallbacks (the one sanctioned
-  degraded mode is `explore.py`'s deterministic lexical fallback, marked
-  "degraded" in its output).
+  the browser re-validates baked DATA. No silent fallbacks (sanctioned
+  degraded modes: `explore.py`'s lexical fallback and recall's BM25F-only
+  mode, each marked "degraded" in output). Auto-rescan failures (issue #19)
+  warn once on stderr, retry-suppress for 60s, and answer from the current
+  index — never crash the tool call.
 
 ## Architecture map
 
@@ -46,12 +49,12 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `extractors/` | per-language parsers behind a registry (`gdscript.py`, `python.py`, `model.py` dataclasses) |
 | `clusters.py` | Louvain + labeler + crosstalk (imported lazily) |
 | `explore.py` | one-call orientation tool (codegraph-discipline: slices + flow + budget) |
-| `server.py` | FastMCP stdio server; read-only tools carry `readOnlyHint`, `rescan` is the write tool |
+| `server.py` | FastMCP stdio server; read-only tools carry `readOnlyHint`, `rescan` is the write tool; read tools auto-rescan on worktree drift (stat gate, issue #19) |
 | `viz.py` | Python `_build_data` + ONE embedded JS template string -> `graph.html` |
 | `tools/` | dev gate + viewer: `qa_readability.py` (readability/declutter gate), `serve.py` (no-cache viewer), `wire-project.ps1` (per-project MCP wiring) |
 | `config/` | named config profiles; `config.json` (root, gitignored) is the default |
 | `vendor/three-0.160.0/` | vendored three.js core + 4 addons, embedded at build (see below) |
-| `tests/` | 9 self-contained suites + committed fixtures (see `tests/AGENTS.md`) |
+| `tests/` | 11 self-contained suites + committed fixtures (see `tests/AGENTS.md`) |
 | `docs/map-spec-v2.md` | spec the named-wire map layer implements |
 
 ## viz.py template laws
@@ -118,6 +121,8 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_target_regression` | byte-stability over the target repo | chromadb import + the target repo configured in `config.json` |
 | `test_explore` | explore() behavior incl. degraded mode | mcp + chroma + populated self-index |
 | `test_server_stdio` | MCP tool surface end-to-end (JSON-RPC over stdio) | mcp + default-config target repo |
+| `test_autorescan` | auto-rescan stat gate: freshness, TTL burst guard, failure cooldown, watcher (issue #19) | mcp + chromadb + numpy/networkx/scipy/scikit-learn (hermetic temp target, fake embeds) |
+| `test_repomap` | repo_map budget/determinism/rank ordering on synthetic graphs | stdlib + numpy |
 | `test_viz` | 90-check Playwright harness (real Chrome) | playwright + chrome + a fresh bake |
 
 Playwright harness gotchas: launch `channel="chrome"`; it serves `graph.html`

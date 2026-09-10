@@ -19,15 +19,27 @@ other code-graph tools (CodeGraph, aider repo map, SCIP).
 | `dead_code(n)` | unreachable-function candidates, tiered likely/review - candidates, never verdicts |
 | `duplicates(n)` | exact-clone function bodies (dedup targets) |
 | `visualize()` | generate interactive 3D graph.html (serve statically, open in browser) |
-| `rescan()` | incremental re-index (vectors + functions + graph) |
+| `rescan()` | incremental re-index (vectors + functions + graph) — the explicit always-sync variant; read tools already auto-rescan on worktree drift |
 
 All read-only tools carry `readOnlyHint`; `rescan` is the one mutating tool.
+
+## Automatic freshness (auto-rescan)
+
+Every read tool first stats the worktree (mtime/size walk over the configured
+includes, TTL-cached ~3s so bursts don't re-walk) and, when it drifted from
+the last synced state, runs the sha-gated incremental rescan before
+answering — external edits show up in the next tool call with no manual
+`rescan()`. Embedding failures degrade loudly: one stderr warning, a 60s
+retry cooldown, and the tool answers from the current index. To index even
+without tool traffic, set `"watch_interval_s": 0.5` (seconds; absent/0 = off)
+in the config: a stdlib daemon thread then polls the same stat gate and
+rescans after a ~2s quiet debounce.
 
 ## Prerequisites
 
 - Python 3.11+ (venv)
 - Ollama running locally with an embedding model: `ollama pull qwen3-embedding:0.6b`
-- `pip install chromadb httpx "mcp<2"` (into the venv)
+- `pip install chromadb httpx "mcp<2" numpy networkx scipy scikit-learn` (into the venv)
 
 Embeddings never leave the machine. Queries need Ollama up; indexing needs it too.
 
@@ -37,7 +49,7 @@ Embeddings never leave the machine. Queries need Ollama up; indexing needs it to
 git clone <this repo>
 cd neuronav
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install chromadb httpx "mcp<2"
+.venv\Scripts\python.exe -m pip install chromadb httpx "mcp<2" numpy networkx scipy scikit-learn
 ```
 
 ## Wire into a project
@@ -60,7 +72,9 @@ Defaults: root = parent of this folder. Extensions per extractors
     "args": ["-X", "utf8", "E:\\path\\to\\neuronav\\server.py"] } } }
 ```
 
-3. Rescan once per project; again after big refactors. Generated state lives in
+3. Read tools auto-rescan on worktree drift (see Automatic freshness
+   above), so an explicit `rescan()` is only needed after big refactors.
+   Generated state lives in
    `<project-root>/.neuronav/` (gitignored - `tools/wire-project.ps1` adds the
    snippet): chroma store, base shards, and the `graph.html` bake. Upgrading
    from an older install whose state sat machine-local in `.chroma/`? Nothing
@@ -125,3 +139,7 @@ dead-code lenses, crosstalk corridors.
 - Empty results with Ollama down - embeddings backend unreachable; search
   degrades to lexical matching marked "degraded", or fails loudly during
   indexing. Start Ollama and `rescan`.
+- `neuronav: auto-rescan FAILED (...)` on stderr - the background
+  freshness rescan could not run (embedding backend down); read tools keep
+  answering from the current index and retry is suppressed for 60s. Start
+  Ollama; the gate recovers by itself or via an explicit `rescan()`.

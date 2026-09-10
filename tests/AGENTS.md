@@ -1,6 +1,6 @@
 # AGENTS.md — tests/
 
-Nine self-contained suites. Each is a standalone script — no pytest — run in
+Eleven self-contained suites. Each is a standalone script — no pytest — run in
 its own process:
 
 ```
@@ -9,7 +9,7 @@ its own process:
 
 Exit 0 = all pass. Each suite bootstraps `sys.path` to the repo root and
 uses a local `check(name, cond)` helper (PASS/FAIL lines + failure count).
-CI (`.github/workflows/ci.yml`) runs the three hermetic suites on ubuntu
+CI (`.github/workflows/ci.yml`) runs the four hermetic suites on ubuntu
 with `NEURONAV_EMBED_FAKE=1`; the rest are local gates.
 
 ## Suites
@@ -24,6 +24,8 @@ with `NEURONAV_EMBED_FAKE=1`; the rest are local gates.
 | `test_target_regression` | byte-stability over the target repo: floor pins + liveness canaries | chromadb import + the target repo configured in `config.json` |
 | `test_explore` | explore() happy/degraded/no-hit paths + MCP tool annotations | mcp + chroma + populated self-index |
 | `test_server_stdio` | MCP stdio end-to-end: spawns server.py, drives JSON-RPC, asserts the context tool answers | mcp + default-config target repo |
+| `test_autorescan` | auto-rescan stat gate (issue #19): read-tool freshness, TTL burst guard, embed-failure cooldown, `watch_interval_s` watcher — in-process pins + two stdio e2e servers | mcp + chromadb + numpy/networkx/scipy/scikit-learn (hermetic temp target + `NEURONAV_EMBED_FAKE=1`) |
+| `test_repomap` | repo_map budget bound, byte determinism, rank ordering, god-hub saturation on synthetic graphs | stdlib + numpy (no index, no embeddings) |
 | `test_viz` | 90-check Playwright harness over the real baked page | playwright + chrome + a fresh `graph.html` bake |
 
 `probe_scene_placement.py` is a manual probe script, not a suite.
@@ -40,6 +42,10 @@ Suites pick their own config; the shell must not pre-export one:
 - `test_pyhard` / `test_mwires` write a generated temp config under the
   system temp dir pointing at `tests/fixtures/<name>` only — they never touch
   the real index.
+- `test_autorescan` generates its own temp TARGET TREE + config under the
+  system temp dir (separate state dirs for the in-process and e2e-server
+  sections) and self-sets `NEURONAV_EMBED_FAKE=1` — never run it against a
+  real profile.
 - `test_server_stdio` strips `NEURONAV_CONFIG` from the child env so the
   server binds the default profile.
 - `test_target_regression` / `test_viz` use the default `config.json` — the
