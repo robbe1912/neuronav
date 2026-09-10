@@ -64,3 +64,11 @@ class FileSym:
     # just that name (plus the receiver const) survives
     imported_modules: set[str] = field(default_factory=set)
     from_imports: set[tuple[str, str]] = field(default_factory=set)
+    # c++ file-scope variables (name -> type): unused statics are honest
+    # dead-code material; visibility precedes any tier-pass consumption
+    globals: dict[str, str] = field(default_factory=dict)
+    # c++ typedef / using-alias declarations (name -> target type text)
+    aliases: dict[str, str] = field(default_factory=dict)
+    # c++ members declared under a private access region (stronger dead
+    # candidates than public-unused once a tier pass consumes this)
+    private_members: set[str] = field(default_factory=set)

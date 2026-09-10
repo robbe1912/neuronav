@@ -170,6 +170,59 @@ check("meta: no bound method in dead candidates", not bad_bound, str(bad_bound))
 g2 = graph.get_graph(rebuild=True)
 check("determinism double-run digest", digest(g) == digest(g2))
 
+
+# ---- issue #20 v1.1: edge families + name nodes -------------------------
+
+# T5: destructor / operator / conversion-operator names (inline path)
+_dt = g.files["dtor_operator.h"].funcs
+check("t5 dtor name", "~DtorOp" in _dt, str(sorted(_dt)))
+check("t5 operator name", "operator+" in _dt, str(sorted(_dt)))
+check("t5 conversion operator",
+      sum(1 for n in _dt if n.startswith("operator") and n != "operator+") >= 1,
+      str(sorted(_dt)))
+
+# T1: templated call sites mint call edges (template_function/method arms)
+check("t1 template fn alive", alive("template_calls.cpp", "maxf"))
+check("t1 template method alive", alive("template_calls.cpp", "compute"))
+check("t1 tcall helper dead", ("template_calls.cpp", "unused_tcall_helper") in DEAD)
+
+# T2: callback refs keep pointer-only targets alive
+check("t2 qualified cb alive", alive("callbacks.cpp", "work"))
+check("t2 free cb alive", alive("callbacks.cpp", "missing_thing"))
+check("t2 cb helper dead", ("callbacks.cpp", "unused_cb_helper") in DEAD)
+check("t2 external hook name-literal", "external_hook" in g.referenced_names)
+
+# T3: instantiation edges (memnew idiom + new)
+_inst = [d for d in g.edges.get("instantiation.cpp::make_widget", ()) if d == "provider.h"]
+check("t3 memnew inst edge", bool(_inst), str(_inst))
+_inst2 = [d for d in g.edges.get("instantiation.cpp::make_plain", ()) if d == "provider.h"]
+check("t3 new inst edge", bool(_inst2), str(_inst2))
+check("t3 inst helper dead", ("instantiation.cpp", "unused_inst_helper") in DEAD)
+
+# T6: file-scope globals visible, locals excluded
+_gl = set(g.files["globals_statics.cpp"].globals)
+check("t6 globals surface", {"s_counter", "kLimit"} <= _gl, str(sorted(_gl)))
+check("t6 locals excluded", "local_only" not in _gl, str(sorted(_gl)))
+
+# T7: typedef/using aliases + alias edge to the defining file
+_al = g.files["typedefs_alias.h"].aliases
+check("t7 alias surface", _al.get("ProviderAlias") == "Provider" and _al.get("NameMap") == "int",
+      str(_al))
+check("t7 alias edge", "provider.h" in g.edges.get("typedefs_alias.h", ()), )
+
+# V5: struct class surface; class beats struct when both have bodies
+check("v5 struct-only class_name", g.files["struct_only.h"].class_name == "Point",
+      g.files["struct_only.h"].class_name)
+check("v5 class wins over struct", g.files["struct_with_class.h"].class_name == "Real",
+      g.files["struct_with_class.h"].class_name)
+check("v5 struct base resolved", g.files["struct_with_class.h"].extends == "Pod",
+      g.files["struct_with_class.h"].extends)
+
+# T4: templated base reduces to the bare name
+check("t4 template base strip", g.files["template_base.h"].extends == "TBase",
+      g.files["template_base.h"].extends)
+check("t4 primary class in class_map", g.class_map.get("UsesTBase") == "template_base.h",
+      str(g.class_map.get("UsesTBase")))
 print()
 print(f"{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)

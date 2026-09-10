@@ -54,17 +54,36 @@ _QUERY_SRC = """
 (function_definition declarator: (function_declarator declarator: (identifier) @fn.name)) @fn.def
 (function_definition declarator: (function_declarator declarator: (field_identifier) @fn.name)) @fn.def
 (function_definition declarator: (function_declarator declarator: (qualified_identifier) @fnq.name)) @fnq.def
+(function_definition declarator: (pointer_declarator (function_declarator declarator: (identifier) @fn.name))) @fn.def
+(function_definition declarator: (pointer_declarator (function_declarator declarator: (qualified_identifier) @fnq.name))) @fnq.def
+(function_definition declarator: (pointer_declarator (function_declarator declarator: (field_identifier) @fn.name))) @fn.def
 (function_definition declarator: (reference_declarator (function_declarator declarator: (identifier) @fn.name))) @fn.def
 (function_definition declarator: (reference_declarator (function_declarator declarator: (field_identifier) @fn.name))) @fn.def
-(function_definition declarator: (reference_declarator (function_declarator declarator: (qualified_identifier) @fnq.name))) @fnq.def
+(function_definition declarator: (function_declarator declarator: (qualified_identifier) @fnq.name)) @fnq.def
+(function_definition declarator: (function_declarator declarator: (destructor_name) @fn.name)) @fn.def
+(function_definition declarator: (function_declarator declarator: (operator_name) @fn.name)) @fn.def
+(function_definition declarator: (operator_cast) @fn.name) @fn.def
 (class_specifier name: (type_identifier) @cls.name) @cls.def
+(struct_specifier name: (type_identifier) @cls.name) @cls.def
+(union_specifier name: (type_identifier) @cls.name) @cls.def
 (base_class_clause (type_identifier) @cls.base)
+(base_class_clause (template_type name: (type_identifier) @cls.base))
 (field_declaration declarator: (field_identifier) @member.name) @member.decl
 (enum_specifier name: (type_identifier) @enum.name) @enum.def
 (enumerator name: (identifier) @const.name) @const.def
 (preproc_include path: (string_literal) @include.path) @include.def
 (call_expression function: (field_expression field: (field_identifier) @call.field)) @call.def
 (call_expression function: (qualified_identifier) @callq.name) @callq.def
+(call_expression function: (template_function name: (identifier) @callt.name)) @callt.def
+(call_expression function: (field_expression field: (template_method name: (field_identifier) @calltf.name))) @calltf.def
+(pointer_expression argument: (identifier) @fref.name) @fref.def
+(pointer_expression argument: (field_expression) @frefq.name) @frefq.def
+(pointer_expression argument: (qualified_identifier) @frefq.name) @frefq.def
+(new_expression type: (type_identifier) @new.type) @new.def
+(declaration declarator: (identifier) @gvar.name) @gvar.def
+(declaration declarator: (init_declarator declarator: (identifier) @gvar.name)) @gvar.def
+(type_definition declarator: (type_identifier) @td.name) @td.def
+(alias_declaration name: (type_identifier) @al.name) @al.def
 """
 _QUERY = Query(CPP_LANG, _QUERY_SRC)
 
@@ -126,6 +145,10 @@ RE_EMIT = re.compile(r"emit_signal\(\s*(?:CoreStringName\()?\s*\"?(\w+)")
 # CoreStringName("x") / StringName("x") anywhere — dispatch-name literals
 RE_NAME_LIT = re.compile(r"\b(?:CoreStringName|StringName)\(\s*\"(\w+)\"")
 
+# memnew(T) / memnew_arr(T) — the engine's heap construction idiom; the
+# macro's argument names the constructed type (scan_calls folds it in as
+# an instantiation site alongside `new T`)
+RE_MEMNEW = re.compile(r"\bmemnew(?:_arr)?\s*\(\s*([A-Za-z_]\w*)")
 # files whose registration macros imply dynamic dispatch — feeds the
 # dead-code review-vs-likely tier for C++ (graph.dead_code)
 CPP_DYNAMIC_RE = re.compile(r"ClassDB::|GDVIRTUAL|ADD_SIGNAL|ADD_PROPERTY|emit_signal")
@@ -206,6 +229,28 @@ def _call_span(text: str, open_idx: int) -> int:
                 return i + 1
     return len(text)
 
+
+def _strip_template(name: str) -> str:
+    """Drop a balanced ``<...>`` suffix: ``Base<int>`` -> ``Base``.
+
+    Depth-counted, never crosses a ``;`` (both impossible in a type
+    position and a cheap guard against walking into broken parses).
+    """
+    lt = name.find("<")
+    if lt < 0:
+        return name
+    depth = 0
+    for i in range(lt, len(name)):
+        c = name[i]
+        if c == "<":
+            depth += 1
+        elif c == ">":
+            depth -= 1
+            if depth == 0:
+                return name[:lt].strip()
+        elif c == ";" or (c == "(" and depth == 0):
+            break
+    return name[:lt].strip()
 
 def harvest_registration(text: str) -> dict[str, list]:
     """All registration-macro facts from one file's text (stdlib regex).
@@ -335,7 +380,7 @@ def parse(path: Path, rel: str) -> FileSym:
             None,
         )
         if nm is None:
-            continue  # operators/destructors — no plain name to key on
+            continue  # def shape with no captured name arm
         name = src[nm.start_byte:nm.end_byte].decode("utf8", "replace")
         name = name.rsplit("::", 1)[-1]  # qualified Class::method -> method
         if not name or name in fs.funcs:
@@ -355,6 +400,7 @@ def parse(path: Path, rel: str) -> FileSym:
     cls_defs = bytewise("cls.def")
     cls_names = bytewise("cls.name")
     cls_bases = bytewise("cls.base")
+    bodies = []  # (node, name, base, is_class) in document order
     for cd in cls_defs:
         if not any(c.type == "field_declaration_list" for c in cd.children):
             continue  # forward declaration — no edge, no class_map entry
@@ -364,16 +410,28 @@ def parse(path: Path, rel: str) -> FileSym:
         )
         if nm is None:
             continue
-        fs.class_name = src[nm.start_byte:nm.end_byte].decode("utf8", "replace")
         base = next(
             (b for b in cls_bases if cd.start_byte <= b.start_byte < cd.end_byte),
             None,
         )
-        if base is not None:
-            fs.extends = src[base.start_byte:base.end_byte].decode("utf8", "replace")
-        break
+        bodies.append((
+            cd,
+            src[nm.start_byte:nm.end_byte].decode("utf8", "replace"),
+            _strip_template(src[base.start_byte:base.end_byte].decode("utf8", "replace"))
+            if base is not None else "",
+            cd.type == "class_specifier",
+        ))
+    if bodies:
+        # a class beats a struct when both carry bodies (engine headers
+        # open with POD structs and close with the registered class);
+        # structs/unions still surface when nothing else declares a body
+        pick = next((b for b in bodies if b[3]), bodies[0])
+        fs.class_name = pick[1]
+        fs.extends = pick[2]
 
-    # data members (method declarations never carry a field_identifier)
+    # data members (method declarations never carry a field_identifier).
+    # visibility: the nearest preceding access_specifier in the enclosing
+    # body decides; absent one, class defaults private, struct/union public
     member_names = bytewise("member.name")
     for md in bytewise("member.decl"):
         nm = next(
@@ -389,6 +447,20 @@ def parse(path: Path, rel: str) -> FileSym:
                 ty = _type_text(src, c)
                 break
         fs.members[name] = ty
+        fl = md.parent
+        if fl is not None and fl.type == "field_declaration_list":
+            access = (
+                "private"
+                if fl.parent is not None and fl.parent.type == "class_specifier"
+                else "public"
+            )
+            for c in fl.children:
+                if c.start_byte >= md.start_byte:
+                    break
+                if c.type == "access_specifier":
+                    access = src[c.start_byte:c.end_byte].decode("utf8", "replace")
+            if access == "private":
+                fs.private_members.add(name)
 
     # enum surface: raw enumerators + BIND_ENUM_CONSTANT / integer constants
     for n in bytewise("const.name"):
@@ -425,6 +497,87 @@ def parse(path: Path, rel: str) -> FileSym:
     for v in reg["gdvirtuals"]:
         fs.entry_hints.add(v.name)
 
+    # file-scope variables: only declarations whose parent is the
+    # translation unit (or a namespace) — locals inside function bodies
+    # also parse as declarations and must stay out
+    gvar_names = bytewise("gvar.name")
+    for gd in bytewise("gvar.def"):
+        scope = gd.parent.type if gd.parent is not None else ""
+        if scope not in ("translation_unit", "namespace_definition"):
+            continue
+        nm = next(
+            (n for n in gvar_names if gd.start_byte <= n.start_byte < gd.end_byte),
+            None,
+        )
+        if nm is None:
+            continue
+        ty = ""
+        for c in gd.children:
+            if c.type in _TYPE_NODES:
+                ty = _type_text(src, c)
+                break
+        fs.globals[src[nm.start_byte:nm.end_byte].decode("utf8", "replace")] = ty
+
+    # typedefs + using-aliases: name -> target type (template args
+    # stripped); target rides the declaration text between keyword and name
+    for key, prefix in (("td", "typedef "), ("al", "")):
+        names = bytewise(f"{key}.name")
+        for d in bytewise(f"{key}.def"):
+            nm = next(
+                (n for n in names if d.start_byte <= n.start_byte < d.end_byte),
+                None,
+            )
+            if nm is None:
+                continue
+            name = src[nm.start_byte:nm.end_byte].decode("utf8", "replace")
+            decl = src[d.start_byte:d.end_byte].decode("utf8", "replace").strip()
+            if key == "td":
+                body = decl[len(prefix):]
+                target = body[: body.rfind(name)].strip() if name in body else ""
+            else:
+                target = decl.split("=", 1)[-1].rstrip(";").strip() if "=" in decl else ""
+            fs.aliases[name] = _strip_template(target)
+
+    return fs
+
+
+def scan_calls(path: Path, rel: str) -> list[dict]:
+    """Call/reference/instantiation sites for graph edge minting.
+
+    One dict per site, start_byte-ordered (deterministic): {name, line,
+    kind}. kind: call (obj.method()), callq (A::b()), callt (f<T>()),
+    calltf (obj.m<T>()), fref (&fn), frefq (&C::fn), new (new T).
+    memnew(T)/memnew_arr(T) — the engine idiom — folds in as new-kind.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    src = text.encode("utf-8")
+    tree = _PARSER.parse(src)
+    caps = QueryCursor(_QUERY).captures(tree.root_node)
+    line_starts = [0] + [i + 1 for i, b in enumerate(src) if b == 0x0A]
+    sites: list[dict] = []
+    for kind, key in (
+        ("call", "call.field"),
+        ("callq", "callq.name"),
+        ("callt", "callt.name"),
+        ("calltf", "calltf.name"),
+        ("fref", "fref.name"),
+        ("frefq", "frefq.name"),
+        ("new", "new.type"),
+    ):
+        for n in sorted(caps.get(key, ()), key=lambda x: x.start_byte):
+            sites.append({
+                "name": src[n.start_byte:n.end_byte].decode("utf8", "replace"),
+                "line": bisect.bisect_right(line_starts, n.start_byte),
+                "kind": kind,
+            })
+    for m in RE_MEMNEW.finditer(text):
+        sites.append({
+            "name": m.group(1),
+            "line": text.count("\n", 0, m.start()) + 1,
+            "kind": "new",
+        })
+    sites.sort(key=lambda s: (s["line"], s["name"], s["kind"]))
+    return sites
     return fs
 
 
