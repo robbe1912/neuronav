@@ -13,7 +13,8 @@ import re
 from pathlib import Path
 from typing import Iterator
 
-import nav
+# nav imported lazily inside the parse fns: extractors are leaf parsers,
+# nav sits on top (nav -> extractors -> ... must never cycle back)
 from extractors.model import FileSym, Func
 
 TAB_WIDTH = 4
@@ -261,6 +262,7 @@ def _scan_io(body: str, params: list, member_names: set) -> tuple:
 
 
 def parse_gd(path: Path, rel: str) -> FileSym:
+    import nav
     text = nav._read_text(path)
     fs = FileSym(path=rel, ext=".gd")
     lines = text.splitlines()
@@ -439,6 +441,7 @@ def parse_gd(path: Path, rel: str) -> FileSym:
 
 
 def parse_tscn(path: Path, rel: str) -> FileSym:
+    import nav
     text = nav._read_text(path)
     fs = FileSym(path=rel, ext=".tscn")
     ext_ids: dict[str, str] = {}

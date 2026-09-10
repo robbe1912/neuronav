@@ -51,7 +51,8 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `explore.py` | one-call orientation tool (codegraph-discipline: slices + flow + budget) |
 | `server.py` | FastMCP stdio server; read-only tools carry `readOnlyHint`, `rescan` is the write tool; read tools auto-rescan on worktree drift (stat gate, issue #19) |
 | `viz.py` | Python `_build_data` + ONE embedded JS template string -> `graph.html` |
-| `tools/` | dev gate + viewer: `qa_readability.py` (readability/declutter gate), `serve.py` (no-cache viewer), `wire-project.ps1` (per-project MCP wiring) |
+| `onboard.py` | one-command project onboarding (issue #27): `init`/`wire` write `<project>/.neuronav/config.json` + MCP entries — the install stays read-only, OS-agnostic pure stdlib |
+| `tools/` | dev gate + viewer: `qa_readability.py` (readability/declutter gate), `serve.py` (no-cache viewer) |
 | `config/` | named config profiles; `config.json` (root, gitignored) is the default |
 | `vendor/three-0.160.0/` | vendored three.js core + 4 addons, embedded at build (see below) |
 | `tests/` | 11 self-contained suites + committed fixtures (see `tests/AGENTS.md`) |
@@ -123,6 +124,9 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_server_stdio` | MCP tool surface end-to-end (JSON-RPC over stdio) | mcp + default-config target repo |
 | `test_autorescan` | auto-rescan stat gate: freshness, TTL burst guard, failure cooldown, watcher (issue #19) | mcp + chromadb + numpy/networkx/scipy/scikit-learn (hermetic temp target, fake embeds) |
 | `test_repomap` | repo_map budget/determinism/rank ordering on synthetic graphs | stdlib + numpy |
+| `test_cpphard` | C++ extractor edge cases (macro surface, pairing, dead tiers, determinism) | tree-sitter wheels (hermetic fixtures) |
+| `test_recall` | hybrid recall: BM25F/RRF fusion, ctx hops, degraded mode | chromadb import (hermetic, `NEURONAV_EMBED_FAKE=1`) |
+| `test_project_mode` | onboarding + config discovery precedence + viz-as-add-on (issue #27) | stdlib + chromadb import (hermetic temp trees) |
 | `test_viz` | 90-check Playwright harness (real Chrome) | playwright + chrome + a fresh bake |
 
 Playwright harness gotchas: launch `channel="chrome"`; it serves `graph.html`
@@ -154,7 +158,7 @@ Visualizer work also gates through `tools/qa_readability.py` (see
   (absolute path). Relative `"root"` values resolve against the config file's
   directory.
 - Consumers wire per-project MCP entries that pass `NEURONAV_CONFIG` in the
-  server env (see `tools/wire-project.ps1`) — one install, many projects.
+  server env (see `onboard.py wire`) — one install, many projects, zero install-side edits.
 - Scratch/test dirs MUST be in `exclude_dirs` or they pollute the self-index
   dead-code tier (see `config/AGENTS.md`).
 - Throwaway worktrees and test screenshots live in `.tmp/` (repo root,

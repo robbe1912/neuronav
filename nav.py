@@ -1,14 +1,18 @@
 """nav core: whole-file semantic index of a checkout (GDScript/scenes,
-Python — whatever the config's "extensions" list enables).
+Python/C++ — whatever the config's "extensions" list enables).
 
-Config resolution: $NEURONAV_CONFIG env var, else ``config.json`` next to
-this file. A second config (e.g. ``config/neuronav.json`` for self-indexing)
-switches root/include_dirs/extensions/collection without touching the
-primary one. Per-project state (issue #15): everything this config
-generates lives under ``state_dir`` (default ``<root>/.neuronav``) - chroma
-store at ``chroma/``, base shards at ``base/``, viz bake at ``graph.html``.
-No auto-migration: a config whose root has no ``.neuronav`` builds a fresh
-store on the next rescan (one-time re-embed).
+Config resolution (issue #27 — the install is read-only at onboarding
+time; config travels with the project):
+  1. $NEURONAV_CONFIG env var (explicit, always wins),
+  2. ``<cwd>/.neuronav/config.json`` (project-local; ``onboard.py init``
+     writes it, ``onboard.py wire`` scaffolds + wires MCP),
+  3. ``config.json`` next to this file, but ONLY when cwd IS the checkout
+     (legacy machine-local default for the install's own target),
+  4. no config: pure defaults — root = cwd, include ``.``, extensions =
+     every registered extractor suffix, state = ``<root>/.neuronav``.
+Per-project state (issue #15): everything a config generates lives under
+``state_dir`` (default ``<root>/.neuronav``) - chroma store at ``chroma/``,
+base shards at ``base/``, viz bake at ``graph.html``. No auto-migration.
 """
 
 from __future__ import annotations
@@ -39,21 +43,42 @@ import recall
 TOOL_DIR = Path(__file__).resolve().parent
 
 
-def _apply_config(path: Path) -> None:
+def _discover_config() -> Path | None:
+    """Issue #27 discovery: env beats project-local beats checkout-local.
+    Returns ``None`` when nothing applies -> caller uses pure defaults."""
+    env = os.environ.get("NEURONAV_CONFIG")
+    if env:
+        return Path(env)
+    local = Path.cwd() / ".neuronav" / "config.json"
+    if local.is_file():
+        return local
+    checkout = TOOL_DIR / "config.json"
+    if checkout.is_file() and Path.cwd() == TOOL_DIR:
+        return checkout
+    return None
+
+
+def _apply_config(path: Path | None) -> None:
     """(Re)bind the config-derived module globals. Called once at import
     and again by ``nav.py --config <path>`` (which also sets NEURONAV_CONFIG
-    so subprocesses and sibling modules like graph.py agree)."""
+    so subprocesses and sibling modules like graph.py agree). ``path=None``
+    means no config anywhere: pure cwd defaults (issue #27)."""
     global ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM, WATCH_INTERVAL_S, STATE_DIR, DB_DIR, BASE_DIR
-    cfg: dict = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-    ROOT = Path(cfg.get("root") or TOOL_DIR.parent)
+    cfg: dict = json.loads(path.read_text(encoding="utf-8")) if path is not None and path.is_file() else {}
+    # lazy import: extractors pulls graph-ish deps only for the suffix list
+    from extractors import EXTENSIONS as _REGISTERED
+    ROOT = Path(cfg.get("root") or Path.cwd())
     if not ROOT.is_absolute():
         # relative roots resolve against the config file's own directory,
         # so shipped profiles (config/neuronav.json) stay machine-portable
         ROOT = (path.parent / ROOT).resolve()
     COLLECTION = str(cfg.get("collection", "main"))
-    INCLUDE_DIRS = tuple(cfg.get("include_dirs", ("scripts", "scenes", "VFX", "ai", "tests", "tools")))
-    EXTS = set(cfg.get("extensions", (".gd", ".tscn")))
-    EXCLUDE_DIRS = frozenset(cfg.get("exclude_dirs", (".git", "__pycache__")))
+    # project-local / no-config defaults walk everything (issue #27); the
+    # legacy install-config default keeps the original target-repo shape
+    _walk_all = path is None or (path.parent.name == ".neuronav")
+    INCLUDE_DIRS = tuple(cfg.get("include_dirs", (".",) if _walk_all else ("scripts", "scenes", "VFX", "ai", "tests", "tools")))
+    EXTS = set(cfg.get("extensions", sorted(_REGISTERED) if _walk_all else (".gd", ".tscn")))
+    EXCLUDE_DIRS = frozenset(cfg.get("exclude_dirs", (".git", "__pycache__", ".venv", ".neuronav", "node_modules") if _walk_all else (".git", "__pycache__")))
     EMBED_URL = str(cfg.get("embed_url", "http://127.0.0.1:11434/api/embed"))
     EMBED_MODEL = str(cfg.get("embed_model", "qwen3-embedding:0.6b"))
     EMBED_DIM = int(cfg.get("embed_dim", 1024))
@@ -65,8 +90,10 @@ def _apply_config(path: Path) -> None:
     # <root>/.neuronav. Relative values resolve against the config file's
     # own dir (same law as "root"), so shipped profiles stay portable.
     STATE_DIR = Path(cfg.get("state_dir") or ROOT / ".neuronav")
-    if not STATE_DIR.is_absolute():
+    if not STATE_DIR.is_absolute() and path is not None:
         STATE_DIR = (path.parent / STATE_DIR).resolve()
+    else:
+        STATE_DIR = STATE_DIR.resolve()
     DB_DIR = STATE_DIR / "chroma"
     BASE_DIR = STATE_DIR / "base"
 
@@ -83,7 +110,7 @@ WATCH_INTERVAL_S: float
 STATE_DIR: Path
 DB_DIR: Path
 BASE_DIR: Path
-_apply_config(Path(os.environ.get("NEURONAV_CONFIG") or TOOL_DIR / "config.json"))
+_apply_config(_discover_config())
 
 MAX_EMBED_CHARS = 30_000  # keep under Ollama context; head of .tscn has script links
 EMBED_BATCH = 32
@@ -588,7 +615,6 @@ def import_base() -> dict[str, int | str]:
             )
         return {"imported": len(ids), "manifest_count": int(manifest.get("count", 0)),
                 "exported_at": str(manifest.get("exported_at", ""))}
-
 
 if __name__ == "__main__":
     argv = list(sys.argv[1:])

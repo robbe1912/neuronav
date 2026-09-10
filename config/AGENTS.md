@@ -1,20 +1,28 @@
 # AGENTS.md — config/
 
-Named config profiles. One neuronav install indexes many projects; each
-project gets a profile here and its MCP entry pins the profile via
-`NEURONAV_CONFIG` (see `tools/wire-project.ps1`).
+Config resolution. One neuronav install indexes many projects and the
+install itself stays read-only (issue #27): the project-local config
+(``<project>/.neuronav/config.json``, written by ``onboard.py init``) is
+the primary form; named profiles here are the tuned-override form.
 
-## Selection
+## Selection (``nav._discover_config``)
 
-- Default: `config.json` at the repo ROOT (gitignored, machine-local) — the
-  primary target repo.
-- Alternates: `config/<name>.json`, selected by setting `NEURONAV_CONFIG`
-  to the profile's ABSOLUTE path. `nav._apply_config` runs once at import
-  (and again on `nav.py --config <path>`, which also exports the var so
-  sibling modules and subprocesses agree).
-- A relative `"root"` resolves against the config file's own directory —
-  shipped profiles stay machine-portable (`config/neuronav.json` uses
-  `"root": ".."` to index this repo itself).
+1. ``$NEURONAV_CONFIG`` — explicit, always wins (absolute path).
+2. ``<cwd>/.neuronav/config.json`` — project-local config; running any
+   command from inside a project just works.
+3. ``config.json`` at the repo ROOT (gitignored, machine-local) — the
+   legacy default, honored ONLY when cwd is the checkout itself.
+4. Nothing found — pure cwd defaults: root = cwd, include ``.``,
+   extensions = every registered extractor suffix, excludes = the sane
+   set (``.git``, ``__pycache__``, ``.venv``, ``.neuronav``,
+   ``node_modules``). This is the npx shape: no config, no edits.
+
+``nav._apply_config`` runs once at import (and again on
+``nav.py --config <path>``, which also exports the var so sibling
+modules and subprocesses agree). A relative ``"root"`` resolves against
+the config file's own directory — shipped profiles stay machine-portable
+(``config/neuronav.json`` uses ``"root": ".."`` to index this repo
+itself).
 
 ## Fields (consumed by `nav._apply_config`)
 

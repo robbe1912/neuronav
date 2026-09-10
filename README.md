@@ -55,77 +55,67 @@ python -m venv .venv
 .venv\Scripts\python.exe -m pip install chromadb httpx "mcp<2" numpy networkx scipy scikit-learn
 ```
 
-## Wire into a project
+## Wire into a project (one command, any OS)
 
-1. Write `config.json` next to `nav.py` (gitignored, machine-local):
+From inside the target project:
 
-```json
-{ "root": "E:/path/to/project", "include_dirs": ["scripts", "scenes"] }
+```bash
+python /path/to/neuronav/onboard.py wire --index
 ```
 
-Defaults: root = parent of this folder. Extensions per extractors
-(`.gd`/`.tscn`/`.py`/...); `NEURONAV_CONFIG` env selects an alternate profile
-(e.g. `config/neuronav.json` indexes this repo itself).
+That's the whole setup: it writes `<project>/.neuronav/config.json`
+(walk-everything defaults, extensions = every registered extractor suffix),
+appends `.neuronav/` to the project's `.gitignore`, indexes the tree, bakes
+the map, and wires MCP entries (`.mcp.json` for Claude Code, `opencode.json`
+when present) with `NEURONAV_CONFIG` pinned to the project-local config.
+**The neuronav install stays read-only** — nothing about a project is stored
+inside it, so one install serves any number of projects and the package is
+`npx`-shaped (run the tool against a repo, never edit the package).
 
-2. Project-level MCP wiring (Claude Code `.mcp.json`, OpenCode `opencode.json`):
+Config discovery when you run `nav.py`/`server.py` yourself:
+`NEURONAV_CONFIG` env → `<cwd>/.neuronav/config.json` (the project-local
+one `onboard.py init` writes) → `config.json` next to `nav.py` *only when
+cwd is the checkout* (machine-local default) → pure defaults (root = cwd,
+walk everything). Read tools auto-rescan on worktree drift, so an explicit
+`rescan()` is only needed after big refactors. Upgrading from an install
+whose state sat machine-local? Nothing moves automatically: the next rescan
+builds a fresh `.neuronav/` store (one-time re-embed), or set `state_dir`
+explicitly to keep the old location.
 
-```json
-{ "mcpServers": { "neuronav": {
-    "command": "E:\\path\\to\\neuronav\\.venv\\Scripts\\python.exe",
-    "args": ["-X", "utf8", "E:\\path\\to\\neuronav\\server.py"] } } }
-```
+Agent-facing guidance for consuming repos: `templates/agents-snippet.md`.
 
-3. Read tools auto-rescan on worktree drift (see Automatic freshness
-   above), so an explicit `rescan()` is only needed after big refactors.
-   Generated state lives in
-   `<project-root>/.neuronav/` (gitignored - `tools/wire-project.ps1` adds the
-   snippet): chroma store, base shards, and the `graph.html` bake. Upgrading
-   from an older install whose state sat machine-local in `.chroma/`? Nothing
-   moves automatically: the next rescan builds a fresh `.neuronav/` store
-   (one-time re-embed), `import-base` reseeds from shards, or set `state_dir`
-   explicitly to keep the old location.
+### Without MCP wiring
 
-### Multiple projects from one install
-
-`config.json` (the default profile) is just the fallback - named profiles in
-`config/` let one install serve many projects. Each project's MCP entry pins
-its profile via `NEURONAV_CONFIG` in the server env:
-
-```json
-{ "mcpServers": { "neuronav": {
-    "command": "E:\\path\\to\\neuronav\\.venv\\Scripts\\python.exe",
-    "args": ["-X", "utf8", "E:\\path\\to\\neuronav\\server.py"],
-    "env": { "NEURONAV_CONFIG": "E:\\path\\to\\neuronav\\config\\mygame.json" } } } }
-```
-
-`tools/wire-project.ps1 -ProjectPath <path> [-WithBaseShards]` does all of it:
-writes the profile (with project-local `state_dir`), appends the `.neuronav/`
-ignore snippet, (optionally) seeds from the project's own shards, rescans,
-and wires `.mcp.json` / `opencode.json` in the target project. Agent-facing
-guidance for consuming repos: `templates/agents-snippet.md`.
+`python onboard.py init --index` writes the config + `.gitignore` entry and
+indexes without touching MCP files. `--project <path>` targets another
+directory from anywhere.
 
 ## Fast onboarding: base shards (skip the re-embed)
 
 Export a project's trained index as gzipped shards (embeddings included,
 ~6 MB per 600 files) and track them in the project repo:
 
-```powershell
+```bash
 nav.py export-base     # writes <state_dir>/base/{manifest.json,shard-*.jsonl.gz}
 nav.py import-base     # seeds the project's empty store from shards; skips deleted files
 ```
 
 `import-base` guards on model/dim; `rescan` heals to the current worktree.
 Shards travel with the project: export from one checkout's `.neuronav/base/`,
-track them in the project repo, and teammates seed straight from there via
-`wire-project.ps1 -WithBaseShards` (state is project-local — no install-side
-copies).
+track them in the project repo, and teammates seed straight from there
+(state is project-local — no install-side copies).
 
-## 3D visualizer
+## 3D visualizer (optional add-on)
 
-`viz.py generate` bakes a frozen deterministic layout + full graph data into a
-single self-contained `graph.html`. Serve the folder with any static server and
-open it - hover = 1-hop greyout, focus mode with animated call direction,
-strata (height = call depth from entry points), cluster supernodes, cycles and
+The **core** is the index (chroma) + hybrid recall (BM25F + vector + RRF)
++ graph + MCP server. The visualizer is an add-on that ships enabled:
+`viz.py` bakes a frozen deterministic layout + full graph data into a single
+self-contained `graph.html` (`tools/serve.py` serves it, `tools/qa_readability.py`
+gates it). Removing `viz.py` + `vendor/` strips it cleanly — `onboard.py --index`
+skips the bake with a note, the MCP `visualize()` tool answers with a
+pointer instead of a bake, and every other tool keeps working.
+Hover = 1-hop greyout, focus mode with animated call direction, strata
+(height = call depth from entry points), cluster supernodes, cycles and
 dead-code lenses, crosstalk corridors.
 
 ## Troubleshooting
