@@ -172,6 +172,12 @@ Conventional commits, lowercase scope (`feat(viz):`, `fix(config):`,
 Terse bodies explaining WHY, not WHAT.
 
 - When starting work on an issue, immediately open a DRAFT PR linked to it ("Closes #N") and push the branch — visible ownership prevents duplicate grabs; flip to ready when the gate is green.
+- Every posted artifact and every branch has a PAIR REVIEWER agent that grounds
+  the worker: name the reviewer in the draft PR body at open time. The reviewer
+  fact-checks issue/PR bodies before `gh` posts them and grounds each increment
+  (claims vs artifacts: real runs, real numbers, real files) before push. Read-only
+  research stays exempt until it promotes to an issue — then the reviewer gates
+  the filing.
 Every change lands via pull request — main is protected with enforce_admins;
   the owner is the sole approving reviewer. Fixes reference their issue
   ("Closes #N") and issues are closed with evidence at merge time, not left
