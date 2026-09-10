@@ -157,9 +157,9 @@ gate, extractor rules. Every change lands via pull request.
   answering from the current index and retry is suppressed for 60s. Start
   Ollama; the gate recovers by itself or via an explicit `rescan()`.
 
-- `NEURONAV_CONFIG points at '<path>', which does not exist` - deliberate
+- `NEURONAV_CONFIG points at '<path>', which does not exist` — deliberate
   abort, not a fallback: the explicit var is a contract. Unset it or point
   it at a real config json (`onboard.py init` writes one).
-- `rescan found 0 files under root=...` - the config matches nothing
+- `rescan found 0 files under root=...` — the config matches nothing
   (typo'd `include_dirs`/`extensions`); fix the config instead of
   accepting an empty index.
