@@ -273,7 +273,7 @@ def _build_data() -> dict:
 
     # engine-scale export budget (spec §4 row 10): named-wire rows grow
     # ~12/file and would push the engine bake past the bootable-html size.
-    # Below the byte cap nothing changes (self-index/swmg bake identical);
+    # Below the byte cap nothing changes (self-index/game-target bake identical);
     # above it, whole FILE PAIRS are kept by pagerank priority — call rows
     # and their fedges mirrors share a pair, so the two exports stay
     # consistent — until the budget is spent. Deterministic: fixed sort
@@ -847,7 +847,7 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
     for step in range(700 if n <= 2048 else 300):
         alpha *= 0.997
         # pairwise repulsion. Dense N^2 below the scale cut — byte-stable on
-        # every existing corpus (self-index, swmg all sit under it). Above it
+        # every existing corpus (self-index, game-target all sit under it). Above it
         # (#13 spec §4 row 6): the dense product is ~1.2 GB of temporaries
         # per step at 6k nodes and turns a bake into hours, so repulsion is
         # grid-binned and each node feels only its 32 nearest neighbours —
