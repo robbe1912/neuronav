@@ -1,4 +1,6 @@
 # neuronav
+[![CI](https://github.com/robbe1912/neuronav/actions/workflows/ci.yml/badge.svg)](https://github.com/robbe1912/neuronav/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Local code-intelligence for AI coding agents: vector search + structural code
 graph + an interactive 3D map, exposed as a stdio MCP server. Standalone repo -
@@ -130,6 +132,11 @@ Hover = 1-hop greyout, focus mode with animated call direction, live
 search with highlighted matches + click-to-focus on hubs and function
 tiers, strata (height = call depth from entry points), cluster supernodes,
 cycles and dead-code lenses, crosstalk corridors.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) — conventional commits, the suite
+gate, extractor rules. Every change lands via pull request.
 
 ## Troubleshooting
 
