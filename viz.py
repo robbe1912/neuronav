@@ -1442,6 +1442,7 @@ const hlArr = new Float32Array(N);   // 1 = file matches the live query
 let hlFn = new Set();                // fn names matching the live query
 function applyHighlight() {
   hlArr.fill(0); hlFn.clear();
+  _sfDirty = true;   // search-match brightness lift reads hlArr
   if (query) {
     for (let i = 0; i < N; i++) {
       const n = nodes[i];
@@ -1784,24 +1785,33 @@ fileMesh.frustumCulled = false;
 scene.add(fileMesh);
 const _dummy = new THREE.Object3D();
 const _col = new THREE.Color();
+const _sfTmp = new THREE.Vector3();
+// whole-mesh skip: the loop's outputs are a pure function of (camera pose,
+// per-node alpha/hover/anchor/highlight state, canvas height, fn sizing).
+// At rest every input reproduces bit-for-bit, so the pass — 3,223 matrix
+// composes + writes + a 245KB GPU upload — is skipped until one moves.
+// _sfDirty is set wherever an input mutates (ease loop, compactAnim,
+// applyVisibility, rebuildFnLayer, applyHighlight, refreshCollapse,
+// resize3D, hover changes); camera motion is caught by the pose compare.
+let _sfDirty = true;
+const _sfCam = new THREE.Vector3();
 function syncFileMesh() {
   // fn-ownership: while a fn box is hovered its owning file lifts hard
   // stale pick guard: fnMeta is rebuilt/cleared by rebuildFnLayer (focus
   // cleared, collapse, fn toggle) — a hoveredFn pointing past it would
   // crash this per-frame read and kill the tick loop
   if (hoveredFn >= 0 && !fnMeta[hoveredFn]) hoveredFn = -1;
+  if (!_sfDirty && _sfCam.distanceToSquared(camera.position) < 1e-8) return;
   const fnOwner = hoveredFn >= 0 ? fnMeta[hoveredFn].file : -1;
   for (let i = 0; i < N; i++) {
     const a = alphaArr[i];
-    if (a < 0.01) {
-      _dummy.position.set(0, 0, 0);
-      _dummy.scale.setScalar(0);
-    } else {
-      _dummy.position.set(pos[i*3], pos[i*3+1], pos[i*3+2]);
+    let x = 0, y = 0, z = 0, sc = 0;
+    if (a >= 0.01) {
+      x = pos[i*3]; y = pos[i*3+1]; z = pos[i*3+2];
       // dead-only mode boosts the survivors so the red set reads at overview distance
       // sqrt(spread) size compensation: gaps scale ~spread, nodes scale
       // ~sqrt(spread) so pulling apart leaves them readable without a
-      let sc = sphR(i) * (deadOnly && nodes[i].dead > 0 ? 1.7 : 1) * hoverScale[i] * (0.45 + 0.55 * a);
+      sc = sphR(i) * (deadOnly && nodes[i].dead > 0 ? 1.7 : 1) * hoverScale[i] * (0.45 + 0.55 * a);
       // perceptual anchor: if ink terminates on this node, hold the sprite
       // at ANCHOR_PX screen diameter — but floor the REST size and let
       // hoverScale ease from the FLOORED rest. Flooring the post-hover size
@@ -1809,7 +1819,7 @@ function syncFileMesh() {
       // the floor, so the eased 1.8x read as 1.1x of the visible rest
       // (harness pin + user expectation: hover grows what the eye sees).
       if (anchorBoost[i] > 0 || degFloor[i] > 0 && alphaTgt[i] >= 0.5) {
-        const dist = camera.position.distanceTo(_dummy.position);
+        const dist = camera.position.distanceTo(_sfTmp.set(x, y, z));
         const hs = hoverScale[i] || 1;
         const base = sc / hs;   // rest size (alpha included), hover lifted out
         const rpxBase = base * (renderer.domElement.clientHeight / 2) /
@@ -1822,20 +1832,24 @@ function syncFileMesh() {
         else if (rpxBase > 0.001 && rpxBase * 2 < degFloor[i])
           sc = base * Math.min(4.0, degFloor[i] / (2 * rpxBase)) * hs;
       }
-      _dummy.scale.setScalar(sc);
     }
-    _dummy.updateMatrix();
-    fileMesh.setMatrixAt(i, _dummy.matrix);
     // hovered nodes also lift slightly in brightness alongside the scale ease
     // search-match lift: pure brightness (no size change — labBox caches
     // label boxes and degFloor sizes; a multiplier here keeps both stable)
     const lift = a * (1 + 0.35 * (hoverScale[i] - 1)) * (i === fnOwner ? 1.9 : 1) *
                  (hlArr[i] ? 1.8 : 1);
-    _col.setRGB(colArr[i*3] * lift, colArr[i*3+1] * lift, colArr[i*3+2] * lift);
+    const r = colArr[i*3] * lift, g = colArr[i*3+1] * lift, b = colArr[i*3+2] * lift;
+    _dummy.position.set(x, y, z);
+    _dummy.scale.setScalar(sc);
+    _dummy.updateMatrix();
+    fileMesh.setMatrixAt(i, _dummy.matrix);
+    _col.setRGB(r, g, b);
     fileMesh.setColorAt(i, _col);
   }
   fileMesh.instanceMatrix.needsUpdate = true;
   if (fileMesh.instanceColor) fileMesh.instanceColor.needsUpdate = true;
+  _sfCam.copy(camera.position);
+  _sfDirty = false;
 }
 
 // supernode spheres: second instanced mesh, capacity = cluster count.
@@ -2744,7 +2758,7 @@ function busLodInit() {
     if (fnStalks) fnStalks.visible = false;
     if (fnLines) fnLines.visible = false;
     // spheres and wires lerp under the chevrons: occluder geometry moves
-    _arrowOcclDirty = true;
+    _arrowOcclDirty = true; _sfDirty = true;
     if (u >= 1) { compactAnim = null; applyVisibility(); }
   }
   // node alpha eases toward its target so filter/focus changes fade in
@@ -2753,11 +2767,11 @@ function busLodInit() {
   // the chevron occlusion cache must see
   for (let i = 0; i < N; i++) {
     const d = alphaTgt[i] - alphaArr[i];
-    if (Math.abs(d) >= 0.003) { alphaArr[i] = alphaArr[i] + d * 0.15; _arrowOcclDirty = true; }
+    if (Math.abs(d) >= 0.003) { alphaArr[i] = alphaArr[i] + d * 0.15; _arrowOcclDirty = true; _sfDirty = true; }
     else alphaArr[i] = alphaTgt[i];
     const hsT = i === hovered ? 1.8 : 1;
     const dh = hsT - hoverScale[i];
-    if (Math.abs(dh) >= 0.004) { hoverScale[i] = hoverScale[i] + dh * 0.18; _arrowOcclDirty = true; }
+    if (Math.abs(dh) >= 0.004) { hoverScale[i] = hoverScale[i] + dh * 0.18; _arrowOcclDirty = true; _sfDirty = true; }
     else hoverScale[i] = hsT;
   }
   syncFileMesh();
@@ -3379,7 +3393,8 @@ function rebuildFocusWires() {
 }
 function applyVisibility() {
   // visibility flips change which occluder geometry exists (scale-0 gate)
-  _arrowOcclDirty = true;
+  // and rewrite alphaTgt — both fileMesh inputs
+  _arrowOcclDirty = true; _sfDirty = true;
   const focusing = computeLevels();
   focusActive = focusing;   // hover greyout defers to focus mode
   edgeFlowOn = focusing;   // tick's dash-flow pass reads this
@@ -4242,6 +4257,8 @@ function rebuildFnLayer(focusing) {
   if (fnStalks) { scene.remove(fnStalks); fnStalks.geometry.dispose(); fnStalks = null; }
   fnMeta = [];
   if (!fnMode || !focusing) return;
+  // fn-tier sizing (satBoost reads fnCount) changes file-sphere scales
+  _sfDirty = true; _arrowOcclDirty = true;
   // pass 1: visible cross-file fn edges
   const visEdges = [];
   fedges.forEach(e => {
@@ -7873,6 +7890,7 @@ renderer.domElement.addEventListener("pointermove", e => {
   raycaster.setFromCamera(mouse, camera);
   const targets = fnMesh ? [fileMesh, fnMesh] : [fileMesh];
   const hits = raycaster.intersectObjects(targets);
+  const hovPrev = hovered, hovFnPrev = hoveredFn;
   hovered = -1; hoveredFn = -1;
   // skip invisible nodes: filtered-out tests/tools keep raycast geometry,
   // but hovering a ghost must not pop a tooltip. Among visible hits, pick
@@ -7896,6 +7914,8 @@ renderer.domElement.addEventListener("pointermove", e => {
       if (dist < bestPx) { bestPx = dist; hovered = h.instanceId; hoveredFn = -1; }
     }
   }
+  // hover identity feeds syncFileMesh (hoverScale ease + fnOwner lift)
+  if (hovered !== hovPrev || hoveredFn !== hovFnPrev) _sfDirty = true;
   if (hoveredFn >= 0) fnStalkUpdate(fnMeta[hoveredFn].file, fnMeta[hoveredFn].p);
   else fnStalkHide();
   hoverGrey(hoveredFn >= 0 ? fnMeta[hoveredFn].file : hovered);
@@ -8081,6 +8101,7 @@ function resize3D() {
   if (fnLines) fnLines.material.resolution.set(w, h);
   if (fnQuiet) fnQuiet.material.resolution.set(w, h);
   if (focusArcs) focusArcs.mat.resolution.set(w, h);
+  _sfDirty = true;   // canvas height feeds the anchor/deg-floor px laws
 }
 addEventListener("resize", resize3D);
 // LOD zoom threshold: crossing it reveals/hides intra-cluster edges at
