@@ -21,3 +21,5 @@ jobs:
         run: python -X utf8 tests/test_crosslang.py
       - name: pyhard (python extractor edge cases)
         run: python -X utf8 tests/test_pyhard.py
+      - name: cpphard (C++ extractor edge cases)
+        run: python -X utf8 tests/test_cpphard.py

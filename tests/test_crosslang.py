@@ -47,5 +47,52 @@ dead = g.dead_code(100000)
 check("py dead_code runs", 0 < dead["total"] < len(g.edges),
       f"total={dead['total']} edges={len(g.edges)}")
 
+# 5. cross-language integration: a mixed .py/.h/.cpp toy tree builds one
+# graph through the same registry (issue #13). Runs last: rebuilding the
+# singleton graph against the temp config would retire the self-index one.
+import json  # noqa: E402
+import tempfile  # noqa: E402
+
+import nav  # noqa: E402
+
+_toy = Path(tempfile.mkdtemp(prefix="neuronav_crosslang_"))
+(_toy / "widget.h").write_text(
+    "class Widget : public Object {\n"
+    "	GDCLASS(Widget, Object)\n"
+    "public:\n"
+    "	int scale_value(int p_v);\n"
+    "};\n"
+)
+(_toy / "widget.cpp").write_text(
+    '#include "widget.h"\n'
+    "int Widget::scale_value(int p_v) { return p_v * 2; }\n"
+    "static int unused_cpp_helper(int p_v) { return p_v; }\n"
+    "void Widget::_bind_methods() {\n"
+    '	ClassDB::bind_method(D_METHOD("scale_value", "v"), &Widget::scale_value);\n'
+    "}\n"
+)
+(_toy / "helper.py").write_text("def python_side_tool():\n    return 3\n")
+_cfg = Path(tempfile.gettempdir()) / "neuronav_crosslang_config.json"
+_cfg.write_text(json.dumps({
+    "root": _toy.as_posix(),
+    "collection": "crosslang",
+    "include_dirs": ["."],
+    "extensions": [".py", ".h", ".cpp"],
+    "exclude_dirs": [],
+}))
+nav._apply_config(_cfg)
+g2 = graph.get_graph(rebuild=True)
+check("cpp registry integration", g2.files["widget.cpp"].class_name == "Widget"
+      and g2.class_map.get("Widget") == "widget.h",
+      f"class={g2.files['widget.cpp'].class_name}")
+check("cpp qualified defs + bound alive", "scale_value" in g2.files["widget.cpp"].funcs,
+      sorted(g2.files["widget.cpp"].funcs))
+_dead2 = {(c["path"], c["func"]) for c in g2.dead_code(100000)["candidates"]}
+check("cpp dead tier in mixed tree", ("widget.cpp", "unused_cpp_helper") in _dead2
+      and ("widget.cpp", "scale_value") not in _dead2, str(sorted(_dead2)))
+check("py coexists with cpp", any(f.ext == ".py" for f in g2.files.values())
+      and any(f.ext in (".h", ".cpp") for f in g2.files.values()),
+      str(sorted(g2.files)))
+
 print(f"\n{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)
