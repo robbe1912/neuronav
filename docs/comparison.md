@@ -52,8 +52,11 @@ neuronav are backed by artifacts in this repo (`bench/RESULTS.md`,
 - **Install friction** — the semantic half needs an embedding backend
   (default: local Ollama). Structural-only tools install in one command
   with zero services. FAKE/lexical modes keep CI and plumbing model-free.
-- **Auto-sync** — CodeGraph watches files and updates the graph on save;
-  neuronav's rescan is manual (MCP `rescan` tool or CLI).
+- **Auto-sync** — CodeGraph watches files and updates the graph on save by
+  default; neuronav self-heals at read time (every read tool stat-checks the
+  worktree and runs a partial rescan on drift) with an opt-in background
+  watcher (`watch_interval_s`). Remaining honest gap: no always-on watcher
+  by default.
 - **Community/maturity** — 70k★ and an npm distribution vs a young repo.
 
 ## The one-line version
