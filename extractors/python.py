@@ -18,6 +18,7 @@ Body scanning (call edges) lives in graph._scan_body_py, keyed on fs.ext.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -162,6 +163,21 @@ def parse(path: Path, rel: str) -> FileSym:
     fs = FileSym(path=rel, ext=".py")
     text = path.read_text(encoding="utf-8", errors="replace")
     lines = text.splitlines()
+    # AST truth for def end lines: a column-0 line inside a triple-quoted
+    # string is NOT a dedent, but the indent scan below reads it as one,
+    # truncating the body (call edges after it vanish) and desyncing the
+    # module scan's string state (the orphaned closer reopens a phantom
+    # string that swallows the rest of the file). end_lineno is exact;
+    # the indent scan survives only as the fallback for unparseable files.
+    def_end: dict[int, int] = {}  # 1-based def line -> 1-based end line
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        tree = None
+    if tree is not None:
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                def_end[node.lineno] = node.end_lineno
 
     in_tq = ""  # open triple-quote sentinel
     class_indents: list[int] = []  # open class headers' indents
@@ -252,12 +268,16 @@ def parse(path: Path, rel: str) -> FileSym:
             pending_decor_indent = -1
             pending_fixture = False
             pending_decors = []
-            j = i + 1
-            while j < n:
-                nxt = lines[j]
-                if nxt.strip() and (len(nxt) - len(nxt.lstrip(" "))) <= ind:
-                    break
-                j += 1
+            span_end = def_end.get(i + 1)
+            if span_end is not None:
+                j = span_end  # 1-based end == 0-based exclusive index
+            else:  # unparseable file: legacy indent-terminated scan
+                j = i + 1
+                while j < n:
+                    nxt = lines[j]
+                    if nxt.strip() and (len(nxt) - len(nxt.lstrip(" "))) <= ind:
+                        break
+                    j += 1
             body = "\n".join(lines[i:j])
             prev = fs.funcs.get(name)
             if prev is not None:  # same-name merge (overloads/inner defs)

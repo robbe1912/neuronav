@@ -1,4 +1,5 @@
-# python-extractor hardening fixtures — fresh-process dead_code run:
+# extractor hardening fixtures (python + gd column-0 cases) — fresh-process
+# dead_code run:
 #   .venv/Scripts/python.exe -X utf8 tests/test_pyhard.py
 #
 # Builds the graph over tests/fixtures/pyhard ONLY (its own generated
@@ -31,7 +32,7 @@ cfg.write_text(
             "root": str(FIX),
             "collection": "pyhard",
             "include_dirs": ["."],
-            "extensions": [".py"],
+            "extensions": [".py", ".gd"],
             "exclude_dirs": ["__pycache__"],
         }
     ),
@@ -152,6 +153,26 @@ check("consts: stay out of fs.funcs",
       & set(g.files["module_consts.py"].funcs))
 alive("consts: const-consuming func alive", "module_consts.py", ["use_consts"])
 stays_dead("consts: control stays dead", "module_consts.py", "unused_const_helper")
+
+# --- fixture: colzero_string.py / colzero_string.gd (issue #50) ----------
+# a column-0 line inside a triple-quoted string is string content, not a
+# dedent: the per-fn body view must span it (AST end_lineno spans for
+# .py, string-state tracking in the accessor scan for .gd), keeping the
+# call edge after the string and its target alive
+_cb = g.files["colzero_string.py"].funcs["payload"].body
+check("colzero: py body view spans the string",
+      "edge_after_string()" in _cb, _cb)
+alive("colzero: py string-truncated fn alive", "colzero_string.py",
+      ["payload", "edge_after_string"])
+stays_dead("colzero: py control stays dead", "colzero_string.py",
+           "unused_colzero_helper")
+_sb = g.files["colzero_string.gd"].funcs["_set_payload"].body
+check("colzero: gd setter body view spans the string",
+      "edge_after_setter()" in _sb, _sb)
+alive("colzero: gd setter chain alive", "colzero_string.gd",
+      ["_set_payload", "edge_after_setter"])
+stays_dead("colzero: gd control stays dead", "colzero_string.gd",
+           "unused_gd_helper")
 
 print(f"{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)
