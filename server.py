@@ -21,11 +21,15 @@ Tools:
   + semantic neighbors, hub rank) — the fresh-agent orientation tool
 - visualize(): generate the interactive 3D graph (graph.html) and return path
 - rescan(): incremental re-index of everything above
+- read tools auto-rescan first when the worktree drifted (cheap stat
+  fingerprint, TTL-cached); config watch_interval_s > 0 additionally
+  polls and rescans without waiting for tool calls
 """
 
 from __future__ import annotations
 
 import sys
+import threading
 import time
 
 from mcp.server.fastmcp import FastMCP
@@ -67,6 +71,7 @@ def explore(query: str, n: int = 4) -> str:
     hit. Weak hits become pointer lines instead of noise; total output is
     budget-capped so nothing externalizes to a file mid-answer.
     """
+    _auto_rescan()
     return _explore.run(query, n)
 
 
@@ -91,6 +96,7 @@ def repo_map(budget_tokens: int = 2048) -> str:
     truncated at the token budget. Call this first to learn the layout,
     then context(path) on any file that matters.
     """
+    _auto_rescan()
     budget = max(MIN_MAP_BUDGET, min(budget_tokens, MAX_MAP_BUDGET))
     g = graph.get_graph()
     return _here(g) + "\n" + graph.repo_map(budget_tokens=budget)
@@ -106,6 +112,7 @@ def semantic_search(query: str, n: int = 8) -> str:
     grep when hunting a concept: input handling, timed effects, save
     system, netcode, AI behavior, item storage.
     """
+    _auto_rescan()
     n = max(1, min(n, 25))
     return _here(graph.get_graph()) + "\n" + _fmt(nav.search(query, n))
 
@@ -119,6 +126,7 @@ def find_functions(query: str, n: int = 6) -> str:
     Returns path::func with line numbers — pair with symbol_graph to see
     how a hit connects.
     """
+    _auto_rescan()
     n = max(1, min(n, 15))
     hits = graph.find_functions(query, n)
     if not hits:
@@ -137,6 +145,7 @@ def symbol_graph(symbol: str, depth: int = 1) -> str:
     shape. depth=2 gives one hop beyond direct neighbors. Pair with
     find_functions when you only know the concept, not the name.
     """
+    _auto_rescan()
     depth = max(1, min(depth, 3))
     return graph.get_graph().symbol_graph(symbol, depth)
 
@@ -151,6 +160,7 @@ def dead_code(n: int = 40) -> str:
     (file uses call()/Callable()/connect() — verify manually). NEVER delete
     without reading the file and running tests.
     """
+    _auto_rescan()
     n = max(1, min(n, 100))
     g = graph.get_graph()
     res = g.dead_code(limit=n)
@@ -174,6 +184,7 @@ def duplicates(n: int = 20) -> str:
     first. Cross-file groups are refactoring gold (extract shared helper);
     same-file groups are quick wins.
     """
+    _auto_rescan()
     n = max(1, min(n, 50))
     groups = graph.get_graph().exact_duplicates(limit=n)
     if not groups:
@@ -195,6 +206,7 @@ def clusters(k: int = 6, min_sim: float = 0.6) -> str:
     every file related to a system before refactoring it. Returns cluster
     sizes with member paths + class names.
     """
+    _auto_rescan()
     k = max(2, min(k, 12))
     min_sim = max(0.4, min(min_sim, 0.85))
     cs = nav.clusters(k=k, min_sim=min_sim)
@@ -223,6 +235,7 @@ def crosstalk() -> str:
     hotspots. Pairs with `clusters` (what the families are) — this reports
     how leaky the boundaries are.
     """
+    _auto_rescan()
     import clusters as _clusters
 
     g = graph.get_graph()
@@ -341,6 +354,7 @@ def context(path: str = "", depth: int = 1) -> str:
     the all-clusters overview instead (label, size, top members, external
     edges). Build from existing clusters + graph + vector index; no new deps.
     """
+    _auto_rescan()
     depth = max(1, min(depth, 3))
     p = path.strip()
     g = graph.get_graph()
@@ -456,10 +470,108 @@ def visualize() -> str:
     Returns the absolute path — open it in a browser. Regenerate after
     rescan if the graph changed materially.
     """
+    _auto_rescan()
     import viz
 
     out = viz.generate()
     return f"3D graph written to {out} — open in a browser (double-click or `start {out}`)"
+
+
+# ---- auto-rescan freshness gate (issue #19) --------------------------------
+# Every read tool calls _auto_rescan() on entry: nav's stat fingerprint
+# (mtime/size walk, TTL-cached) is compared against the last synced
+# baseline, and a drifted worktree triggers the sha-gated nav.rescan() +
+# graph/fns sync before the tool answers. Failures never crash the call:
+# one stderr warning, a RESCAN_COOLDOWN_S retry suppression, and the
+# tool answers from the current index (the recall degraded-mode
+# precedent). Config watch_interval_s > 0 adds a daemon thread that
+# polls the same fingerprint and rescans without tool traffic.
+
+RESCAN_COOLDOWN_S = 60.0  # auto-rescan retry suppression after a failure
+WATCH_DEBOUNCE_S = 2.0  # writer-quiet window before a watcher rescan
+WATCH_DEBOUNCE_MAX_S = 30.0  # cap on waiting for the writer to quiet down
+
+_rescan_busy = threading.Lock()  # in-flight trigger (cross-process is nav._db_lock's job)
+_rescan_failed_at: float | None = None  # monotonic; None = healthy
+
+
+def _cooldown_active() -> bool:
+    return (
+        _rescan_failed_at is not None
+        and time.monotonic() - _rescan_failed_at < RESCAN_COOLDOWN_S
+    )
+
+
+def _auto_rescan() -> None:
+    """Read-tool freshness gate: stat-scan -> dirty ? incremental rescan +
+    graph/fns sync + baseline update. Never raises."""
+    global _rescan_failed_at
+    if _cooldown_active() or not _rescan_busy.acquire(blocking=False):
+        return  # failed recently, or another trigger is already mid-rescan
+    try:
+        try:
+            if not nav.stat_scan():
+                return
+            stats = nav.rescan()
+            if stats["added"] or stats["updated"] or stats["deleted"]:
+                _sync_chain(stats)
+                print(
+                    f"neuronav: auto-rescan: files {stats['added']}/{stats['updated']}/"
+                    f"{stats['unchanged']}/{stats['deleted']} (a/u/u/d)",
+                    file=sys.stderr,
+                )
+            nav.stat_mark_synced()
+            _rescan_failed_at = None
+        except Exception as e:  # embedding backend down etc: degrade loudly
+            _rescan_failed_at = time.monotonic()
+            print(
+                f"neuronav: auto-rescan FAILED ({e}); answering from the current "
+                f"index, retry suppressed for {RESCAN_COOLDOWN_S:.0f}s",
+                file=sys.stderr,
+            )
+    finally:
+        _rescan_busy.release()
+
+
+def _wait_quiet() -> None:
+    """Sleep until the fingerprint stops changing (bounded): rescan a
+    coherent tree, not a writer's half-saved state."""
+    last = nav.stat_fingerprint()
+    deadline = time.monotonic() + WATCH_DEBOUNCE_MAX_S
+    while time.monotonic() < deadline:
+        time.sleep(WATCH_DEBOUNCE_S)
+        cur = nav.stat_fingerprint()
+        if cur == last:
+            return
+        last = cur
+
+
+def _watch_loop(interval: float) -> None:
+    """Poll the stat fingerprint every interval; on a dirty transition let
+    the writer go quiet, then run the shared gate (which re-checks
+    dirtiness and cooldown before rescanning)."""
+    while True:
+        time.sleep(interval)
+        try:
+            dirty = nav.stat_scan(force=True)
+        except Exception as e:
+            print(f"neuronav: watch scan failed ({e}); continuing", file=sys.stderr)
+            continue
+        if dirty:
+            _wait_quiet()
+            _auto_rescan()
+
+
+def _start_watcher(interval: float) -> threading.Thread:
+    """Daemon polling watcher — stdlib only (threading/time/os in nav).
+
+    The lambda (not ``target=_watch_loop``) keeps the callee a visible
+    call for the static graph: bare callback refs are invisible to it."""
+    t = threading.Thread(
+        target=lambda: _watch_loop(interval), daemon=True, name="neuronav-watch"
+    )
+    t.start()
+    return t
 
 
 def _sync_chain(stats: dict) -> tuple[object, object, str]:
@@ -482,11 +594,14 @@ def _sync_chain(stats: dict) -> tuple[object, object, str]:
 def rescan() -> str:
     """Re-index changed/new/deleted files: vectors, function index, graph.
 
-    Fast when nothing changed. Run after pulling, branching, or mass edits.
+    Fast when nothing changed. Run after pulling, branching, or mass
+    edits. Read tools also auto-rescan on worktree drift (stat-gated,
+    mtime/size fingerprint); this is the explicit always-sync variant.
     """
     t0 = time.perf_counter()
     stats = nav.rescan()
     g, fns, note = _sync_chain(stats)
+    nav.stat_mark_synced()
     dt = time.perf_counter() - t0
     return (
         f"rescan: files {stats['added']}/{stats['updated']}/"
@@ -500,6 +615,11 @@ if __name__ == "__main__":
     t0 = time.perf_counter()
     stats = nav.rescan()
     g, fns, _ = _sync_chain(stats)
+    nav.stat_mark_synced()
+    watch_note = ""
+    if nav.WATCH_INTERVAL_S > 0:
+        _start_watcher(nav.WATCH_INTERVAL_S)
+        watch_note = f", watcher {nav.WATCH_INTERVAL_S:g}s"
     # warm the clusters stack (networkx/numpy/sklearn/scipy) on the main
     # thread before the event loop serves: importing these C extensions
     # lazily inside a fastmcp tool call (on the anyio loop thread) blocks
@@ -513,7 +633,7 @@ if __name__ == "__main__":
         f"neuronav: startup files {stats['added']}/{stats['updated']}/"
         f"{stats['unchanged']}/{stats['deleted']}, "
         f"fns {fns['fns_upserted']}, "
-        f"in {time.perf_counter() - t0:.1f}s",
+        f"in {time.perf_counter() - t0:.1f}s{watch_note}",
         file=sys.stderr,
     )
     mcp.run(transport="stdio")

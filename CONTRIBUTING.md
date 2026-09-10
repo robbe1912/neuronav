@@ -9,7 +9,7 @@ server. MIT. Python 3.11+, stdlib-first.
 git clone https://github.com/robbe1912/neuronav
 cd neuronav
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install chromadb httpx "mcp<2" numpy playwright
+.venv\Scripts\python.exe -m pip install chromadb httpx "mcp<2" numpy playwright networkx scipy scikit-learn
 ollama pull qwen3-embedding:0.6b          # embedding backend, runs locally
 ```
 

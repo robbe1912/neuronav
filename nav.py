@@ -20,6 +20,7 @@ import os
 import random
 import shutil
 import sys
+import threading
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -42,7 +43,7 @@ def _apply_config(path: Path) -> None:
     """(Re)bind the config-derived module globals. Called once at import
     and again by ``nav.py --config <path>`` (which also sets NEURONAV_CONFIG
     so subprocesses and sibling modules like graph.py agree)."""
-    global ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM, STATE_DIR, DB_DIR, BASE_DIR
+    global ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM, WATCH_INTERVAL_S, STATE_DIR, DB_DIR, BASE_DIR
     cfg: dict = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
     ROOT = Path(cfg.get("root") or TOOL_DIR.parent)
     if not ROOT.is_absolute():
@@ -56,6 +57,9 @@ def _apply_config(path: Path) -> None:
     EMBED_URL = str(cfg.get("embed_url", "http://127.0.0.1:11434/api/embed"))
     EMBED_MODEL = str(cfg.get("embed_model", "qwen3-embedding:0.6b"))
     EMBED_DIM = int(cfg.get("embed_dim", 1024))
+    # >0: the MCP server polls the stat gate every N seconds and
+    # auto-rescans without waiting for a tool call (issue #19)
+    WATCH_INTERVAL_S = float(cfg.get("watch_interval_s") or 0.0)
     # per-project state: chroma store, base shards and the viz bake all
     # derive from one dir — explicit "state_dir" honored, default
     # <root>/.neuronav. Relative values resolve against the config file's
@@ -75,6 +79,7 @@ EXCLUDE_DIRS: frozenset[str]
 EMBED_URL: str
 EMBED_MODEL: str
 EMBED_DIM: int
+WATCH_INTERVAL_S: float
 STATE_DIR: Path
 DB_DIR: Path
 BASE_DIR: Path
@@ -85,6 +90,14 @@ EMBED_BATCH = 32
 UPSERT_BATCH = 64
 SHARD_SIZE = 250
 MANIFEST_NAME = "manifest.json"
+
+# stat-gate freshness (issue #19): the MCP read tools stat-scan the
+# worktree and auto-rescan when it drifted from the last synced
+# fingerprint. The walk collects mtime/size only — no read, no hash —
+# and is TTL-cached below so bursts of tool calls do not re-stat the
+# tree. The rescan behind the gate stays sha-gated, so a touched-but-
+# identical file embeds nothing.
+STAT_TTL_S = 3.0
 
 
 def embed(texts: list[str]) -> list[list[float]]:
@@ -130,6 +143,77 @@ def iter_files() -> Iterator[Path]:
             for name in sorted(filenames):
                 if Path(name).suffix in EXTS:
                     yield Path(dirpath) / name
+
+
+# ---- stat-gate freshness (issue #19) ---------------------------------------
+
+_fp_lock = threading.Lock()
+_fp_clean: dict[str, tuple[int, int]] | None = None  # last synced baseline
+_fp_last: dict[str, tuple[int, int]] | None = None  # most recent walk
+_fp_last_scan = float("-inf")  # monotonic ts of that walk
+_fp_dirty = False  # its verdict vs the baseline
+
+
+def stat_fingerprint() -> dict[str, tuple[int, int]]:
+    """(mtime_ns, size) per indexed file, mirroring iter_files' walk
+    (same include/exclude/suffix rules). Stat-only, so it is cheap
+    enough to run on every read-tool call."""
+    fp: dict[str, tuple[int, int]] = {}
+    root_len = len(str(ROOT)) + 1
+    stack = [ROOT / d for d in INCLUDE_DIRS]
+    while stack:
+        d = stack.pop()
+        try:
+            with os.scandir(d) as it:
+                for e in it:
+                    try:
+                        if e.is_dir(follow_symlinks=False):
+                            if e.name not in EXCLUDE_DIRS:
+                                stack.append(e.path)
+                            continue
+                        if Path(e.name).suffix not in EXTS:
+                            continue
+                        st = e.stat(follow_symlinks=False)
+                    except OSError:
+                        continue  # vanished mid-walk; the next scan reconciles
+                    fp[e.path[root_len:].replace(os.sep, "/")] = (
+                        st.st_mtime_ns,
+                        st.st_size,
+                    )
+        except OSError:
+            continue  # include_dir vanished; empty is a valid fingerprint
+    return fp
+
+
+def stat_scan(force: bool = False) -> bool:
+    """True when the worktree drifted from the synced baseline. The walk
+    is TTL-cached: inside STAT_TTL_S the cached verdict comes back
+    without touching the filesystem (force bypasses it — the watcher's
+    poll). The walked fingerprint is kept for stat_mark_synced."""
+    global _fp_last, _fp_last_scan, _fp_dirty
+    with _fp_lock:
+        if not force and time.monotonic() - _fp_last_scan < STAT_TTL_S:
+            return _fp_dirty
+    fp = stat_fingerprint()
+    with _fp_lock:
+        _fp_last = fp
+        _fp_last_scan = time.monotonic()
+        _fp_dirty = _fp_clean is None or fp != _fp_clean
+        return _fp_dirty
+
+
+def stat_mark_synced() -> None:
+    """Record the worktree state the last rescan covered as the clean
+    baseline: the fingerprint of the scan that triggered it (edits that
+    land mid-rescan then re-dirty on the next scan and converge), or a
+    fresh walk when no scan preceded (server startup)."""
+    global _fp_clean, _fp_dirty, _fp_last, _fp_last_scan
+    with _fp_lock:
+        if _fp_last is None:
+            _fp_last = stat_fingerprint()
+        _fp_clean = _fp_last
+        _fp_dirty = False
+        _fp_last_scan = time.monotonic()
 
 
 def file_id(path: Path) -> str:

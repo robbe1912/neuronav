@@ -21,7 +21,7 @@ $py = Join-Path $navRoot ".venv\Scripts\python.exe"
 $nav = Join-Path $navRoot "nav.py"
 $proj = (Resolve-Path $ProjectPath).Path
 if (-not $Name) { $Name = Split-Path -Leaf $proj }
-if (-not (Test-Path $py))  { throw "venv missing - create $navRoot\.venv first (chromadb httpx 'mcp<2')" }
+if (-not (Test-Path $py))  { throw "venv missing - create $navRoot\.venv first (chromadb httpx 'mcp<2' numpy networkx scipy scikit-learn)" }
 if (-not (Test-Path $nav)) { throw "nav.py not found at $navRoot" }
 
 # 1. named config profile in the install (state lives in the project)

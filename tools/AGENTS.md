@@ -78,5 +78,6 @@ One neuronav install serves many projects. Idempotent; BOM-free writes only
    `NEURONAV_CONFIG`); update `opencode.json` if present. Restart client
    sessions in the project afterwards.
 
-Requires `.venv` with `chromadb httpx "mcp<2"`. Agent-side guidance snippet
+Requires `.venv` with `chromadb httpx "mcp<2" numpy networkx scipy scikit-learn`.
+Agent-side guidance snippet
 for wired projects: `templates/agents-snippet.md`.
