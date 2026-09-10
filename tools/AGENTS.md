@@ -55,28 +55,21 @@ response carries `Cache-Control: no-store, no-cache, must-revalidate` so the
 browser always refetches `graph.html` (kills the stale-build bug class when
 iterating on the bake). Threaded, quiet logs.
 
-## wire-project.ps1 — per-project MCP wiring
+## per-project MCP wiring — moved to `onboard.py`
+
+`tools/wire-project.ps1` is gone (Windows-only; setup belongs to the
+cross-platform onboarding module, and issue #27 pins the install as
+read-only). Use, from inside the target project:
 
 ```
-powershell -ExecutionPolicy Bypass -File tools\wire-project.ps1 -ProjectPath E:\path\to\proj [-Name x] [-IncludeDirs ...] [-Extensions ...] [-WithBaseShards]
+python /path/to/neuronav/onboard.py wire [--index] [--project PATH]
 ```
 
-One neuronav install serves many projects. Idempotent; BOM-free writes only
-(`[System.IO.File]::WriteAllText` — PowerShell 5 utf8 BOM kills
-`json.loads` downstream). Steps:
-
-1. Write `config/<Name>.json` in this install (root = absolute project path,
-   `state_dir = <project>\.neuronav`, optional include_dirs/extensions).
-   `-Name` defaults to the project dir leaf.
-2. Append `.neuronav/` to the project's `.gitignore` (idempotent, BOM-free).
-3. Optionally seed from the project's own `<project>\.neuronav\base` shards
-   (`-WithBaseShards` -> `import-base`), then `rescan` under the profile's
-   `NEURONAV_CONFIG` (env set only for the duration). State is project-local —
-   no install-side shard copying.
-4. Write/update the project's `.mcp.json` `mcpServers.neuronav` entry
-   (venv python, `-X utf8 server.py`, env pins the profile via
-   `NEURONAV_CONFIG`); update `opencode.json` if present. Restart client
-   sessions in the project afterwards.
+It writes the project-local config (`<project>/.neuronav/config.json`),
+appends the `.neuronav/` gitignore snippet (idempotent, UTF-8 no BOM),
+optionally indexes + bakes, and wires `.mcp.json` / `opencode.json` with
+`NEURONAV_CONFIG` pinned to the project config. All state lands in the
+project; the install is never written to.
 
 Requires `.venv` with `chromadb httpx "mcp<2" numpy networkx scipy scikit-learn`.
 Agent-side guidance snippet

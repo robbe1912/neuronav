@@ -471,7 +471,12 @@ def visualize() -> str:
     rescan if the graph changed materially.
     """
     _auto_rescan()
-    import viz
+    try:
+        import viz
+    except ImportError:
+        return ("viz add-on not installed — delete-able surface is viz.py + vendor/ + "
+                "tools/serve.py; core tools (search/repo_map/context/...) work without it. "
+                "Restore viz.py to re-enable the bake.")
 
     out = viz.generate()
     return f"3D graph written to {out} — open in a browser (double-click or `start {out}`)"
