@@ -54,7 +54,7 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `tools/` | dev gate + viewer: `qa_readability.py` (readability/declutter gate), `serve.py` (no-cache viewer), `wire-project.ps1` (per-project MCP wiring) |
 | `config/` | named config profiles; `config.json` (root, gitignored) is the default |
 | `vendor/three-0.160.0/` | vendored three.js core + 4 addons, embedded at build (see below) |
-| `tests/` | 11 self-contained suites + committed fixtures (see `tests/AGENTS.md`) |
+| `tests/` | 13 self-contained suites + committed fixtures (see `tests/AGENTS.md`) |
 | `docs/map-spec-v2.md` | spec the named-wire map layer implements |
 
 ## viz.py template laws
@@ -123,6 +123,8 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_server_stdio` | MCP tool surface end-to-end (JSON-RPC over stdio) | mcp + default-config target repo |
 | `test_autorescan` | auto-rescan stat gate: freshness, TTL burst guard, failure cooldown, watcher (issue #19) | mcp + chromadb + numpy/networkx/scipy/scikit-learn (hermetic temp target, fake embeds) |
 | `test_repomap` | repo_map budget/determinism/rank ordering on synthetic graphs | stdlib + numpy |
+| `test_cpphard` | C++ extractor edge cases: macro surface, pairing, registration, dead tiers, determinism | tree-sitter wheels only (hermetic fixtures) |
+| `test_recall` | hybrid recall: BM25F+vector fusion, degraded mode | chromadb import + self-index |
 | `test_viz` | 90-check Playwright harness (real Chrome) | playwright + chrome + a fresh bake |
 
 Playwright harness gotchas: launch `channel="chrome"`; it serves `graph.html`

@@ -1,6 +1,6 @@
 # AGENTS.md — tests/
 
-Eleven self-contained suites. Each is a standalone script — no pytest — run in
+Thirteen self-contained suites. Each is a standalone script — no pytest — run in
 its own process:
 
 ```
@@ -19,6 +19,7 @@ with `NEURONAV_EMBED_FAKE=1`; the rest are local gates.
 | `test_strata` | depth layering, cycles, `_layout` determinism | stdlib + numpy |
 | `test_crosslang` | self-index integration: parse + embed + fn search over this repo | chromadb + Ollama (or `NEURONAV_EMBED_FAKE=1` — CI mode) |
 | `test_pyhard` | python extractor edge cases on `fixtures/pyhard` | numpy + chromadb import only (hermetic fixture config) |
+| `test_mwires` | named-wire map exports (`mwires`/`fns`/`meta` contract, map-spec-v2 §0) | chromadb import only (self-sets `NEURONAV_EMBED_FAKE=1`, hermetic fixture config) |
 | `test_cpphard` | C++ extractor edge cases on `fixtures/cpp` (issue #13): macro surface, .h/.cpp pairing, registration harvest, dead tiers, determinism | tree-sitter + tree-sitter-cpp import only (hermetic fixture config) |
 | `test_selfindex` | self-index structural invariants: likely-dead zero, handlers stay review, deterministic rebuild | chromadb import (structural only) |
 | `test_target_regression` | byte-stability over the target repo: floor pins + liveness canaries | chromadb import + the target repo configured in `config.json` |
@@ -26,6 +27,7 @@ with `NEURONAV_EMBED_FAKE=1`; the rest are local gates.
 | `test_server_stdio` | MCP stdio end-to-end: spawns server.py, drives JSON-RPC, asserts the context tool answers | mcp + default-config target repo |
 | `test_autorescan` | auto-rescan stat gate (issue #19): read-tool freshness, TTL burst guard, embed-failure cooldown, `watch_interval_s` watcher — in-process pins + two stdio e2e servers | mcp + chromadb + numpy/networkx/scipy/scikit-learn (hermetic temp target + `NEURONAV_EMBED_FAKE=1`) |
 | `test_repomap` | repo_map budget bound, byte determinism, rank ordering, god-hub saturation on synthetic graphs | stdlib + numpy (no index, no embeddings) |
+| `test_recall` | hybrid recall: BM25F+vector fusion, RRF, hop-ctx, degraded mode (membership pins in fake mode, exact rank in real) | chromadb import + self-index |
 | `test_viz` | 90-check Playwright harness over the real baked page | playwright + chrome + a fresh `graph.html` bake |
 
 `probe_scene_placement.py` is a manual probe script, not a suite.
