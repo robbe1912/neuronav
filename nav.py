@@ -64,7 +64,16 @@ def _apply_config(path: Path | None) -> None:
     so subprocesses and sibling modules like graph.py agree). ``path=None``
     means no config anywhere: pure cwd defaults (issue #27)."""
     global ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM, WATCH_INTERVAL_S, STATE_DIR, DB_DIR, BASE_DIR
-    cfg: dict = json.loads(path.read_text(encoding="utf-8")) if path is not None and path.is_file() else {}
+    if path is not None and not path.is_file():
+        # issue #41: an explicit config path is a contract, not a hint —
+        # silently degrading to walk-all defaults flips the walk identity
+        # and the next rescan purges the previous profile's entries
+        raise SystemExit(
+            f"NEURONAV_CONFIG points at '{path}', which does not exist — "
+            "unset the variable or point it at a real config json "
+            "(onboard.py init writes one)"
+        )
+    cfg: dict = json.loads(path.read_text(encoding="utf-8")) if path is not None else {}
     # lazy import: extractors pulls graph-ish deps only for the suffix list
     from extractors import EXTENSIONS as _REGISTERED
     ROOT = Path(cfg.get("root") or Path.cwd())
@@ -339,6 +348,17 @@ def rescan() -> dict[str, int]:
 
 
 def _rescan_locked() -> dict[str, int]:
+    files = list(iter_files())
+    if not files:
+        # issue #41: zero files means the config matches nothing (typo'd
+        # root/include_dirs/extensions) — proceeding would report a silent
+        # zero-file success and purge the previous walk's entries
+        raise RuntimeError(
+            f"rescan found 0 files under root={ROOT} "
+            f"include_dirs={list(INCLUDE_DIRS)} extensions={sorted(EXTS)} — "
+            "fix the config or unset NEURONAV_CONFIG (deliberate wipe: "
+            "python nav.py drop)"
+        )
     col = _collection()
     existing: dict[str, str] = {}
     if col.count():
@@ -368,7 +388,7 @@ def _rescan_locked() -> dict[str, int]:
         )
         pending_ids, pending_docs, pending_meta = [], [], []
 
-    for path in iter_files():
+    for path in files:
         fid = file_id(path)
         seen.add(fid)
         digest = sha256_of(path)
