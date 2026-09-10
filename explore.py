@@ -103,12 +103,12 @@ def _slice(path: str, fn_line: int, body: str, cap: int) -> str | None:
     return "\n".join(out)
 
 
-def _cluster_map() -> str:
+def _cluster_map(cs: "list[dict[str, object]] | None") -> str:
     """Funnel stage 1 (constant per repo): subsystem layout, biggest
-    first — the Agentless structure map the shortlists narrow into."""
-    try:
-        cs = nav.clusters()
-    except Exception:
+    first — the Agentless structure map the shortlists narrow into.
+    `cs` is the clusters list run() computed once; None = the pipeline
+    failed, degrade loudly."""
+    if cs is None:
         return "== clusters == (unavailable - embedding index unreachable)"
     lines = [
         f"- {c['label']} ({c['size']} files): "
@@ -135,12 +135,12 @@ def _file_shortlist(seeds: list[dict]) -> str:
     return "== file shortlist ==\n" + "\n".join(lines)[:SHORTLIST_CAP]
 
 
-def _symbol_slices(g, seeds: list[dict], degraded: bool, budget: int) -> str:
+def _symbol_slices(g, seeds: list[dict], degraded: bool, budget: int, cs) -> str:
     """Funnel leaf: Read-equivalent `cat -n` slices + call flow under the
     codegraph budget discipline (score-proportional caps, cliff to pointer
     lines for weak hits)."""
     top = seeds[0]["score"]
-    labels = _cluster_labels()
+    labels = _cluster_labels(cs)
     total = 0
     parts: list[str] = []
     if degraded:
@@ -181,9 +181,16 @@ def run(query: str, n: int = 4) -> str:
     # Agentless funnel: constant orientation first (repo map, clusters),
     # then query-dependent narrowing (file shortlist -> symbol slices).
     # Every stage degrades loudly or returns guidance, never an error.
+    # one clusters() pass feeds both funnel stages (map + slice labels);
+    # nothing rescans between them, so sharing the result is semantically
+    # identical and halves the pipeline cost (issue #44)
+    try:
+        cs = nav.clusters()
+    except Exception:
+        cs = None
     parts = [
         "== repo map ==\n" + g.repo_map(budget_tokens=PREAMBLE_TOKENS),
-        _cluster_map(),
+        _cluster_map(cs),
     ]
     if not seeds:
         parts.append(
@@ -195,16 +202,17 @@ def run(query: str, n: int = 4) -> str:
 
     parts.append(_file_shortlist(seeds))
     used = sum(len(p) + 2 for p in parts)
-    parts.append(_symbol_slices(g, seeds, degraded, TOTAL_CAP - used))
+    parts.append(_symbol_slices(g, seeds, degraded, TOTAL_CAP - used, cs))
     return "\n\n".join(parts)[:TOTAL_CAP]
 
 
-def _cluster_labels() -> dict[str, str]:
-    try:
-        out: dict[str, str] = {}
-        for c in nav.clusters():
-            for p, _cls in c["paths"]:
-                out[p] = c["label"]
-        return out
-    except Exception:
+def _cluster_labels(cs: "list[dict[str, object]] | None") -> dict[str, str]:
+    """path -> cluster label for slice headers; {} when the shared
+    clusters pass failed (degraded mode labels nothing)."""
+    if cs is None:
         return {}
+    out: dict[str, str] = {}
+    for c in cs:
+        for p, _cls in c["paths"]:
+            out[p] = c["label"]
+    return out
