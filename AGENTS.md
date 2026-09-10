@@ -158,3 +158,8 @@ Visualizer work also gates through `tools/qa_readability.py` (see
 Conventional commits, lowercase scope (`feat(viz):`, `fix(config):`,
 `test:`, `docs:`). One atomic commit per verified increment. English.
 Terse bodies explaining WHY, not WHAT.
+
+- Every change lands via pull request — main is protected with enforce_admins;
+  the owner is the sole approving reviewer. Fixes reference their issue
+  ("Closes #N") and issues are closed with evidence at merge time, not left
+  open. No direct pushes, no admin bypasses.
