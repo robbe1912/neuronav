@@ -3859,7 +3859,17 @@ function juncArrowObstacles(w, h) {
     if (!mesh) continue;
     const am = mesh.instanceMatrix.array;
     for (let i = 0; i < am.length / 16; i++) {
-      _obstV.set(am[i*16+12], am[i*16+13], am[i*16+14]).project(camera);
+      // issue #6: a RIDING mark paints mid-leg, but its delivery
+      // reservation is the box site -- hidden arrows always parked
+      // there, so pinning riders to fnArrowBox keeps the obstacle
+      // set (and therefore label placement) identical to the
+      // box-site law. Direct chevron-label hits stay measured
+      // against the painted anchor by the census (chevInLabel).
+      if (mesh === fnArrows && fnArrowBox && _arrowShown.length === am.length / 16
+          && _arrowShown[i] && _arrowOccl[i]
+          && _arrowRide[i] >= 0 && _arrowRide[i] < 1)
+        _obstV.set(fnArrowBox[i*3], fnArrowBox[i*3+1], fnArrowBox[i*3+2]).project(camera);
+      else _obstV.set(am[i*16+12], am[i*16+13], am[i*16+14]).project(camera);
       if (_obstV.z <= 1 && Math.abs(_obstV.x) <= 1.05 && Math.abs(_obstV.y) <= 1.05)
         pts.push([(_obstV.x*0.5+0.5)*w, (-_obstV.y*0.5+0.5)*h]);
     }
@@ -4030,6 +4040,43 @@ let _arrowOccl = new Float32Array(0);   // 1 = delivery chevron occluded
 let _arrowOcclCam = null;              // camera pos of the last occlusion pass
 let _arrowOcclDirty = true;            // occluder geometry moved since last pass
 let _arrowOcclPasses = 0;              // probe: occlusion passes since boot
+let fnArrowLeg, fnArrowHalo = null;  // per-arrow delivery leg [from(3), liftFrac] (issue #6)
+let _arrowRide = new Float32Array(0);  // low-lod ride t (-1 = no visible leg sample)
+let _arrowShown = new Uint8Array(0);   // shown flag this frame (consolidation pick)
+let _chevCarry = new Uint8Array(0);    // 1 = arrow carried into fnArrows.count this frame
+const _chevPick = new Map();           // fi -> carried arrow (low-lod consolidation)
+// issue #6: below 2x ANCHOR_PX a file's per-fn-box delivery fan collapses to
+// a speck blob at land distances (cu land: 13 arrows on a 6px box cluster, all
+// buried behind the compact ball). The file then carries ONE mark which rides
+// its delivery leg; zoomed-in fans (>= CHEV_FAN_PX) are untouched.
+const CHEV_FAN_PX = 16;
+// near-box steps first: the label solver reserves the <=14px band
+// around each box for its delivery mark, so a rider must sit as
+// close to its box as visibility allows (t=1 is the box end)
+const RIDE_TS = [0.95, 0.9, 0.85, 0.8, 0.6, 0.4, 0.2, 0.05];
+// delivery-leg bezier (emitArc curve: mid + liftFrac*dist in +Y, B = box).
+// legPt/legTan reproduce the painted arc from the captured leg params.
+function legPt(i, t, out) {
+  const ax = fnArrowLeg[i*4], ay = fnArrowLeg[i*4+1], az = fnArrowLeg[i*4+2];
+  const lf = fnArrowLeg[i*4+3];
+  const bx = fnArrowBox[i*3], by = fnArrowBox[i*3+1], bz = fnArrowBox[i*3+2];
+  const dist = Math.hypot(bx-ax, by-ay, bz-az) || 1;
+  const mx = (ax+bx)/2, my = (ay+by)/2 + lf*dist, mz = (az+bz)/2;
+  const u = 1 - t;
+  return out.set(u*u*ax + 2*u*t*mx + t*t*bx,
+                 u*u*ay + 2*u*t*my + t*t*by,
+                 u*u*az + 2*u*t*mz + t*t*bz);
+}
+function legTan(i, t, out) {
+  const ax = fnArrowLeg[i*4], ay = fnArrowLeg[i*4+1], az = fnArrowLeg[i*4+2];
+  const lf = fnArrowLeg[i*4+3];
+  const bx = fnArrowBox[i*3], by = fnArrowBox[i*3+1], bz = fnArrowBox[i*3+2];
+  const dist = Math.hypot(bx-ax, by-ay, bz-az) || 1;
+  const mx = (ax+bx)/2, my = (ay+by)/2 + lf*dist, mz = (az+bz)/2;
+  return out.set(2*(1-t)*(mx-ax) + 2*t*(bx-mx),
+                 2*(1-t)*(my-ay) + 2*t*(by-my),
+                 2*(1-t)*(mz-az) + 2*t*(bz-mz)).normalize();
+}
 function aimArrows() {
   if (!fnArrows || !fnArrowPos || !fnArrowTang || !fnArrowR) return;
   const hpx = renderer.domElement.clientHeight || 900;
@@ -4045,6 +4092,9 @@ function aimArrows() {
   if (_arrowOccl.length !== fnArrowR.length) {
     _arrowOccl = new Float32Array(fnArrowR.length);
     _arrowOcclCam = null;
+    _arrowRide = new Float32Array(fnArrowR.length);
+    _arrowShown = new Uint8Array(fnArrowR.length);
+    _chevCarry = new Uint8Array(fnArrowR.length);
   }
   // Camera-ε + dirty gate (issue #33 perf round): the pass is a pure
   // function of (camera pose, occluder geometry), so it only needs to
@@ -4084,16 +4134,93 @@ function aimArrows() {
       }
       if (blocked) _arrowOccl[i] = 1;
     }
+    // LOW-LOD RIDE (issue #6): at land distances most delivery boxes
+    // sit behind the compact ball (cu land: 13/18) -- the occlusion
+    // above is honest, so instead of un-hiding (chevCrowd wall), the
+    // mark slides DOWN ITS OWN delivery leg to the last visible
+    // bezier sample: direction rides where the wire ink is visible.
+    // Samples ignore hits near the sample (the wire itself) and near
+    // the own box, same occluder set as the box ray. High-LOD arrows
+    // (pxOf >= CHEV_FAN_PX) never ride -- zoomed views are unchanged.
+    if (fnArrowLeg && fnArrowLeg.length === fnArrowR.length * 4 &&
+        arrowFile && arrowFile.length) {
+      const S = new THREE.Vector3(), org2 = new THREE.Vector3(),
+            dir2 = new THREE.Vector3(), bo2 = new THREE.Vector3();
+      for (let i = 0; i < fnArrowR.length; i++) {
+        _arrowRide[i] = -1;
+        const fi = arrowFile[i];
+        if (fi < 0 || lod.pxOf(fi) >= CHEV_FAN_PX) continue;
+        if (!lod.resA(fi)) continue;         // not even served: hidden
+        if (!_arrowOccl[i]) { _arrowRide[i] = 1; continue; }  // box clear
+        bo2.set(fnArrowBox[i*3], fnArrowBox[i*3+1], fnArrowBox[i*3+2]);
+        for (let r = 0; r < RIDE_TS.length; r++) {
+          legPt(i, RIDE_TS[r], S);
+          org2.copy(camera.position);
+          dir2.copy(S).sub(org2);
+          const L2 = dir2.length() || 1; dir2.divideScalar(L2);
+          rc.set(org2, dir2); rc.far = L2 - 1;
+          let clear = true;
+          for (const h of rc.intersectObjects(occ, false)) {
+            if (h.point.distanceTo(S) < 4) continue;    // the wire itself
+            if (h.point.distanceTo(bo2) < 4) continue;  // own delivery box
+            clear = false; break;
+          }
+          if (clear) { _arrowRide[i] = RIDE_TS[r]; break; }
+        }
+      }
+    }
     if (!_arrowOcclCam) _arrowOcclCam = new THREE.Vector3();
     _arrowOcclCam.copy(camera.position);
     _arrowOcclDirty = false;
   }
   const w = renderer.domElement.clientWidth || 1600, h = hpx;
+  const hasLeg = fnArrowLeg && fnArrowLeg.length === fnArrowR.length * 4;
+  // pass 1 -- shown flags: the box-site law (lodOk + clear ray) plus the
+  // low-lod ride override (issue #6): a buried box keeps its mark when the
+  // delivery leg has a visible sample to ride
   for (let i = 0; i < fnArrowR.length; i++) {
+    const fi = arrowFile && arrowFile.length ? arrowFile[i] : -1;
+    const lodOk = fi < 0 || lod.resA(fi);
+    const low = fi >= 0 && hasLeg && lod.pxOf(fi) < CHEV_FAN_PX;
+    _arrowShown[i] = lodOk &&
+      (!_arrowOccl[i] || (low && _arrowRide[i] >= 0)) ? 1 : 0;
+  }
+  // pass 2 -- low-lod consolidation (issue #6, fewer marks carry the
+  // signal): a file whose boxes are specks (< CHEV_FAN_PX) carries ONE
+  // delivery mark -- the first arrow with a visible anchor, else the first
+  // arrow. Unowned and zoomed-in arrows always carry: high-LOD fans are
+  // exactly today's.
+  let KC = fnArrowR.length;
+  if (arrowFile && arrowFile.length && hasLeg) {
+    _chevPick.clear(); KC = 0;
+    for (let i = 0; i < fnArrowR.length; i++) {
+      const fi = arrowFile[i];
+      if (fi < 0 || lod.pxOf(fi) >= CHEV_FAN_PX) { _chevCarry[i] = 1; KC++; continue; }
+      const prev = _chevPick.get(fi);
+      if (prev === undefined) { _chevPick.set(fi, i); _chevCarry[i] = 1; KC++; }
+      else if (!_arrowShown[prev] && _arrowShown[i]) {
+        _chevCarry[prev] = 0; _chevPick.set(fi, i); _chevCarry[i] = 1;
+      } else _chevCarry[i] = 0;
+    }
+  } else _chevCarry.fill(1);
+  // pass 3 -- anchors + matrices. Carried arrows pack into slots [0,KC)
+  // and fnArrows.count = KC (the marks this view carries); dropped arrows
+  // keep a collapsed-at-box matrix in tail slots, so label obstacles and
+  // census discs see exactly the discs a hidden arrow shows today.
+  let slotC = 0, slotT = KC;
+  for (let i = 0; i < fnArrowR.length; i++) {
+    const fi = arrowFile && arrowFile.length ? arrowFile[i] : -1;
+    const low = fi >= 0 && hasLeg && lod.pxOf(fi) < CHEV_FAN_PX;
+    const ride = low && _arrowOccl[i] ? _arrowRide[i] : -1;
     P.set(fnArrowPos[i*3], fnArrowPos[i*3+1], fnArrowPos[i*3+2]);
     const bx0 = fnArrowBox ? fnArrowBox[i*3] : 0, by0 = fnArrowBox ? fnArrowBox[i*3+1] : 0,
           bz0 = fnArrowBox ? fnArrowBox[i*3+2] : 0;
-    T.set(fnArrowTang[i*3], fnArrowTang[i*3+1], fnArrowTang[i*3+2]);
+    if (ride >= 0 && ride < 1) {
+      // riding the delivery leg: anchor = bezier at the last visible
+      // sample, V aims along the LOCAL wire tangent (issue #6)
+      legPt(i, ride, P);
+      legTan(i, ride, T);
+    } else T.set(fnArrowTang[i*3], fnArrowTang[i*3+1], fnArrowTang[i*3+2]);
     Z.subVectors(camera.position, P).normalize();
     // project the wire tangent into the billboard plane; degenerate
     // (tangent along the view axis) falls back to world-up
@@ -4102,9 +4229,12 @@ function aimArrows() {
     Y.normalize();
     X.crossVectors(Y, Z);
     // screen-hug clamp: at grazing angles a 3.5wu world offset projects
-    // 30-60px from the box (skeptic aFar >25px bar) — pull the anchor
-    // toward the box until it sits <=14px from it ON SCREEN
-    if (fnArrowBox) {
+    // 30-60px from the box (skeptic aFar >25px bar) -- pull the anchor
+    // toward the box until it sits <=14px from it ON SCREEN. Riding
+    // anchors (ride >= 0) sit mid-leg ON the wire -- the hug would
+    // drag them back into the occluded pile, so it only applies to
+    // box anchors (ride < 0).
+    if (ride < 0 && fnArrowBox) {
       const q = _obstV.set(fnArrowBox[i*3], fnArrowBox[i*3+1], fnArrowBox[i*3+2]).project(camera);
       const qx = (q.x*0.5+0.5)*w, qy = (-q.y*0.5+0.5)*h;
       for (let t = 1; t > 0.02; t -= 0.08) {
@@ -4117,22 +4247,18 @@ function aimArrows() {
         if (t <= 0.12) P.set(bx0, by0, bz0);   // extreme grazing: park ON the box
       }
     }
-    // occluded deliveries collapse INTO their box (scale 0) — tested a 0.55x/
-    // 0.45x hint V to lift chevObs, but each un-hidden arrow adds chevCrowd
-    // pairs at delivery sites (hub6 zoomin 16->19, tol +2): hidden stays.
-    if (_arrowOccl[i] && fnArrowBox) P.set(fnArrowBox[i*3], fnArrowBox[i*3+1], fnArrowBox[i*3+2]);
+    // not-shown deliveries collapse INTO their box (scale 0) -- tested a
+    // 0.55x/0.45x hint V to lift chevObs, but each un-hidden arrow adds
+    // chevCrowd pairs at delivery sites (hub6 zoomin 16->19, tol +2):
+    // hidden stays. (issue #6 rides/consolidates instead of un-hiding.)
+    if (!_arrowShown[i] && fnArrowBox) P.set(fnArrowBox[i*3], fnArrowBox[i*3+1], fnArrowBox[i*3+2]);
     const d = P.distanceTo(camera.position) || 1;
-    const lodOk = !arrowFile || !arrowFile.length || arrowFile[i] < 0 || lod.resA(arrowFile[i]);
-    // viewport-fraction law (user directive): 12px on the nominal 900px
-    // canvas at ANY window size — same fraction of frame, ref-px invariant
-    // viewport-FRACTION law: half-height 8px on the nominal 900 canvas at
-    // ANY window — same fraction of frame height, ref-px invariant. 8 not 6:
-    // at the USER's 735px window the chunky V's saturated mass read ~6 CSS px
-    // (pair-engineer zoom-crop: 'direction not reliably readable at native');
-    // 16px@900 keeps the V-mass >= 8px at the smallest window we test
+    // 8px-floor law, ref-px form: half-height 8px on the nominal 900px
+    // canvas at ANY window -- a fraction of frame height, so the V's
+    // saturated mass stays readable at the smallest window we test
     const s = 8 * (2 * Math.tan(camera.fov * Math.PI / 360) / 900) * d
-             * ((lodOk && !_arrowOccl[i]) ? 1 : 0);
-    if (fnLodV && s > 0.01) {
+             * (_arrowShown[i] ? 1 : 0);
+    if (fnLodV && s > 0.01 && _chevCarry[i]) {
       fnLodV.chevShown++;
       fnLodV.minChevPx = Math.min(fnLodV.minChevPx, ((2 * s) / (wuPerPx * d)) * (900 / hpx));
     }
@@ -4140,9 +4266,20 @@ function aimArrows() {
     fnArrowPos[i*3] = P.x; fnArrowPos[i*3+1] = P.y; fnArrowPos[i*3+2] = P.z;
     M.makeBasis(X.multiplyScalar(s), Y.multiplyScalar(s), Z);
     M.setPosition(P);
-    M.toArray(a, i * 16);
+    M.toArray(a, (_chevCarry[i] ? slotC++ : slotT++) * 16);
+    if (fnArrowHalo) {
+      // same anchor/billboard, 0.95 disc vs the V's 0.72 half-width;
+      // X/Y already carry s (0 when hidden), so the halo appears
+      // exactly where a chevron does and hides with it
+      M.makeBasis(X, Y, Z);
+      M.setPosition(P);
+      M.toArray(fnArrowHalo.instanceMatrix.array, i * 16);
+    }
   }
+  fnArrows.count = KC;
   fnArrows.instanceMatrix.needsUpdate = true;
+  if (fnArrowHalo) { fnArrowHalo.count = fnArrowR.length;
+    fnArrowHalo.instanceMatrix.needsUpdate = true; }
 }
 
 // ---- focus labels: name neighboring files + function satellites on focus ----
@@ -4286,6 +4423,11 @@ function rebuildFnLayer(focusing) {
   if (fnBus) { scene.remove(fnBus); fnBus.geometry.dispose(); fnBus = null; busPts = null; fnBusRi = null; busPtsMeta = null; trunkMetaMap = null; juncPickInfo = null; }
     if (fnJDot) { scene.remove(fnJDot); fnJDot.geometry.dispose(); fnJDot = null; fnJDotPos = null; fnJDotR = null; }
   if (fnArrows) { scene.remove(fnArrows); fnArrows.geometry.dispose(); fnArrows = null; fnArrowPos = null; fnArrowR = null; fnArrowTang = null; fnArrowBox = null; arrowFile = null; }
+  // issue #6: halo + delivery legs are rebuilt with the bus -- tear them
+  // down with the arrows or ghost discs persist past Escape (#58 family)
+  // and a stale leg array could alias a same-count rebuild
+  if (fnArrowHalo) { scene.remove(fnArrowHalo); fnArrowHalo.geometry.dispose(); fnArrowHalo.material.dispose(); fnArrowHalo = null; }
+  fnArrowLeg = null;
   if (fnStalks) { scene.remove(fnStalks); fnStalks.geometry.dispose(); fnStalks = null; }
   fnMeta = [];
   if (!fnMode || !focusing) return;
@@ -4475,7 +4617,7 @@ function rebuildFnLayer(focusing) {
   const FS = 8;
   const mk = () => ({ ep: [], ec: [], ed: [], meta: [] });
   const tierB = mk(), tierQ = mk();
-  const aPos = [], aDir = [], aCol = [], aBox = [];
+  const aPos = [], aDir = [], aCol = [], aBox = [], aLeg = [];
   const cA = new THREE.Color(), cB = new THREE.Color();
   // BUS pass — two granularities, both SHARED-DESTINATION only (blind
   // bundling hurts path tracing, McGee & Dingliana 2012):
@@ -4750,6 +4892,10 @@ function rebuildFnLayer(focusing) {
         aDir.push(axp/al, ayp/al, azp/al);
         aCol.push(br, bg, bb);
         aBox.push(bx, by, bz);
+        // issue #6 ride: delivery leg = this arc (from -> box,
+        // liftFrac bulge) so a buried box can slide its mark down
+        // the wire to the last visible sample
+        aLeg.push(ax, ay, az, liftFrac);
       }
       px = x; py = y; pz = z; pd = dd;
     }
@@ -5145,6 +5291,7 @@ function rebuildFnLayer(focusing) {
           aDir.push(ddx, ddy, ddz);
           aCol.push(cB.r, cB.g, cB.b);
           aBox.push(bx, by, bz);
+          aLeg.push(e1[0], e1[1], e1[2], 0.16);   // issue #6 ride: exit leg
         }
       } else {
         const J = Jof.get(b);
@@ -5375,6 +5522,23 @@ function rebuildFnLayer(focusing) {
     scene.add(fnArrows);
     fnArrowPos = new Float32Array(aPos);
     fnArrowR = new Float32Array(aPos.length / 3).fill(1);   // half-height wu
+    // issue #6: delivery-leg params per arrow [from(3), liftFrac] --
+    // same order as aPos; rebuilt with the bus every focus
+    fnArrowLeg = new Float32Array(aPos.length / 3 * 4);
+    fnArrowLeg.set(aLeg.slice(0, aPos.length / 3 * 4));
+    // issue #6 sketch: dark halo disc behind each chevron -- amber
+    // chevrons ride amber wires and vanish into them (VLM: 'gold-on-
+    // gold'); the disc restores figure-ground at crowded sites
+    fnArrowHalo = new THREE.InstancedMesh(
+      new THREE.CircleGeometry(0.95, 24),
+      new THREE.MeshBasicMaterial({ color: 0x0a0a10, transparent: true,
+        opacity: 0.6, depthTest: false, depthWrite: false, fog: false,
+        toneMapped: false }),
+      fnArrowR.length);
+    fnArrowHalo.frustumCulled = false;
+    fnArrowHalo.renderOrder = 3;
+    fnArrowHalo.count = 0;
+    scene.add(fnArrowHalo);
   }
 }
 
@@ -8190,6 +8354,56 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get hlArr() { return hlArr; },  // search-highlight flags per fi (probe hook)
   get hlFnArr() { return [...hlFn]; },  // fn names matching the live query
   get arrowOcclPasses() { return _arrowOcclPasses; },  // chevron occlusion passes since boot
+  get chevCensus() {
+    // per delivery chevron: owning file, box ref-px, lit state, occlusion
+    // and the shown flag aimArrows() actually painted (chevObs diagnosis
+    // + harness pin surface; pure read, no frame effects)
+    if (!fnArrows || !arrowFile) return null;
+    const out = [];
+    for (let i = 0; i < arrowFile.length; i++) {
+      const fi = arrowFile[i];
+      const lodOk = fi < 0 || (_lod ? _lod.resA(fi) : true);
+      const low = fi >= 0 && _lod && fnArrowLeg &&
+                  fnArrowLeg.length === arrowFile.length * 4 &&
+                  _lod.pxOf(fi) < CHEV_FAN_PX;
+      const shown = lodOk &&
+        (!_arrowOccl[i] || (low && _arrowRide[i] >= 0));
+      out.push({ i, fi, px: (fi >= 0 && _lod) ? +_lod.pxOf(fi).toFixed(2) : null,
+                 alpha: fi >= 0 ? +alphaTgt[fi].toFixed(2) : 1,
+                 occl: _arrowOccl[i] > 0, lodOk, shown,
+                 ride: low && _arrowOccl[i] ? +_arrowRide[i].toFixed(2) : null,
+                 carried: _chevCarry.length ? !!_chevCarry[i] : true });
+    }
+    // first-blocker classification + own-box visibility (diagnosis
+    // only; same ray semantics as aimArrows())
+    if (renderer && THREE && fnArrowPos) {
+      const rc = new THREE.Raycaster(); rc.far = Infinity;
+      const occ = (fileMesh.visible ? [fileMesh, fnMesh, fnBus] : [fnMesh, fnBus])
+                  .filter(Boolean);
+      const org = new THREE.Vector3().copy(camera.position);
+      for (let i = 0; i < arrowFile.length; i++) {
+        const o = out[i];
+        const bo = fnArrowBox ? new THREE.Vector3(fnArrowBox[i*3], fnArrowBox[i*3+1],
+                                                     fnArrowBox[i*3+2]) : null;
+        const tgt = new THREE.Vector3(fnArrowPos[i*3], fnArrowPos[i*3+1], fnArrowPos[i*3+2]);
+        const dir = tgt.clone().sub(org); const L = dir.length() || 1; dir.divideScalar(L);
+        rc.set(org, dir); rc.far = L - 1;
+        for (const h of rc.intersectObjects(occ, false)) {
+          if (bo && h.point.distanceTo(bo) < 4) continue;
+          o.blocker = h.object === fileMesh ? 'file' : h.object === fnMesh ? 'fnBox' : 'bus';
+          o.blockDist = +h.distance.toFixed(1); break;
+        }
+        if (!o.blocker) o.blocker = 'none';
+        if (bo) {   // is the target box itself in clear line of sight?
+          rc.set(org, bo.clone().sub(org)); const BL = rc.ray.direction.length() || 1;
+          rc.ray.direction.divideScalar(BL); rc.far = BL - 1;
+          o.boxBlocked = rc.intersectObjects(occ, false)
+            .some(h => h.point.distanceTo(bo) >= 4);
+        }
+      }
+    }
+    return out;
+  },
   get chainGates() { return [...chainGate.entries()]; },  // per-chain first failing gate (sighting #10)
   get taperDbg() {   // EXPLAINED EXIT probe: per-leg gate state this frame
     const out = [];

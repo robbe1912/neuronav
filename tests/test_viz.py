@@ -285,6 +285,7 @@ def run_tests():
                  return d.fnLod ? { b: d.fnLod.bollardsShown,
                                     c: d.fnLod.conduitsShown,
                                     ch: d.fnLod.chevShown,
+                                    cnt: d.fnArrows ? d.fnArrows.count : 0,
                                     msb: d.fnLod.minServedBoxPx,
                                     mch: d.fnLod.minChevPx,
                                     od: d.fnLod.oDot, oa: d.fnLod.oArrow,
@@ -294,6 +295,14 @@ def run_tests():
               lodf and lodf["b"] > 0 and lodf["c"] > 0 and lodf["msb"] > 0, str(lodf))
         check("default-cam chevrons at size or hidden",
               lodf and (lodf["ch"] == 0 or lodf["mch"] >= 8), str(lodf))
+        # issue #6: chevObs = chevShown / carried marks (fnArrows.count
+        # after consolidation) must clear 0.75 at a serving view --
+        # low-LOD files consolidate to one mark and buried boxes ride
+        # their delivery leg, so every mark a view carries is one the
+        # user can actually see (or the view hides chevrons entirely)
+        check("default-cam chevObs >= 0.75 (carried marks observable)",
+              lodf and (lodf["cnt"] == 0
+                        or lodf["ch"] / lodf["cnt"] >= 0.75), str(lodf))
         # paint-full law holds when the focus-state serve gate is ON; with
         # the gate off the distance fade IS the design (far-zoom noise
         # control), so only assert it in the gated-on state
