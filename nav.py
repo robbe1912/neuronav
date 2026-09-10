@@ -342,9 +342,20 @@ def _collection() -> chromadb.Collection:
 
 
 def rescan() -> dict[str, int]:
-    """Incremental index: add/update changed files, purge deleted ones."""
+    """Incremental index: add/update changed files, purge deleted ones.
+    Warm passes skip read+hash via the stat fingerprint (issue #42); the
+    sha stays the content identity."""
     with _db_lock():
         return _rescan_locked()
+
+
+def _stored_fp(meta: dict) -> tuple[int, int] | None:
+    """(mtime_ns, size) persisted at last hash — None on pre-gate entries
+    (issue #42): those re-hash once and gain the keys, no migration."""
+    try:
+        return int(meta["mtime_ns"]), int(meta["size"])
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _rescan_locked() -> dict[str, int]:
@@ -360,11 +371,11 @@ def _rescan_locked() -> dict[str, int]:
             "python nav.py drop)"
         )
     col = _collection()
-    existing: dict[str, str] = {}
+    existing: dict[str, dict] = {}
     if col.count():
         got = col.get(include=["metadatas"])
         existing = {
-            rid: (meta or {}).get("sha", "")
+            rid: (meta or {})
             for rid, meta in zip(got["ids"], got["metadatas"])
         }
 
@@ -373,7 +384,12 @@ def _rescan_locked() -> dict[str, int]:
     changed_paths: list[str] = []
     pending_ids: list[str] = []
     pending_docs: list[str] = []
-    pending_meta: list[dict[str, str]] = []
+    pending_meta: list[dict[str, object]] = []
+    refresh_ids: list[str] = []  # touched-but-identical: fingerprint-only update
+    refresh_meta: list[dict] = []
+    # issue #42: stat-only walk mirroring iter_files' rules — stats equal
+    # to the ones persisted at hash time mean the stored sha still holds
+    fp = stat_fingerprint()
 
     def flush() -> None:
         nonlocal pending_ids, pending_docs, pending_meta
@@ -391,26 +407,39 @@ def _rescan_locked() -> dict[str, int]:
     for path in files:
         fid = file_id(path)
         seen.add(fid)
-        digest = sha256_of(path)
-        if existing.get(fid) == digest:
+        old = existing.get(fid)
+        st = fp.get(fid)
+        if old is not None and st is not None and _stored_fp(old) == st:
             stats["unchanged"] += 1
+            continue
+        digest = sha256_of(path)
+        if old is not None and old.get("sha") == digest:
+            # touched but byte-identical: sha-gated, embeds nothing —
+            # refresh the stored fingerprint so the next warm pass skips
+            stats["unchanged"] += 1
+            if st is not None:
+                refresh_ids.append(fid)
+                refresh_meta.append({**old, "mtime_ns": st[0], "size": st[1]})
             continue
         text = _read_text(path)
         pending_ids.append(fid)
         pending_docs.append(text)
-        pending_meta.append(
-            {
-                "sha": digest,
-                "ext": path.suffix,
-                "class_name": _class_name(text),
-                "extends": _extends(text),
-            }
-        )
+        meta: dict[str, object] = {
+            "sha": digest,
+            "ext": path.suffix,
+            "class_name": _class_name(text),
+            "extends": _extends(text),
+        }
+        if st is not None:
+            meta["mtime_ns"], meta["size"] = st
+        pending_meta.append(meta)
         stats["added" if fid not in existing else "updated"] += 1
         changed_paths.append(fid)
         if len(pending_ids) >= UPSERT_BATCH:
             flush()
     flush()
+    if refresh_ids:
+        col.update(ids=refresh_ids, metadatas=refresh_meta)
 
     deleted = [fid for fid in existing if fid not in seen]
     if deleted:
