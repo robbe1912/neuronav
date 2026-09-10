@@ -50,6 +50,15 @@ def init(project: Path | None = None, index: bool = False) -> Path:
         "exclude_dirs": [".git", "__pycache__", ".venv", ".neuronav", "node_modules"],
     }
     cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8", newline="\n")
+    ig = state / ".neuroignore"
+    if not ig.is_file():
+        ig.write_text(
+            "# neuronav ignores — one directory name per line (matched at any depth)\n"
+            "# adjust freely: delete a line to re-include, add a name to exclude more\n"
+            "# scratch conventions agent tooling drops into projects:\n"
+            ".tmp\n"
+            ".team_scratch\n",
+            encoding="utf-8", newline="\n")
     gi = proj / ".gitignore"
     if gi.is_file():
         lines = gi.read_text(encoding="utf-8").splitlines()
