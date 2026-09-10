@@ -1,6 +1,6 @@
 # AGENTS.md — tests/
 
-Eleven self-contained suites. Each is a standalone script — no pytest — run in
+Fifteen self-contained suites. Each is a standalone script — no pytest — run in
 its own process:
 
 ```
@@ -28,6 +28,7 @@ with `NEURONAV_EMBED_FAKE=1`; the rest are local gates.
 | `test_repomap` | repo_map budget bound, byte determinism, rank ordering, god-hub saturation on synthetic graphs | stdlib + numpy (no index, no embeddings) |
 | `test_mwires` | named-wire map exports (`mwires`/`fns`/`meta` contract, map-spec-v2 §0) | chromadb import only (self-sets `NEURONAV_EMBED_FAKE=1`) |
 | `test_recall` | hybrid recall fusion, ctx hops, degraded mode (real+fake modes) | chromadb import; exact-rank pins need a real-embedded store |
+| `test_embedprov` | embed provider contract (issue #17): provider select/auto-detect, ollama+openai wire adapters, env-vs-config key precedence, keyless no-header, 401 loud, 429 retry, batch chunking, no-pad mismatches, fake-mode isolation | stdlib http.server stub on an ephemeral loopback port + chromadb import |
 | `test_project_mode` | onboarding (issue #27): discovery precedence env > project-local > checkout, `onboard.init`/`wire` scaffolds, viz add-on degrade | stdlib + chromadb import (fresh subprocesses, fake embeds) |
 | `test_viz` | 90-check Playwright harness over the real baked page | playwright + chrome + a fresh `graph.html` bake |
 
@@ -51,6 +52,10 @@ Suites pick their own config; the shell must not pre-export one:
   real profile.
 - `test_server_stdio` strips `NEURONAV_CONFIG` from the child env so the
   server binds the default profile.
+- `test_embedprov` writes a generated temp config under the system
+  temp dir, points `embed_url` at its own loopback stub (ephemeral
+  port), and manages `NEURONAV_EMBED_FAKE`/`NEURONAV_EMBED_KEY`
+  itself — it never touches a real profile or model server.
 - `test_target_regression` / `test_viz` use the default `config.json` — the
   target repo must exist at its configured path.
 

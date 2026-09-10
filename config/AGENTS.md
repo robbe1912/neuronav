@@ -35,7 +35,49 @@ itself).
 | `extensions` | `.gd, .tscn` | suffixes kept (must be registered in `extractors/` to parse) |
 | `exclude_dirs` | `.git, __pycache__` | pruned from the directory walk |
 | `watch_interval_s` | `0` (off) | >0: the MCP server polls the stat gate every N seconds and auto-rescans without waiting for a tool call (issue #19) |
-| `embed_url` / `embed_model` / `embed_dim` | local Ollama `/api/embed`, `qwen3-embedding:0.6b`, 1024 | embedding backend |
+| `embed_url` | `http://127.0.0.1:11434/api/embed` | embedding endpoint (Ollama `/api/embed` or any OpenAI-compatible `/embeddings`) |
+| `embed_model` | `qwen3-embedding:0.6b` | model name sent verbatim; also the vector-space fingerprint on the collection and in base-export manifests |
+| `embed_dim` | `1024` | explicit per profile — never inferred, mismatch fails loud |
+| `embed_provider` | auto-detect from `embed_url` | `"ollama"` or `"openai"` wire protocol; url ending in `/embeddings` -> `openai`, anything else -> `ollama`; unknown explicit value exits loud |
+| `embed_api_key` | `""` (none) | sent as `Authorization: Bearer ...` ONLY when non-empty; `$NEURONAV_EMBED_KEY` (evaluated at config load) wins over this field so secrets stay out of tracked profiles |
+
+## Embedding providers (issue #17)
+
+`nav.embed` speaks two wire protocols behind the same config keys:
+
+| provider | request | response rows | auth |
+|---|---|---|---|
+| `ollama` (default) | `{model, input}` to `/api/embed` | `embeddings[i]` | header only when a key is set (Ollama ignores it) |
+| `openai` | `{model, input[]}` to any `/v1/embeddings` | `data[i].embedding`, sorted by `index` (row order is not guaranteed) | Bearer key when set |
+
+The `openai` side covers OpenAI itself and every compatible endpoint —
+vLLM, LM Studio, llama.cpp server, and Ollama's own `/v1` layer — so
+switching is a config edit, not a code change. Details:
+
+- Provider resolution happens in `nav._apply_config`: explicit
+  `embed_provider` wins (case-insensitive, anything but the two names
+  exits loud with a fix hint); unset auto-detects from the `embed_url`
+  path. Default configs keep the exact Ollama behavior.
+- Keys: `$NEURONAV_EMBED_KEY` beats `embed_api_key` in the config json;
+  both are read at config load (import or `nav.py --config`). Keyless
+  local servers stay keyless — no header is sent when no key is set.
+- Robustness: requests chunk at the internal batch of 32 (OpenAI caps
+  input array length); `429` responses back off — a parseable
+  `Retry-After` is honored capped at 60s, otherwise 1s/2s/4s, then fail.
+- Loud failures name the provider: count mismatches raise (never pad or
+  truncate), wrong-shape responses raise, missing keys against an
+  authed endpoint surface the HTTP error. The collection fingerprint
+  records `embed_model` + `embed_provider` (a provider-only change
+  never blocks reuse — the model defines the vector space); base-export
+  manifests gained a `provider` field, older manifests/collections
+  default to `ollama` in messages.
+- `NEURONAV_EMBED_FAKE=1` (CI plumbing) short-circuits before any
+  network: same deterministic hash vectors as before, provider ignored.
+
+Bench note: before/after recall comparisons must pin ONE
+`embed_provider` + `embed_model` pair for both runs — `bench/`
+records the model in its result json, and mixing providers (or models)
+compares two different vector spaces, not two code states.
 
 ## exclude_dirs semantics — read before adding a profile
 

@@ -63,7 +63,7 @@ def _apply_config(path: Path | None) -> None:
     and again by ``nav.py --config <path>`` (which also sets NEURONAV_CONFIG
     so subprocesses and sibling modules like graph.py agree). ``path=None``
     means no config anywhere: pure cwd defaults (issue #27)."""
-    global ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM, WATCH_INTERVAL_S, STATE_DIR, DB_DIR, BASE_DIR
+    global ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM, EMBED_PROVIDER, EMBED_API_KEY, WATCH_INTERVAL_S, STATE_DIR, DB_DIR, BASE_DIR
     if path is not None and not path.is_file():
         # issue #41: an explicit config path is a contract, not a hint —
         # silently degrading to walk-all defaults flips the walk identity
@@ -92,6 +92,24 @@ def _apply_config(path: Path | None) -> None:
     EMBED_URL = str(cfg.get("embed_url", "http://127.0.0.1:11434/api/embed"))
     EMBED_MODEL = str(cfg.get("embed_model", "qwen3-embedding:0.6b"))
     EMBED_DIM = int(cfg.get("embed_dim", 1024))
+    # issue #17: the wire protocol follows the endpoint — Ollama /api/embed
+    # or any OpenAI-compatible /embeddings (OpenAI, vLLM, LM Studio,
+    # Ollama's own /v1 layer). Explicit "ollama"|"openai" wins; unset
+    # auto-detects from the url path. NEURONAV_EMBED_KEY beats the config
+    # key so secrets stay out of tracked profiles; the Bearer header only
+    # goes out when a key is present, so keyless local servers still work.
+    _provider = str(cfg.get("embed_provider", "")).strip().lower()
+    if _provider and _provider not in ("ollama", "openai"):
+        raise SystemExit(
+            f"embed_provider '{_provider}' is not 'ollama' or 'openai' — "
+            "fix the config json or unset it to auto-detect from embed_url"
+        )
+    EMBED_PROVIDER = (
+        _provider
+        if _provider
+        else ("openai" if EMBED_URL.rstrip("/").endswith("/embeddings") else "ollama")
+    )
+    EMBED_API_KEY = os.environ.get("NEURONAV_EMBED_KEY") or str(cfg.get("embed_api_key", ""))
     # >0: the MCP server polls the stat gate every N seconds and
     # auto-rescans without waiting for a tool call (issue #19)
     WATCH_INTERVAL_S = float(cfg.get("watch_interval_s") or 0.0)
@@ -132,6 +150,8 @@ EXCLUDE_DIRS: frozenset[str]
 EMBED_URL: str
 EMBED_MODEL: str
 EMBED_DIM: int
+EMBED_PROVIDER: str
+EMBED_API_KEY: str
 WATCH_INTERVAL_S: float
 STATE_DIR: Path
 DB_DIR: Path
@@ -153,8 +173,42 @@ MANIFEST_NAME = "manifest.json"
 STAT_TTL_S = 3.0
 
 
+def _embed_post(chunk: list[str], headers: dict[str, str] | None) -> dict:
+    """One embeddings POST with 429 backoff (issue #17): a parseable
+    Retry-After is honored (capped at 60s), no header means 1s/2s/4s.
+    Any other failure raises loud via raise_for_status."""
+    attempt = 0
+    while True:
+        resp = httpx.post(
+            EMBED_URL,
+            json={"model": EMBED_MODEL, "input": chunk},
+            headers=headers,
+            timeout=300.0,
+        )
+        if resp.status_code != 429:
+            resp.raise_for_status()
+            return resp.json()
+        if attempt >= 3:
+            raise RuntimeError(
+                f"{EMBED_PROVIDER} embed still rate-limited (429) after "
+                f"{attempt + 1} attempts: {resp.text[:200]}"
+            )
+        raw = resp.headers.get("Retry-After")
+        if raw is None:
+            time.sleep(float(2**attempt))
+        else:
+            try:
+                time.sleep(max(min(float(raw), 60.0), 0.0))
+            except ValueError:
+                time.sleep(float(2**attempt))  # Retry-After as HTTP-date
+        attempt += 1
+
+
 def embed(texts: list[str]) -> list[list[float]]:
-    """Batch-embed via Ollama /api/embed. Truncates long inputs.
+    """Batch-embed via the configured provider (issue #17): Ollama
+    /api/embed or any OpenAI-compatible /embeddings endpoint. Truncates
+    long inputs and chunks requests at EMBED_BATCH (OpenAI caps input
+    array length).
 
     NEURONAV_EMBED_FAKE=1 swaps in deterministic hash embeddings (CI
     plumbing mode): same text -> same vector, so upsert/query/scoping all
@@ -167,20 +221,22 @@ def embed(texts: list[str]) -> list[list[float]]:
             rng = random.Random(f"neuronav-fake:{t}")
             out.append([rng.uniform(-1.0, 1.0) for _ in range(EMBED_DIM)])
         return out
-    resp = httpx.post(
-        EMBED_URL,
-        json={"model": EMBED_MODEL, "input": truncated},
-        timeout=300.0,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    if "embeddings" not in data:
-        raise RuntimeError(f"Ollama embed failed: {data}")
-    out: list[list[float]] = data["embeddings"]
-    if len(out) != len(texts):
-        raise RuntimeError(
-            f"Ollama returned {len(out)} embeddings for {len(texts)} inputs"
-        )
+    headers = {"Authorization": f"Bearer {EMBED_API_KEY}"} if EMBED_API_KEY else None
+    out: list[list[float]] = []
+    for i in range(0, len(truncated), EMBED_BATCH):
+        chunk = truncated[i : i + EMBED_BATCH]
+        data = _embed_post(chunk, headers)
+        if EMBED_PROVIDER == "ollama":
+            rows = data.get("embeddings")
+        else:  # openai: data[i].embedding; row order is not guaranteed
+            rows = [r.get("embedding") for r in sorted(data.get("data") or [], key=lambda r: r.get("index", 0))]
+        if rows is None or any(r is None for r in rows):
+            raise RuntimeError(f"{EMBED_PROVIDER} embed failed: {data}")
+        if len(rows) != len(chunk):
+            raise RuntimeError(
+                f"{EMBED_PROVIDER} returned {len(rows)} embeddings for {len(chunk)} inputs"
+            )
+        out.extend(rows)
     return out
 
 
@@ -316,18 +372,24 @@ _LOCK: FileLock | None = None
 
 def _check_model(col: chromadb.Collection) -> None:
     """Embedding-model fingerprint on the live collection: a same-dim
-    different-model swap silently mixes vector spaces otherwise."""
+    different-model swap silently mixes vector spaces otherwise. The
+    provider rides along in metadata for the error text (issue #17) —
+    the model defines the vector space, the provider is transport, so a
+    provider-only change never blocks reuse (old collections predate
+    the provider key and default to 'ollama' in messages)."""
     meta = col.metadata or {}
     stored = meta.get("embed_model")
     if stored is None:
         try:
-            col.modify(metadata={"embed_model": EMBED_MODEL})
+            col.modify(metadata={"embed_model": EMBED_MODEL, "embed_provider": EMBED_PROVIDER})
         except Exception:
             pass  # chroma refusing metadata modify is non-fatal
     elif stored != EMBED_MODEL:
         raise RuntimeError(
-            f"index was built with embed model '{stored}' but config says "
-            f"'{EMBED_MODEL}' — run `python nav.py drop` then rescan"
+            f"index was built with embed model '{stored}' (provider "
+            f"'{meta.get('embed_provider', 'ollama')}') but config says "
+            f"'{EMBED_MODEL}' (provider '{EMBED_PROVIDER}') — run "
+            "`python nav.py drop` then rescan"
         )
 
 
@@ -631,6 +693,7 @@ def export_base() -> dict[str, object]:
         manifest = {
             "model": EMBED_MODEL,
             "dim": EMBED_DIM,
+            "provider": EMBED_PROVIDER,
             "count": len(rows),
             "shards": shards,
             "exported_at": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -659,7 +722,10 @@ def import_base() -> dict[str, int | str]:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if manifest.get("model") != EMBED_MODEL or manifest.get("dim") != EMBED_DIM:
             raise RuntimeError(
-                f"base index model mismatch: {manifest.get('model')}/{manifest.get('dim')}"
+                f"base index model mismatch: {manifest.get('model')}/"
+                f"{manifest.get('dim')} (provider "
+                f"'{manifest.get('provider', 'ollama')}') vs config "
+                f"{EMBED_MODEL}/{EMBED_DIM} (provider '{EMBED_PROVIDER}')"
             )
         ids: list[str] = []
         embs: list[list[float]] = []
