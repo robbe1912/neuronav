@@ -178,7 +178,9 @@ Terse bodies explaining WHY, not WHAT.
   (claims vs artifacts: real runs, real numbers, real files) before push. Read-only
   research stays exempt until it promotes to an issue — then the reviewer gates
   the filing.
-Every change lands via pull request — main is protected with enforce_admins;
-  the owner is the sole approving reviewer. Fixes reference their issue
-  ("Closes #N") and issues are closed with evidence at merge time, not left
-  open. No direct pushes, no admin bypasses.
+Every change lands via pull request — main is protected; the required
+  gate is the green "suites" CI check (agents author PRs under the owner's
+  token, so a required human approval is structurally unsatisfiable — the
+  review function is the agent batteries + post-reviewer verdict comments).
+  Fixes reference their issue ("Closes #N") and issues are closed with
+  evidence at merge time, not left open. No direct pushes.
