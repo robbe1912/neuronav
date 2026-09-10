@@ -1,10 +1,10 @@
-# machine-local state
+# machine-local state (per-project generated state lives in the TARGET
+# repo's .neuronav/: chroma store, base shards, graph.html bake)
 .venv/
-.chroma/
 config.json
-base/
 .codegraph/
 .neuronav/
+.tmp/
 
 # python build artifacts
 __pycache__/
@@ -15,16 +15,11 @@ dist/
 *.egg-info/
 
 # generated output
-graph.html
-graph_neuronav.html
-# graph_stable.html: second generated viz bake (~3.4MB), sibling of graph.html — never commit
-graph_stable.html
 *.log
 
-# generated screenshots (tests + manual QA)
+# generated screenshots (tests + manual QA — land in .tmp/, this is a
+# repo-wide backstop against accidental commits anywhere)
 *.png
 
 tools/_*.py
-tools/*.png
 .team_scratch/
-qa/

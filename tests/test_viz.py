@@ -12,6 +12,8 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
+SHOTS = ROOT / ".tmp" / "shots"
+SHOTS.mkdir(parents=True, exist_ok=True)
 sys.path.insert(0, str(ROOT))
 import nav  # noqa: E402  (the bake lives in the active config's state dir)
 
@@ -480,7 +482,7 @@ def run_tests():
               pins.get("skip") or (pins["n"] >= 1 and pins["off"] >= pins["n"] - 2),
               str(pins))
 
-        page.screenshot(path=str(ROOT / "tests" / "qa_hubbudget.png"),
+        page.screenshot(path=str(SHOTS / "qa_hubbudget.png"),
                         scale="css", type="png")
 
         # 5. hover a fn box -> tooltip shows path :: name
@@ -544,7 +546,7 @@ def run_tests():
               str(stalks))
 
         # pointer still parked on the fn box -> capture the stalk evidence
-        page.screenshot(path=str(ROOT / "tests" / "qa_stalk.png"), scale="css", type="png")
+        page.screenshot(path=str(SHOTS / "qa_stalk.png"), scale="css", type="png")
 
         # 5aa. aggregate fn box ('n×') click opens the fn picker over that
         # file's roster (ranked by incident-wire count then name) — NOT the
@@ -773,7 +775,7 @@ def run_tests():
             """() => ["hubs", "clabs", "flabs"].map(id =>
                  document.getElementById(id).style.opacity)"""
         )
-        page.screenshot(path=str(ROOT / "tests" / "qa_grey.png"), scale="css", type="png")
+        page.screenshot(path=str(SHOTS / "qa_grey.png"), scale="css", type="png")
         page.evaluate(
             """() => window.__dbg.renderer.domElement.dispatchEvent(
                  new PointerEvent('pointermove', { clientX: -500, clientY: -500, bubbles: true }))"""
@@ -1015,7 +1017,7 @@ def run_tests():
                           hidden: labs.every(el => el.style.display === 'none') }; }"""
         )
         if not (sup and "skip" in sup) and sup and "fail" not in sup:
-            page.screenshot(path=str(ROOT / "tests" / "qa_collapse.png"), scale="css", type="png")
+            page.screenshot(path=str(SHOTS / "qa_collapse.png"), scale="css", type="png")
         sup2 = page.evaluate(
             """() => new Promise(res => { const d = window.__dbg;
                  const b = document.getElementById('bCollapse');
@@ -1482,9 +1484,9 @@ def run_tests():
             zin = mstruct()
             check("zoom-in keeps the ONE layout (no re-scope, no relayout)",
                   all(zin[k] == mbase[k] for k in mkeys), f"{mbase} -> {zin}")
-            page.screenshot(path=str(ROOT / "tests" / "qa_map_zoomin.png"),
+            page.screenshot(path=str(SHOTS / "qa_map_zoomin.png"),
                             scale="css", type="png")
-            print("artifact: tests/qa_map_zoomin.png")
+            print("artifact: .tmp/shots/qa_map_zoomin.png")
             # drag = pan zoomed in far: content follows the cursor 1:1 and
             # HOLDS (the old doc re-center snap-back is gone)
             page.mouse.move(mcx, mcy)
@@ -1505,9 +1507,9 @@ def run_tests():
                   f"{pan_mid['probe']} vs {pan['probe']}")
             check("pan does not change the layout",
                   all(pan[k] == mbase[k] for k in mkeys), "")
-            page.screenshot(path=str(ROOT / "tests" / "qa_map_panned.png"),
+            page.screenshot(path=str(SHOTS / "qa_map_panned.png"),
                             scale="css", type="png")
-            print("artifact: tests/qa_map_panned.png")
+            print("artifact: .tmp/shots/qa_map_panned.png")
             # zoom far out: SAME layout scaled - nothing collapses into
             # band trunks, no doc re-scoping, boxes keep their rosters
             page.mouse.move(mcx, mcy)
@@ -1520,9 +1522,9 @@ def run_tests():
                   all(zout[k] == mbase[k] for k in mkeys), f"{mbase} -> {zout}")
             check("zoom-out moved the view (scaled, not frozen)",
                   zout["probe"] != zin["probe"], "")
-            page.screenshot(path=str(ROOT / "tests" / "qa_map_zoomout.png"),
+            page.screenshot(path=str(SHOTS / "qa_map_zoomout.png"),
                             scale="css", type="png")
-            print("artifact: tests/qa_map_zoomout.png")
+            print("artifact: .tmp/shots/qa_map_zoomout.png")
             # 8c. zoom-gated ink tiers (paint-only): the fine layers
             # (underlays, named wires, port dots/arrowheads) hide when
             # zoomed out and return when zoomed back in (hysteresis) -
@@ -1696,8 +1698,8 @@ def run_tests():
             check("trunk click opens the rider card",
                   card.startswith("\U0001F68C bus ") and "→" in card, card[:80])
         # artifact: screenshot of the focused fn-layer state
-        page.screenshot(path=str(ROOT / "tests" / "last_run.png"), scale="css", type="png")
-        print("artifact: tests/last_run.png")
+        page.screenshot(path=str(SHOTS / "last_run.png"), scale="css", type="png")
+        print("artifact: .tmp/shots/last_run.png")
         browser.close()
 
     print(f"\n{n_files} files indexed · {len(FAILURES)} failure(s)")

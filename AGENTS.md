@@ -157,6 +157,9 @@ Visualizer work also gates through `tools/qa_readability.py` (see
   server env (see `tools/wire-project.ps1`) — one install, many projects.
 - Scratch/test dirs MUST be in `exclude_dirs` or they pollute the self-index
   dead-code tier (see `config/AGENTS.md`).
+- Throwaway worktrees and test screenshots live in `.tmp/` (repo root,
+  gitignored, on the self-index exclude list) — never the repo root or
+  tracked dirs. See `config/AGENTS.md`.
 
 ## Conventions
 

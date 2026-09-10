@@ -40,6 +40,11 @@ toward the junk. The self-index profile (`neuronav.json`) exists precisely
 to keep that signal clean — it indexes only `.py` and excludes the venv,
 the per-project state store (`.neuronav/`), and fixture trees.
 
+`.tmp/` (repo root) is the sanctioned home for throwaway worktrees and test
+screenshots; it is gitignored and — because the self-index walks `.`
+(`include_dirs: ["."]`) — it is on `neuronav.json`'s exclude list. Never
+park scratch in the repo root itself.
+
 `include_dirs` and `extensions` are additive filters on top; `collection`
 namespacing means two profiles never share vectors.
 
