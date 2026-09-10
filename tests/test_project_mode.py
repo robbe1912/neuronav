@@ -169,6 +169,45 @@ def main() -> None:
         r = run_nav_raw(p4, "import nav; nav.rescan()", str(cfg_empty))
         err = (r.stderr or "") + (r.stdout or "")
         check("empty effective file set: rescan fails loudly", r.returncode != 0 and "0 files" in err and "nope-dir" in err, err[:120])
+
+        # 8. nav: warm-rescan stat gate (issue #42) — unchanged files
+        # skip the read+hash; the sha stays the identity
+        p5 = tmp / "fifth"
+        (p5 / "src").mkdir(parents=True)
+        (p5 / "src" / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+        (p5 / "src" / "other.py").write_text("def aux():\n    return 2\n", encoding="utf-8")
+        (p5 / ".neuronav").mkdir()
+        (p5 / ".neuronav" / "config.json").write_text(
+            json.dumps({"root": str(p5), "include_dirs": ["."]}), encoding="utf-8"
+        )
+        code8 = (
+            "import json, os\n"
+            "import nav\n"
+            "cold = nav.rescan()\n"
+            "col = nav._collection()\n"
+            "ids1 = sorted(col.get()['ids'])\n"
+            "warm = nav.rescan()\n"
+            "ids2 = sorted(col.get()['ids'])\n"
+            "p = nav.ROOT / 'src' / 'app.py'\n"
+            "p.write_text(p.read_text(encoding='utf-8') + '\\ndef extra():\\n    return 3\\n', encoding='utf-8')\n"
+            "touched = nav.rescan()\n"
+            "q = nav.ROOT / 'src' / 'other.py'\n"
+            "st = q.stat()\n"
+            "os.utime(q, ns=(st.st_atime_ns + 10**9, st.st_mtime_ns + 10**9))\n"
+            "resaved = nav.rescan()\n"
+            "print(json.dumps({'cold': cold, 'warm': warm, 'ids_stable': ids1 == ids2,\n"
+            "                  'touched': touched, 'resaved': resaved}))\n"
+        )
+        r = run_nav_raw(p5, code8, str(p5 / ".neuronav" / "config.json"))
+        if r.returncode != 0:
+            check("stat gate: scenario subprocess ran", False, (r.stderr or "")[:120])
+        else:
+            out = json.loads(r.stdout.strip().splitlines()[-1])
+            w = {k: out["warm"][k] for k in ("added", "updated", "unchanged", "deleted")}
+            check("stat gate: warm rescan is 0/0/2/0 (a/u/u/d)", w == {"added": 0, "updated": 0, "unchanged": 2, "deleted": 0}, str(w))
+            check("stat gate: warm rescan leaves count + ids identical", out["ids_stable"] and out["cold"]["added"] == 2)
+            check("stat gate: touched file re-hashes + updates", out["touched"]["updated"] == 1 and "src/app.py" in out["touched"]["changed"], str(out["touched"]["updated"]))
+            check("stat gate: re-stat'd identical file embeds nothing", out["resaved"]["updated"] == 0 and out["resaved"]["unchanged"] == 2, str(out["resaved"]["updated"]))
 if __name__ == "__main__":
     main()
     sys.exit(1 if FAILURES else 0)   # a failing run must fail the gate
