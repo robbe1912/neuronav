@@ -1298,10 +1298,20 @@ _TEMPLATE = r"""<!DOCTYPE html>
     overflow-y:auto; }
   #mapList h3 { margin:0 0 6px; font-size:11px; font-weight:600; color:#1de9b6;
     word-break:break-all; }
-  #mapList .row, #mapPick .row, #fnPick .row { padding:2px 4px; border-radius:4px;
-    cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  #mapList .row:hover, #mapPick .row:hover, #fnPick .row:hover {
-    background:#1de9b61a; color:#1de9b6; }
+  #mapList .row, #mapPick .row, #fnPick .row, #searchResults .row {
+    padding:2px 4px; border-radius:4px; cursor:pointer; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis; }
+  #mapList .row:hover, #mapPick .row:hover, #fnPick .row:hover,
+  #searchResults .row:hover { background:#1de9b61a; color:#1de9b6; }
+  /* search results dropdown: rides the sidebar under #search (fnPick
+     pattern — fixed, viewport coords, hidden until a query matches) */
+  #searchResults { display:none; position:fixed; z-index:6;
+    background:rgba(8,12,16,.95); border:1px solid #263238; border-radius:8px;
+    padding:8px; width:250px; max-height:40vh; overflow-y:auto; }
+  #searchResults .more { padding:2px 4px; color:#546e7a; font-size:10.5px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #searchResults .fnrow { color:#8fa3ad; }
+  #searchResults .fnrow b { color:#ffcc80; font-weight:600; }
   #mapPick, #fnPick { display:none; pointer-events:auto;
     background:rgba(8,12,16,.95); border:1px solid #263238; border-radius:8px;
     padding:8px; width:250px; max-height:40vh; overflow-y:auto; }
@@ -1321,6 +1331,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <div id="stats"></div>
   <div id="edgeLegend"></div>
   <input id="search" placeholder="search file / class…">
+  <div id="searchResults"></div>
   <div id="depthRow">
     <span>depth</span>
 <input id="depth" type="range" min="1" max="3" value="1">
@@ -1422,6 +1433,94 @@ fedges.forEach(e => {
   (fnOf[e[3]] = fnOf[e[3]] || new Set()).add(e[2]);
 });
 const fnNames = Object.keys(fnOf);
+// ---- search highlight (issue #33): typing never focuses — it flags
+// matches in place and fills the results list; focus/fn tier starts only
+// from a node (or results-row) click. Match rule is EXACTLY the seed rule
+// computeLevels used (path/cls includes; fn-name includes at >=2 chars) so
+// highlight and focus agree on what a query means — same DATA, same rule.
+const hlArr = new Float32Array(N);   // 1 = file matches the live query
+let hlFn = new Set();                // fn names matching the live query
+function applyHighlight() {
+  hlArr.fill(0); hlFn.clear();
+  if (query) {
+    for (let i = 0; i < N; i++) {
+      const n = nodes[i];
+      if (n.path.toLowerCase().includes(query) ||
+          n.cls.toLowerCase().includes(query)) hlArr[i] = 1;
+    }
+    if (query.length >= 2) for (const nm of fnNames) {
+      if (!nm.toLowerCase().includes(query)) continue;
+      hlFn.add(nm);
+      for (const f of fnOf[nm]) hlArr[f] = 1;
+    }
+  }
+  hubs.forEach(h => h.el.classList.toggle("hl", !!hlArr[h.i]));
+  fLabs.forEach(f => {
+    if (f.kind === 1) f.el.classList.toggle("hl", hlFn.has(fnMeta[f.ix].name));
+    else f.el.classList.remove("hl");
+  });
+  buildSearchResults();
+}
+// results dropdown: capped, deterministic (files by degree desc, then fn
+// names by owning-file count desc). Row click == node click: same focus
+// path, compaction and framing the canvas click takes.
+const searchResEl = document.getElementById("searchResults");
+const RES_CAP = 30;
+function focusFromSearch(i) {
+  hideSearchResults();
+  pushFocusState();
+  focusSeeds.clear(); focusSeeds.add(i);
+  applyVisibility();
+  focus(i);
+  showInfo(i);
+  mapCenterOn(i);
+}
+function hideSearchResults() {
+  searchResEl.style.display = "none";
+  searchResEl.innerHTML = "";
+}
+function buildSearchResults() {
+  if (!query) { hideSearchResults(); return; }
+  const files = [];
+  for (let i = 0; i < N; i++) if (hlArr[i]) files.push(i);
+  files.sort((a, b) => degree[b] - degree[a] || a - b);
+  const fns = [...hlFn];
+  fns.sort((a, b) => fnOf[b].size - fnOf[a].size || (a < b ? -1 : a > b ? 1 : 0));
+  const total = files.length + fns.length;
+  if (!total) { hideSearchResults(); return; }
+  const rows = [];
+  const nFiles = Math.min(files.length, RES_CAP);
+  for (let k = 0; k < nFiles; k++) {
+    const i = files[k];
+    rows.push({ html: esc(nodes[i].label) + " · " + Math.round(degree[i]),
+                title: nodes[i].path, fn: false, i });
+  }
+  const nFns = Math.min(fns.length, Math.max(0, RES_CAP - nFiles));
+  for (let k = 0; k < nFns; k++) {
+    const nm = fns[k];
+    // deterministic owner: highest-degree file the name lives on
+    let best = -1;
+    for (const f of fnOf[nm]) if (best < 0 || degree[f] > degree[best] ||
+        (degree[f] === degree[best] && f < best)) best = f;
+    rows.push({ html: "ƒ <b>" + esc(nm) + "</b> · " + fnOf[nm].size + " files",
+                title: nm, fn: true, i: best });
+  }
+  let html = rows.map((r, k) =>
+    '<div class="row' + (r.fn ? " fnrow" : "") + '" data-k="' + k + '" title="' +
+    esc(r.title) + '">' + r.html + "</div>").join("");
+  if (total > rows.length)
+    html += '<div class="more">+' + (total - rows.length) +
+            " more — refine or click a node</div>";
+  searchResEl.innerHTML = html;
+  const r0 = searchEl.getBoundingClientRect();
+  searchResEl.style.left = r0.left + "px";
+  searchResEl.style.top = (r0.bottom + 6) + "px";
+  searchResEl.style.display = "block";
+  searchResEl.querySelectorAll(".row").forEach(el => {
+    // pointerdown beats the input blur so the row click still lands
+    el.onpointerdown = e => { e.preventDefault(); focusFromSearch(rows[+el.dataset.k].i); };
+  });
+}
 // per-file typed edge weight (for the hover summary line)
 const typedCount = Array.from({ length: N }, () => ({}));
 links.forEach(l => {
@@ -1728,7 +1827,10 @@ function syncFileMesh() {
     _dummy.updateMatrix();
     fileMesh.setMatrixAt(i, _dummy.matrix);
     // hovered nodes also lift slightly in brightness alongside the scale ease
-    const lift = a * (1 + 0.35 * (hoverScale[i] - 1)) * (i === fnOwner ? 1.9 : 1);
+    // search-match lift: pure brightness (no size change — labBox caches
+    // label boxes and degFloor sizes; a multiplier here keeps both stable)
+    const lift = a * (1 + 0.35 * (hoverScale[i] - 1)) * (i === fnOwner ? 1.9 : 1) *
+                 (hlArr[i] ? 1.8 : 1);
     _col.setRGB(colArr[i*3] * lift, colArr[i*3+1] * lift, colArr[i*3+2] * lift);
     fileMesh.setColorAt(i, _col);
   }
@@ -2979,22 +3081,12 @@ const level = new Int16Array(N).fill(-1);
 const HUB_EDGE_BUDGET = 12;
 const GHOST_K = 0.08;
 
-// BFS from search seeds (path/class/fn-name matches + clicked seeds) up to
-// `depth`; the direction mode picks which adjacency half the walk follows
+// BFS from clicked seeds up to `depth` (issue #33: focus starts ONLY from
+// a node click — search typing highlights in place, it never seeds); the
+// direction mode picks which adjacency half the walk follows
 function computeLevels() {
   level.fill(-1);
   const seeds = [];
-  if (query) nodes.forEach((n, i) => {
-    if (n.path.toLowerCase().includes(query) || n.cls.toLowerCase().includes(query)) {
-      if (level[i] < 0) { level[i] = 0; seeds.push(i); }
-    }
-  });
-  // fn-name seeds: a function search lights the files that own or call it
-  if (query && query.length >= 2) fnNames.forEach(nm => {
-    if (nm.toLowerCase().includes(query)) {
-      for (const f of fnOf[nm]) if (level[f] < 0) { level[f] = 0; seeds.push(f); }
-    }
-  });
   for (const s of focusSeeds) if (level[s] < 0) { level[s] = 0; seeds.push(s); }
   for (let qi = 0; qi < seeds.length; qi++) {
     const u = seeds[qi];
@@ -3480,8 +3572,7 @@ function applyVisibility() {
     let lit = 0;
     for (let i = 0; i < N; i++) if (level[i] >= 0 && level[i] <= 1 && nodeVisible(nodes[i])) lit++;
     const first = focusSeeds.values().next().value;
-    const label = !focusSeeds.size ? "“" + esc(query) + "”"
-      : focusSeeds.size === 1 ? esc(nodes[first].label)
+    const label = focusSeeds.size === 1 ? esc(nodes[first].label)
       : focusSeeds.size + " files";
     crumb.innerHTML = "focus: <b>" + label + "</b> · depth " + depth +
       (dirMode ? " · dir " + (dirMode === 1 ? "out" : "in") : "") + " · " + lit +
@@ -3642,7 +3733,7 @@ function updateXtLabels() {
   // collapse hides crosstalk labels too: the arcs they annotate re-target to
   // supernode centroids, so the "A - B ×n" captions would float over merged
   // piles pointing at nothing
-  const overview = !collapsed && !focusSeeds.size && !query &&
+  const overview = !collapsed && !focusSeeds.size &&
     camera.position.distanceTo(controls.target) >= lodDist;
   if (!overview) {
     xtLabs.forEach(k => { k.el.style.display = "none"; });
@@ -3688,7 +3779,7 @@ function rebuildHubs() {
   hubsEl.innerHTML = "";
   hubs = vis.slice(0, HUB_MAX).map(i => {
     const el = document.createElement("div");
-    el.className = "hub";
+    el.className = "hub" + (hlArr[i] ? " hl" : "");
     el.textContent = nodes[i].label + " · " + Math.round(degree[i]);
     el.title = nodes[i].path;
     el.onpointerenter = () => { tip.style.display = "none"; };
@@ -4043,6 +4134,7 @@ function rebuildFocusLabels(focusing) {
       el.textContent = "ƒ " + m.name + (io && io.w.length ? " ✎" + io.w.length : "");
       if (mutOnly && (!io || !io.w.length)) return;   // mutators-only filter
       el.title = nodes[m.file].path + " :: " + m.name;
+      if (hlFn.has(m.name)) el.classList.add("hl");
       el.onclick = () => showFnInfo(ix);
       flabsEl.appendChild(el);
       fLabs.push({ kind: 1, i: m.file, ix, el });
@@ -5803,7 +5895,7 @@ function mapRender() {
   // only on focus/visibility/expansion changes (cache key below).
   // focus signature ("focusVersion"): every input that changes the lit set
   // or the typed admission. pan/zoom never touch it (section 5).
-  const sig = lit.join(",") + "|" + query + "|" + mapVarsOn + "|" +
+  const sig = lit.join(",") + "|" + mapVarsOn + "|" +
     typeVisible("call") + typeVisible("signal") + typeVisible("inst");
   if (mapLayout && mapLayout.sig !== sig) mapZ = 0;   // focus change -> refit
   // tier-1 admission: file skeleton unchanged (survives section 10)
@@ -7403,20 +7495,16 @@ fnMode = cbFnEl.checked;   // checkbox is the truth; sync the flag at boot
 const cbSpinEl = document.getElementById("cbSpin");
 cbSpinEl.addEventListener("change", () => { spinEnabled = cbSpinEl.checked; });
 const bDeadEl = document.getElementById("bDead");
+// issue #33: typing NEVER starts focus or the fn tier — it highlights the
+// matches in place (spheres + labels) and fills the results list. Focus
+// (compaction, budget fan, fn satellites) begins only at a node click or
+// a results-row click, both of which run the same focus() path.
 searchEl.oninput = e => {
   query = e.target.value.toLowerCase();
-  // a fn-name hit implies satellite interest: auto-enable the fn layer
-  if (query.length >= 2 && !fnMode &&
-      fnNames.some(nm => nm.toLowerCase().includes(query))) {
-    fnMode = true;
-    document.getElementById("cbFn").checked = true;
-  }
-  applyVisibility();
-  // search-focus must land framed, not stranded in the overview: the ring,
-  // the budget fan and the info panel all read at ball distance. Same law
-  // as the click path (focus() frames the compact ball).
-  frameQueryCamera();
+  applyHighlight();
 };
+searchEl.onblur = () => setTimeout(hideSearchResults, 120);
+searchEl.onfocus = () => { if (query) buildSearchResults(); };
 depthEl.oninput = e => { depth = +e.target.value; document.getElementById("depthVal").textContent = depth; applyVisibility(); };
 document.getElementById("spread").oninput = e => {
   const v = +e.target.value / 100;
@@ -7447,11 +7535,17 @@ document.getElementById("bCollapse").onclick = e => {
 };
 function clearFocus() {
   // one scope for Esc / right-click / crumb ✕: drop the focus, the query,
-  // the back-stack and the info panel together
+  // the back-stack and the info panel together — and return every piece of
+  // focus-scoped UI to its boot value (issue #31: fnMode/depth used to
+  // stay dirty after Escape, so the next focus inherited a stale tier)
   focusSeeds.clear(); query = "";
   focusStack = [];
   document.getElementById("search").value = "";
   info.style.display = "none";
+  depth = 1; depthEl.value = 1;
+  document.getElementById("depthVal").textContent = "1";
+  fnMode = cbFnEl.checked = true;   // boot default: checked (tier shows only in focus)
+  applyHighlight();   // query is empty -> clears hlArr/hlFn/.hl classes + results
   applyVisibility();
   frameGraph();   // the camera followed the focus in; it follows the reset out
 }
@@ -7476,17 +7570,18 @@ renderer.domElement.addEventListener("contextmenu", e => {
 function resetAll() {
   activeClusters.clear(); activeDirs.clear();
   deadOnly = false; cycOnly = false; query = ""; focusSeeds.clear(); focusStack = [];
-  dirMode = 0; showSignals = true; showVar = false; fnMode = false; depth = 1;
+  dirMode = 0; showSignals = true; showVar = false; fnMode = true; depth = 1;
+  searchEl.value = ""; depthEl.value = 1;
+  applyHighlight();   // query is empty -> drops hl classes + results list
+  document.getElementById("depthVal").textContent = "1";
   mutOnly = false;
   showInst = false; showCalls = true; showTests = false; showGhost = false;
   groupsMode = false;   // coloring level is view state — reset to fine clusters
   collapsed = false; fnWasOn = false;   // supernode collapse off — resetAll's button wipe clears its .on
-  searchEl.value = ""; depthEl.value = 1;
-  document.getElementById("depthVal").textContent = "1";
+  cbFnEl.checked = true;   // boot default: functions box checked
 document.getElementById("spread").value = 100;
 document.getElementById("spreadVal").textContent = "1.0";
 applySpread(1);
-  cbFnEl.checked = false;
   info.style.display = "none";
   camTween = null;
   camera.position.set(0, 0, 1400); controls.target.set(0, 0, 0);
@@ -7710,7 +7805,7 @@ function greyLabelsDim(on) {
 }
 function hoverGrey(i) {
   if (i === hoverGreyIdx) return;
-  if (pointerDown || focusActive || deadOnly || query) {
+  if (pointerDown || focusActive || deadOnly) {
     if (hoverGreyIdx >= 0) { hoverGreyIdx = -1; applyVisibility(); greyLabelsDim(false); }
     return;
   }
@@ -7899,35 +7994,6 @@ function focusSeedsCamera() {
   dir.normalize();
   tweenCamTo(c, c.clone().addScaledVector(dir, Math.min(900, 240 + r * 2)));
 }
-// frame the query match set (level-0 nodes of the search BFS): the search
-// path fills `query`, not focusSeeds, so focusSeedsCamera can't see it
-function frameQueryCamera() {
-  if (!query) { frameGraph(); return; }
-  const arr = [];
-  for (let i = 0; i < N; i++)
-    if (level[i] === 0 && !supMem[i] && alphaTgt[i] > 0.5) arr.push(i);
-  if (!arr.length) return;
-  if (arr.length === 1) { focus(arr[0]); return; }
-  // multi-match with an active fn focus: the bus tier and its pickable
-  // trunks live around the focused hub's compact ball — frame THAT ball
-  // (focus() already does), not a centroid of all seeds. Fn-name matches
-  // can sit hundreds of world-units outside the ball (degree-0 owners),
-  // and after an Escape interlude the in-flight pos[] mix pushes the
-  // centroid off the ball entirely: geometry off-screen, picking dead.
-  if (focusFileIdx >= 0 && arr.includes(focusFileIdx)) { focus(focusFileIdx); return; }
-  const c = new THREE.Vector3();
-  arr.forEach(i => c.add(new THREE.Vector3(pos[i*3], pos[i*3+1], pos[i*3+2])));
-  c.divideScalar(arr.length);
-  let r = 120;
-  arr.forEach(i => r = Math.max(r, c.distanceTo(
-    new THREE.Vector3(pos[i*3], pos[i*3+1], pos[i*3+2]))));
-  const dir = new THREE.Vector3(camera.position.x - controls.target.x,
-    camera.position.y - controls.target.y,
-    camera.position.z - controls.target.z);
-  if (dir.lengthSq() < 1) dir.set(0.42, 0.5, 0.76);
-  dir.normalize();
-  tweenCamTo(c, c.clone().addScaledVector(dir, Math.min(900, 240 + r * 2)));
-}
 // wires & buses pick in the CAPTURE phase: fn-box labels (.flab) and the
 // canvas itself sit above the wires' pixels — without this, clicking a wire
 // near the hub opens the fn instead. No wire nearby -> event passes through.
@@ -8002,7 +8068,7 @@ controls.addEventListener("change", () => {
   const c = camera.position.distanceTo(controls.target) < lodDist;
   if (c !== lodClose) {
     lodClose = c;
-    if (!focusSeeds.size && !query) applyVisibility();
+    if (!focusSeeds.size) applyVisibility();
   }
 });
 
@@ -8042,6 +8108,8 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get stubExits() { return stubExits; },  // EXPLAINED EXIT dissolve points
   get anchorBoostArr() { return anchorBoost; },  // corridor-boost px per fi (probe hook)
   get degFloorArr() { return degFloor; },  // zoomed-out min diameter px per fi (probe hook)
+  get hlArr() { return hlArr; },  // search-highlight flags per fi (probe hook)
+  get hlFnArr() { return [...hlFn]; },  // fn names matching the live query
   get chainGates() { return [...chainGate.entries()]; },  // per-chain first failing gate (sighting #10)
   get taperDbg() {   // EXPLAINED EXIT probe: per-leg gate state this frame
     const out = [];
