@@ -3391,10 +3391,38 @@ function rebuildFocusWires() {
   flines.userData.seg = ARC_SEG;
   focusArcs.lines.visible = true;
 }
+// ---- focus ink seeding (issue #39) ----------------------------------
+// A scene hub (.tscn) can have EVERY link inst-typed: with the inst tier
+// off (the boot default) focus lights its ball but draws zero budget
+// ink — every wire the hub has is type-gated away. Focus is an explicit
+// drill-down, so the boot→focus TRANSITION seeds the tier (the map pane
+// auto-seeds its own ink tier the same way). One-shot only: never
+// re-forced during the focus (the user's toggles win); Escape/reset
+// return the boot default with every other focus-scoped control.
+let focusWasOn = false;   // focus active as of the last applyVisibility
+function instTierOnFocus() {
+  if (showInst) return;
+  const i = focusSeeds.values().next().value;
+  let tot = 0, inst = 0;
+  links.forEach(l => {
+    if (l.s !== i && l.t !== i) return;
+    tot++;
+    if (l.ty === "inst" || l.ty === "attach") inst++;   // showInst-gated
+  });
+  if (!tot || inst * 2 <= tot) return;   // inst-dominant majority only
+  showInst = true;
+  document.getElementById("bInst").classList.add("on");
+}
 function applyVisibility() {
   // visibility flips change which occluder geometry exists (scale-0 gate)
   // and rewrite alphaTgt — both fileMesh inputs
   _arrowOcclDirty = true; _sfDirty = true;
+  // the only moment the inst tier may auto-seed is the boot→focus
+  // TRANSITION — before computeLevels so the lit/budget passes below
+  // already see the tier on (issue #39).
+  const entering = focusSeeds.size > 0 && !focusWasOn;
+  focusWasOn = focusSeeds.size > 0;
+  if (entering) instTierOnFocus();
   const focusing = computeLevels();
   focusActive = focusing;   // hover greyout defers to focus mode
   edgeFlowOn = focusing;   // tick's dash-flow pass reads this
@@ -7583,6 +7611,10 @@ function clearFocus() {
   depth = 1; depthEl.value = 1;
   document.getElementById("depthVal").textContent = "1";
   fnMode = cbFnEl.checked = true;   // boot default: checked (tier shows only in focus)
+  if (showInst) {   // seeded by the focus transition (issue #39) — the boot
+    showInst = false;   // default returns with the rest of the focus scope
+    document.getElementById("bInst").classList.remove("on");
+  }
   applyHighlight();   // query is empty -> clears hlArr/hlFn/.hl classes + results
   applyVisibility();
   frameGraph();   // the camera followed the focus in; it follows the reset out
@@ -8131,6 +8163,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   alpha: alphaArr, alphaTgt, hoverScale, hot, bucketMat, bucketOf, hwSlot, bucketPosIB, bucketColIB, slotOf,
   adjOut, adjIn, adj, outDeg, inDeg, get dirMode() { return dirMode; }, focusSeeds, level,
   get budgetLit() { return budgetLit; }, get hoverEdgeLi() { return hoverEdgeLi; },
+  get showInst() { return showInst; },   // tier state probe (issue #39)
   get fnLines() { return fnLines; }, get hubRing() { return hubRing; },
   get fnArrows() { return fnArrows; }, get compactBallR() { return compactBallR; },
   get fnQuiet() { return fnQuiet; }, get fnTrunkN() { return fnTrunkN; },
