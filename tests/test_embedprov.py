@@ -1,0 +1,212 @@
+# Pluggable embed providers (issue #17) — provider selection, protocol
+# adapters, auth injection, batching, 429 retry, loud failures, fake-mode
+# isolation. Run in its own process:
+#   .venv/Scripts/python.exe -X utf8 tests/test_embedprov.py
+# Hermetic: loopback stub server (stdlib http.server, ephemeral port)
+# speaking both the Ollama /api/embed and OpenAI /v1/embeddings wire
+# shapes; temp config + state dir — never the real index or .neuronav.
+import json
+import os
+import sys
+import tempfile
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+TMP = Path(tempfile.mkdtemp(prefix="nav-embedprov-"))
+SRV: HTTPServer
+CAPTURED: list[dict] = []
+MODE = {"protocol": "ollama", "require_auth": None, "retry_429": 0, "short_by": 0, "shuffle": False}
+
+
+class Stub(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(n))
+        auth = self.headers.get("Authorization")
+        CAPTURED.append({"path": self.path, "auth": auth, "body": body})
+        if MODE["require_auth"] is not None and auth != MODE["require_auth"]:
+            out = b'{"error": {"message": "missing api key"}}'
+            self.send_response(401)
+        elif MODE["retry_429"] > 0:
+            MODE["retry_429"] -= 1
+            self.send_response(429)
+            self.send_header("Retry-After", "0")
+            out = b"{}"
+        else:
+            texts = body["input"]
+            if MODE["protocol"] == "ollama":
+                rows = [[float(i), float(i), float(i)] for i in range(len(texts))]
+                payload = {"model": body.get("model", ""), "embeddings": rows}
+            else:
+                order = list(range(len(texts)))
+                if MODE["shuffle"]:
+                    order.reverse()
+                payload = {"object": "list", "model": body.get("model", ""),
+                           "data": [{"object": "embedding", "index": i,
+                                     "embedding": [float(i), 1.0, 2.0]} for i in order]}
+            if MODE["short_by"]:
+                payload["embeddings" if MODE["protocol"] == "ollama" else "data"] = (
+                    payload.get("embeddings") or payload.get("data"))[:-MODE["short_by"]]
+            out = json.dumps(payload).encode()
+            self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+
+def start_stub() -> int:
+    global SRV
+    SRV = HTTPServer(("127.0.0.1", 0), Stub)  # ephemeral loopback port
+    threading.Thread(target=SRV.serve_forever, daemon=True).start()
+    return SRV.server_address[1]
+
+
+PORT = start_stub()
+os.environ["NEURONAV_CONFIG"] = str(TMP / "config.json")
+os.environ.pop("NEURONAV_EMBED_FAKE", None)
+os.environ.pop("NEURONAV_EMBED_KEY", None)
+
+CFG = TMP / "config.json"
+
+
+def write_cfg(**over):
+    cfg = {"root": str(TMP), "state_dir": str(TMP / "state"), "collection": "embedprov",
+           "embed_model": "test-model", "embed_dim": 3, **over}
+    CFG.write_text(json.dumps(cfg), encoding="utf-8")
+    import nav
+    nav._apply_config(CFG)
+    return nav
+
+
+write_cfg()  # bootstrap: first nav import (inside) binds the temp config
+import nav  # noqa: E402  (cached module from write_cfg's import)
+
+FAILS = []
+
+
+def check(name, cond, detail=""):
+    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail else ""))
+    if not cond:
+        FAILS.append(name)
+
+
+# --- provider selection -------------------------------------------------
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/api/embed")
+check("no embed_provider + ollama url -> ollama", nav.EMBED_PROVIDER == "ollama", nav.EMBED_PROVIDER)
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/v1/embeddings")
+check("auto-detect: url ends /embeddings -> openai", nav.EMBED_PROVIDER == "openai", nav.EMBED_PROVIDER)
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/v1/embeddings", embed_provider="ollama")
+check("explicit provider beats url auto-detect", nav.EMBED_PROVIDER == "ollama", nav.EMBED_PROVIDER)
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/api/embed", embed_provider="OpenAI")
+check("provider is case-insensitive", nav.EMBED_PROVIDER == "openai", nav.EMBED_PROVIDER)
+try:
+    write_cfg(embed_url=f"http://127.0.0.1:{PORT}/api/embed", embed_provider="bedrock")
+    check("unknown provider fails loud", False, "no SystemExit")
+except SystemExit as e:
+    check("unknown provider fails loud", "bedrock" in str(e), str(e))
+
+# --- protocol adapters --------------------------------------------------
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/api/embed")
+vecs = nav.embed(["a", "b", "c"])
+check("ollama adapter returns embeddings in input order",
+      [v[0] for v in vecs] == [0.0, 1.0, 2.0], str(vecs))
+check("request carries model + input",
+      CAPTURED[-1]["body"] == {"model": "test-model", "input": ["a", "b", "c"]}, str(CAPTURED[-1]))
+
+MODE["protocol"] = "openai"
+MODE["shuffle"] = True
+CAPTURED.clear()
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/v1/embeddings")
+vecs = nav.embed(["a", "b", "c"])
+check("openai adapter sorts shuffled data[] by index",
+      [v[0] for v in vecs] == [0.0, 1.0, 2.0], str(vecs))
+check("openai posts to the configured url", CAPTURED[0]["path"] == "/v1/embeddings", CAPTURED[0]["path"])
+MODE["shuffle"] = False
+
+# --- batching -----------------------------------------------------------
+CAPTURED.clear()
+nav.embed([f"t{i}" for i in range(40)])
+check("40 texts chunk at EMBED_BATCH -> posts of 32 + 8",
+      [len(c["body"]["input"]) for c in CAPTURED] == [32, 8],
+      str([len(c["body"]["input"]) for c in CAPTURED]))
+
+# --- auth ---------------------------------------------------------------
+os.environ["NEURONAV_EMBED_KEY"] = "sk-env-secret"
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/v1/embeddings", embed_api_key="sk-cfg-secret")
+nav.embed(["k"])
+check("env key beats config key", CAPTURED[-1]["auth"] == "Bearer sk-env-secret", str(CAPTURED[-1]["auth"]))
+del os.environ["NEURONAV_EMBED_KEY"]
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/v1/embeddings", embed_api_key="sk-cfg-secret")
+nav.embed(["k"])
+check("config key used when env unset", CAPTURED[-1]["auth"] == "Bearer sk-cfg-secret", str(CAPTURED[-1]["auth"]))
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/v1/embeddings")
+nav.embed(["k"])
+check("keyless request carries no Authorization header", CAPTURED[-1]["auth"] is None, str(CAPTURED[-1]["auth"]))
+
+MODE["require_auth"] = "Bearer sk-needed"
+try:
+    nav.embed(["needs", "key"])
+    check("missing key against authed endpoint fails loud", False, "no exception")
+except Exception as e:
+    check("missing key against authed endpoint fails loud",
+          getattr(e, "response", None) is not None and e.response.status_code == 401, f"{type(e).__name__}: {e}")
+MODE["require_auth"] = None
+
+# --- loud failures, never pad/truncate ----------------------------------
+MODE["protocol"] = "ollama"
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/api/embed")
+MODE["short_by"] = 1
+try:
+    nav.embed(["a", "b", "c"])
+    check("short response raises, never pads", False, "no exception")
+except RuntimeError as e:
+    check("short response raises, never pads",
+          "ollama" in str(e) and "2 embeddings" in str(e) and "3 inputs" in str(e), str(e))
+MODE["short_by"] = 0
+MODE["protocol"] = "openai"  # server answers OpenAI shape...
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/v1/embeddings")
+nav.EMBED_PROVIDER = "ollama"  # ...but the client speaks Ollama
+try:
+    nav.embed(["x"])
+    check("protocol mismatch fails loud, names provider", False, "no exception")
+except RuntimeError as e:
+    check("protocol mismatch fails loud, names provider", "ollama" in str(e), str(e))
+finally:
+    nav.EMBED_PROVIDER = "openai"
+
+# --- fake mode isolated -------------------------------------------------
+os.environ["NEURONAV_EMBED_FAKE"] = "1"
+CAPTURED.clear()
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/v1/embeddings", embed_api_key="sk-ignored")
+v1 = nav.embed(["fake", "mode"])
+v2 = nav.embed(["fake", "mode"])
+check("fake mode never touches the server", CAPTURED == [], f"{len(CAPTURED)} requests")
+check("fake mode deterministic", v1 == v2 and len(v1) == 2, f"equal={v1 == v2}")
+check("fake mode honors EMBED_DIM", all(len(v) == 3 for v in v1), str([len(v) for v in v1]))
+del os.environ["NEURONAV_EMBED_FAKE"]
+
+# --- collection fingerprint names provider ------------------------------
+MODE["protocol"] = "ollama"
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/api/embed", embed_model="m-openai-era", embed_provider="openai")
+col = nav._collection()
+check("fresh collection records model + provider",
+      (col.metadata or {}).get("embed_model") == "m-openai-era"
+      and (col.metadata or {}).get("embed_provider") == "openai", str(col.metadata))
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/api/embed", embed_model="m-new", embed_provider="ollama")
+try:
+    nav._collection()
+    check("model swap raises naming both providers", False, "no exception")
+except RuntimeError as e:
+    check("model swap raises naming both providers",
+          "provider 'openai'" in str(e) and "provider 'ollama'" in str(e), str(e))
+
+print()
+print(f"{len(FAILS)} failure(s)" + (": " + ", ".join(FAILS) if FAILS else ""))
+sys.exit(1 if FAILS else 0)
