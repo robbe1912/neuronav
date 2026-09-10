@@ -927,6 +927,14 @@ class Graph:
 
     def dead_code(self, limit: int = 60) -> dict[str, object]:
         dead = []
+        # wildcard handler refs (*::name, cross-file signal handlers) keep
+        # same-named funcs alive; precompute the bare-name set once instead
+        # of rescanning self.referenced per candidate fn (O(fns x referenced)
+        # -> O(referenced), issue #43). Membership-only set: it never
+        # iterates into an output path, so determinism is unchanged.
+        wildcard_names = {
+            r.split("::")[-1] for r in self.referenced if r.startswith("*::")
+        }
         for rel, fs in self.files.items():
             if fs.ext not in (".gd", ".py") and fs.ext not in CPP_EXTS:
                 continue
@@ -937,7 +945,7 @@ class Graph:
                 if fn.key in self.reachable:
                     continue
                 # wildcard handler refs (_on_x from any file) keep it alive
-                if any(name == r.split("::")[-1] for r in self.referenced if r.startswith("*::")):
+                if name in wildcard_names:
                     continue
                 if name in self.referenced_names:
                     continue
