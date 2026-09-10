@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 
 import nav
 from extractors import registry_for
@@ -31,7 +31,7 @@ from extractors.gdscript import VIRTUALS, GUT_ROOTS, ADDON_VIRTUALS, MANUAL_BASE
 from extractors.python import PY_HOOKS  # stdlib dispatch hooks (dead-scan tier)
 # C++ front-end facts (issue #13): pairing + registration wiring, the
 # dynamic-dispatch marker for the dead tier, and the repo-wide GDVIRTUAL set
-from extractors.cpp import CPP_DYNAMIC_RE, CPP_EXTS, harvest_registration, scan_calls
+from extractors.cpp import CPP_DYNAMIC_RE, CPP_EXTS, CPP_MENTION_FLOOR, harvest_registration, scan_calls
 
 # ---- constants ---------------------------------------------------------------
 # Language-owned constants and entry-point rules (VIRTUALS, GUT_ROOTS,
@@ -48,6 +48,10 @@ MEMBER_ACCESS_RE = re.compile(
 # scripts whose funcs must count as alive
 RES_LOAD_RE = re.compile(r"res://([\w/.-]+\.gd)")
 BARE_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\s*\(")
+# identifier-shaped token anywhere in raw corpus text (issue #20): the
+# dead-tier mention-count pass counts these per file once, comments and
+# string literals included — never a rescan per dead candidate
+MENTION_TOKEN_RE = re.compile(r"[A-Za-z_]\w*")
 
 # ---- python scanning (companion to extractors/python.py) ----------------------
 PY_ATTR_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\(")
@@ -229,6 +233,7 @@ class Graph:
         self.referenced_names: set[str] = set()  # func names called via unresolvable receivers
         self.edge_types: dict[tuple[str, str], set[str]] = defaultdict(set)
         self.built_at_lines: int = 0
+        self._mentions: Counter | None = None  # lazy corpus mention counts (issue #20)
 
     # -- parsing ---------------------------------------------------------------
     # language parsing is delegated to extractors/ via the suffix registry;
@@ -923,6 +928,25 @@ class Graph:
                     queue.append(nxt)
         self.reachable = seen
 
+    def _mention_counts(self) -> Counter:
+        """Corpus-wide identifier mention counts (issue #20 tier rule).
+
+        One tokenizing pass over every indexed file's raw text — comments
+        and string literals included — cached for the graph's lifetime;
+        callers never rescan per candidate. Counting is order-independent,
+        so determinism is unaffected.
+        """
+        if self._mentions is None:
+            counts: Counter = Counter()
+            for rel in sorted(self.files):
+                try:
+                    text = nav._read_text(nav.ROOT / rel)
+                except OSError:
+                    continue
+                counts.update(MENTION_TOKEN_RE.findall(text))
+            self._mentions = counts
+        return self._mentions
+
     # -- queries -------------------------------------------------------------------
 
     def dead_code(self, limit: int = 60) -> dict[str, object]:
@@ -935,6 +959,14 @@ class Graph:
         wildcard_names = {
             r.split("::")[-1] for r in self.referenced if r.startswith("*::")
         }
+        # mention-count corroboration (issue #20): one cached tokenizing
+        # pass over raw corpus text, never a scan per candidate. Only C++
+        # candidates consume it, so corpora without C++ files skip the pass.
+        mentions = (
+            self._mention_counts()
+            if any(f.ext in CPP_EXTS for f in self.files.values())
+            else {}
+        )
         for rel, fs in self.files.items():
             if fs.ext not in (".gd", ".py") and fs.ext not in CPP_EXTS:
                 continue
@@ -964,6 +996,18 @@ class Graph:
                         # the python analogue of the .gd underscore-virtual rule
                         or (fs.ext == ".py" and (name in PY_HOOKS or name.startswith("do_")))
                     )
+                ):
+                    tier = "review"
+                # mention-count corroboration (issue #20): a cpp name that
+                # keeps appearing across the corpus — unresolved same-name
+                # call sites the ambiguity guard dropped, comments, string
+                # dispatch tables — is wired somewhere the static pass
+                # cannot see, so 'likely' overclaims its deadness. Names
+                # mentioned only at their own definition stay 'likely'.
+                if (
+                    tier == "likely"
+                    and fs.ext in CPP_EXTS
+                    and mentions.get(name, 0) >= CPP_MENTION_FLOOR
                 ):
                     tier = "review"
                 dead.append({"path": rel, "func": name, "line": fn.line, "tier": tier})
