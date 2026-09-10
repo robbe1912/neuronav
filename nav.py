@@ -78,7 +78,8 @@ def _apply_config(path: Path | None) -> None:
     _walk_all = path is None or (path.parent.name == ".neuronav")
     INCLUDE_DIRS = tuple(cfg.get("include_dirs", (".",) if _walk_all else ("scripts", "scenes", "VFX", "ai", "tests", "tools")))
     EXTS = set(cfg.get("extensions", sorted(_REGISTERED) if _walk_all else (".gd", ".tscn")))
-    EXCLUDE_DIRS = frozenset(cfg.get("exclude_dirs", (".git", "__pycache__", ".venv", ".neuronav", "node_modules", ".tmp") if _walk_all else (".git", "__pycache__")))
+    EXCLUDE_DIRS = frozenset(cfg.get("exclude_dirs", (".git", "__pycache__", ".venv", ".neuronav", "node_modules") if _walk_all else (".git", "__pycache__")))
+    EXCLUDE_DIRS |= _neuroignore(path)
     EMBED_URL = str(cfg.get("embed_url", "http://127.0.0.1:11434/api/embed"))
     EMBED_MODEL = str(cfg.get("embed_model", "qwen3-embedding:0.6b"))
     EMBED_DIM = int(cfg.get("embed_dim", 1024))
@@ -96,6 +97,22 @@ def _apply_config(path: Path | None) -> None:
         STATE_DIR = STATE_DIR.resolve()
     DB_DIR = STATE_DIR / "chroma"
     BASE_DIR = STATE_DIR / "base"
+
+
+def _neuroignore(path: Path | None) -> frozenset[str]:
+    """Extra exclude dir names from a .neuroignore beside the active config
+    (project-local: <root>/.neuronav/.neuroignore; shipped profile:
+    config/.neuroignore). One dir name per line, '#' comments and blanks
+    ignored — user-adjustable without editing the config json."""
+    if path is None:
+        return frozenset()
+    f = path.parent / ".neuroignore"
+    if not f.is_file():
+        return frozenset()
+    names = {ln.strip() for ln in f.read_text(encoding="utf-8").splitlines()
+             if ln.strip() and not ln.lstrip().startswith("#")}
+    return frozenset(n for n in names
+                     if n not in ("", ".", "..") and "/" not in n and "\\" not in n)
 
 
 ROOT: Path
