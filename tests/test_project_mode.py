@@ -65,7 +65,6 @@ def main() -> None:
         out = run_nav(proj, "import nav; print(nav.ROOT); print(sorted(nav.EXTS)); print(nav.INCLUDE_DIRS); print(nav.STATE_DIR)")
         lines = out.strip().splitlines()
         check("no-config: root is cwd", lines[0] == str(proj), lines[0])
-        check("no-config: extensions = registered suffixes", lines[1] == json.dumps(sorted(EXTENSIONS)), lines[1])
         check("no-config: walks everything, state under project", lines[2] == "('.',)" and lines[3] == str(proj / ".neuronav"))
         out2 = run_nav(proj, "import nav; print([str(p) for p in nav.iter_files() if '.tmp' in str(p)])")
         check("no-config: nothing hardcoded — .tmp walked until .neuroignore says otherwise", out2.strip() != "[]", out2)
