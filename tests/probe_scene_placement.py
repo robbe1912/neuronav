@@ -5,7 +5,6 @@ Manual probe (not a suite) — config-agnostic: picks the top .tscn targets
 by inbound edge count from whatever index the default config selects, so it
 never hardcodes paths or naming conventions from a private target repo.
 Exits 0 with SKIP when the index has no such scenes (e.g. the self-index)."""
-import re
 import sys
 from pathlib import Path
 
@@ -13,21 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import graph as _graph
 import nav
-
-GENERIC = {
-    "vfx", "scenes", "scene", "map", "effects", "demo", "test", "show",
-    "final", "sample", "main", "core", "ui", "utils",
-}
-
-
-def _vocab(path: str) -> set[str]:
-    stem = Path(path).stem.lower()
-    return {
-        tok
-        for tok in re.split(r"[_\-(\s]+", stem)
-        if tok and tok not in GENERIC and not tok.isdigit()
-    }
-
 
 def main() -> int:
     g = _graph.get_graph()

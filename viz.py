@@ -228,6 +228,11 @@ def _build_data() -> dict:
                 ["call", idx[s_path], s_fn, idx[d_path], d_fn, s_line, None]
             )
 
+    # canonical row order: g.edges values are sets (PYTHONHASHSEED varies
+    # their iteration order across processes) — export paths must never
+    # leak set order; mirrors the deterministic named-wire sort below
+    fedges.sort(key=lambda e: (e[0], e[1], e[2], e[3], e[4]))
+
     # signal wires: scene connections resolved against the scene's script
     # ext_resources, mirroring graph._wire_tscn's script_rels cascade
     # (multi-script scenes try every script; attached_script only when no
