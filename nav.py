@@ -4,9 +4,11 @@ Python — whatever the config's "extensions" list enables).
 Config resolution: $NEURONAV_CONFIG env var, else ``config.json`` next to
 this file. A second config (e.g. ``config/neuronav.json`` for self-indexing)
 switches root/include_dirs/extensions/collection without touching the
-primary one. Per-checkout index: ``.chroma`` (gitignored). Base index
-shards (``base/``) are tracked and give fresh clones a fast start; the
-incremental rescan then heals the index to the current HEAD.
+primary one. Per-project state (issue #15): everything this config
+generates lives under ``state_dir`` (default ``<root>/.neuronav``) - chroma
+store at ``chroma/``, base shards at ``base/``, viz bake at ``graph.html``.
+No auto-migration: a config whose root has no ``.neuronav`` builds a fresh
+store on the next rescan (one-time re-embed).
 """
 
 from __future__ import annotations
@@ -40,7 +42,7 @@ def _apply_config(path: Path) -> None:
     """(Re)bind the config-derived module globals. Called once at import
     and again by ``nav.py --config <path>`` (which also sets NEURONAV_CONFIG
     so subprocesses and sibling modules like graph.py agree)."""
-    global ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM
+    global ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM, STATE_DIR, DB_DIR, BASE_DIR
     cfg: dict = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
     ROOT = Path(cfg.get("root") or TOOL_DIR.parent)
     if not ROOT.is_absolute():
@@ -54,6 +56,15 @@ def _apply_config(path: Path) -> None:
     EMBED_URL = str(cfg.get("embed_url", "http://127.0.0.1:11434/api/embed"))
     EMBED_MODEL = str(cfg.get("embed_model", "qwen3-embedding:0.6b"))
     EMBED_DIM = int(cfg.get("embed_dim", 1024))
+    # per-project state: chroma store, base shards and the viz bake all
+    # derive from one dir — explicit "state_dir" honored, default
+    # <root>/.neuronav. Relative values resolve against the config file's
+    # own dir (same law as "root"), so shipped profiles stay portable.
+    STATE_DIR = Path(cfg.get("state_dir") or ROOT / ".neuronav")
+    if not STATE_DIR.is_absolute():
+        STATE_DIR = (path.parent / STATE_DIR).resolve()
+    DB_DIR = STATE_DIR / "chroma"
+    BASE_DIR = STATE_DIR / "base"
 
 
 ROOT: Path
@@ -64,10 +75,10 @@ EXCLUDE_DIRS: frozenset[str]
 EMBED_URL: str
 EMBED_MODEL: str
 EMBED_DIM: int
+STATE_DIR: Path
+DB_DIR: Path
+BASE_DIR: Path
 _apply_config(Path(os.environ.get("NEURONAV_CONFIG") or TOOL_DIR / "config.json"))
-
-DB_DIR = TOOL_DIR / ".chroma"
-BASE_DIR = TOOL_DIR / "base"
 
 MAX_EMBED_CHARS = 30_000  # keep under Ollama context; head of .tscn has script links
 EMBED_BATCH = 32

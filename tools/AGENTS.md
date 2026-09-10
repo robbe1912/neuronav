@@ -49,7 +49,8 @@ Operational notes:
 
 ## serve.py — no-cache dev viewer
 
-`python tools/serve.py` — binds 127.0.0.1:8791, serves the repo root. Every
+`python tools/serve.py` - binds 127.0.0.1:8791, serves the ACTIVE config's
+state dir (where the `graph.html` bake lives). Every
 response carries `Cache-Control: no-store, no-cache, must-revalidate` so the
 browser always refetches `graph.html` (kills the stale-build bug class when
 iterating on the bake). Threaded, quiet logs.
@@ -65,12 +66,14 @@ One neuronav install serves many projects. Idempotent; BOM-free writes only
 `json.loads` downstream). Steps:
 
 1. Write `config/<Name>.json` in this install (root = absolute project path,
-   optional include_dirs/extensions). `-Name` defaults to the project dir
-   leaf.
-2. Optionally copy the project's `.neuronav/base` shards into this install's
-   `base/`, then run `import-base` + `rescan` under the profile's
-   `NEURONAV_CONFIG` (env set only for the duration).
-3. Write/update the project's `.mcp.json` `mcpServers.neuronav` entry
+   `state_dir = <project>\.neuronav`, optional include_dirs/extensions).
+   `-Name` defaults to the project dir leaf.
+2. Append `.neuronav/` to the project's `.gitignore` (idempotent, BOM-free).
+3. Optionally seed from the project's own `<project>\.neuronav\base` shards
+   (`-WithBaseShards` -> `import-base`), then `rescan` under the profile's
+   `NEURONAV_CONFIG` (env set only for the duration). State is project-local —
+   no install-side shard copying.
+4. Write/update the project's `.mcp.json` `mcpServers.neuronav` entry
    (venv python, `-X utf8 server.py`, env pins the profile via
    `NEURONAV_CONFIG`); update `opencode.json` if present. Restart client
    sessions in the project afterwards.

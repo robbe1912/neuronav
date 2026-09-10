@@ -24,23 +24,28 @@ if (-not $Name) { $Name = Split-Path -Leaf $proj }
 if (-not (Test-Path $py))  { throw "venv missing - create $navRoot\.venv first (chromadb httpx 'mcp<2')" }
 if (-not (Test-Path $nav)) { throw "nav.py not found at $navRoot" }
 
-# 1. named config profile in the install
-$cfg = @{ root = $proj }
+# 1. named config profile in the install (state lives in the project)
+$stateDir = Join-Path $proj ".neuronav"
+$cfg = @{ root = $proj; state_dir = $stateDir }
 if ($IncludeDirs.Count) { $cfg.include_dirs = $IncludeDirs }
 if ($Extensions.Count)  { $cfg.extensions = $Extensions }
 $cfgPath = Join-Path $navRoot "config\$Name.json"
 [System.IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json -Depth 5))
-Write-Host "profile: config/$Name.json -> $proj"
+Write-Host "profile: config/$Name.json -> $proj (state: $stateDir)"
 
-# 2. index (seed from project shards if asked, then rescan)
-if ($WithBaseShards) {
-    $shards = Join-Path $proj ".neuronav\base"
-    if (Test-Path $shards) {
-        Copy-Item (Join-Path $shards "*") (Join-Path $navRoot "base") -Force -ErrorAction SilentlyContinue
-    }
+# 1b. generated state is machine-local: ignore it in the project's VCS
+$giPath = Join-Path $proj ".gitignore"
+$gi = if (Test-Path $giPath) { [System.IO.File]::ReadAllText($giPath) } else { "" }
+if ($gi -notmatch '(?m)^\.neuronav/\s*$') {
+    [System.IO.File]::WriteAllText($giPath, $gi.TrimEnd("`r", "`n") + "`n.neuronav/`n")
+    Write-Host ".gitignore: added .neuronav/"
 }
+
+# 2. index (seed from the project's OWN shards if asked, then rescan) -
+#    state_dir is project-local, so -WithBaseShards imports straight from
+#    <project>\.neuronav\base; no install-side copying
 $env:NEURONAV_CONFIG = $cfgPath
-& $py -X utf8 $nav import-base
+if ($WithBaseShards) { & $py -X utf8 $nav import-base }
 & $py -X utf8 $nav rescan
 Remove-Item Env:\NEURONAV_CONFIG -ErrorAction SilentlyContinue
 

@@ -11,8 +11,9 @@ Config switching is INTERNAL (kwargs on recall.search; falls back to plain
 nav.search where recall.py does not exist yet, e.g. the pre-fusion baseline
 worktree). NEURONAV_CONFIG is hard-set in-process to the self-index profile
 BEFORE any neuronav import — never exported from the shell (AGENTS.md
-config-leakage trap). Each measured checkout gets its own .chroma (DB_DIR is
-checkout-relative), so runs never touch the live shared index.
+config-leakage trap). Each measured checkout gets its own state store
+(state_dir is root-relative: <root>/.neuronav), so runs never touch the
+live shared index.
 
 Runs are recorded as bench/runs/<set>-<config>.json (rank-level evidence,
 not raw scores); RESULTS.md is re-rendered from all records, so reruns with
@@ -28,7 +29,7 @@ Usage:
 --set NAME   record set: before | after | fake (fake implies CI plumbing mode).
 --fake       NEURONAV_EMBED_FAKE=1 (deterministic hash embeddings; coherent
              only against a collection built in the same mode — use a fresh
-             checkout/.chroma per mode).
+             checkout/.neuronav per mode).
 """
 
 from __future__ import annotations
@@ -225,13 +226,13 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool) -> int:
     if fake and repo != DEFAULT_REPO:
         import shutil
 
-        db = repo / ".chroma"  # the worktree's OWN untracked db: a real-populated
+        db = nav.STATE_DIR  # the worktree's OWN state store (<root>/.neuronav): a
         if db.is_dir():  # store would poison fake runs (sha-unchanged rescans skip
             shutil.rmtree(db)  # re-embed -> fake queries vs real docs). Real runs
             # keep the sha-incremental store: docs embed once, reruns only re-embed
             # queries, so Ollama fp jitter cannot shift document-side near-ties.
 
-    stats = nav.rescan()  # coherent index for this mode in this checkout's .chroma
+    stats = nav.rescan()  # coherent index for this mode in this checkout's .neuronav
     print(f"index: {nav.count()} files (rescan {stats['added']}+/{stats['updated']}~/{stats['deleted']}-)")
 
     def make(flags):
@@ -404,7 +405,7 @@ def render() -> None:
         "```",
         "",
         "Before/after are measured in detached worktrees (`git worktree add --detach",
-        "<dir> <commit>`), each with its own `.chroma`, so the live shared index is",
+        "<dir> <commit>`), each with its own `.neuronav/` state store, so the live shared index is",
         "never touched and attribution is by commit. Ordering: run real sets first,",
         "fake last — fake mode wipes the worktree store for embed-mode coherence,",
         "and a real run after it would embed queries against sha-equal fake docs.",
@@ -442,7 +443,7 @@ def main() -> int:
     if fake and repo == DEFAULT_REPO:
         print(
             "ERROR: fake mode must run in a detached worktree (--repo): the main\n"
-            "checkout's .chroma holds real embeddings and a fake rescan would\n"
+            "checkout's .neuronav store holds real embeddings and a fake rescan would\n"
             "leave them (sha-unchanged) -> fake query vectors vs real docs."
         )
         return 2
