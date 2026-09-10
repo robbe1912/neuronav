@@ -121,5 +121,36 @@ def main() -> None:
         sys.modules["viz"] = None  # import viz now raises ImportError
         msg = server.visualize()
         check("visualize degrades loudly without the add-on", "viz add-on not installed" in msg, msg[:60])
+
+        # 7. nav: explicit-config guards (issue #41) — a missing env
+        # config is a hard exit, an empty effective file set a loud
+        # rescan error; neither may degrade silently
+        def run_nav_raw(cwd: Path, code: str, cfg: str | None = None) -> subprocess.CompletedProcess:
+            env = {k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}
+            env["NEURONAV_EMBED_FAKE"] = "1"
+            if cfg is not None:
+                env["NEURONAV_CONFIG"] = cfg
+            code = f"import sys; sys.path.insert(0, r'{ROOT}'); " + code
+            return subprocess.run(
+                [PY, "-X", "utf8", "-c", code], cwd=cwd, env=env,
+                capture_output=True, text=True,
+            )
+
+        p3 = make_project(tmp / "third")
+        r = run_nav_raw(p3, "import nav", str(p3 / ".neuronav" / "typo.json"))
+        err = (r.stderr or "") + (r.stdout or "")
+        check("missing env config: loud nonzero exit", r.returncode != 0, f"rc={r.returncode} {err[:60]}")
+        check("missing env config: names the path + remedy", "typo.json" in err and "unset" in err, err[:120])
+        # no config anywhere stays legal (pure defaults; section 1 pins it)
+        # — but a config whose walk matches nothing must fail the rescan
+        p4 = make_project(tmp / "fourth")
+        cfg_empty = p4 / ".neuronav" / "no-match.json"
+        p4.joinpath(".neuronav").mkdir()
+        cfg_empty.write_text(
+            json.dumps({"root": str(p4), "include_dirs": ["nope-dir"]}), encoding="utf-8"
+        )
+        r = run_nav_raw(p4, "import nav; nav.rescan()", str(cfg_empty))
+        err = (r.stderr or "") + (r.stdout or "")
+        check("empty effective file set: rescan fails loudly", r.returncode != 0 and "0 files" in err and "nope-dir" in err, err[:120])
 if __name__ == "__main__":
     main()
