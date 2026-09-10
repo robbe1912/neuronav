@@ -31,7 +31,7 @@ from extractors.gdscript import VIRTUALS, GUT_ROOTS, ADDON_VIRTUALS, MANUAL_BASE
 from extractors.python import PY_HOOKS  # stdlib dispatch hooks (dead-scan tier)
 # C++ front-end facts (issue #13): pairing + registration wiring, the
 # dynamic-dispatch marker for the dead tier, and the repo-wide GDVIRTUAL set
-from extractors.cpp import CPP_DYNAMIC_RE, CPP_EXTS, harvest_registration
+from extractors.cpp import CPP_DYNAMIC_RE, CPP_EXTS, harvest_registration, scan_calls
 
 # ---- constants ---------------------------------------------------------------
 # Language-owned constants and entry-point rules (VIRTUALS, GUT_ROOTS,
@@ -354,6 +354,8 @@ class Graph:
             elif fs.ext == ".py":
                 for fn in fs.funcs.values():
                     self._scan_body_py(fs, fn)
+            elif fs.ext in CPP_EXTS:
+                self._scan_body_cpp(fs, rel)
 
         self._wire_tscn()
         # C++ wiring (issue #13): .cpp files inherit their class identity
@@ -363,6 +365,7 @@ class Graph:
         self.cpp_gdvirtuals: set[str] = set()
         self._pair_cpp()
         self._wire_cpp()
+        self._wire_aliases()
         self._find_roots()
         self._reachable()
         return self
@@ -795,6 +798,77 @@ class Graph:
                     dst = target(fs.class_name, name)
                     if dst:
                         self._edge(src, dst, ty="call")
+
+    def _scan_body_cpp(self, fs: FileSym, rel: str) -> None:
+        """C++ body scan (issue #20): call / callback / instantiation edges.
+
+        Sites come from extractors.cpp.scan_calls (query captures +
+        memnew). Resolution mirrors the registration wiring: file-local
+        funcs first, then the paired class's header via class_map. Sites
+        that resolve to nothing are DROPPED for plain calls — an
+        unresolved call name must never feed referenced_names (the
+        same-name-elsewhere ambiguity guard) — but callback references
+        (&fn / &C::fn) keep the name-aliteral liveness path: a function
+        reachable ONLY through a function pointer is alive, and the
+        engine's registrars are not ClassDB-shaped.
+        """
+        try:
+            sites = scan_calls(nav.ROOT / rel, rel)
+        except OSError:
+            return
+        if not sites or not fs.funcs:
+            return
+        order = sorted(fs.funcs.values(), key=lambda f: f.line)
+        hdr = self.class_map.get(fs.class_name, "") if fs.class_name else ""
+
+        def container(lineno: int) -> str:
+            owner = ""
+            for f in order:
+                if f.line <= lineno:
+                    owner = f.key
+                else:
+                    break
+            return owner
+
+        for site in sites:
+            name = site["name"]
+            kind = site["kind"]
+            if kind == "new":
+                cls_file = self.class_map.get(name, "")
+                if cls_file and cls_file != rel:
+                    src = container(site["line"])
+                    if src:
+                        self._edge(src, cls_file, ty="inst")
+                continue
+            parts = name.split("::")
+            dst = ""
+            if len(parts) == 2:
+                cls_file = self.class_map.get(parts[0], "")
+                if cls_file and parts[1] in self.files[cls_file].funcs:
+                    dst = f"{cls_file}::{parts[1]}"
+            elif name in fs.funcs:
+                dst = f"{rel}::{name}"
+            elif hdr and name in self.files[hdr].funcs:
+                dst = f"{hdr}::{name}"
+            if dst:
+                src = container(site["line"])
+                if src and src != dst:
+                    self._edge(src, dst, ty="call")
+            elif kind in ("fref", "frefq"):
+                self.referenced_names.add(parts[-1])
+
+    def _wire_aliases(self) -> None:
+        """typedef/using targets -> alias edges to the aliased class's file
+        (issue #20 T7). Cheap signal: an alias means the type is genuinely
+        used; the edge keeps the defining file visible in the graph."""
+        for rel in sorted(self.files):
+            fs = self.files[rel]
+            if fs.ext not in CPP_EXTS or not fs.aliases:
+                continue
+            for target in sorted(fs.aliases.values()):
+                cls_file = self.class_map.get(target, "")
+                if cls_file and cls_file != rel:
+                    self._edge(rel, cls_file, ty="alias")
 
     def _parse_autoloads(self) -> dict[str, str]:
         """project.godot [autoload] section: singleton name -> rel path."""
