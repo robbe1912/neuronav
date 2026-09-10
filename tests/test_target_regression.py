@@ -30,8 +30,8 @@ check("target dead stable", 60 <= dead["total"] <= 130, f"dead={dead['total']}")
 cands = dead["candidates"]
 # canaries live in the machine-local config (gitignored) — they name
 # functions in the private target repo and must never be committed:
-#   "regression_canaries": {"dead": [["item_registry", "get_all_items"]],
-#                           "alive": ["encrypt_env", "corner_pillar"]}
+#   "regression_canaries": {"dead": [["<file token>", "<func>"]],
+#                           "alive": ["<file token>", "<file token>"]}
 _cfgp = Path(os.environ.get("NEURONAV_CONFIG")
              or Path(__file__).resolve().parents[1] / "config.json")
 _cans: dict = {}

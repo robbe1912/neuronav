@@ -764,7 +764,7 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
             np.add.at(vel, mb, fms)
         # cluster gravity toward per-cluster centroid, scaled by degree:
         # hubs carry huge repulsion coefficients, so a flat gravity lets the
-        # repulsion evict them from their own cluster (one showcase scene
+        # repulsion evict them from their own cluster (one high-degree scene
         # drifted 310 units from its pack into a sparse neighbor pocket).
         # Degree-scaled anchor keeps hubs home; average nodes barely move.
         csum = np.zeros((nc, 3), dtype=np.float32)
@@ -2122,8 +2122,8 @@ function busLodInit() {
   // FOCUS-STATE master gate (skeptic r5 objection): when the user asks for
   // the fn layer (focus active) and the FOCUS file's own box is readable,
   // serve the whole bus tier — camera distance alone gated the busiest
-  // hub's d2 state (vfx_preload: 21/21 bollards at radius 0 because its
-  // neighborhood shells sit farther out than world_manager's). Zoomed-out
+  // hub's d2 state (the top .tscn hub: 21/21 bollards at radius 0 because
+  // its neighborhood shells sit farther out than the entry scene's). Zoomed-out
   // overview (user's droplet state) still gates: focus box < floor there.
   // Rotation-invariant master gate: autoRotate orbits the camera at constant
   // camDist, so a sphere-relative px floor oscillates with spin phase and
@@ -4769,7 +4769,7 @@ function rebuildFnLayer(focusing) {
           // reroute junction: wires merge AT the moat junction, then ONE
           // shared stub delivers into the fn box — the junction must not
           // be a dead end in open space ("supposed to go into
-          // request_level_transition"). Fan dims to the target hue (ink#1).
+          // a cross-system call). Fan dims to the target hue (ink#1).
           const d6 = [cB.r*0.38, cB.g*0.38, cB.b*0.38];
           emitArc(T, ax, ay, az, J[0], J[1], J[2],
                   d6[0], d6[1], d6[2], d6[0], d6[1], d6[2], phase, 0.16, false,

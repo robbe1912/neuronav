@@ -14,7 +14,7 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
   private repo; NOTHING derived from it may be committed: no file/class/
   function names, no paths, no screenshots, no measured baselines (qa/ is
   gitignored machine-local state). Tests and probes must be config-agnostic
-  (derive targets from the loaded index, see `test_viz`/`probe_showcase`/
+  (derive targets from the loaded index, see `test_viz`/`probe_scene_placement`/
   `test_server_stdio`); regression canaries live in the gitignored
   `config.json` under `regression_canaries`. Same rule for every future
   target (the engine profile included).

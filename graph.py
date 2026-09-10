@@ -119,7 +119,7 @@ CALLABLE_TWO_RE = re.compile(
 )
 # quoted identifier-shaped strings in bodies of files that use dynamic
 # dispatch (file-level gate) — callback-name conventions leak into plain
-# string args, e.g. handle_animation_callback(slot, "on_cast_hold_end")
+# string args, e.g. run_callback(slot, "on_target_hit")
 QUOTED_IDENT_RE = re.compile(r"""["']([a-z_]\w{3,})["']""")
 # bare callback-convention identifiers (_on_*) in argument/array positions:
 # method references without call parens, e.g. ["QUIT", color, _on_quit]

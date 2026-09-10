@@ -8,7 +8,7 @@ point it at any project via config; nothing is vendored into target projects.
 
 | tool | use |
 |---|---|
-| `semantic_search(query, n)` | find files by meaning ("spell cooldown timer" -> magicsystem.gd) |
+| `semantic_search(query, n)` | find files by meaning ("rescan and index the repo" -> nav.py) |
 | `find_functions(query, n)` | same, per function with line numbers |
 | `symbol_graph(symbol, depth)` | callers/callees - refactoring safety |
 | `explore(query, n)` | one-call orientation: Read-equivalent source slices + callers/callees flow |

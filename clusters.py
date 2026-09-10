@@ -55,8 +55,8 @@ BLOB_MIN = 60          # clusters larger than this get split
 PACK_SPLIT_SHARE = 0.25  # each of the top-2 stem packs must cover >= this
                          # for the surgical asset-pack split to fire
 BIG_SEED_MAX = 60      # seed groups at/above this size need cross_sim even
-                       # for same-seed unions (blob-scale flat folders like
-                       # VFX/Scenes chain unrelated asset packs at min_sim)
+                       # for same-seed unions (blob-scale flat folders of asset
+                       # packs chain unrelated packs at min_sim)
 SMALL_MIN = 3          # subclusters smaller than this merge / go Misc
 MERGE_SIM = 0.55       # centroid cosine needed to merge a small subcluster
 SPLIT_SIM = 0.65       # default agglomerative similarity floor (dist 0.35)
@@ -89,8 +89,8 @@ def dir_segments(path: str) -> list[str]:
 def seed_chain(path: str) -> list[str]:
     """Dir segments with only the TOP-LEVEL generic walk dir stripped
     (scripts/, scenes/, ...). Nested segments stay even when generic-named,
-    so VFX/Scenes and VFX/Fire are distinct depths, while scripts/inventory
-    -> ["inventory"] and scripts/inventory/services -> ["inventory",
+    so art/scenes and art/scenes/fire are distinct depths, while src/inventory
+    -> ["inventory"] and src/inventory/services -> ["inventory",
     "services"]."""
     parts = path.split("/")[:-1]
     if parts and parts[0].lower() in GENERIC_DIRS:
@@ -211,7 +211,7 @@ def communities_graph(
         if j is not None and j not in tests:
             _union(i, j, None)
     # pass 2: remaining script welds capped — a heavily-shared script
-    # (a hub component can sit on half the HUD scenes) must not transitively
+    # (a hub component can sit on half the UI scenes) must not transitively
     # glue dozens of scenes into one mega-unit
     for rel, i in sorted(id_of.items()):
         if not rel.endswith(".tscn") or i in tests or rel not in g.files:
@@ -390,8 +390,8 @@ def communities_graph(
 
     # infra routing: generic scripts referenced by >=2 pack scenes join
     # the community holding the plurality of those scenes' packs (audit:
-    # one_shot_particles_3d / gpu_particles_3d_fix /
-    # particle_distance_emitter used only by Fire/Earth, parked in Wind)
+    # three generic fx scripts used only by two element packs ended
+    # up parked in a third pack's community)
     pack_of_scene: dict[str, str] = {}
     for p in idset:
         if p.endswith(".tscn"):
@@ -529,9 +529,9 @@ def _stem(path: str) -> str:
 
 def _stem_prefix_seg(members: list[tuple[str, str]]) -> str | None:
     """Varying segment of a shared stem prefix, for flat asset-pack folders
-    (VFX/Scenes): >=60% of the cluster's scene files must match Pfx_Seg*
+    (art/scenes): >=60% of the cluster's scene files must match Pfx_Seg*
     where Seg is the first camel hump of the second underscore token
-    (VFX_FireArea_A -> "Fire"); the winning segment must hold >=55% of the
+    (Art_FireArea_A -> "Fire"); the winning segment must hold >=55% of the
     prefix-matching files. Returns the lowercase segment, or None."""
     stems = [_stem(p) for p, _ in members if p.endswith(".tscn")]
     if not stems:
@@ -615,7 +615,7 @@ def label_cluster(
     ordered = sorted(members)
     # 1. autoload backing file — ONLY when it is the cluster's in-cluster
     # hub (highest weighted structural in-degree). A non-hub autoload
-    # would brand a grab-bag with conf 1.0 (audit: AudioPlayer on 61
+    # would brand a grab-bag with conf 1.0 (audit: one audio hub on 61
     # mostly-unrelated files, E2EMatchProbe on 7 asset tools).
     mem_paths = [p for p, _ in ordered]
 
@@ -639,8 +639,8 @@ def label_cluster(
             return titleize(seg), 0.7, "stem"
     # 2. deepest majority dir chain: walk prefix-constrained while the
     # majority (>=55%) still shares the chain; label = last NON-GENERIC
-    # segment of that chain. A cluster spread over VFX/Scenes bottoms out
-    # at "Vfx" (mixed symptom); VFX/Fire labels "Fire".
+    # segment of that chain. A cluster spread over a flat asset folder
+    # bottoms out at the root name (mixed symptom); subfolders win.
     chains = [seed_chain(p) for p, _ in members]
     nonempty = [c for c in chains if c]
     cur: list[str] = []
@@ -828,8 +828,8 @@ def _pack_key(stem: str) -> str | None:
 def _split_pack_cluster(cluster: dict, rows: dict[str, int], mat) -> list[dict]:
     """Surgical asset-pack split (lead-approved): subdivide ONLY
     scene-dominant clusters whose member stems map to >=2 distinct Pfx_Seg
-    packs each holding >= PACK_SPLIT_SHARE of the cluster (the wind+earth
-    mixed community in the flat VFX/Scenes folder). Global resolution is
+    packs each holding >= PACK_SPLIT_SHARE of the cluster (a two-element
+    mixed community in a flat asset folder). Global resolution is
     untouched. Named pack groups smaller than SMALL_MIN merge into the
     nearest surviving pack centroid (>= MERGE_SIM) else join the no-pack
     leftover bucket."""
@@ -1135,7 +1135,7 @@ def finalize(
     # scene structural majority: a scene whose weighted structural ties
     # (both directions, whole welded unit) overwhelmingly point into ONE
     # other part belongs there, embedding similarity notwithstanding
-    # (field report: an element showcase sat in the showcase blob while
+    # (field report: a display scene sat in the display-name blob while
     # every instancing wire crossed its element cluster). Requires >=60% of
     # edge weight into the target and >=10 total, and the scene must not
     # already hold more of its own ties (wired hubs stay home).

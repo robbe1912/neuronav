@@ -92,7 +92,7 @@ by kind (hit@5 / MRR):
 | `NoCacheHandler` | symbol | 1 | 1 | 1 | 1 | 1 |
 | `LabelContext` | symbol | 3 | 2 | 3 | 2 | 2 |
 | `FileSym` | symbol | 6 | · | 6 | · | · |
-| `MagicPlayer` | symbol | 12 | 12 | 12 | 12 | 12 |
+| `TargetClass` | symbol | 12 | 12 | 12 | 12 | 12 |
 | `where do godot scene resources get read` | prose | 1 | 2 | 1 | 2 | 2 |
 | `how do cross-module references become caller edges` | prose | 7 | 7 | 7 | 7 | 7 |
 | `what stops two simultaneous rescans from corrupting the store` | prose | 2 | 4 | 2 | 4 | 4 |
@@ -124,7 +124,7 @@ by kind (hit@5 / MRR):
 | `NoCacheHandler` | symbol | 1 |
 | `LabelContext` | symbol | 3 |
 | `FileSym` | symbol | 6 |
-| `MagicPlayer` | symbol | 11 |
+| `TargetClass` | symbol | 11 |
 | `where do godot scene resources get read` | prose | 1 |
 | `how do cross-module references become caller edges` | prose | 5 |
 | `what stops two simultaneous rescans from corrupting the store` | prose | 2 |

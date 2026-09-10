@@ -235,7 +235,7 @@ def main() -> None:
                 "method": "tools/call",
                 "params": {
                     "name": "semantic_search",
-                    "arguments": {"query": "player movement input", "n": 5},
+                    "arguments": {"query": "movement input handling", "n": 5},
                 },
             }
         )

@@ -98,13 +98,13 @@ def repo_map(budget_tokens: int = 2048) -> str:
 
 @mcp.tool(annotations=READONLY)
 def semantic_search(query: str, n: int = 8) -> str:
-    """Find code/scene files in this Godot project by meaning, not keywords.
+    """Find files in this repo by meaning, not keywords.
 
     Hybrid recall: vector similarity fused with lexical BM25F ranks —
     src=vec|bm25|both says which side found each hit, ctx= lists up to 3
     structural neighbors worth a look while you are there. Use before
-    grep when hunting a concept: input handling, spell cooldowns, save
-    system, netcode, bot AI, inventory.
+    grep when hunting a concept: input handling, timed effects, save
+    system, netcode, AI behavior, item storage.
     """
     n = max(1, min(n, 25))
     return _here(graph.get_graph()) + "\n" + _fmt(nav.search(query, n))
@@ -115,7 +115,7 @@ def find_functions(query: str, n: int = 6) -> str:
     """Semantic search over individual FUNCTIONS (not whole files).
 
     Use when you need the exact function implementing a concept, e.g.
-    "apply spell damage", "spawn projectile", "reload inventory UI".
+    "apply status damage", "spawn projectile", "refresh item UI".
     Returns path::func with line numbers — pair with symbol_graph to see
     how a hit connects.
     """
@@ -190,8 +190,8 @@ def duplicates(n: int = 20) -> str:
 def clusters(k: int = 6, min_sim: float = 0.6) -> str:
     """Subsystem clusters discovered from embedding geometry (mutual kNN).
 
-    Shows which files belong to the same feature family — inventory, dungeon
-    generation, VFX elements, netcode. Use to survey unfamiliar areas or find
+    Shows which files belong to the same feature family — UI, core systems,
+    asset handling, networking. Use to survey unfamiliar areas or find
     every file related to a system before refactoring it. Returns cluster
     sizes with member paths + class names.
     """

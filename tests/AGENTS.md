@@ -26,7 +26,7 @@ with `NEURONAV_EMBED_FAKE=1`; the rest are local gates.
 | `test_server_stdio` | MCP stdio end-to-end: spawns server.py, drives JSON-RPC, asserts the context tool answers | mcp + default-config target repo |
 | `test_viz` | 90-check Playwright harness over the real baked page | playwright + chrome + a fresh `graph.html` bake |
 
-`probe_showcase.py` is a manual probe script, not a suite.
+`probe_scene_placement.py` is a manual probe script, not a suite.
 
 ## Config self-selection (the leakage trap)
 
