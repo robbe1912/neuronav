@@ -200,6 +200,10 @@ def _build_data() -> dict:
     for src_key, dsts in g.edges.items():
         if src_key.endswith("::tscn"):  # pseudo source, fn would be "tscn"
             continue
+        if "::" not in src_key:
+            # file-level source (cpp v1.1 header-scope refs) — no fn to
+            # attribute; its file adjacency already rides the links layer
+            continue
         s_path, s_fn = src_key.split("::", 1)
         if s_path not in idx:
             continue
@@ -219,6 +223,11 @@ def _build_data() -> dict:
                 dst_key.endswith("::tscn")
                 or "::SIGNAL:" in dst_key
             ):
+                continue
+            if "::" not in dst_key:
+                # fn -> whole-file edge (cpp v1.1 template/instantiation
+                # refs resolve to the target's file, not a fn): file-level
+                # ink comes from the links layer; the fn layer skips it
                 continue
             d_path, d_fn = dst_key.split("::", 1)
             if d_path not in idx or d_path == s_path:
