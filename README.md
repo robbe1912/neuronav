@@ -4,6 +4,9 @@ Local code-intelligence for AI coding agents: vector search + structural code
 graph + an interactive 3D map, exposed as a stdio MCP server. Standalone repo -
 point it at any project via config; nothing is vendored into target projects.
 
+See [docs/comparison.md](docs/comparison.md) for how neuronav differs from
+other code-graph tools (CodeGraph, aider repo map, SCIP).
+
 ## Tools (stdio MCP, 9)
 
 | tool | use |
