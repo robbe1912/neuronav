@@ -5692,7 +5692,8 @@ document.getElementById("bGhost").onclick = e => {
 const mapPane = document.getElementById("mapPane");
 const MAP_MAX = 40;            // lit-node cap: past this the pane refuses
 const FN_PORT_MAX = 4;          // roster rows per expanded box, then "+N more"
-const NH = 22, RH = 13, GAPX = 12, TOP = 46;   // header / row / gap / first-row Y
+const NH = 22, RH = 13, GAPX = 12, TOP = 46;   // header / row / wrap gap / first-row Y
+const GAPX_MAX = 120;   // placement stretches band gaps up to this (spread)
 const MAP_FONT = sz => sz + "px ui-monospace, Menlo, Consolas, monospace";
 // type glyphs (spec section 3): stroke color / dash pattern / terminator.
 // one font constant (above) covers ALL map text.
@@ -6096,11 +6097,11 @@ function mapRender() {
   const cwView = mapPane.clientWidth || 440;
   const chView = mapPane.clientHeight || innerHeight;
   const dpr = mapPane.width / cwView || 1;
-  // world width FOLLOWS the pane (pane + 170, clamped): the fit zoom then
-  // lands near min(paneW/worldW, paneH/worldH) so every box is visible at
-  // boot while text keeps >=~8px effective (F15 rev2: fit below 1.0 allowed,
-  // floor 0.55 protects text on pathological repos)
-  const cw = MAP_WORLD_W;   // scan ceiling; the fit scan picks the real width
+  // world width follows the pane: the scan ceiling grows with it so wide
+  // panes get wide worlds, capped at 1400 so a maximized window cannot wrap
+  // a small repo into one unbounded megaband. The fit scan below picks the
+  // real width for THIS pane (floor 0.30 protects text on pathological repos)
+  const cw = Math.max(480, Math.min(1400, Math.floor(cwView * 1.6 / 20) * 20));   // scan ceiling
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = "#0b0f14";
   ctx.fillRect(0, 0, cwView, chView);
@@ -6291,9 +6292,12 @@ function mapRender() {
   }
   // rows WRAP to world width against the resolved box widths. The world
   // width is CHOSEN: a narrow world wraps into more/taller chunks, a wide
-  // one into fewer/flatter - the fit zoom z = min(paneW/W, paneH/H(W)) has
-  // an interior optimum. Wrap once per candidate width (cheap: <=40 boxes),
-  // keep the width that maximizes z (ties: narrower world). Deterministic:
+  // one into fewer/flatter - the fit zoom z(W) saturates once W stops
+  // re-wrapping (h constant). Wrap once per candidate width (cheap: <=40
+  // boxes), keep the width that maximizes z, ties -> WIDEST: the tie zone
+  // is exactly where a sub-1 zoom would stare at a narrow column through
+  // dead side margins, and growing W there costs nothing (same z, same
+  // wrap) while giving lanes and ports the spare width. Deterministic:
   // same data + pane => same scan.
   const wrapChunks = W => {
     const ch = [];
@@ -6327,9 +6331,10 @@ function mapRender() {
   };
   const wrapH = ch => {   // per-chunk rowH = max(56, tallest + band pad) [F6]
     // band pads grow with crossing demand (capacity for hot corridors) but
-    // under a HARD height budget: the fit zoom may not fall below ~0.70 or
-    // the whole pane shrinks to a thumbnail. Extras scale down to fit.
-    const Hmax = chView / 0.70;
+    // under a loose height budget: past it the fit zoom would fall below
+    // the 0.30 floor and extra band capacity buys nothing on screen.
+    // Extras scale down to fit.
+    const Hmax = chView / 0.30;
     const rowHOf = (tall, pad) => Math.max(56, tall + pad);
     const total = pads => {
       let y = TOP;
@@ -6356,10 +6361,11 @@ function mapRender() {
     });
     return { h: Math.max(chView, total(pads)), tops, pads };
   };
-  let cwBest = Math.min(640, cw), zBest = -1;
-  for (let W = 560; W <= cw; W += 20) {
-    const z = Math.min(cwView / W, chView / wrapH(wrapChunks(W)).h);
-    if (z > zBest + 1e-9) { zBest = z; cwBest = W; }
+  const fitZOf = (W, h) => Math.max(0, Math.min(1.0, (cwView - 48) / W, (chView - 48) / h));
+  let cwBest = 480, zBest = -1;
+  for (let W = 480; W <= cw; W += 20) {
+    const z = fitZOf(W, wrapH(wrapChunks(W)).h);
+    if (z > zBest + 1e-9 || (z >= zBest - 1e-9 && W > cwBest)) { zBest = z; cwBest = W; }
   }
   const cwL = cwBest;                    // resolved world width for THIS pane
   const chunks = wrapChunks(cwL);
@@ -6375,18 +6381,29 @@ function mapRender() {
     wy += Math.max(56, tall + wrapRes.pads[g]);
   });
   const worldH = Math.max(chView, wy + 20);
+  // [issue #78] slack spreading: wrapping stays tight (GAPX) so the scan
+  // sees the flattest world, but PLACEMENT stretches each band's gaps up
+  // to GAPX_MAX so a wide world reads as full-width bands instead of a
+  // centered column with dead side margins. Leftover centers the band.
   const place = new Map();
   chunks.forEach((chunk, rr) => {
-    const tw = chunk.reduce((a, i) => a + geo.get(i).w, 0) + GAPX * (chunk.length - 1);
-    let x = Math.max(8, (cwL - tw) / 2);
+    const sw = chunk.reduce((a, i) => a + geo.get(i).w, 0);
+    const n = chunk.length;
+    // slackEach can exceed GAPX_MAX (center the leftover) but the stretch
+    // never exceeds the world: extent = sw + gap*(n-1) <= cwL - 16
+    const gap = n > 1
+      ? Math.min(GAPX_MAX, Math.max(GAPX, (cwL - 16 - sw) / (n - 1))) : GAPX;
+    let x = Math.max(8, (cwL - (sw + gap * (n - 1))) / 2);
     const y = chunkY[rr];
     chunk.forEach(i => {
       place.set(i, { x, y, w: geo.get(i).w, h: geo.get(i).h, row: rr });
-      x += geo.get(i).w + GAPX;
+      x += geo.get(i).w + gap;
     });
   });
   if (!mapZ) {   // focus change / first draw: fit BOTH dims [F15 rev2]
-    mapZ = Math.max(0.55, Math.min(1.0, Math.min(cwView / cwL, chView / worldH)));
+    // [issue #78] 24px fit margin + 0.30 floor: matches fitZOf above, so
+    // the scan's optimum materializes exactly; boxes never touch pane edges
+    mapZ = Math.max(0.30, Math.min(1.0, Math.min((cwView - 48) / cwL, (chView - 48) / worldH)));
     mapPX = (cwL - cwView / mapZ) / 2;    // negative when world < pane: centers
     mapPY = (worldH - chView / mapZ) / 2; // the shrunken content (D2)
     // fit-relative ink tier: fine ink ON at the overview (wire clicks work
