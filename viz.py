@@ -1256,6 +1256,10 @@ _TEMPLATE = r"""<!DOCTYPE html>
     text-shadow:0 1px 2px #000; }
   .flab:hover { color:#fff; background:rgba(20,30,38,.92); }
   .flab.fn { font-size:10px; color:#8fa3ad; background:rgba(8,12,16,.6); }
+  /* search matches (issue #51): hubs + fn labels carrying .hl lift to the
+     accent — the toggles existed but no rule backed them (dead ink) */
+  .hub.hl, .flab.hl { color:#1de9b6; background:#1de9b626;
+    border-color:#1de9b666; }
   .flab.fn:hover { color:#d0f2ea; background:rgba(14,26,24,.9); }
   #stubLabs { position:fixed; inset:0; z-index:6; pointer-events:none;
     overflow:hidden; }

@@ -34,6 +34,14 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
         pass  # quiet
 
 
+def port_owner_hint(port: int) -> str:
+    """Who-owns-this-port remedy for the bind refusal, per OS (issue #51):
+    the PowerShell cmdlet only exists on Windows."""
+    if sys.platform == "win32":
+        return f"Get-NetTCPConnection -LocalPort {port}"
+    return f"lsof -i :{port}  (or: ss -ltnp)"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="no-cache viewer for the active config's graph.html bake")
@@ -71,7 +79,7 @@ def main() -> int:
         print(
             f"refusing to start: 127.0.0.1:{args.port} is already in use "
             f"({exc.strerror or exc}). Another serve.py or viewer owns the "
-            f"port — find who: Get-NetTCPConnection -LocalPort {args.port}",
+            f"port — find who: {port_owner_hint(args.port)}",
             file=sys.stderr,
         )
         return 1

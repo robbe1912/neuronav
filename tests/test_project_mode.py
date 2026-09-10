@@ -248,8 +248,10 @@ def main() -> None:
                 why = (dup.stdout + dup.stderr).strip()
                 check("serve: second bind on a taken port exits nonzero",
                       dup.returncode != 0, f"rc={dup.returncode}")
+                want_hint = ("Get-NetTCPConnection" if sys.platform == "win32"
+                             else "lsof")   # per-OS remedy (issue #51)
                 check("serve: refusal prints the port + owner hint",
-                      str(port) in why and "Get-NetTCPConnection" in why, why[:70])
+                      str(port) in why and want_hint in why, why[:70])
             except subprocess.TimeoutExpired:
                 check("serve: second bind on a taken port exits nonzero", False,
                       "second instance kept serving (timeout)")
@@ -257,6 +259,26 @@ def main() -> None:
             finally:
                 first.kill()
                 first.wait()
+
+        # 9b. the remedy line is per-OS (issue #51): the PowerShell cmdlet
+        # only exists on Windows — POSIX prints lsof/ss instead
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("serve_hint", serve_py)
+        serve_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(serve_mod)
+        plat = sys.platform
+        try:
+            sys.platform = "win32"
+            win_hint = serve_mod.port_owner_hint(9123)
+            sys.platform = "linux"
+            posix_hint = serve_mod.port_owner_hint(9123)
+        finally:
+            sys.platform = plat
+        check("serve: win32 hint is the cmdlet with the port",
+              win_hint == "Get-NetTCPConnection -LocalPort 9123", win_hint)
+        check("serve: POSIX hint is lsof/ss, never the cmdlet",
+              "lsof" in posix_hint and "9123" in posix_hint
+              and "Get-NetTCPConnection" not in posix_hint, posix_hint)
 if __name__ == "__main__":
     main()
     sys.exit(1 if FAILURES else 0)   # a failing run must fail the gate
