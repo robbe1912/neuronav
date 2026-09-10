@@ -26,8 +26,9 @@ integration suite (needs Ollama up).
 | `extractors/` | language registry (add a language = new module + registry entry) |
 | `clusters.py` | Louvain communities, labels, crosstalk |
 | `explore.py` | one-call agent orientation tool |
-| `server.py` | FastMCP stdio server (9 tools) |
-| `viz.py` | data build + embedded three.js template -> `graph.html` |
+| `onboard.py` | one-command project onboarding (issue #27): init/wire — install stays read-only, cross-platform |
+| `server.py` | FastMCP stdio server (12 tools) |
+| `viz.py` | optional add-on: data build + embedded three.js template -> `graph.html` |
 
 ## Ground rules
 
