@@ -14,10 +14,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install numpy chromadb httpx
+      - run: pip install numpy chromadb httpx tree-sitter==0.26.0 tree-sitter-cpp==0.23.4
       - name: strata (depth layering, cycles, determinism)
         run: python -X utf8 tests/test_strata.py
       - name: crosslang (self-index integration, deterministic fake embeddings)
         run: python -X utf8 tests/test_crosslang.py
       - name: pyhard (python extractor edge cases)
         run: python -X utf8 tests/test_pyhard.py
+      - name: cpphard (C++ extractor edge cases)
+        run: python -X utf8 tests/test_cpphard.py

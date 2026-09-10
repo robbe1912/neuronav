@@ -326,9 +326,9 @@ def clusters(
     mat /= norms
     sim = mat @ mat.T
     np.fill_diagonal(sim, -1.0)
-    knn = np.argsort(-sim, axis=1)[:, :k]
-
     import clusters as _clusters
+
+    knn = _clusters.topk_desc(sim, k)
 
     out: list[dict[str, object]] = []
     adj = None  # structural adjacency from the louvain engine (hub gating)

@@ -29,6 +29,9 @@ from extractors.model import FileSym, Func  # noqa: F401  (re-export)
 # language fact needed by the dead-code tier heuristic (native dispatch names)
 from extractors.gdscript import VIRTUALS, GUT_ROOTS, ADDON_VIRTUALS, MANUAL_BASES, parse_gd, parse_tscn
 from extractors.python import PY_HOOKS  # stdlib dispatch hooks (dead-scan tier)
+# C++ front-end facts (issue #13): pairing + registration wiring, the
+# dynamic-dispatch marker for the dead tier, and the repo-wide GDVIRTUAL set
+from extractors.cpp import CPP_DYNAMIC_RE, CPP_EXTS, harvest_registration
 
 # ---- constants ---------------------------------------------------------------
 # Language-owned constants and entry-point rules (VIRTUALS, GUT_ROOTS,
@@ -315,7 +318,7 @@ class Graph:
         # (BT exports) join the same referenced-name pool
         self._dyn_files: set[str] = set()
         for rel, fs in self.files.items():
-            if fs.ext != ".gd":
+            if fs.ext != ".gd" and fs.ext not in CPP_EXTS:
                 continue
             for nm in fs.name_literals:
                 if len(nm) > 3:
@@ -326,7 +329,7 @@ class Graph:
             if not fs.funcs:
                 continue
             joined = "\n".join(f.body for f in fs.funcs.values())
-            if DYNAMIC_HINT_RE.search(joined):
+            if fs.ext == ".gd" and DYNAMIC_HINT_RE.search(joined):
                 self._dyn_files.add(rel)
 
         # python import liveness: a PLAIN `import x` binds the namespace -
@@ -353,6 +356,13 @@ class Graph:
                     self._scan_body_py(fs, fn)
 
         self._wire_tscn()
+        # C++ wiring (issue #13): .cpp files inherit their class identity
+        # from the paired header, then registration macros become edges and
+        # the repo-wide GDVIRTUAL override set. Must precede _find_roots —
+        # the gdvirtual entry rule consumes ctx.cpp_gdvirtuals.
+        self.cpp_gdvirtuals: set[str] = set()
+        self._pair_cpp()
+        self._wire_cpp()
         self._find_roots()
         self._reachable()
         return self
@@ -696,6 +706,96 @@ class Graph:
             return ""
         return res_path.removeprefix("res://")
 
+    def _resolve_include(self, src_rel: str, inc: str) -> str:
+        """Repo-relative path for a quoted include of src_rel, or ''."""
+        if inc in self.files:
+            return inc
+        parent = src_rel.rsplit("/", 1)[0] if "/" in src_rel else ""
+        cand = f"{parent}/{inc}" if parent else inc
+        return cand if cand in self.files else ""
+
+    def _pair_cpp(self) -> None:
+        """Give each .cpp its header's class identity (spec §2 pairing).
+
+        Convention: a .cpp's first quoted include is its own header
+        (path-ordered includes in engine code). The header stays the
+        canonical class_map owner; the .cpp only fills in if unclaimed.
+        """
+        for rel in sorted(self.files):
+            fs = self.files[rel]
+            if fs.ext != ".cpp" or fs.class_name:
+                continue
+            own_stem = rel.rsplit("/", 1)[-1].split(".")[0]
+            pair = ""
+            for inc in sorted(fs.imported_modules):
+                resolved = self._resolve_include(rel, inc)
+                if not resolved or self.files[resolved].ext not in (".h", ".hpp"):
+                    continue
+                if resolved.rsplit("/", 1)[-1].split(".")[0] == own_stem:
+                    pair = resolved
+                    break  # exact-stem match wins outright
+                pair = pair or resolved
+            if pair and self.files[pair].class_name:
+                fs.class_name = self.files[pair].class_name
+                self.class_map.setdefault(fs.class_name, pair)
+
+    def _wire_cpp(self) -> None:
+        """Registration macros -> call edges + repo-wide GDVIRTUAL set.
+
+        Binds/props live inside a containing function (usually
+        _bind_methods): the owner is resolved by line order, mirroring how
+        the engine runs registration at class-initialization time. Edge
+        targets resolve file-locally first, then via class_map to the
+        class's defining file. Roots come from ENTRY_RULES; these edges
+        carry the call-graph wire (clusters/ PagerRank treat ty="call").
+        """
+        for rel in sorted(self.files):
+            fs = self.files[rel]
+            if fs.ext not in CPP_EXTS:
+                continue
+            try:
+                text = nav._read_text(nav.ROOT / rel)
+            except OSError:
+                continue
+            reg = harvest_registration(text)
+            self.cpp_gdvirtuals.update(v.name for v in reg["gdvirtuals"])
+            if not fs.funcs or (not reg["binds"] and not reg["props"]):
+                continue
+            order = sorted(fs.funcs.values(), key=lambda f: f.line)
+
+            def container(lineno: int) -> str:
+                owner = ""
+                for f in order:
+                    if f.line <= lineno:
+                        owner = f.key
+                    else:
+                        break
+                return owner
+
+            def target(cls: str, name: str) -> str:
+                if name in fs.funcs:
+                    return f"{rel}::{name}"
+                class_file = self.class_map.get(cls, "")
+                if class_file and name in self.files[class_file].funcs:
+                    return f"{class_file}::{name}"
+                return ""
+
+            for b in reg["binds"]:
+                dst = target(b.cls, b.method)
+                src = container(b.line)
+                if dst and src:
+                    self._edge(src, dst, ty="call")
+            for p in reg["props"]:
+                src = container(p.line)
+                if not src:
+                    continue
+                for name in (p.setter, p.getter):
+                    if not name:
+                        continue
+                    dst = target(fs.class_name, name)
+                    if dst:
+                        self._edge(src, dst, ty="call")
+
     def _parse_autoloads(self) -> dict[str, str]:
         """project.godot [autoload] section: singleton name -> rel path."""
         out: dict[str, str] = {}
@@ -732,7 +832,7 @@ class Graph:
         # alive but have no static edge — root them so their callees survive
         if self.referenced_names:
             for rel, fs in self.files.items():
-                if fs.ext not in (".gd", ".py"):
+                if fs.ext not in (".gd", ".py") and fs.ext not in CPP_EXTS:
                     continue
                 for name, fn in fs.funcs.items():
                     if name in self.referenced_names:
@@ -754,9 +854,11 @@ class Graph:
     def dead_code(self, limit: int = 60) -> dict[str, object]:
         dead = []
         for rel, fs in self.files.items():
-            if fs.ext not in (".gd", ".py"):
+            if fs.ext not in (".gd", ".py") and fs.ext not in CPP_EXTS:
                 continue
-            file_is_dynamic = bool(DYNAMIC_HINT_RE.search("\n".join(fs.funcs[f].body for f in fs.funcs))) if fs.funcs else False
+            joined = "\n".join(fs.funcs[f].body for f in fs.funcs) if fs.funcs else ""
+            dyn_re = CPP_DYNAMIC_RE if fs.ext in CPP_EXTS else DYNAMIC_HINT_RE
+            file_is_dynamic = bool(dyn_re.search(joined))
             for name, fn in fs.funcs.items():
                 if fn.key in self.reachable:
                     continue
@@ -1008,54 +1110,100 @@ def _all_filesyms() -> dict[str, FileSym]:
 
 
 def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
-    """Re-embed functions of changed files, purge deleted files' functions.
-    Self-healing: an interrupted sync (embed failure, process kill) leaves a
-    dirty marker; the next call with no changes does a full rebuild so the
-    index never stays silently stale."""
+    """Re-embed functions of changed files, purge deleted files' functions,
+    skipping unchanged ones via a per-entry content-hash cache (Cursor
+    pattern): each stored fn keeps the sha256 of its embedded doc, so a
+    rescan re-embeds only fns whose doc changed, refreshes metadata on
+    line moves while reusing the stored vector, and purges fns that
+    vanished from the file. At engine scale (~35k fns) the cold embed is
+    ~2.3 h; the cache turns repeat rescans into minutes. Pre-cache
+    collections migrate lazily: entries without a stored sha re-embed
+    once. The dirty-marker self-heal still forces a full pass, but every
+    cached skip verifies against the fresh parse, so dirty rebuilds stay
+    correct and cheap. Purges resolve ids via where-get then
+    delete(ids=...): chroma's delete(where=...) was observed to no-op
+    silently under client churn while get(where=...) and delete(ids=...)
+    stay reliable."""
     col = _fn_collection()
     dirty = nav.DB_DIR / "fns.dirty"
     if dirty.is_file() and not changed:
         changed = sorted(rel for rel, fs in _all_filesyms().items() if fs.funcs)
-    stale = sorted(set(changed) | set(deleted))
-    if stale and col.count():
-        for p in stale:
-            col.delete(where={"path": p})
     if col.count() == 0 and not changed:
         # first build: index every parsed function (any text language)
         changed = sorted(
             rel for rel, fs in _all_filesyms().items() if fs.funcs
         )
+    populated = col.count() > 0
+    purged_paths = 0
+    purged_fns = 0
+
+    def _purge_path(rel: str) -> None:
+        nonlocal purged_paths, purged_fns
+        got = col.get(where={"path": rel}, include=[])
+        if got["ids"]:
+            col.delete(ids=got["ids"])
+            purged_paths += 1
+            purged_fns += len(got["ids"])
+
+    if populated and deleted:
+        for p in sorted(set(deleted)):
+            _purge_path(p)
     parser = Graph()
     ids: list[str] = []
     docs: list[str] = []
     metas: list[dict[str, object]] = []
+    moved: list[tuple[str, str, dict[str, object]]] = []
+    cached = 0
     for rel in changed:
         path = nav.ROOT / rel
         suffix = path.suffix
-        # scenes have no funcs; only languages with an extractor are parseable
+        # scenes have no funcs; only languages with an extractor are
+        # parseable — a file that left parseable space is purged, not kept
         if not path.is_file() or suffix not in nav.EXTS or suffix == ".tscn":
+            if populated:
+                _purge_path(rel)
             continue
         if suffix == ".gd":
             fs = parser._parse_gd(path, rel)
         else:
-            from extractors import registry_for
-
             fs = registry_for(suffix).parse(path, rel)
+        current: set[str] = set()
+        existing: dict[str, dict[str, object]] = {}
+        if populated:
+            got = col.get(where={"path": rel}, include=["metadatas"])
+            existing = {
+                rid: meta or {}
+                for rid, meta in zip(got["ids"], got["metadatas"])
+            }
         for name, fn in fs.funcs.items():
-            ids.append(f"{rel}::{name}")
+            rid = f"{rel}::{name}"
+            current.add(rid)
             # signature line up front: better embeddings + agents see the IO
             # surface without opening the file
             sig = ", ".join(
                 f"{p}: {t}" if t else p for p, t in fn.params
             )
             ret = f" -> {fn.ret}" if fn.ret else ""
-            docs.append(
-                f"{rel} :: func {name}({sig}){ret}\n{fn.body[:6000]}"
-            )
-            metas.append(
-                {"path": rel, "name": name, "class_name": fs.class_name,
-                 "line": fn.line}
-            )
+            doc = f"{rel} :: func {name}({sig}){ret}\n{fn.body[:6000]}"
+            sha = hashlib.sha256(doc.encode("utf-8")).hexdigest()
+            meta: dict[str, object] = {
+                "path": rel, "name": name, "class_name": fs.class_name,
+                "line": fn.line, "sha": sha,
+            }
+            old = existing.get(rid)
+            if old is not None and old.get("sha") == sha:
+                if old.get("line") == fn.line:
+                    cached += 1
+                    continue
+                moved.append((rid, doc, meta))  # line move: reuse vector
+                continue
+            ids.append(rid)
+            docs.append(doc)
+            metas.append(meta)
+        gone = sorted(set(existing) - current)
+        if gone:
+            col.delete(ids=gone)
+            purged_fns += len(gone)
     try:
         with nav._db_lock():
             added = 0
@@ -1068,11 +1216,24 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
                     metadatas=metas[i : i + nav.EMBED_BATCH],
                 )
                 added += len(vecs)
+            for rid, doc, meta in moved:
+                got = col.get(ids=[rid], include=["embeddings"])
+                if rid not in got["ids"]:
+                    raise RuntimeError(f"fn vector vanished for {rid}")
+                vec = [float(x) for x in got["embeddings"][0]]
+                col.upsert(ids=[rid], embeddings=[vec], documents=[doc],
+                           metadatas=[meta])
+                added += 1
     except Exception:
         dirty.write_text("sync failed", encoding="utf-8")
         raise
     dirty.unlink(missing_ok=True)
-    return {"fns_upserted": added, "purged_paths": len(stale)}
+    return {
+        "fns_upserted": added,
+        "fns_cached": cached,
+        "purged_paths": purged_paths,
+        "purged_fns": purged_fns,
+    }
 
 
 def find_functions(query: str, n: int = 6) -> list[dict[str, object]]:

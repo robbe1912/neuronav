@@ -271,6 +271,50 @@ def _build_data() -> dict:
     # deterministic named-wire order: ty, sf, df, dfn, sfn, line (spec §0)
     mwires.sort(key=lambda w: (w[0], w[1], w[3], w[4], w[2], w[5]))
 
+    # engine-scale export budget (spec §4 row 10): named-wire rows grow
+    # ~12/file and would push the engine bake past the bootable-html size.
+    # Below the byte cap nothing changes (self-index/game-target bake identical);
+    # above it, whole FILE PAIRS are kept by pagerank priority — call rows
+    # and their fedges mirrors share a pair, so the two exports stay
+    # consistent — until the budget is spent. Deterministic: fixed sort
+    # keys, whole-pair keeps, original emission order preserved.
+    _rank = None
+    wire_dropped = 0
+    _WIRE_BYTE_CAP = 2_600_000
+    if (len(json.dumps(fedges, separators=(",", ":")))
+            + len(json.dumps(mwires, separators=(",", ":"))) > _WIRE_BYTE_CAP):
+        if _rank is None:
+            _rank = g.pagerank()
+        groups: dict[tuple, list] = {}
+        for i, r in enumerate(fedges):
+            groups.setdefault((r[0], r[2]), [[], []])[0].append(i)
+        for i, r in enumerate(mwires):
+            groups.setdefault((r[1], r[3]), [[], []])[1].append(i)
+
+        def _pair_cost(pair) -> int:
+            fe, mw = groups[pair]
+            # +1 per row: the joining comma each kept row adds to the
+            # serialized list (caps are enforced on the real bake bytes)
+            return (sum(len(json.dumps(fedges[i], separators=(",", ":"))) + 1 for i in fe)
+                    + sum(len(json.dumps(mwires[i], separators=(",", ":"))) + 1 for i in mw))
+
+        budget = _WIRE_BYTE_CAP
+        keep_fe: list[int] = []
+        keep_mw: list[int] = []
+        for pair in sorted(groups, key=lambda p: (
+            -_rank.get(paths[p[0]], 0.0) - _rank.get(paths[p[1]], 0.0),
+            paths[p[0]], paths[p[1]],
+        )):
+            cost = _pair_cost(pair)
+            if cost > budget:
+                continue
+            budget -= cost
+            keep_fe.extend(groups[pair][0])
+            keep_mw.extend(groups[pair][1])
+        wire_dropped = (len(fedges) - len(keep_fe)) + (len(mwires) - len(keep_mw))
+        fedges = [fedges[i] for i in sorted(keep_fe)]
+        mwires = [mwires[i] for i in sorted(keep_mw)]
+
     # complete per-file fn roster [name, line], line order (spec §0)
     fns: dict[str, list[list]] = {}
     for p in paths:
@@ -306,7 +350,9 @@ def _build_data() -> dict:
             embs /= norms
             sim = embs @ embs.T
             np.fill_diagonal(sim, -1.0)
-            knn = np.argsort(-sim, axis=1)[:, :6]
+            from clusters import topk_desc
+
+            knn = topk_desc(sim, 6)
             for a in range(len(rows)):
                 for b in knn[a]:
                     b = int(b)
@@ -460,6 +506,26 @@ def _build_data() -> dict:
         except Exception:
             hw = []
 
+    # hw arc budget (spec §4 row 10): bezier control polylines are ~400 B
+    # each and scale with long inter-cluster links. Below the cap nothing
+    # changes; above it arcs of the heaviest links survive first (ties by
+    # link index), re-emitted in ascending link order like the uncapped
+    # path.
+    hw_dropped = 0
+    _HW_BYTE_CAP = 1_500_000
+    if len(json.dumps(hw, separators=(",", ":"))) > _HW_BYTE_CAP:
+        order = sorted(range(len(hw)), key=lambda i: (-links[hw[i][0]]["w"], hw[i][0]))
+        budget = _HW_BYTE_CAP
+        kept_hw: list[int] = []
+        for i in order:
+            cost = len(json.dumps(hw[i], separators=(",", ":"))) + 1
+            if cost > budget:
+                continue
+            budget -= cost
+            kept_hw.append(i)
+        hw_dropped = len(hw) - len(kept_hw)
+        hw = [hw[i] for i in sorted(kept_hw)]
+
     # git-churn channel: optional (None when git/history unavailable → DATA.hot
     # absent → renderer leaves sizes untouched, no legend note)
     hot = _churn_hot([nd["path"] for nd in nodes])
@@ -480,6 +546,29 @@ def _build_data() -> dict:
                 "w": sorted(fn.writes),
                 "mp": sorted(fn.mut_params),
             }
+
+    # fio byte budget (spec §4 row 10): per-fn IO signatures carry C++
+    # type strings (200-300 B/row at engine scale). Below the cap nothing
+    # changes; above it entries survive by pagerank of their file (ties by
+    # key), so hover IO stays richest on the files that matter.
+    fio_dropped = 0
+    _FIO_BYTE_CAP = 3_000_000
+    if len(json.dumps(fio, separators=(",", ":"))) > _FIO_BYTE_CAP:
+        if _rank is None:
+            _rank = g.pagerank()
+        budget = _FIO_BYTE_CAP
+        kept_fio: dict = {}
+        for k, v in sorted(fio.items(), key=lambda kv: (
+            -_rank.get(kv[0].split("::", 1)[0], 0.0), kv[0],
+        )):
+            cost = len(json.dumps([k, v], separators=(",", ":"))) + 1
+            if cost > budget:
+                continue
+            budget -= cost
+            kept_fio[k] = v
+        fio_dropped = len(fio) - len(kept_fio)
+        fio = kept_fio
+
 
     # crosstalk corridors: top inter-cluster file pairs by edge count, baked
     # for the overview labels. Deterministic order: count desc, then cid asc.
@@ -536,6 +625,15 @@ def _build_data() -> dict:
         data["hot"] = hot
     if groups2:
         data["groups"] = groups2
+    if wire_dropped or hw_dropped or fio_dropped:
+        # export budget engagement record (spec §4 row 10) — present only
+        # when a cap actually trimmed something, so small-repo DATA stays
+        # byte-identical to the uncapped pipeline
+        data["meta"]["budget"] = {
+            "wireRowsDropped": wire_dropped,
+            "hwArcsDropped": hw_dropped,
+            "fioDropped": fio_dropped,
+        }
     return data
 
 
@@ -645,8 +743,7 @@ def _strata_analysis(n: int, links: list) -> tuple:
 
 
 def _layout(n: int, links: list, sims: list, cluster_ids: list,
-            ckeys: list = None, cmat: list = None,
-            depths: list = None, hot: list = None) -> list:
+              ckeys=None, cmat=None, depths=None, hot=None):
     """Deterministic offline force layout; positions are frozen into DATA.
 
     Mirrors the constants the in-browser sim was QA'd against, plus the
@@ -744,16 +841,84 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
     kcoef = (kcoef * hh[np.ix_(cinv, cinv)]).astype(np.float32)
 
     alpha = 1.0
-    for step in range(700):
+    # scale path runs 300 steps (spec §4 row 6 fallback): the sim is
+    # near-equilibrium by step ~150 and 700 kNN steps would still cost
+    # minutes at 6k nodes; the dense path keeps its QA'd 700 verbatim
+    for step in range(700 if n <= 2048 else 300):
         alpha *= 0.997
-        # pairwise repulsion (dense; N is small)
-        diff = pos[None, :, :] - pos[:, None, :]        # D[i,j] = pos[j]-pos[i]
-        d2 = (diff * diff).sum(-1)
-        d2 += 1.0
-        m = np.minimum(kcoef / (d2 * d2), 400.0 / d2, dtype=np.float32)
-        m[d2 > 2.5e6] = 0.0
-        np.fill_diagonal(m, 0.0)
-        vel -= np.einsum("ij,ijk->ik", m, diff, dtype=np.float32)
+        # pairwise repulsion. Dense N^2 below the scale cut — byte-stable on
+        # every existing corpus (self-index, game-target all sit under it). Above it
+        # (#13 spec §4 row 6): the dense product is ~1.2 GB of temporaries
+        # per step at 6k nodes and turns a bake into hours, so repulsion is
+        # grid-binned and each node feels only its 32 nearest neighbours —
+        # terms beyond the 2.5e6 cutoff were already force-zero, and the cap
+        # only ever engages at engine scale. Same seeded rng, same force law,
+        # deterministic pair selection (stable sorts, no hash iteration).
+        if n <= 2048:
+            diff = pos[None, :, :] - pos[:, None, :]    # D[i,j] = pos[j]-pos[i]
+            d2 = (diff * diff).sum(-1)
+            d2 += 1.0
+            m = np.minimum(kcoef / (d2 * d2), 400.0 / d2, dtype=np.float32)
+            m[d2 > 2.5e6] = 0.0
+            np.fill_diagonal(m, 0.0)
+            vel -= np.einsum("ij,ijk->ik", m, diff, dtype=np.float32)
+        else:
+            off = np.array([[i, j, k] for i in (-1, 0, 1)
+                            for j in (-1, 0, 1) for k in (-1, 0, 1)],
+                           dtype=np.int64)
+            lo = pos.min(0)
+            span = np.maximum(pos.max(0) - lo, 1.0)
+            # cell size targeting ~40 occupants over the 27-cell
+            # neighbourhood: just above the 32-NN cut so the selection
+            # rarely discards candidates
+            cell = max(60.0, min(800.0,
+                        (40.0 * float(span.prod()) / (27.0 * n)) ** (1.0 / 3.0)))
+            gi = ((pos - lo) / cell).astype(np.int64)
+            dims = gi.max(0) + 3
+            d0 = int(dims[0])
+            d1 = int(dims[1])
+            gkey = gi[:, 0] + gi[:, 1] * d0 + gi[:, 2] * (d0 * d1)
+            order = np.argsort(gkey, kind="stable")
+            skey = gkey[order]
+            KC = np.float32(110000.0 / (dbar * dbar))
+            for c0 in range(0, n, 512):
+                chunk = np.arange(c0, min(c0 + 512, n))
+                gx = gi[chunk, 0][:, None] + off[:, 0]
+                gy = gi[chunk, 1][:, None] + off[:, 1]
+                gz = gi[chunk, 2][:, None] + off[:, 2]
+                ok = ((gx >= 0) & (gx < d0) & (gy >= 0) & (gy < int(dims[1]))
+                      & (gz >= 0) & (gz < int(dims[2])))
+                nk = np.where(ok, gx + gy * d0 + gz * (d0 * d1), -1)
+                st = np.searchsorted(skey, nk, "left")
+                en = np.searchsorted(skey, nk, "right")
+                cntm = np.where(ok, en - st, 0)
+                cnt = cntm.sum(1)
+                tot = int(cnt.sum())
+                if not tot:
+                    continue
+                owner = np.repeat(chunk, cnt)
+                starts = np.concatenate(([0], np.cumsum(cntm.ravel())[:-1]))
+                within = np.arange(tot) - np.repeat(starts, cntm.ravel())
+                cand = order[np.repeat(st.ravel(), cntm.ravel()) + within]
+                diff = pos[cand] - pos[owner]
+                pd2 = (diff * diff).sum(1)
+                pd2 += 1.0
+                pd2[cand == owner] = np.float32(1e18)
+                sel = np.lexsort((cand, pd2, owner))
+                owner, cand = owner[sel], cand[sel]
+                diff, pd2 = diff[sel], pd2[sel]
+                grp_start = np.concatenate(([True], owner[1:] != owner[:-1]))
+                gs = np.maximum.accumulate(np.where(grp_start,
+                                    np.arange(tot), 0))
+                keep = (np.arange(tot) - gs) < 32
+                owner, cand, diff, pd2 = owner[keep], cand[keep], diff[keep], pd2[keep]
+                kc = KC * ds[owner] * ds[cand] * hh[cinv[owner], cinv[cand]]
+                m = np.minimum(kc / (pd2 * pd2), np.float32(400.0) / pd2)
+                m[pd2 > 2.5e6] = 0.0
+                f = m[:, None] * diff
+                for ax in range(3):
+                    vel[:, ax] -= np.bincount(owner, weights=f[:, ax], minlength=n)
+                    vel[:, ax] += np.bincount(cand, weights=f[:, ax], minlength=n)
         # structural springs (positive f pulls the pair back together)
         sd = pos[sa] - pos[sb]
         dist = np.linalg.norm(sd, axis=1) + 0.01

@@ -13,6 +13,7 @@ Contract for an extractor module (full details: extractors/README.md):
 
 from __future__ import annotations
 
+from extractors import cpp
 from extractors import gdscript
 from extractors import python
 from extractors.model import FileSym, Func  # noqa: F401  (re-export)
@@ -22,6 +23,11 @@ EXTENSIONS: dict[str, object] = {
     ".gd": gdscript,
     ".tscn": gdscript,
     ".py": python,
+    ".h": cpp,
+    ".hpp": cpp,
+    ".cpp": cpp,
+    ".cc": cpp,
+    ".cxx": cpp,
 }
 
 
