@@ -7,7 +7,11 @@ the primary form; named profiles here are the tuned-override form.
 
 ## Selection (``nav._discover_config``)
 
-1. ``$NEURONAV_CONFIG`` — explicit, always wins (absolute path).
+1. ``$NEURONAV_CONFIG`` — explicit, always wins (absolute path). A set-but-
+   missing path aborts at load (issue #41): an explicit config is a
+   contract, not a hint — silently degrading to walk-all defaults would
+   flip the walk identity and the next rescan would purge the previous
+   profile's entries.
 2. ``<cwd>/.neuronav/config.json`` — project-local config; running any
    command from inside a project just works.
 3. ``config.json`` at the repo ROOT (gitignored, machine-local) — the
@@ -17,12 +21,23 @@ the primary form; named profiles here are the tuned-override form.
    set (``.git``, ``__pycache__``, ``.venv``, ``.neuronav``,
    ``node_modules``). This is the npx shape: no config, no edits.
 
+A rescan that matches ZERO files aborts the same way (issue #41) — a
+config that walks nothing is a typo, not an empty index.
+
 ``nav._apply_config`` runs once at import (and again on
 ``nav.py --config <path>``, which also exports the var so sibling
 modules and subprocesses agree). A relative ``"root"`` resolves against
 the config file's own directory — shipped profiles stay machine-portable
 (``config/neuronav.json`` uses ``"root": ".."`` to index this repo
 itself).
+
+``.neuroignore`` beside the active config (project-local
+``<root>/.neuronav/.neuroignore``, or ``config/.neuroignore`` for a
+shipped profile) extends ``exclude_dirs`` with one directory name per
+line — ``#`` comments and blank lines ignored, matched at any depth
+(issue #36). ``onboard.py init`` scaffolds one pre-seeded with the
+scratch conventions (``.tmp``, ``.team_scratch``); users adjust it
+without touching the config json.
 
 ## Fields (consumed by `nav._apply_config`)
 
@@ -34,6 +49,7 @@ itself).
 | `include_dirs` | `scripts, scenes, VFX, ai, tests, tools` | walked under root |
 | `extensions` | `.gd, .tscn` | suffixes kept (must be registered in `extractors/` to parse) |
 | `exclude_dirs` | `.git, __pycache__` | pruned from the directory walk |
+| `.neuroignore` | (file beside config) | extra exclude dir names, one per line, merged into `exclude_dirs` at load |
 | `watch_interval_s` | `0` (off) | >0: the MCP server polls the stat gate every N seconds and auto-rescans without waiting for a tool call (issue #19) |
 | `embed_url` | `http://127.0.0.1:11434/api/embed` | embedding endpoint (Ollama `/api/embed` or any OpenAI-compatible `/embeddings`) |
 | `embed_model` | `qwen3-embedding:0.6b` | model name sent verbatim; also the vector-space fingerprint on the collection and in base-export manifests |
@@ -105,8 +121,10 @@ Read tools never answer from a stale index silently: each call first runs
 `nav.stat_fingerprint()` — a stat-only (mtime_ns, size) walk mirroring
 `iter_files`' include/exclude rules, TTL-cached for `nav.STAT_TTL_S` (3s)
 so bursts of tool calls do not re-stat the tree — and a drifted worktree
-triggers the sha-gated `nav.rescan()` (unchanged files embed nothing) plus
-the graph/fns sync before the tool answers. Embedding failures never crash
+triggers the incremental `nav.rescan()` (warm passes skip read+hash via
+the stat fingerprint persisted at hash time, issue #42 — the sha stays
+the content identity, so unchanged files embed nothing) plus the
+graph/fns sync before the tool answers. Embedding failures never crash
 the call: one stderr warning, a 60s retry cooldown, and the tool answers
 from the current index. `watch_interval_s` > 0 moves the polling into a
 daemon thread (~2s quiet debounce before each rescan) so indexing happens

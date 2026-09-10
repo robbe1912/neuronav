@@ -9,8 +9,10 @@ its own process:
 
 Exit 0 = all pass. Each suite bootstraps `sys.path` to the repo root and
 uses a local `check(name, cond)` helper (PASS/FAIL lines + failure count).
-CI (`.github/workflows/ci.yml`) runs the four hermetic suites on ubuntu
-with `NEURONAV_EMBED_FAKE=1`; the rest are local gates.
+CI (`.github/workflows/ci.yml`) runs the six hermetic suites on ubuntu
+with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
+`test_pyhard`, `test_cpphard`, `test_autorescan`, `test_project_mode`);
+the rest are local gates.
 
 ## Suites
 
@@ -29,8 +31,8 @@ with `NEURONAV_EMBED_FAKE=1`; the rest are local gates.
 | `test_mwires` | named-wire map exports (`mwires`/`fns`/`meta` contract, map-spec-v2 §0) | chromadb import only (self-sets `NEURONAV_EMBED_FAKE=1`) |
 | `test_recall` | hybrid recall fusion, ctx hops, degraded mode (real+fake modes) | chromadb import; exact-rank pins need a real-embedded store |
 | `test_embedprov` | embed provider contract (issue #17): provider select/auto-detect, ollama+openai wire adapters, env-vs-config key precedence, keyless no-header, 401 loud, 429 retry, batch chunking, no-pad mismatches, fake-mode isolation | stdlib http.server stub on an ephemeral loopback port + chromadb import |
-| `test_project_mode` | onboarding (issue #27): discovery precedence env > project-local > checkout, `onboard.init`/`wire` scaffolds, viz add-on degrade | stdlib + chromadb import (fresh subprocesses, fake embeds) |
-| `test_viz` | 90-check Playwright harness over the real baked page | playwright + chrome + a fresh `graph.html` bake |
+| `test_project_mode` | onboarding (issue #27): discovery precedence env > project-local > checkout, `onboard.init`/`wire` scaffolds incl. `.neuroignore` (issue #36), viz add-on degrade | stdlib + chromadb import (fresh subprocesses, fake embeds) |
+| `test_viz` | 103-check Playwright harness over the real baked page | playwright + chrome + a fresh `graph.html` bake |
 
 `probe_scene_placement.py` is a manual probe script, not a suite.
 
@@ -50,6 +52,9 @@ Suites pick their own config; the shell must not pre-export one:
   system temp dir (separate state dirs for the in-process and e2e-server
   sections) and self-sets `NEURONAV_EMBED_FAKE=1` — never run it against a
   real profile.
+- `test_project_mode` builds throwaway project trees under the system
+  temp dir and drives init/wire/discovery in fresh subprocesses with
+  fake embeds — never touches a real profile.
 - `test_server_stdio` strips `NEURONAV_CONFIG` from the child env so the
   server binds the default profile.
 - `test_embedprov` writes a generated temp config under the system
@@ -82,6 +87,9 @@ Suites pick their own config; the shell must not pre-export one:
 - `fixtures/mwires/*.gd` + `*.tscn` — named-wire map contract fixtures
   (multi-script scenes discriminate signal resolution; unresolved
   connections counted).
+- `fixtures/cpp/*.h` + `*.cpp` — C++ extractor fixtures: macro/
+  registration surface, `.h`/`.cpp` pairing, dead tiers, and the
+  mention-rescue pair (`mention_rescue.cpp` + its caller).
 - Suites copy nothing into the real index; generated configs go to the
   system temp dir.
 

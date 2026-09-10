@@ -51,8 +51,9 @@ Operational notes:
 
 `python tools/serve.py [--port 8791] [--config CONFIG]` - binds 127.0.0.1
 exclusively (issue #40): SO_EXCLUSIVEADDRUSE on Windows, plain EADDRINUSE
-elsewhere — a taken port aborts startup (exit 1) with a
-`Get-NetTCPConnection -LocalPort <p>` hint instead of silently
+elsewhere — a taken port aborts startup (exit 1) with a per-OS
+port-owner hint (issue #51): `Get-NetTCPConnection -LocalPort <p>` on
+Windows, `lsof -i :<p>` (or `ss -ltnp`) elsewhere, instead of silently
 double-binding and shadowing the first listener. Serves the ACTIVE
 config's state dir (where the `graph.html` bake lives); `--config` is the
 NEURONAV_CONFIG equivalent, set per-process only. Every response carries
