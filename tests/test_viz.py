@@ -1257,6 +1257,79 @@ def run_tests():
               page.evaluate("() => window.__dbg.focusFileIdx") < 0
               and page.evaluate("() => window.__dbg.fnMesh") is None,
               "focus/fn layer after Escape")
+
+        # 4t. scene-hub focus ink (issue #39): a .tscn hub whose links are
+        # all inst-type draws zero budget ink at the boot toggles — every
+        # wire it has is showInst-gated off. Entering focus must seed the
+        # tier (transition only); Escape returns BOTH the focus and the
+        # boot default.
+        hub39 = page.evaluate(
+            """() => { const d = window.__dbg;
+                 let best = null;
+                 for (let i = 0; i < d.nodes.length; i++) {
+                   if (!/\\.tscn$/i.test(d.nodes[i].path || "")) continue;
+                   let tot = 0, inst = 0;
+                   for (const l of d.links) {
+                     if (l.s !== i && l.t !== i) continue;
+                     tot++;
+                     if (l.ty === "inst" || l.ty === "attach") inst++;
+                   }
+                   if (tot > 3 && inst * 2 > tot && (!best || tot > best.tot))
+                     best = { i, tot, inst, path: d.nodes[i].path };
+                 }
+                 return best; }"""
+        )
+        if not hub39:
+            print("SKIP scene-hub focus ink — no inst-dominant .tscn hub in this index")
+        else:
+            stem39 = hub39["path"].split("/")[-1].rsplit(".", 1)[0].lower()
+            page.fill("#search", stem39)
+            page.dispatch_event("#search", "input")
+            page.wait_for_timeout(700)
+            page.evaluate(
+                """(p) => { const rows = [...document.querySelectorAll('#searchResults .row')];
+                     const r = rows.find(x => x.getAttribute('title') === p) || rows[0];
+                     r.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); }""",
+                hub39["path"])
+            page.wait_for_timeout(1500)
+            st39 = page.evaluate(
+                """() => { const d = window.__dbg;
+                     return { fi: d.focusFileIdx, inst: d.showInst,
+                              btn: document.getElementById('bInst').classList.contains('on'),
+                              budgetN: d.budgetLit ? d.budgetLit.size : null,
+                              arcs: d.rfwProbe.fa }; }"""
+            )
+            check("scene-hub focus seeds the inst tier (transition only)",
+                  st39["fi"] >= 0 and st39["inst"] and st39["btn"], str(st39))
+            check("scene-hub focus draws budget ink",
+                  st39["budgetN"] and st39["budgetN"] > 0 and st39["arcs"], str(st39))
+            # the user's own toggle during focus is final for this focus
+            # (no re-force): flip the tier off mid-focus, then re-run
+            # applyVisibility via a depth change — it must NOT re-seed.
+            page.click("#bInst")
+            page.wait_for_timeout(400)
+            page.evaluate(
+                """() => { const el = document.getElementById('depth');
+                     el.value = 2; el.dispatchEvent(new Event('input')); }""")
+            page.wait_for_timeout(600)
+            noRefight = page.evaluate(
+                "() => ({ inst: window.__dbg.showInst, fi: window.__dbg.focusFileIdx })")
+            check("user toggle wins mid-focus (no re-force)",
+                  not noRefight["inst"] and noRefight["fi"] >= 0, str(noRefight))
+            page.evaluate(
+                """() => { const el = document.getElementById('depth');
+                     el.value = 1; el.dispatchEvent(new Event('input')); }""")
+            page.wait_for_timeout(400)
+            page.keyboard.press("Escape")
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(900)
+            st39b = page.evaluate(
+                """() => ({ fi: window.__dbg.focusFileIdx,
+                     inst: window.__dbg.showInst,
+                     btn: document.getElementById('bInst').classList.contains('on') })"""
+            )
+            check("Escape restores overview + boot showInst=false",
+                  st39b["fi"] < 0 and not st39b["inst"] and not st39b["btn"], str(st39b))
         # The dead-only cycle below zeroes alphaTgt for a moment; alphaArr
         # eases back slowly, so wait until every node that SHOULD be visible
         # has finished easing — otherwise matrices measure as scale-0 (flaky).
