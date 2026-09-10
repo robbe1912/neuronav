@@ -78,7 +78,7 @@ def _apply_config(path: Path | None) -> None:
     _walk_all = path is None or (path.parent.name == ".neuronav")
     INCLUDE_DIRS = tuple(cfg.get("include_dirs", (".",) if _walk_all else ("scripts", "scenes", "VFX", "ai", "tests", "tools")))
     EXTS = set(cfg.get("extensions", sorted(_REGISTERED) if _walk_all else (".gd", ".tscn")))
-    EXCLUDE_DIRS = frozenset(cfg.get("exclude_dirs", (".git", "__pycache__", ".venv", ".neuronav", "node_modules") if _walk_all else (".git", "__pycache__")))
+    EXCLUDE_DIRS = frozenset(cfg.get("exclude_dirs", (".git", "__pycache__", ".venv", ".neuronav", "node_modules", ".tmp") if _walk_all else (".git", "__pycache__")))
     EMBED_URL = str(cfg.get("embed_url", "http://127.0.0.1:11434/api/embed"))
     EMBED_MODEL = str(cfg.get("embed_model", "qwen3-embedding:0.6b"))
     EMBED_DIM = int(cfg.get("embed_dim", 1024))

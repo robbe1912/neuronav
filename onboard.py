@@ -47,7 +47,7 @@ def init(project: Path | None = None, index: bool = False) -> Path:
         "collection": "main",
         "include_dirs": ["."],
         "extensions": sorted(EXTENSIONS),
-        "exclude_dirs": [".git", "__pycache__", ".venv", ".neuronav", "node_modules"],
+        "exclude_dirs": [".git", "__pycache__", ".venv", ".neuronav", "node_modules", ".tmp"],
     }
     cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8", newline="\n")
     gi = proj / ".gitignore"

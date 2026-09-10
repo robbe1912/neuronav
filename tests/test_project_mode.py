@@ -44,6 +44,9 @@ def make_project(tmp: Path) -> Path:
     proj = tmp / "proj"
     (proj / "src").mkdir(parents=True)
     (proj / "src" / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+    # scratch convention (repo-root .tmp): must never enter the index
+    (proj / ".tmp").mkdir()
+    (proj / ".tmp" / "scratch.py").write_text("def leaked():\n    return 2\n", encoding="utf-8")
     (proj / ".gitignore").write_text("build/\n", encoding="utf-8")
     return proj
 
@@ -61,6 +64,8 @@ def main() -> None:
         check("no-config: root is cwd", lines[0] == str(proj), lines[0])
         check("no-config: extensions = registered suffixes", lines[1] == json.dumps(sorted(EXTENSIONS)), lines[1])
         check("no-config: walks everything, state under project", lines[2] == "('.',)" and lines[3] == str(proj / ".neuronav"))
+        out2 = run_nav(proj, "import nav; print([str(p) for p in nav.iter_files() if '.tmp' in str(p)])")
+        check("no-config: .tmp scratch pruned from walk (default exclude)", out2.strip() == "[]", out2)
 
         check("no-config: extensions = registered suffixes", lines[1] == str(sorted(EXTENSIONS)), lines[1])
         r = subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "init"], cwd=proj,
@@ -69,6 +74,8 @@ def main() -> None:
         cfg_path = proj / ".neuronav" / "config.json"
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         check("init: project-local config with walk defaults", cfg["root"] == str(proj) and cfg["include_dirs"] == ["."])
+        out3 = run_nav(proj, "import nav; print([str(p) for p in nav.iter_files() if '.tmp' in str(p)])")
+        check("init: scaffolded config also prunes .tmp", out3.strip() == "[]", out3)
         gi = (proj / ".gitignore").read_text(encoding="utf-8")
         check("init: gitignore gains exactly one .neuronav/ line", gi.count(".neuronav/") == 1, repr(gi))
         subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "init"], cwd=proj,
