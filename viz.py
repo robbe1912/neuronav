@@ -3859,7 +3859,17 @@ function juncArrowObstacles(w, h) {
     if (!mesh) continue;
     const am = mesh.instanceMatrix.array;
     for (let i = 0; i < am.length / 16; i++) {
-      _obstV.set(am[i*16+12], am[i*16+13], am[i*16+14]).project(camera);
+      // issue #6: a RIDING mark paints mid-leg, but its delivery
+      // reservation is the box site -- hidden arrows always parked
+      // there, so pinning riders to fnArrowBox keeps the obstacle
+      // set (and therefore label placement) identical to the
+      // box-site law. Direct chevron-label hits stay measured
+      // against the painted anchor by the census (chevInLabel).
+      if (mesh === fnArrows && fnArrowBox && _arrowShown.length === am.length / 16
+          && _arrowShown[i] && _arrowOccl[i]
+          && _arrowRide[i] >= 0 && _arrowRide[i] < 1)
+        _obstV.set(fnArrowBox[i*3], fnArrowBox[i*3+1], fnArrowBox[i*3+2]).project(camera);
+      else _obstV.set(am[i*16+12], am[i*16+13], am[i*16+14]).project(camera);
       if (_obstV.z <= 1 && Math.abs(_obstV.x) <= 1.05 && Math.abs(_obstV.y) <= 1.05)
         pts.push([(_obstV.x*0.5+0.5)*w, (-_obstV.y*0.5+0.5)*h]);
     }
@@ -4040,7 +4050,10 @@ const _chevPick = new Map();           // fi -> carried arrow (low-lod consolida
 // buried behind the compact ball). The file then carries ONE mark which rides
 // its delivery leg; zoomed-in fans (>= CHEV_FAN_PX) are untouched.
 const CHEV_FAN_PX = 16;
-const RIDE_TS = [0.8, 0.6, 0.4, 0.2, 0.05];
+// near-box steps first: the label solver reserves the <=14px band
+// around each box for its delivery mark, so a rider must sit as
+// close to its box as visibility allows (t=1 is the box end)
+const RIDE_TS = [0.95, 0.9, 0.85, 0.8, 0.6, 0.4, 0.2, 0.05];
 // delivery-leg bezier (emitArc curve: mid + liftFrac*dist in +Y, B = box).
 // legPt/legTan reproduce the painted arc from the captured leg params.
 function legPt(i, t, out) {
@@ -4218,9 +4231,10 @@ function aimArrows() {
     // screen-hug clamp: at grazing angles a 3.5wu world offset projects
     // 30-60px from the box (skeptic aFar >25px bar) -- pull the anchor
     // toward the box until it sits <=14px from it ON SCREEN. Riding
-    // anchors (ride < 1) sit mid-leg ON the wire -- the hug would drag
-    // them back into the occluded pile, so it only applies to box anchors.
-    if (ride < 1 && fnArrowBox) {
+    // anchors (ride >= 0) sit mid-leg ON the wire -- the hug would
+    // drag them back into the occluded pile, so it only applies to
+    // box anchors (ride < 0).
+    if (ride < 0 && fnArrowBox) {
       const q = _obstV.set(fnArrowBox[i*3], fnArrowBox[i*3+1], fnArrowBox[i*3+2]).project(camera);
       const qx = (q.x*0.5+0.5)*w, qy = (-q.y*0.5+0.5)*h;
       for (let t = 1; t > 0.02; t -= 0.08) {
@@ -4409,6 +4423,11 @@ function rebuildFnLayer(focusing) {
   if (fnBus) { scene.remove(fnBus); fnBus.geometry.dispose(); fnBus = null; busPts = null; fnBusRi = null; busPtsMeta = null; trunkMetaMap = null; juncPickInfo = null; }
     if (fnJDot) { scene.remove(fnJDot); fnJDot.geometry.dispose(); fnJDot = null; fnJDotPos = null; fnJDotR = null; }
   if (fnArrows) { scene.remove(fnArrows); fnArrows.geometry.dispose(); fnArrows = null; fnArrowPos = null; fnArrowR = null; fnArrowTang = null; fnArrowBox = null; arrowFile = null; }
+  // issue #6: halo + delivery legs are rebuilt with the bus -- tear them
+  // down with the arrows or ghost discs persist past Escape (#58 family)
+  // and a stale leg array could alias a same-count rebuild
+  if (fnArrowHalo) { scene.remove(fnArrowHalo); fnArrowHalo.geometry.dispose(); fnArrowHalo.material.dispose(); fnArrowHalo = null; }
+  fnArrowLeg = null;
   if (fnStalks) { scene.remove(fnStalks); fnStalks.geometry.dispose(); fnStalks = null; }
   fnMeta = [];
   if (!fnMode || !focusing) return;
