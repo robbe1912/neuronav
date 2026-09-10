@@ -2,7 +2,9 @@
 
 Local code-intelligence tool: vector recall (chroma + Ollama), call/signal
 graph, clusters, dead-code tiers, 3D visualizer, stdio MCP server. Python 3.11,
-stdlib-first; chromadb/httpx are the only heavy deps. Standalone repo — point it
+stdlib-first; chromadb/httpx are the only heavy deps — plus the pinned C++
+front-end pair tree-sitter==0.26.0 / tree-sitter-cpp==0.23.4 (issue #13).
+Standalone repo — point it
 at any project via config; nothing is vendored into target projects.
 
 Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`,

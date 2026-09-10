@@ -29,6 +29,9 @@ from extractors.model import FileSym, Func  # noqa: F401  (re-export)
 # language fact needed by the dead-code tier heuristic (native dispatch names)
 from extractors.gdscript import VIRTUALS, GUT_ROOTS, ADDON_VIRTUALS, MANUAL_BASES, parse_gd, parse_tscn
 from extractors.python import PY_HOOKS  # stdlib dispatch hooks (dead-scan tier)
+# C++ front-end facts (issue #13): pairing + registration wiring, the
+# dynamic-dispatch marker for the dead tier, and the repo-wide GDVIRTUAL set
+from extractors.cpp import CPP_DYNAMIC_RE, CPP_EXTS, harvest_registration
 
 # ---- constants ---------------------------------------------------------------
 # Language-owned constants and entry-point rules (VIRTUALS, GUT_ROOTS,
@@ -315,7 +318,7 @@ class Graph:
         # (BT exports) join the same referenced-name pool
         self._dyn_files: set[str] = set()
         for rel, fs in self.files.items():
-            if fs.ext != ".gd":
+            if fs.ext != ".gd" and fs.ext not in CPP_EXTS:
                 continue
             for nm in fs.name_literals:
                 if len(nm) > 3:
@@ -326,7 +329,7 @@ class Graph:
             if not fs.funcs:
                 continue
             joined = "\n".join(f.body for f in fs.funcs.values())
-            if DYNAMIC_HINT_RE.search(joined):
+            if fs.ext == ".gd" and DYNAMIC_HINT_RE.search(joined):
                 self._dyn_files.add(rel)
 
         # python import liveness: a PLAIN `import x` binds the namespace -
@@ -353,6 +356,13 @@ class Graph:
                     self._scan_body_py(fs, fn)
 
         self._wire_tscn()
+        # C++ wiring (issue #13): .cpp files inherit their class identity
+        # from the paired header, then registration macros become edges and
+        # the repo-wide GDVIRTUAL override set. Must precede _find_roots —
+        # the gdvirtual entry rule consumes ctx.cpp_gdvirtuals.
+        self.cpp_gdvirtuals: set[str] = set()
+        self._pair_cpp()
+        self._wire_cpp()
         self._find_roots()
         self._reachable()
         return self
@@ -696,6 +706,96 @@ class Graph:
             return ""
         return res_path.removeprefix("res://")
 
+    def _resolve_include(self, src_rel: str, inc: str) -> str:
+        """Repo-relative path for a quoted include of src_rel, or ''."""
+        if inc in self.files:
+            return inc
+        parent = src_rel.rsplit("/", 1)[0] if "/" in src_rel else ""
+        cand = f"{parent}/{inc}" if parent else inc
+        return cand if cand in self.files else ""
+
+    def _pair_cpp(self) -> None:
+        """Give each .cpp its header's class identity (spec §2 pairing).
+
+        Convention: a .cpp's first quoted include is its own header
+        (path-ordered includes in engine code). The header stays the
+        canonical class_map owner; the .cpp only fills in if unclaimed.
+        """
+        for rel in sorted(self.files):
+            fs = self.files[rel]
+            if fs.ext != ".cpp" or fs.class_name:
+                continue
+            own_stem = rel.rsplit("/", 1)[-1].split(".")[0]
+            pair = ""
+            for inc in sorted(fs.imported_modules):
+                resolved = self._resolve_include(rel, inc)
+                if not resolved or self.files[resolved].ext not in (".h", ".hpp"):
+                    continue
+                if resolved.rsplit("/", 1)[-1].split(".")[0] == own_stem:
+                    pair = resolved
+                    break  # exact-stem match wins outright
+                pair = pair or resolved
+            if pair and self.files[pair].class_name:
+                fs.class_name = self.files[pair].class_name
+                self.class_map.setdefault(fs.class_name, pair)
+
+    def _wire_cpp(self) -> None:
+        """Registration macros -> call edges + repo-wide GDVIRTUAL set.
+
+        Binds/props live inside a containing function (usually
+        _bind_methods): the owner is resolved by line order, mirroring how
+        the engine runs registration at class-initialization time. Edge
+        targets resolve file-locally first, then via class_map to the
+        class's defining file. Roots come from ENTRY_RULES; these edges
+        carry the call-graph wire (clusters/ PagerRank treat ty="call").
+        """
+        for rel in sorted(self.files):
+            fs = self.files[rel]
+            if fs.ext not in CPP_EXTS:
+                continue
+            try:
+                text = nav._read_text(nav.ROOT / rel)
+            except OSError:
+                continue
+            reg = harvest_registration(text)
+            self.cpp_gdvirtuals.update(v.name for v in reg["gdvirtuals"])
+            if not fs.funcs or (not reg["binds"] and not reg["props"]):
+                continue
+            order = sorted(fs.funcs.values(), key=lambda f: f.line)
+
+            def container(lineno: int) -> str:
+                owner = ""
+                for f in order:
+                    if f.line <= lineno:
+                        owner = f.key
+                    else:
+                        break
+                return owner
+
+            def target(cls: str, name: str) -> str:
+                if name in fs.funcs:
+                    return f"{rel}::{name}"
+                class_file = self.class_map.get(cls, "")
+                if class_file and name in self.files[class_file].funcs:
+                    return f"{class_file}::{name}"
+                return ""
+
+            for b in reg["binds"]:
+                dst = target(b.cls, b.method)
+                src = container(b.line)
+                if dst and src:
+                    self._edge(src, dst, ty="call")
+            for p in reg["props"]:
+                src = container(p.line)
+                if not src:
+                    continue
+                for name in (p.setter, p.getter):
+                    if not name:
+                        continue
+                    dst = target(fs.class_name, name)
+                    if dst:
+                        self._edge(src, dst, ty="call")
+
     def _parse_autoloads(self) -> dict[str, str]:
         """project.godot [autoload] section: singleton name -> rel path."""
         out: dict[str, str] = {}
@@ -732,7 +832,7 @@ class Graph:
         # alive but have no static edge — root them so their callees survive
         if self.referenced_names:
             for rel, fs in self.files.items():
-                if fs.ext not in (".gd", ".py"):
+                if fs.ext not in (".gd", ".py") and fs.ext not in CPP_EXTS:
                     continue
                 for name, fn in fs.funcs.items():
                     if name in self.referenced_names:
@@ -754,9 +854,11 @@ class Graph:
     def dead_code(self, limit: int = 60) -> dict[str, object]:
         dead = []
         for rel, fs in self.files.items():
-            if fs.ext not in (".gd", ".py"):
+            if fs.ext not in (".gd", ".py") and fs.ext not in CPP_EXTS:
                 continue
-            file_is_dynamic = bool(DYNAMIC_HINT_RE.search("\n".join(fs.funcs[f].body for f in fs.funcs))) if fs.funcs else False
+            joined = "\n".join(fs.funcs[f].body for f in fs.funcs) if fs.funcs else ""
+            dyn_re = CPP_DYNAMIC_RE if fs.ext in CPP_EXTS else DYNAMIC_HINT_RE
+            file_is_dynamic = bool(dyn_re.search(joined))
             for name, fn in fs.funcs.items():
                 if fn.key in self.reachable:
                     continue
