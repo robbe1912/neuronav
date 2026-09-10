@@ -2743,16 +2743,22 @@ function busLodInit() {
     if (fnMesh) fnMesh.visible = false;
     if (fnStalks) fnStalks.visible = false;
     if (fnLines) fnLines.visible = false;
+    // spheres and wires lerp under the chevrons: occluder geometry moves
+    _arrowOcclDirty = true;
     if (u >= 1) { compactAnim = null; applyVisibility(); }
   }
   // node alpha eases toward its target so filter/focus changes fade in
-  // (visibility decisions read alphaTgt, so the fade is purely visual)
+  // (visibility decisions read alphaTgt, so the fade is purely visual);
+  // while any value still eases the sphere scales change geometry, which
+  // the chevron occlusion cache must see
   for (let i = 0; i < N; i++) {
     const d = alphaTgt[i] - alphaArr[i];
-    alphaArr[i] = Math.abs(d) < 0.003 ? alphaTgt[i] : alphaArr[i] + d * 0.15;
+    if (Math.abs(d) >= 0.003) { alphaArr[i] = alphaArr[i] + d * 0.15; _arrowOcclDirty = true; }
+    else alphaArr[i] = alphaTgt[i];
     const hsT = i === hovered ? 1.8 : 1;
     const dh = hsT - hoverScale[i];
-    hoverScale[i] = Math.abs(dh) < 0.004 ? hsT : hoverScale[i] + dh * 0.18;
+    if (Math.abs(dh) >= 0.004) { hoverScale[i] = hoverScale[i] + dh * 0.18; _arrowOcclDirty = true; }
+    else hoverScale[i] = hsT;
   }
   syncFileMesh();
   // idle spin pauses while the pointer is down over the canvas or a fn box
@@ -3372,6 +3378,8 @@ function rebuildFocusWires() {
   focusArcs.lines.visible = true;
 }
 function applyVisibility() {
+  // visibility flips change which occluder geometry exists (scale-0 gate)
+  _arrowOcclDirty = true;
   const focusing = computeLevels();
   focusActive = focusing;   // hover greyout defers to focus mode
   edgeFlowOn = focusing;   // tick's dash-flow pass reads this
@@ -3381,7 +3389,7 @@ function applyVisibility() {
   updateEdgeLegend(focusing);
   // fn layer only makes sense inside a focus — say so instead of ignoring clicks
   cbFnEl.disabled = !focusing;
-  cbFnEl.parentElement.title = focusing ? "" : "function layer needs a focus (search or click a node)";
+  cbFnEl.parentElement.title = focusing ? "" : "function layer needs a focus (click a node)";
   for (let i = 0; i < N; i++) {
     let a;
     if (!nodeVisible(nodes[i])) a = 0.0;   // size-0 gate = true disable
@@ -3973,6 +3981,8 @@ let fnJDot = null;  // reroute junction bollards (InstancedMesh spheres)
 // data) are deterministic per view, so R10 determinism holds.
 let _arrowOccl = new Float32Array(0);   // 1 = delivery chevron occluded
 let _arrowOcclCam = null;              // camera pos of the last occlusion pass
+let _arrowOcclDirty = true;            // occluder geometry moved since last pass
+let _arrowOcclPasses = 0;              // probe: occlusion passes since boot
 function aimArrows() {
   if (!fnArrows || !fnArrowPos || !fnArrowTang || !fnArrowR) return;
   const hpx = renderer.domElement.clientHeight || 900;
@@ -3989,14 +3999,24 @@ function aimArrows() {
     _arrowOccl = new Float32Array(fnArrowR.length);
     _arrowOcclCam = null;
   }
-  // recompute EVERY frame: the settle-moment state must be a pure function
-  // of the final camera pose (determinism — chevShown differed 16 vs 5 across
-  // reloads when the last pass ran mid-damping). Cost ~1ms for 45 rays.
-  if (true) {
+  // Camera-ε + dirty gate (issue #33 perf round): the pass is a pure
+  // function of (camera pose, occluder geometry), so it only needs to
+  // re-run when one of those moved. Damping frames keep re-running while
+  // the pose drifts; the last pass lands within ε (1e-4 wu ≈ 1e-5 px) of
+  // the settled pose, so the settle-moment state stays a pure function
+  // of the final view — the determinism the old recompute-every-frame
+  // guaranteed, without its 0.4ms/ray cost at rest. Geometry moves
+  // without the camera (compactAnim lerp, alpha/hover eases, visibility
+  // flips) set _arrowOcclDirty from their sites.
+  if (_arrowOcclDirty || !_arrowOcclCam ||
+      _arrowOcclCam.distanceToSquared(camera.position) > 1e-8) {
+    _arrowOcclPasses++;
     _arrowOccl.fill(0);
     const rc = new THREE.Raycaster();
     rc.far = Infinity;
     const dir = new THREE.Vector3(), org = new THREE.Vector3();
+    const occ = (fileMesh.visible ? [fileMesh, fnMesh, fnBus] : [fnMesh, fnBus])
+                .filter(Boolean);
     for (let i = 0; i < fnArrowR.length; i++) {
       org.copy(camera.position);
       dir.set(fnArrowPos[i*3], fnArrowPos[i*3+1], fnArrowPos[i*3+2]).sub(org);
@@ -4004,8 +4024,7 @@ function aimArrows() {
       dir.divideScalar(L);
       rc.set(org, dir);
       rc.far = L - 1;   // anything solid closer than the chevron blocks it
-      const occ = fileMesh.visible ? [fileMesh, fnMesh, fnBus] : [fnMesh, fnBus];
-      const hits = rc.intersectObjects(occ.filter(Boolean), false);
+      const hits = rc.intersectObjects(occ, false);
       // the delivery chevron rides 3.5wu off its TARGET box center — when
       // the wire arrives from the far side, the box's near face legitimately
       // sits between camera and chevron. That is the DELIVERY, not an
@@ -4018,7 +4037,9 @@ function aimArrows() {
       }
       if (blocked) _arrowOccl[i] = 1;
     }
-    _arrowOcclCam = camera.position.clone();
+    if (!_arrowOcclCam) _arrowOcclCam = new THREE.Vector3();
+    _arrowOcclCam.copy(camera.position);
+    _arrowOcclDirty = false;
   }
   const w = renderer.domElement.clientWidth || 1600, h = hpx;
   for (let i = 0; i < fnArrowR.length; i++) {
@@ -8110,6 +8131,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get degFloorArr() { return degFloor; },  // zoomed-out min diameter px per fi (probe hook)
   get hlArr() { return hlArr; },  // search-highlight flags per fi (probe hook)
   get hlFnArr() { return [...hlFn]; },  // fn names matching the live query
+  get arrowOcclPasses() { return _arrowOcclPasses; },  // chevron occlusion passes since boot
   get chainGates() { return [...chainGate.entries()]; },  // per-chain first failing gate (sighting #10)
   get taperDbg() {   // EXPLAINED EXIT probe: per-leg gate state this frame
     const out = [];
