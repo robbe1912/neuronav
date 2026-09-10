@@ -1110,54 +1110,100 @@ def _all_filesyms() -> dict[str, FileSym]:
 
 
 def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
-    """Re-embed functions of changed files, purge deleted files' functions.
-    Self-healing: an interrupted sync (embed failure, process kill) leaves a
-    dirty marker; the next call with no changes does a full rebuild so the
-    index never stays silently stale."""
+    """Re-embed functions of changed files, purge deleted files' functions,
+    skipping unchanged ones via a per-entry content-hash cache (Cursor
+    pattern): each stored fn keeps the sha256 of its embedded doc, so a
+    rescan re-embeds only fns whose doc changed, refreshes metadata on
+    line moves while reusing the stored vector, and purges fns that
+    vanished from the file. At engine scale (~35k fns) the cold embed is
+    ~2.3 h; the cache turns repeat rescans into minutes. Pre-cache
+    collections migrate lazily: entries without a stored sha re-embed
+    once. The dirty-marker self-heal still forces a full pass, but every
+    cached skip verifies against the fresh parse, so dirty rebuilds stay
+    correct and cheap. Purges resolve ids via where-get then
+    delete(ids=...): chroma's delete(where=...) was observed to no-op
+    silently under client churn while get(where=...) and delete(ids=...)
+    stay reliable."""
     col = _fn_collection()
     dirty = nav.DB_DIR / "fns.dirty"
     if dirty.is_file() and not changed:
         changed = sorted(rel for rel, fs in _all_filesyms().items() if fs.funcs)
-    stale = sorted(set(changed) | set(deleted))
-    if stale and col.count():
-        for p in stale:
-            col.delete(where={"path": p})
     if col.count() == 0 and not changed:
         # first build: index every parsed function (any text language)
         changed = sorted(
             rel for rel, fs in _all_filesyms().items() if fs.funcs
         )
+    populated = col.count() > 0
+    purged_paths = 0
+    purged_fns = 0
+
+    def _purge_path(rel: str) -> None:
+        nonlocal purged_paths, purged_fns
+        got = col.get(where={"path": rel}, include=[])
+        if got["ids"]:
+            col.delete(ids=got["ids"])
+            purged_paths += 1
+            purged_fns += len(got["ids"])
+
+    if populated and deleted:
+        for p in sorted(set(deleted)):
+            _purge_path(p)
     parser = Graph()
     ids: list[str] = []
     docs: list[str] = []
     metas: list[dict[str, object]] = []
+    moved: list[tuple[str, str, dict[str, object]]] = []
+    cached = 0
     for rel in changed:
         path = nav.ROOT / rel
         suffix = path.suffix
-        # scenes have no funcs; only languages with an extractor are parseable
+        # scenes have no funcs; only languages with an extractor are
+        # parseable — a file that left parseable space is purged, not kept
         if not path.is_file() or suffix not in nav.EXTS or suffix == ".tscn":
+            if populated:
+                _purge_path(rel)
             continue
         if suffix == ".gd":
             fs = parser._parse_gd(path, rel)
         else:
-            from extractors import registry_for
-
             fs = registry_for(suffix).parse(path, rel)
+        current: set[str] = set()
+        existing: dict[str, dict[str, object]] = {}
+        if populated:
+            got = col.get(where={"path": rel}, include=["metadatas"])
+            existing = {
+                rid: meta or {}
+                for rid, meta in zip(got["ids"], got["metadatas"])
+            }
         for name, fn in fs.funcs.items():
-            ids.append(f"{rel}::{name}")
+            rid = f"{rel}::{name}"
+            current.add(rid)
             # signature line up front: better embeddings + agents see the IO
             # surface without opening the file
             sig = ", ".join(
                 f"{p}: {t}" if t else p for p, t in fn.params
             )
             ret = f" -> {fn.ret}" if fn.ret else ""
-            docs.append(
-                f"{rel} :: func {name}({sig}){ret}\n{fn.body[:6000]}"
-            )
-            metas.append(
-                {"path": rel, "name": name, "class_name": fs.class_name,
-                 "line": fn.line}
-            )
+            doc = f"{rel} :: func {name}({sig}){ret}\n{fn.body[:6000]}"
+            sha = hashlib.sha256(doc.encode("utf-8")).hexdigest()
+            meta: dict[str, object] = {
+                "path": rel, "name": name, "class_name": fs.class_name,
+                "line": fn.line, "sha": sha,
+            }
+            old = existing.get(rid)
+            if old is not None and old.get("sha") == sha:
+                if old.get("line") == fn.line:
+                    cached += 1
+                    continue
+                moved.append((rid, doc, meta))  # line move: reuse vector
+                continue
+            ids.append(rid)
+            docs.append(doc)
+            metas.append(meta)
+        gone = sorted(set(existing) - current)
+        if gone:
+            col.delete(ids=gone)
+            purged_fns += len(gone)
     try:
         with nav._db_lock():
             added = 0
@@ -1170,11 +1216,24 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
                     metadatas=metas[i : i + nav.EMBED_BATCH],
                 )
                 added += len(vecs)
+            for rid, doc, meta in moved:
+                got = col.get(ids=[rid], include=["embeddings"])
+                if rid not in got["ids"]:
+                    raise RuntimeError(f"fn vector vanished for {rid}")
+                vec = [float(x) for x in got["embeddings"][0]]
+                col.upsert(ids=[rid], embeddings=[vec], documents=[doc],
+                           metadatas=[meta])
+                added += 1
     except Exception:
         dirty.write_text("sync failed", encoding="utf-8")
         raise
     dirty.unlink(missing_ok=True)
-    return {"fns_upserted": added, "purged_paths": len(stale)}
+    return {
+        "fns_upserted": added,
+        "fns_cached": cached,
+        "purged_paths": purged_paths,
+        "purged_fns": purged_fns,
+    }
 
 
 def find_functions(query: str, n: int = 6) -> list[dict[str, object]]:

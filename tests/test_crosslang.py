@@ -25,7 +25,98 @@ g = graph.get_graph(rebuild=True)
 # already-populated exercise the same parse+embed+upsert path)
 _all = sorted(rel for rel, fs in graph._all_filesyms().items() if fs.funcs)
 sync = graph.sync_functions(_all, [])
-check("py fns synced", sync["fns_upserted"] >= 80, str(sync))
+# warm-store proof: with the content-hash cache, re-syncing unchanged
+# fns embeds nothing (cached counts them) — cold and warm runs both
+# cover every fn
+check("py fns synced", sync["fns_upserted"] + sync["fns_cached"] >= 80, str(sync))
+
+# 0b. re-sync of the unchanged corpus must be embed-free
+resync = graph.sync_functions(_all, [])
+check("py fns re-sync all cached",
+      resync["fns_upserted"] == 0
+      and resync["fns_cached"] == sync["fns_upserted"] + sync["fns_cached"],
+      f"{sync} -> {resync}")
+
+# 0c. per-fn cache edges (.team_scratch is excluded from the file walk,
+# so the scratch file never enters any suite's corpus)
+import nav  # noqa: E402
+
+def _fn_cache_edges() -> None:
+    # nested helpers stay invisible to the self-index dead-scan (its
+    # zero-likely-dead pin covers this file's corpus too)
+    scratch_rel = ".team_scratch/xlang_fn_cache.py"
+    scratch = Path.cwd() / scratch_rel
+
+    def _write(body: str) -> None:
+        scratch.parent.mkdir(exist_ok=True)
+        scratch.write_text(body, encoding="utf-8")
+
+    try:
+        _write("def cache_alpha(x):\n"
+               "    return x + 1\n"
+               "\n"
+               "\n"
+               "def cache_beta(y):\n"
+               "    return y * 2\n")
+        r1 = graph.sync_functions([scratch_rel], [])
+        check("cache cold scratch embeds both",
+              r1["fns_upserted"] == 2 and r1["fns_cached"] == 0, str(r1))
+        _write("# header shifts alpha's line; beta's body changes; gamma is new\n"
+               "\n"
+               "def cache_alpha(x):\n"
+               "    return x + 1\n"
+               "\n"
+               "\n"
+               "def cache_beta(y):\n"
+               "    return y * 3\n"
+               "\n"
+               "\n"
+               "def cache_gamma(z):\n"
+               "    return z - 1\n")
+        r2 = graph.sync_functions([scratch_rel], [])
+        check("cache re-sync handles moved+changed+new",
+              r2["fns_upserted"] == 3 and r2["fns_cached"] == 0, str(r2))
+        r3 = graph.sync_functions([scratch_rel], [])
+        check("cache warm scratch all cached",
+              r3["fns_upserted"] == 0 and r3["fns_cached"] == 3, str(r3))
+        # pure line shift must not call the embedder at all (vector reuse)
+        real_embed = nav.embed
+
+        def _boom(texts):
+            raise AssertionError(
+                "embedder called during pure line-move sync")
+
+        nav.embed = _boom
+        try:
+            _write("# one more shift line\n"
+                   "# header shifts alpha's line; beta's body changes; gamma is new\n"
+                   "\n"
+                   "def cache_alpha(x):\n"
+                   "    return x + 1\n"
+                   "\n"
+                   "\n"
+                   "def cache_beta(y):\n"
+                   "    return y * 3\n"
+                   "\n"
+                   "\n"
+                   "def cache_gamma(z):\n"
+                   "    return z - 1\n")
+            r4 = graph.sync_functions([scratch_rel], [])
+            check("line-shift-only sync embeds nothing",
+                  r4["fns_upserted"] == 3 and r4["fns_cached"] == 0, str(r4))
+        finally:
+            nav.embed = real_embed
+        scratch.unlink()
+        r5 = graph.sync_functions([], [scratch_rel])
+        check("cache deleted file purges fns",
+              r5["purged_paths"] == 1 and r5["purged_fns"] == 3, str(r5))
+    finally:
+        if scratch.exists():
+            scratch.unlink()
+        graph.sync_functions([], [scratch_rel])
+
+
+_fn_cache_edges()
 
 # 1. graph layer parsed python
 py_files = [f for f in g.files.values() if f.ext == ".py"]
