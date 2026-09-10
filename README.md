@@ -7,15 +7,18 @@ point it at any project via config; nothing is vendored into target projects.
 See [docs/comparison.md](docs/comparison.md) for how neuronav differs from
 other code-graph tools (CodeGraph, aider repo map, SCIP).
 
-## Tools (stdio MCP, 9)
+## Tools (stdio MCP, 12)
 
 | tool | use |
 |---|---|
-| `semantic_search(query, n)` | find files by meaning ("rescan and index the repo" -> nav.py) |
+| `repo_map(budget_tokens)` | token-budget repo map, PageRank-ranked — the cheap orientation preamble |
+| `semantic_search(query, n)` | find files by meaning ("rescan and index the repo" -> nav.py), RRF-fused with BM25F |
 | `find_functions(query, n)` | same, per function with line numbers |
 | `symbol_graph(symbol, depth)` | callers/callees - refactoring safety |
 | `explore(query, n)` | one-call orientation: Read-equivalent source slices + callers/callees flow |
+| `context(path, depth)` | per-file dossier: cluster, structural+semantic neighbors, hub rank, edge types |
 | `clusters(k, min_sim)` | subsystem families from embedding geometry |
+| `crosstalk()` | which subsystem clusters are wired together (cross-cluster coupling report) |
 | `dead_code(n)` | unreachable-function candidates, tiered likely/review - candidates, never verdicts |
 | `duplicates(n)` | exact-clone function bodies (dedup targets) |
 | `visualize()` | generate interactive 3D graph.html (serve statically, open in browser) |
