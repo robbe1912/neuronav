@@ -249,6 +249,17 @@ def run_tests():
               f"pre {lit_pre} / post {inert['lit']} (base {lit_base})")
         check("typing highlights matches in place",
               inert["hl"] > 0, str(inert))
+        hl_style = page.evaluate(
+            """() => { const on = document.querySelector('#hubs .hub.hl'),
+                           off = document.querySelector('#hubs .hub:not(.hl)');
+                 if (!(on && off)) return { skip: true };
+                 const a = getComputedStyle(on), b = getComputedStyle(off);
+                 return { skip: false, on: a.color, off: b.color,
+                          bg: a.backgroundColor }; }"""
+        )
+        check(".hl matches visibly lift (CSS rule, not a dead toggle)",
+              not hl_style.get("skip") and hl_style["on"] != hl_style["off"],
+              str(hl_style))
         check("typing surfaces a capped results list",
               inert["rows"] > 0, str(inert))
         check("typing leaves overview (no fn tier)",
