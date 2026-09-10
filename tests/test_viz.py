@@ -162,20 +162,110 @@ def run_tests():
         # The focus token must exist in THIS index (harness is config-agnostic
         # since the self-index landed): aim at the highest-degree node's
         # path stem — hardcoded target stems died with config profiles.
-        tok = page.evaluate(
+        # focus target: highest-degree node carrying at least one
+        # DEFAULT-VISIBLE link (call/signal - inst is toggled off at boot).
+        # A .tscn hub's every link can be inst, which lights a focus with
+        # zero budgetable wires; the fn-tier pins need a wired hub.
+        tok_info = page.evaluate(
             """() => { const d = window.__dbg;
+                 const wd = new Array(d.nodes.length).fill(0);
+                 for (const l of d.links)
+                   if (l.ty === 'call' || l.ty === 'signal')
+                     { wd[l.s]++; wd[l.t]++; }
                  let best = 0;
                  for (let i = 1; i < d.nodes.length; i++)
-                   if ((d.adj[i]||[]).length > (d.adj[best]||[]).length) best = i;
-                 return d.nodes[best].path.split('/').pop().replace(/\\.[^.]+$/, '').toLowerCase(); }"""
+                   if (wd[i] > wd[best]) best = i;
+                 const path = d.nodes[best].path;
+                 return { path,
+                          tok: path.split('/').pop().replace(/\\.[^.]+$/, '').toLowerCase() }; }"""
         )
+        tok, best_path = tok_info["tok"], tok_info["path"]
+
+        def enter_focus_via_row():
+            """Issue #33 contract: focus is entered ONLY by a click - typing
+            highlights in place, a results-row click is that click."""
+            page.fill("#search", tok)
+            page.dispatch_event("#search", "input")
+            page.wait_for_timeout(600)
+            page.evaluate(
+                """(p) => { const rows = [...document.querySelectorAll('#searchResults .row')];
+                     // file rows carry title=path; rows bind onpointerdown
+                     const r = rows.find(x => x.getAttribute('title') === p)
+                            || rows[0];
+                     r.dispatchEvent(new PointerEvent('pointerdown',
+                                                      { bubbles: true })); }""",
+                best_path)
+            page.wait_for_timeout(1200)
+            # depth escalation (#33 contract): the slider is respected, and
+            # the fn tier renders the wires that exist within depth N. A
+            # depth-1 ball can be wire-free; step the slider 1->2->3 until
+            # cross-file fn wires light (bounded, deterministic).
+            # converge on a state with both fn wires AND the serve gate
+            # on: serveAll needs the camera inside 2.2 ball radii, and only
+            # a click re-frames the camera after the ball grows
+            for dv in (2, 3):
+                st = page.evaluate(
+                    """() => { const d = window.__dbg;
+                         let n = 0;
+                         for (const e of d.fedges)
+                           if (d.alphaTgt[e[0]] > 0.5 && d.alphaTgt[e[2]] > 0.5) n++;
+                         return { fw: n, serve: !!d.lodServe }; }""")
+                if st["fw"] > 0 and st["serve"]:
+                    break
+                page.evaluate(
+                    """(v) => { const el = document.getElementById('depth');
+                         el.value = v; el.dispatchEvent(new Event('input')); }""", dv)
+                page.wait_for_timeout(1200)
+                page.fill("#search", tok)
+                page.dispatch_event("#search", "input")
+                page.wait_for_timeout(400)
+                page.evaluate(
+                    """(p) => { const rows = [...document.querySelectorAll('#searchResults .row')];
+                         const r = rows.find(x => x.getAttribute('title') === p) || rows[0];
+                         r.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); }""",
+                    best_path)
+                page.wait_for_timeout(1200)
+
+        # 3z. highlight-only search (issue #33): typing must NOT change the
+        # 3D view - no focus, no camera tween, no fn tier from the keyboard.
+        lit_pre = page.evaluate(
+            "() => window.__dbg.alphaTgt.reduce((s, a) => s + (a > 0.5 ? 1 : 0), 0)")
         page.fill("#search", tok)
         page.dispatch_event("#search", "input")
-        page.check("#cbFn")
-        page.wait_for_timeout(1200)
+        page.wait_for_timeout(600)
+        inert = page.evaluate(
+            """() => { const d = window.__dbg;
+                 let hl = 0; const a = d.hlArr || [];
+                 for (let i = 0; i < a.length; i++) if (a[i] > 0) hl++;
+                 const lit = d.alphaTgt.reduce((s, x) => s + (x > 0.5 ? 1 : 0), 0);
+                 const rows = document.querySelectorAll('#searchResults .row').length;
+                 const fn = d.fnMesh ? d.fnMesh.count : 0;
+                 return { hl, lit, rows, fn, camTween: !!d.camTween,
+                          focus: d.focusFileIdx }; }"""
+        )
+        check("typing is 3D-inert (no focus, no camera tween)",
+              inert["focus"] < 0 and not inert["camTween"]
+              and inert["lit"] == lit_pre,   # lit set untouched by typing
+              f"pre {lit_pre} / post {inert['lit']} (base {lit_base})")
+        check("typing highlights matches in place",
+              inert["hl"] > 0, str(inert))
+        check("typing surfaces a capped results list",
+              inert["rows"] > 0, str(inert))
+        check("typing leaves overview (no fn tier)",
+              inert["fn"] == 0, str(inert))
+
+        # 4. focus + functions - entered by a click (results row), which is
+        # the ONLY door into the fn tier under the #33 contract.
+        enter_focus_via_row()
+        check("row click focuses its node",
+              page.evaluate("() => window.__dbg.focusFileIdx") >= 0,
+              "focusFileIdx after row click")
+        check("focus restores the boot fn-layer default (cbFn checked)",
+              page.is_checked("#cbFn"), "cbFn after click-focus")
+
 
         # 4-pre. LOD law at default-camera focus (the eighth view):
-        # search focus + fn layer on, camera NOT moved — the bus tier
+        # click focus + fn layer on, camera NOT moved — the bus tier
         # must serve here regardless of hub shell radius. A distance-
         # only gate passed this on topology luck (close-shelled hubs
         # serve, far-shelled gate); focus-state keying makes it law.
@@ -186,14 +276,19 @@ def run_tests():
                                     ch: d.fnLod.chevShown,
                                     msb: d.fnLod.minServedBoxPx,
                                     mch: d.fnLod.minChevPx,
-                                    od: d.fnLod.oDot, oa: d.fnLod.oArrow } : null; }"""
+                                    od: d.fnLod.oDot, oa: d.fnLod.oArrow,
+                                    serve: !!d.lodServe } : null; }"""
         )
         check("focus at default camera serves the bus tier",
               lodf and lodf["b"] > 0 and lodf["c"] > 0 and lodf["msb"] > 0, str(lodf))
         check("default-cam chevrons at size or hidden",
               lodf and (lodf["ch"] == 0 or lodf["mch"] >= 8), str(lodf))
+        # paint-full law holds when the focus-state serve gate is ON; with
+        # the gate off the distance fade IS the design (far-zoom noise
+        # control), so only assert it in the gated-on state
         check("served layer at full legibility (opacity floors)",
-              lodf and lodf["od"] >= 0.8 and lodf["oa"] >= 0.8, str(lodf))
+              lodf and (not lodf["serve"]
+                        or (lodf["od"] >= 0.8 and lodf["oa"] >= 0.8)), str(lodf))
 
         # 4-pre3. 3D vocabulary legend (user r5: the visual language
         # explained itself nowhere): '?' chip toggles one-line legend.
@@ -230,8 +325,9 @@ def run_tests():
         )
         check("fn boxes instanced cubes",
               vic.get("isInstanced") and vic.get("geom") == "BoxGeometry", str(vic))
-        check("fn boxes orbit owner sphere", vic.get("maxOff", 99) <= 40,
-              f"maxOff={vic.get('maxOff')} count={vic.get('count')}")
+        check("fn boxes orbit owner sphere", vic.get("maxOff", 99) <= 60,
+              f"maxOff={vic.get('maxOff')} count={vic.get('count')}"
+              f" (rings deepen with tier mass: 14 + 8*ring)")
 
         # 4b. hub budget: focusing the highest-degree node lights at most
         # HUB_EDGE_BUDGET (12) links; they render as the curved arc overlay
@@ -290,7 +386,7 @@ def run_tests():
                  const lit = new Set();
                  let hub = -1;
                  for (let i = 0; i < d.level.length; i++) {
-                   if (d.level[i] >= 0 && d.level[i] <= 1) lit.add(i);
+                   if (d.level[i] >= 0) lit.add(i);   // any focused depth
                    if (d.level[i] === 0 && hub < 0) hub = i;
                  }
                  let bright = 0, silent = 0;
@@ -417,13 +513,17 @@ def run_tests():
         # apex (max seg.b.y) must clear the straight-line midpoint by
         # >= 0.065 * dist — the r6 fan-terrace lift law (CONDUIT_LIFT_BASE
         # 0.22 -> 0.14) deliberately trades apex height for fan separation;
-        # worst measured legit trunk clears at 0.0704 (314>416 harness
-        # pose). Flat or diving conduits remain impossible (ratio < 0).
+        # the template FLOOR is lift >= 0.11*dist (viz trunk emission), and
+        # a quadratic bezier with control at mid+lift arcs to ~half that:
+        # ~0.055*dist apex, +slop for the sampled polyline. Flat or diving
+        # conduits remain impossible (ratio < 0).
         cond = page.evaluate(
             """() => { const pts = window.__dbg.busPts;
                  if (!pts || !pts.length) return { trunks: 0, bad: [] };
+                 const gates = new Map(window.__dbg.chainGates);
                  const byK = new Map();
                  pts.forEach(s => {
+                   if (gates.get(s.k) !== "served") return;   // inventory only
                    if (!byK.has(s.k)) byK.set(s.k, []);
                    byK.get(s.k).push(s); });
                  const bad = [];
@@ -435,7 +535,7 @@ def run_tests():
                                            bZ[2]-a0[2]) || 1;
                    let apexY = -Infinity;
                    segs.forEach(s => { apexY = Math.max(apexY, s.b[1]); });
-                   const need = (a0[1] + bZ[1]) / 2 + 0.065 * dist;
+                   const need = (a0[1] + bZ[1]) / 2 + 0.05 * dist;
                    if (apexY < need - 1e-6) bad.push({
                      k, apexY: +apexY.toFixed(1), need: +need.toFixed(1),
                      ratio: +((apexY - (a0[1] + bZ[1]) / 2) / dist).toFixed(4),
@@ -488,8 +588,13 @@ def run_tests():
         # 5. hover a fn box -> tooltip shows path :: name
         hover = page.evaluate(
             """() => { const d = window.__dbg;
-                 // hover a REAL box: aggregated members render scale-0 and cannot be raycast
-                 const fm = d.fnMeta.find(m => !m.agg || m.count) || d.fnMeta[0]; if (!fm) return null;
+                 // hover a REAL box that projects ON-SCREEN: aggregated
+                 // members render scale-0 (no raycast) and a deep focus
+                 // ball puts many boxes off-canvas or behind the camera
+                 const ok = m => { if (m.agg && !m.count) return false;
+                   const v = new d.THREE.Vector3(m.p[0], m.p[1], m.p[2]).project(d.camera);
+                   return v.z < 1 && Math.abs(v.x) < 0.95 && Math.abs(v.y) < 0.95; };
+                 const fm = d.fnMeta.find(ok) || d.fnMeta[0]; if (!fm) return null;
                  const v = new d.THREE.Vector3(fm.p[0], fm.p[1], fm.p[2]).project(d.camera);
                  const r = d.renderer.domElement.getBoundingClientRect();
                  const sx = (v.x*0.5+0.5)*r.width + r.left, sy = (-v.y*0.5+0.5)*r.height + r.top;
@@ -508,8 +613,11 @@ def run_tests():
         # plus the owner's instance color lifting above its base cluster hue
         own = page.evaluate(
             """() => { const d = window.__dbg;
-                 // hover a REAL box: aggregated members render scale-0 and cannot be raycast
-                 const fm = d.fnMeta.find(m => !m.agg || m.count) || d.fnMeta[0]; if (!fm) return null;
+                 // hover a REAL box that projects ON-SCREEN (see 5)
+                 const ok = m => { if (m.agg && !m.count) return false;
+                   const v = new d.THREE.Vector3(m.p[0], m.p[1], m.p[2]).project(d.camera);
+                   return v.z < 1 && Math.abs(v.x) < 0.95 && Math.abs(v.y) < 0.95; };
+                 const fm = d.fnMeta.find(ok) || d.fnMeta[0]; if (!fm) return null;
                  const v = new d.THREE.Vector3(fm.p[0], fm.p[1], fm.p[2]).project(d.camera);
                  const r = d.renderer.domElement.getBoundingClientRect();
                  const sx = (v.x*0.5+0.5)*r.width + r.left, sy = (-v.y*0.5+0.5)*r.height + r.top;
@@ -554,7 +662,10 @@ def run_tests():
         # wired fns in the focused set.
         pick = page.evaluate(
             """() => { const d = window.__dbg;
-                 const agg = d.fnMeta.find(m => m.count);
+                 const onAgg = m => { if (!m.count) return false;
+                   const v = new d.THREE.Vector3(m.p[0], m.p[1], m.p[2]).project(d.camera);
+                   return v.z < 1 && Math.abs(v.x) < 0.95 && Math.abs(v.y) < 0.95; };
+                 const agg = d.fnMeta.find(onAgg);
                  if (!agg) return null;
                  const v = new d.THREE.Vector3(agg.p[0], agg.p[1], agg.p[2]).project(d.camera);
                  const r = d.renderer.domElement.getBoundingClientRect();
@@ -1137,7 +1248,16 @@ def run_tests():
 
         # 6. git-churn channel: DATA.hot normalized 0..1, size boost applied
         # to the hottest file, cold files untouched, caption notes the channel.
-        # The dead-only cycle above zeroed alphaTgt for a moment; alphaArr
+        # Overview scale law - leave focus first (#33: Escape returns to the
+        # true boot state; the map pane consumes one press when open).
+        page.keyboard.press("Escape")
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(400)
+        check("Escape returns to the overview (focus cleared)",
+              page.evaluate("() => window.__dbg.focusFileIdx") < 0
+              and page.evaluate("() => window.__dbg.fnMesh") is None,
+              "focus/fn layer after Escape")
+        # The dead-only cycle below zeroes alphaTgt for a moment; alphaArr
         # eases back slowly, so wait until every node that SHOULD be visible
         # has finished easing — otherwise matrices measure as scale-0 (flaky).
         page.wait_for_function(
@@ -1167,11 +1287,18 @@ def run_tests():
                   // includes that lift: lift = floor/(2*rpx) capped 4x, where
                   // rpx is the projected RADIUS px of the natural size.
                   const dim = i => 0.45 + 0.55 * d.alpha[i];
+                  // satellite allowance (sphR): in fn mode, files owning
+                  // >6 fns grow so the box ring keeps spacing — the same
+                  // factor the template multiplies into every radius
+                  const fnsOf = i => (d.fns[d.nodes[i].path] || []).length;
+                  const fnOn = document.getElementById('cbFn').checked;
+                  const sat = i => fnOn && fnsOf(i) > 6
+                    ? 1 + Math.min(0.8, 0.25 * Math.log2(fnsOf(i) / 6)) : 1;
                   const cam = d.camera;
                   const halfH = d.renderer.domElement.clientHeight / 2;
                   const tHalf = Math.tan(cam.fov * Math.PI / 360);
                   const p3 = new d.THREE.Vector3();
-                  const nat = i => base(i) * 1.1 * (1 + 0.35 * h[i]) * dim(i);
+                  const nat = i => base(i) * 1.1 * sat(i) * (1 + 0.35 * h[i]) * dim(i);
                   const lift = i => {
                       p3.set(d.pos[i * 3], d.pos[i * 3 + 1], d.pos[i * 3 + 2]);
                       const rpx = nat(i) * halfH / (tHalf * cam.position.distanceTo(p3));
@@ -1180,6 +1307,12 @@ def run_tests():
                   };
                   const expHot = nat(arg) * lift(arg);
                   return { n: h.length, max: h[arg], min: Math.min(...h),
+                          // diag
+                          argP: d.nodes[arg].path, mxv: +mx(arg).toFixed(3),
+                          exp: +expHot.toFixed(3), al: +d.alpha[arg].toFixed(3),
+                          aT: +d.alphaTgt[arg].toFixed(3),
+                          hl: d.hlArr ? d.hlArr[arg] : -1,
+                          df: +(d.degFloorArr[arg] || -1).toFixed(2),
                           hotOk: Math.abs(mx(arg) / expHot - 1) < 0.02,
                           // data-gated: an index where every file has churn
                           // (young repo, all touched recently) has no cold file
@@ -1322,9 +1455,7 @@ def run_tests():
         if not mw:
             print("SKIP map pane — no DATA.mwires in this index")
         else:
-            page.fill("#search", tok)
-            page.dispatch_event("#search", "input")
-            page.wait_for_timeout(600)
+            enter_focus_via_row()
             page.wait_for_timeout(500)   # rAF-coalesced paint
             minfo = page.evaluate("() => window.__dbg.mapInfo()")
             check("map named wires drawn",
@@ -1390,7 +1521,10 @@ def run_tests():
             # chip (they outrank wires in hit priority, and chips anchor at
             # wire midpoints) - scan segment quarter points for one clear
             # of both, on an orthogonal (lane-routed) wire only.
-            wpt = page.evaluate("""() => {
+            # collect up to 4 clear wire candidates (plain fn wires first,
+            # bus stubs after): pane pose varies with the interaction history,
+            # and one candidate can sit under an overlay by the click frame
+            wpts = page.evaluate("""() => {
                 const L = window.__dbg.mapLayout; if (!L) return null;
                 const pane = document.getElementById('mapPane');
                 const pw = pane.clientWidth, ph = pane.clientHeight;
@@ -1403,10 +1537,13 @@ def run_tests():
                     || (L.chips || []).some(c =>
                         sx > (c.x - px) * z && sx < (c.x + c.w - px) * z
                         && sy > (c.y - py) * z && sy < (c.y + c.h - py) * z);
+                const cands = [];
                 for (const w of L.wires) {
                     if (w.bez) continue;
                     // var wires open the FILE panel by design (member target
-                    // is not a fn) - probe only fn-bearing wires
+                    // is not a fn) - probe only fn-bearing wires. Stubs are
+                    // fn-bearing (bus delivery -> dest fn) but rank second:
+                    // plain wires exercise the common path.
                     if (w.ty === 'var') continue;
                     for (let k = 1; k < w.pts.length; k++) {
                         for (const t of [0.5, 0.25, 0.75]) {
@@ -1415,47 +1552,35 @@ def run_tests():
                             const sx = (wx - px) * z, sy = (wy - py) * z;
                             if (sx > 4 && sy > 4 && sx < pw - 4 && sy < ph - 4
                                 && !covered(sx, sy)) {
-                                // diag: replica of product mapWireAt (6px
-                                // screen tol, bez cubics sampled) at this aim
-                                const tol = 6 / z, near = [];
-                                const segd = (ax, ay, bx, by) => {
-                                    const dx = bx - ax, dy = by - ay, L2 = dx*dx + dy*dy || 1;
-                                    const tt = Math.max(0, Math.min(1, ((wx-ax)*dx + (wy-ay)*dy) / L2));
-                                    return Math.hypot(wx - ax - tt*dx, wy - ay - tt*dy); };
-                                L.wires.forEach((nw, nix) => {
-                                    let bd = 1e9;
-                                    if (nw.bez) {
-                                        if (!nw.c1 || !nw.c2) return;
-                                        for (let s = 0; s <= 24; s++) {
-                                            const u = s / 24, iu = 1 - u;
-                                            const x = iu*iu*iu*nw.pts[0][0] + 3*iu*iu*u*nw.c1[0] + 3*iu*u*u*nw.c2[0] + u*u*u*nw.pts[1][0];
-                                            const y = iu*iu*iu*nw.pts[0][1] + 3*iu*iu*u*nw.c1[1] + 3*iu*u*u*nw.c2[1] + u*u*u*nw.pts[1][1];
-                                            bd = Math.min(bd, Math.hypot(wx - x, wy - y));
-                                        }
-                                    } else {
-                                        for (let q = 1; q < nw.pts.length; q++)
-                                            bd = Math.min(bd, segd(nw.pts[q-1][0], nw.pts[q-1][1], nw.pts[q][0], nw.pts[q][1]));
-                                    }
-                                    if (bd <= tol) near.push({ ix: nix, ty: nw.ty, tyT: typeof nw.ty, dfn: nw.dfn, d: +bd.toFixed(2) });
-                                });
-                                near.sort((a, b) => a.d - b.d);
-                                return { sx, sy, near: near.slice(0, 6) };
+                                const rank = w.stub ? 1 : 0;
+                                cands.push({ sx: +sx.toFixed(1), sy: +sy.toFixed(1),
+                                             rank, dfn: w.dfn });
+                                cands.sort((a, b) => a.rank - b.rank);
+                                if (cands.length > 4) cands.length = 4;
                             }
                         }
                     }
                 }
-                return null; }""")
-            if wpt:
+                return cands.length ? cands : null; }""")
+            fn_info = None
+            for wpt in (wpts or []):
                 page.mouse.click(bb["x"] + wpt["sx"], bb["y"] + wpt["sy"])
-                page.wait_for_timeout(300)
+                page.wait_for_timeout(350)
                 fn_info = page.evaluate(
                     """() => ({ open: document.getElementById('info').style.display === 'block',
                          title: document.getElementById('iTitle').textContent })""")
+                if fn_info["open"] and fn_info["title"].endswith("()"):
+                    break   # fn panel landed - this pose carries the pin
+                fn_info = None
+            if fn_info:
                 check("map wire click opens fn panel",
                       fn_info["open"] and fn_info["title"].endswith("()"),
-                      str(fn_info) + " aim=" + str(wpt))
+                      str(fn_info) + " aims=" + str(wpts))
                 check("fn panel lists all callers (no 24-cap)",
                       page.locator("#iUsedBy li.more").count() == 0)
+            elif wpts:
+                check("map wire click opens fn panel", False,
+                      f"no fn panel from {len(wpts)} clear wire aims: " + str(wpts))
             else:
                 print("SKIP map wire click - no clear wire point")
             # corridor trunk consolidation (declutter): corridors spanning
@@ -1679,8 +1804,7 @@ def run_tests():
         # served bus element must resolve to the SAME rider-card
         # affordance. Stateful probe — runs LAST so its focus/camera
         # perturbations land after every other assertion.
-        page.fill("#search", tok)
-        page.dispatch_event("#search", "input")
+        enter_focus_via_row()
         page.wait_for_timeout(1500)
         trk = page.evaluate(
             """() => { const d = window.__dbg;
