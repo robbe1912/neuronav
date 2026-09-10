@@ -2836,13 +2836,35 @@ function buildContainment() {
 // centroid; the candidate search reruns only on collision or after a hidden
 // frame. Radial-outward wins first: 40px from the centroid along the
 // screen-space direction away from the galaxy center of mass.
+// Label placement rects without DOM reads. The placers used to call
+// getBoundingClientRect per candidate — at engine scale that is ~800 forced
+// layout reads per frame, the single largest frame cost (idle included;
+// profiler: 63% of focus-frame time). Label text is fixed between rebuilds
+// and only translate() moves, so the border-box size never changes: measure
+// once per element, then rebuild rects in JS around the anchor the
+// transform writes to. ay mirrors each placer's translate(-50%,ay*100%):
+// 0 = box top at y (hubs), 0.5 = centered (clab/elab/xtlab), 1 = box bottom
+// at y (flabs). Boxes are plain {left,top,right,bottom} — same shape the
+// predicates already consume.
+const hubBoxes = [];   // this frame's placed hub boxes; updateHubs (first
+                       // placer in tick) fills it, every later placer
+                       // collides against it instead of re-reading the DOM
+function labBox(el, x, y, ay) {
+  let w = el.__lw, h = el.__lh;
+  if (w === undefined) {   // first frame visible: one real measure, cached
+    const r = el.getBoundingClientRect();
+    w = el.__lw = r.width; h = el.__lh = r.height;
+  }
+  const top = y - ay * h;
+  return { left: x - w / 2, right: x + w / 2, top, bottom: top + h };
+}
 const clabOff = new Map();
 function updateClusterLabs() {
   const w = renderer.domElement.clientWidth, h = renderer.domElement.clientHeight;
-  // hub pills win collisions; cluster names try placements around the centroid
-  const hubRects = [...document.querySelectorAll("#hubs .hub")]
-    .filter(el => el.style.display !== "none")
-    .map(el => el.getBoundingClientRect());
+  // hub pills win collisions; cluster names try placements around the
+  // centroid. Their boxes come from updateHubs (ran first this tick) —
+  // no DOM reads here.
+  const hubRects = hubBoxes;
   const sep = (a, b) =>
     a.right < b.left - 4 || b.right < a.left - 4 ||
     a.bottom < b.top - 4 || b.bottom < a.top - 4;
@@ -2874,7 +2896,7 @@ function updateClusterLabs() {
     const rx = px + dx / dl * 40, ry = py + dy2 / dl * 40;
     const tryAt = (x, y) => {
       c.el.style.transform = "translate(" + x.toFixed(1) + "px," + y.toFixed(1) + "px) translate(-50%,-50%)";
-      const r = c.el.getBoundingClientRect();
+      const r = labBox(c.el, x, y, 0.5);
       return (hubRects.every(hr => sep(r, hr)) && taken.every(t => sep(r, t)) &&
               clabObst.every(q => q[0] < r.left - 6 || q[0] > r.right + 6 ||
                                   q[1] < r.top - 6 || q[1] > r.bottom + 6)) ? r : null;
@@ -3540,13 +3562,12 @@ function updateEdgeLabels() {
     // try a small vertical nudge before letting collision-skip hide it
     el.style.transform = "translate(" + x.toFixed(1) + "px," + y.toFixed(1) +
       "px) translate(-50%,-50%)";
-    placed.push({ el, x, y, r: el.getBoundingClientRect() });
+    placed.push({ el, x, y, r: labBox(el, x, y, 0.5) });
   }
   // collision-skip: hub labels win, then stronger (earlier) edge labels win;
-  // losing labels try a small nudge before hiding
-  const hubRects = [...document.querySelectorAll(".hub")]
-    .filter(e => e.style.display === "block")
-    .map(e => e.getBoundingClientRect());
+  // losing labels try a small nudge before hiding (hub boxes from
+  // updateHubs — no DOM reads)
+  const hubRects = hubBoxes;
   const free = (a, b) => a.right < b.left - 2 || b.right < a.left - 2 ||
     a.bottom < b.top - 2 || b.bottom < a.top - 2;
   const taken = [];
@@ -3559,7 +3580,7 @@ function updateEdgeLabels() {
       for (const dy of [-13, 11, -26]) {
         p.el.style.transform = "translate(" + p.x.toFixed(1) + "px," +
           (p.y + dy).toFixed(1) + "px) translate(-50%,-50%)";
-        const r2 = p.el.getBoundingClientRect();
+        const r2 = labBox(p.el, p.x, p.y + dy, 0.5);
         if (hubRects.every(hr => free(r2, hr)) &&
             taken.every(t => free(r2, t))) { r = r2; ok = true; break; }
       }
@@ -3621,7 +3642,7 @@ function updateXtLabels() {
     k.el.style.display = "block";
     k.el.style.transform = "translate(" + ((hubV.x*0.5+0.5)*w).toFixed(1) + "px," +
       ((-hubV.y*0.5+0.5)*h).toFixed(1) + "px) translate(-50%,-50%)";
-    const r = k.el.getBoundingClientRect();
+    const r = labBox(k.el, (hubV.x*0.5+0.5)*w, (-hubV.y*0.5+0.5)*h, 0.5);
     if (taken.every(t => free(r, t))) taken.push(r);
     else k.el.style.display = "none";
   }
@@ -3690,10 +3711,12 @@ function updateHubs() {
   const obstPts = juncArrowObstacles(w, h);
   const clearOfDots = r => obstPts.every(q =>
     q[0] < r.left - 8 || q[0] > r.right + 8 || q[1] < r.top - 8 || q[1] > r.bottom + 8);
-  // greedy placement against real measured boxes; transforms only touch
-  // these few absolutely-positioned nodes, so rect reads stay cheap.
+  // greedy placement against cached boxes (see labBox); transforms only
+  // touch these few absolutely-positioned nodes, so no DOM reads remain.
   // vertical rows first (keeps label near its node), then sideways nudges
-  const fixed = [];
+  hubBoxes.length = 0;   // this frame's placed boxes — the module-level
+                         // array the other placers collide against
+  const fixed = hubBoxes;
   const free = (a, b) => a.right < b.left - 4 || b.right < a.left - 4 ||
     a.bottom < b.top - 4 || b.bottom < a.top - 4;
   for (let hi = 0; hi < hubs.length; hi++) {
@@ -3715,7 +3738,7 @@ function updateHubs() {
     if (prev) {
       el.style.transform = "translate(" + (x + prev.dx).toFixed(1) + "px," +
         (y + prev.dy).toFixed(1) + "px) translate(-50%,0)";
-      r = el.getBoundingClientRect();
+      r = labBox(el, x + prev.dx, y + prev.dy, 0);
       if (fixed.every(f => free(r, f)) && clearOfDots(r)) { fixed.push(r); continue; }
     }
     outer:
@@ -3723,7 +3746,7 @@ function updateHubs() {
       for (const dx of [0, 100, -100]) {
         el.style.transform = "translate(" + (x + dx).toFixed(1) + "px," +
           (y + dy).toFixed(1) + "px) translate(-50%,0)";
-        r = el.getBoundingClientRect();
+        r = labBox(el, x + dx, y + dy, 0);
         if (fixed.every(f => free(r, f)) && clearOfDots(r)) { hubOff.set(i, { dx, dy }); break outer; }
       }
     }
@@ -3731,7 +3754,6 @@ function updateHubs() {
   }
 }
 let stubExits = [];     // EXPLAINED EXIT dissolve points this frame (focus-file
-                        // chains culled by the termini law; labeled in tick)
 const legTermOn = new Map();  // per-leg chain-key -> terminus projects on-screen (tick fills)
 const chainGate = new Map();  // per-chain first failing gate this frame (sighting #10 probe)
 const inkKeys = new Set();    // chains carrying ink this frame (serve loop fills; sighting #11)
@@ -4012,8 +4034,7 @@ function updateFocusLabels() {
   const w = renderer.domElement.clientWidth, h = renderer.domElement.clientHeight;
   const clearOf = (a, b) => a.right < b.left - 2 || b.right < a.left - 2 ||
     a.bottom < b.top - 2 || b.bottom < a.top - 2;
-  const hubRects = [...document.querySelectorAll(".hub")]
-    .filter(e => e.style.display === "block").map(e => e.getBoundingClientRect());
+  const hubRects = hubBoxes;   // placed by updateHubs earlier this tick
   const taken = [];
   // station dots are label obstacles (skeptic R8): project them once per
   // frame — no flab may cover a junction bollard
@@ -4056,19 +4077,19 @@ function updateFocusLabels() {
     // every placed rect — the dense-swarm label shagpile; a blocked label
     // hides (element stays; next frame re-tries as the camera moves)
     if (f.kind === 1) {
-      const r1 = f.el.getBoundingClientRect();
+      const r1 = labBox(f.el, x, y, 1);
       const clear18 = t => r1.right < t.left - 18 || t.right < r1.left - 18 ||
         r1.bottom < t.top - 18 || t.bottom < r1.top - 18;
       if (!taken.every(clear18) || !clearDots(r1)) { f.el.style.display = "none"; continue; }
       taken.push(r1);
       continue;
     }
-    let r = f.el.getBoundingClientRect();
+    let r = labBox(f.el, x, y, 1);
     if (hubRects.some(hr => !clearOf(r, hr)) || taken.some(t => !clearOf(r, t)) || !clearDots(r)) {
       let ok = false;
       for (const dy of [16, -14, 32, -30]) {
         f.el.style.transform = "translate(" + x.toFixed(1) + "px," + (y + dy).toFixed(1) + "px) translate(-50%,-100%)";
-        r = f.el.getBoundingClientRect();
+        r = labBox(f.el, x, y + dy, 1);
         if (hubRects.every(hr => clearOf(r, hr)) && taken.every(t => clearOf(r, t)) && clearDots(r)) { ok = true; break; }
       }
       if (!ok) { f.el.style.display = "none"; continue; }
