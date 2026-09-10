@@ -152,6 +152,13 @@ RE_MEMNEW = re.compile(r"\bmemnew(?:_arr)?\s*\(\s*([A-Za-z_]\w*)")
 # files whose registration macros imply dynamic dispatch — feeds the
 # dead-code review-vs-likely tier for C++ (graph.dead_code)
 CPP_DYNAMIC_RE = re.compile(r"ClassDB::|GDVIRTUAL|ADD_SIGNAL|ADD_PROPERTY|emit_signal")
+# dead-tier mention-count corroboration floor (issue #20): a cpp name
+# whose raw-text mentions across the corpus reach this count (its own
+# definition plus at least one more — an unresolved same-name call site
+# the ambiguity guard dropped, a comment, a string dispatch table) is
+# wired somewhere the static pass cannot see, so 'likely' overclaims its
+# deadness and the row drops to 'review'. Consumed by graph.dead_code.
+CPP_MENTION_FLOOR = 2
 
 # C++ Object virtuals dispatched by the engine (spec §2). GDVIRTUAL
 # declarations are NOT here — they are harvested per-repo into

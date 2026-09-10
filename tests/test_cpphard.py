@@ -41,7 +41,7 @@ sys.path.insert(0, str(HERE))
 
 import graph  # noqa: E402  (needs NEURONAV_CONFIG set first)
 
-from extractors.cpp import CPP_EXTS, harvest_registration  # noqa: E402
+from extractors.cpp import CPP_EXTS, CPP_MENTION_FLOOR, harvest_registration  # noqa: E402
 
 
 def digest(g) -> str:
@@ -145,6 +145,26 @@ check("f8 unused_literal_helper dead (review: emit_signal file)",
 # fixture 9: dead_control.cpp
 check("f9 orphan_calc dead likely", tier("dead_control.cpp", "orphan_calc") == "likely")
 check("f9 unused_plain_helper dead likely", tier("dead_control.cpp", "unused_plain_helper") == "likely")
+
+# fixture 10: mention-count corroboration (issue #20 dead-tier micro-rule)
+# — the companion caller's field call sits on an unresolvable receiver, so
+# the same-name ambiguity guard drops it from referenced_names; the raw
+# corpus mention (definition + call site == floor) still corroborates and
+# the row drops to review. The control is mentioned only at its definition.
+check("f10 ambiguous same-name rescued to review",
+      tier("mention_rescue.cpp", "rescued_by_mentions") == "review",
+      str(tier("mention_rescue.cpp", "rescued_by_mentions")))
+check("f10 mention-free control stays likely",
+      tier("mention_rescue.cpp", "mention_free_helper") == "likely",
+      str(tier("mention_rescue.cpp", "mention_free_helper")))
+check("f10 guard still drops unresolved call site",
+      "rescued_by_mentions" not in g.referenced_names,
+      str(sorted(g.referenced_names)))
+_mc = g._mention_counts()
+check("f10 mention counts at floor boundary",
+      _mc.get("rescued_by_mentions") == CPP_MENTION_FLOOR
+      and _mc.get("mention_free_helper") == 1,
+      f"rescued={_mc.get('rescued_by_mentions')} control={_mc.get('mention_free_helper')} floor={CPP_MENTION_FLOOR}")
 
 # provider.h bound method
 check("provider provide_value alive", alive("provider.h", "provide_value"))
