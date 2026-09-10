@@ -1628,6 +1628,22 @@ const supCollapsed = new Map();
 // syncFileMesh lifts scale to meet it (capped so hierarchy survives).
 const ANCHOR_PX = 8;   // endpoint anchor bar, DIAMETER ref-px
 const anchorBoost = new Float32Array(N);
+// zoomed-out size encoding: at engine scale the camera sits so far back
+// that world-unit size differences (4.5 + sqrt(deg), capped 12) collapse
+// to sub-pixel — every file renders the same ~1px speck and the
+// size-by-connectivity signal is gone (corr(px, deg) 0.744 on the engine
+// bake, p50 diameter 1.2px). degFloor[i] = minimum projected DIAMETER in
+// px, scaled by log2(1+deg) so ordering survives: 2px for leaves, 7px
+// for the hottest hubs (measured projection: engine corr 0.744 -> 0.982
+// at +1.6% viewport ink; game corr 0.788 -> 0.998 at +0.44% — floors
+// barely bind there, overview reads unchanged). syncFileMesh lifts the
+// REST size to meet it (ANCHOR_PX precedent, same 4x cap, so near-field
+// hierarchy is untouched and the floor self-disarms up close).
+const degFloor = new Float32Array(N);
+for (let i = 0; i < N; i++) {
+  const f = 2 + 0.5 * Math.log2(1 + degree[i]);
+  degFloor[i] = Math.max(2, Math.min(7, f));
+}
 
 // true 3D node geometry (billboard sprites read flat on screen): files =
 // shaded spheres, functions = boxes orbiting their owner file sphere,
@@ -1693,7 +1709,7 @@ function syncFileMesh() {
       // instead made the lift vanish the moment hover grew the sprite past
       // the floor, so the eased 1.8x read as 1.1x of the visible rest
       // (harness pin + user expectation: hover grows what the eye sees).
-      if (anchorBoost[i] > 0) {
+      if (anchorBoost[i] > 0 || degFloor[i] > 0 && alphaTgt[i] >= 0.5) {
         const dist = camera.position.distanceTo(_dummy.position);
         const hs = hoverScale[i] || 1;
         const base = sc / hs;   // rest size (alpha included), hover lifted out
@@ -1701,6 +1717,11 @@ function syncFileMesh() {
                         (Math.tan(camera.fov * Math.PI / 360) * dist);
         if (rpxBase > 0.001 && rpxBase < anchorBoost[i])
           sc = base * Math.min(4.0, anchorBoost[i] / rpxBase) * hs;
+        // degree-scaled minimum DIAMETER (rpxBase is a radius): only binds
+        // when the projected size drops under the floor — up close, or on
+        // the compact game layout, natural sizes win and nothing moves
+        else if (rpxBase > 0.001 && rpxBase * 2 < degFloor[i])
+          sc = base * Math.min(4.0, degFloor[i] / (2 * rpxBase)) * hs;
       }
       _dummy.scale.setScalar(sc);
     }
@@ -8020,6 +8041,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get jDotArrays() { return { of: fnJDotOf, st: fnJDotSt, legs: fnJDotLegs, key: fnJDotKey }; },
   get stubExits() { return stubExits; },  // EXPLAINED EXIT dissolve points
   get anchorBoostArr() { return anchorBoost; },  // corridor-boost px per fi (probe hook)
+  get degFloorArr() { return degFloor; },  // zoomed-out min diameter px per fi (probe hook)
   get chainGates() { return [...chainGate.entries()]; },  // per-chain first failing gate (sighting #10)
   get taperDbg() {   // EXPLAINED EXIT probe: per-leg gate state this frame
     const out = [];

@@ -1161,15 +1161,30 @@ def run_tests():
                   const mat = new d.THREE.Matrix4();
                   const mx = i => { d.fileMesh.getMatrixAt(i, mat); return mat.elements[0]; };
                   // instance scale = sizes*1.1 × dim-shrink (0.45+0.55a) at
-                  // overview (no dead boost/hover); alpha eases, read it live
+                  // overview (no dead boost/hover); alpha eases, read it live.
+                  // Sub-floor nodes are lifted by the zoomed-out degree floor
+                  // (min screen DIAMETER, __dbg.degFloorArr) — expected scale
+                  // includes that lift: lift = floor/(2*rpx) capped 4x, where
+                  // rpx is the projected RADIUS px of the natural size.
                   const dim = i => 0.45 + 0.55 * d.alpha[i];
-                  const expHot = base(arg) * 1.1 * (1 + 0.35 * h[arg]) * dim(arg);
+                  const cam = d.camera;
+                  const halfH = d.renderer.domElement.clientHeight / 2;
+                  const tHalf = Math.tan(cam.fov * Math.PI / 360);
+                  const p3 = new d.THREE.Vector3();
+                  const nat = i => base(i) * 1.1 * (1 + 0.35 * h[i]) * dim(i);
+                  const lift = i => {
+                      p3.set(d.pos[i * 3], d.pos[i * 3 + 1], d.pos[i * 3 + 2]);
+                      const rpx = nat(i) * halfH / (tHalf * cam.position.distanceTo(p3));
+                      const f = d.degFloorArr[i];
+                      return rpx > 0.001 && rpx * 2 < f ? Math.min(4.0, f / (2 * rpx)) : 1;
+                  };
+                  const expHot = nat(arg) * lift(arg);
                   return { n: h.length, max: h[arg], min: Math.min(...h),
                           hotOk: Math.abs(mx(arg) / expHot - 1) < 0.02,
                           // data-gated: an index where every file has churn
                           // (young repo, all touched recently) has no cold file
                           coldOk: cold < 0 ? true
-                                  : Math.abs(mx(cold) / (base(cold) * 1.1 * dim(cold)) - 1) < 0.02,
+                                  : Math.abs(mx(cold) / (nat(cold) * lift(cold)) - 1) < 0.02,
                           noted: document.getElementById('caption').textContent.includes('churn') }; }"""
         )
         check("git churn sizes hottest file and notes caption",
