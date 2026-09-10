@@ -1298,10 +1298,20 @@ _TEMPLATE = r"""<!DOCTYPE html>
     overflow-y:auto; }
   #mapList h3 { margin:0 0 6px; font-size:11px; font-weight:600; color:#1de9b6;
     word-break:break-all; }
-  #mapList .row, #mapPick .row, #fnPick .row { padding:2px 4px; border-radius:4px;
-    cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  #mapList .row:hover, #mapPick .row:hover, #fnPick .row:hover {
-    background:#1de9b61a; color:#1de9b6; }
+  #mapList .row, #mapPick .row, #fnPick .row, #searchResults .row {
+    padding:2px 4px; border-radius:4px; cursor:pointer; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis; }
+  #mapList .row:hover, #mapPick .row:hover, #fnPick .row:hover,
+  #searchResults .row:hover { background:#1de9b61a; color:#1de9b6; }
+  /* search results dropdown: rides the sidebar under #search (fnPick
+     pattern — fixed, viewport coords, hidden until a query matches) */
+  #searchResults { display:none; position:fixed; z-index:6;
+    background:rgba(8,12,16,.95); border:1px solid #263238; border-radius:8px;
+    padding:8px; width:250px; max-height:40vh; overflow-y:auto; }
+  #searchResults .more { padding:2px 4px; color:#546e7a; font-size:10.5px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #searchResults .fnrow { color:#8fa3ad; }
+  #searchResults .fnrow b { color:#ffcc80; font-weight:600; }
   #mapPick, #fnPick { display:none; pointer-events:auto;
     background:rgba(8,12,16,.95); border:1px solid #263238; border-radius:8px;
     padding:8px; width:250px; max-height:40vh; overflow-y:auto; }
@@ -1321,6 +1331,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <div id="stats"></div>
   <div id="edgeLegend"></div>
   <input id="search" placeholder="search file / class…">
+  <div id="searchResults"></div>
   <div id="depthRow">
     <span>depth</span>
 <input id="depth" type="range" min="1" max="3" value="1">
@@ -1422,6 +1433,95 @@ fedges.forEach(e => {
   (fnOf[e[3]] = fnOf[e[3]] || new Set()).add(e[2]);
 });
 const fnNames = Object.keys(fnOf);
+// ---- search highlight (issue #33): typing never focuses — it flags
+// matches in place and fills the results list; focus/fn tier starts only
+// from a node (or results-row) click. Match rule is EXACTLY the seed rule
+// computeLevels used (path/cls includes; fn-name includes at >=2 chars) so
+// highlight and focus agree on what a query means — same DATA, same rule.
+const hlArr = new Float32Array(N);   // 1 = file matches the live query
+let hlFn = new Set();                // fn names matching the live query
+function applyHighlight() {
+  hlArr.fill(0); hlFn.clear();
+  _sfDirty = true;   // search-match brightness lift reads hlArr
+  if (query) {
+    for (let i = 0; i < N; i++) {
+      const n = nodes[i];
+      if (n.path.toLowerCase().includes(query) ||
+          n.cls.toLowerCase().includes(query)) hlArr[i] = 1;
+    }
+    if (query.length >= 2) for (const nm of fnNames) {
+      if (!nm.toLowerCase().includes(query)) continue;
+      hlFn.add(nm);
+      for (const f of fnOf[nm]) hlArr[f] = 1;
+    }
+  }
+  hubs.forEach(h => h.el.classList.toggle("hl", !!hlArr[h.i]));
+  fLabs.forEach(f => {
+    if (f.kind === 1) f.el.classList.toggle("hl", hlFn.has(fnMeta[f.ix].name));
+    else f.el.classList.remove("hl");
+  });
+  buildSearchResults();
+}
+// results dropdown: capped, deterministic (files by degree desc, then fn
+// names by owning-file count desc). Row click == node click: same focus
+// path, compaction and framing the canvas click takes.
+const searchResEl = document.getElementById("searchResults");
+const RES_CAP = 30;
+function focusFromSearch(i) {
+  hideSearchResults();
+  pushFocusState();
+  focusSeeds.clear(); focusSeeds.add(i);
+  applyVisibility();
+  focus(i);
+  showInfo(i);
+  mapCenterOn(i);
+}
+function hideSearchResults() {
+  searchResEl.style.display = "none";
+  searchResEl.innerHTML = "";
+}
+function buildSearchResults() {
+  if (!query) { hideSearchResults(); return; }
+  const files = [];
+  for (let i = 0; i < N; i++) if (hlArr[i]) files.push(i);
+  files.sort((a, b) => degree[b] - degree[a] || a - b);
+  const fns = [...hlFn];
+  fns.sort((a, b) => fnOf[b].size - fnOf[a].size || (a < b ? -1 : a > b ? 1 : 0));
+  const total = files.length + fns.length;
+  if (!total) { hideSearchResults(); return; }
+  const rows = [];
+  const nFiles = Math.min(files.length, RES_CAP);
+  for (let k = 0; k < nFiles; k++) {
+    const i = files[k];
+    rows.push({ html: esc(nodes[i].label) + " · " + Math.round(degree[i]),
+                title: nodes[i].path, fn: false, i });
+  }
+  const nFns = Math.min(fns.length, Math.max(0, RES_CAP - nFiles));
+  for (let k = 0; k < nFns; k++) {
+    const nm = fns[k];
+    // deterministic owner: highest-degree file the name lives on
+    let best = -1;
+    for (const f of fnOf[nm]) if (best < 0 || degree[f] > degree[best] ||
+        (degree[f] === degree[best] && f < best)) best = f;
+    rows.push({ html: "ƒ <b>" + esc(nm) + "</b> · " + fnOf[nm].size + " files",
+                title: nm, fn: true, i: best });
+  }
+  let html = rows.map((r, k) =>
+    '<div class="row' + (r.fn ? " fnrow" : "") + '" data-k="' + k + '" title="' +
+    esc(r.title) + '">' + r.html + "</div>").join("");
+  if (total > rows.length)
+    html += '<div class="more">+' + (total - rows.length) +
+            " more — refine or click a node</div>";
+  searchResEl.innerHTML = html;
+  const r0 = searchEl.getBoundingClientRect();
+  searchResEl.style.left = r0.left + "px";
+  searchResEl.style.top = (r0.bottom + 6) + "px";
+  searchResEl.style.display = "block";
+  searchResEl.querySelectorAll(".row").forEach(el => {
+    // pointerdown beats the input blur so the row click still lands
+    el.onpointerdown = e => { e.preventDefault(); focusFromSearch(rows[+el.dataset.k].i); };
+  });
+}
 // per-file typed edge weight (for the hover summary line)
 const typedCount = Array.from({ length: N }, () => ({}));
 links.forEach(l => {
@@ -1685,24 +1785,33 @@ fileMesh.frustumCulled = false;
 scene.add(fileMesh);
 const _dummy = new THREE.Object3D();
 const _col = new THREE.Color();
+const _sfTmp = new THREE.Vector3();
+// whole-mesh skip: the loop's outputs are a pure function of (camera pose,
+// per-node alpha/hover/anchor/highlight state, canvas height, fn sizing).
+// At rest every input reproduces bit-for-bit, so the pass — 3,223 matrix
+// composes + writes + a 245KB GPU upload — is skipped until one moves.
+// _sfDirty is set wherever an input mutates (ease loop, compactAnim,
+// applyVisibility, rebuildFnLayer, applyHighlight, refreshCollapse,
+// resize3D, hover changes); camera motion is caught by the pose compare.
+let _sfDirty = true;
+const _sfCam = new THREE.Vector3();
 function syncFileMesh() {
   // fn-ownership: while a fn box is hovered its owning file lifts hard
   // stale pick guard: fnMeta is rebuilt/cleared by rebuildFnLayer (focus
   // cleared, collapse, fn toggle) — a hoveredFn pointing past it would
   // crash this per-frame read and kill the tick loop
   if (hoveredFn >= 0 && !fnMeta[hoveredFn]) hoveredFn = -1;
+  if (!_sfDirty && _sfCam.distanceToSquared(camera.position) < 1e-8) return;
   const fnOwner = hoveredFn >= 0 ? fnMeta[hoveredFn].file : -1;
   for (let i = 0; i < N; i++) {
     const a = alphaArr[i];
-    if (a < 0.01) {
-      _dummy.position.set(0, 0, 0);
-      _dummy.scale.setScalar(0);
-    } else {
-      _dummy.position.set(pos[i*3], pos[i*3+1], pos[i*3+2]);
+    let x = 0, y = 0, z = 0, sc = 0;
+    if (a >= 0.01) {
+      x = pos[i*3]; y = pos[i*3+1]; z = pos[i*3+2];
       // dead-only mode boosts the survivors so the red set reads at overview distance
       // sqrt(spread) size compensation: gaps scale ~spread, nodes scale
       // ~sqrt(spread) so pulling apart leaves them readable without a
-      let sc = sphR(i) * (deadOnly && nodes[i].dead > 0 ? 1.7 : 1) * hoverScale[i] * (0.45 + 0.55 * a);
+      sc = sphR(i) * (deadOnly && nodes[i].dead > 0 ? 1.7 : 1) * hoverScale[i] * (0.45 + 0.55 * a);
       // perceptual anchor: if ink terminates on this node, hold the sprite
       // at ANCHOR_PX screen diameter — but floor the REST size and let
       // hoverScale ease from the FLOORED rest. Flooring the post-hover size
@@ -1710,7 +1819,7 @@ function syncFileMesh() {
       // the floor, so the eased 1.8x read as 1.1x of the visible rest
       // (harness pin + user expectation: hover grows what the eye sees).
       if (anchorBoost[i] > 0 || degFloor[i] > 0 && alphaTgt[i] >= 0.5) {
-        const dist = camera.position.distanceTo(_dummy.position);
+        const dist = camera.position.distanceTo(_sfTmp.set(x, y, z));
         const hs = hoverScale[i] || 1;
         const base = sc / hs;   // rest size (alpha included), hover lifted out
         const rpxBase = base * (renderer.domElement.clientHeight / 2) /
@@ -1723,17 +1832,24 @@ function syncFileMesh() {
         else if (rpxBase > 0.001 && rpxBase * 2 < degFloor[i])
           sc = base * Math.min(4.0, degFloor[i] / (2 * rpxBase)) * hs;
       }
-      _dummy.scale.setScalar(sc);
     }
+    // hovered nodes also lift slightly in brightness alongside the scale ease
+    // search-match lift: pure brightness (no size change — labBox caches
+    // label boxes and degFloor sizes; a multiplier here keeps both stable)
+    const lift = a * (1 + 0.35 * (hoverScale[i] - 1)) * (i === fnOwner ? 1.9 : 1) *
+                 (hlArr[i] ? 1.8 : 1);
+    const r = colArr[i*3] * lift, g = colArr[i*3+1] * lift, b = colArr[i*3+2] * lift;
+    _dummy.position.set(x, y, z);
+    _dummy.scale.setScalar(sc);
     _dummy.updateMatrix();
     fileMesh.setMatrixAt(i, _dummy.matrix);
-    // hovered nodes also lift slightly in brightness alongside the scale ease
-    const lift = a * (1 + 0.35 * (hoverScale[i] - 1)) * (i === fnOwner ? 1.9 : 1);
-    _col.setRGB(colArr[i*3] * lift, colArr[i*3+1] * lift, colArr[i*3+2] * lift);
+    _col.setRGB(r, g, b);
     fileMesh.setColorAt(i, _col);
   }
   fileMesh.instanceMatrix.needsUpdate = true;
   if (fileMesh.instanceColor) fileMesh.instanceColor.needsUpdate = true;
+  _sfCam.copy(camera.position);
+  _sfDirty = false;
 }
 
 // supernode spheres: second instanced mesh, capacity = cluster count.
@@ -2641,16 +2757,22 @@ function busLodInit() {
     if (fnMesh) fnMesh.visible = false;
     if (fnStalks) fnStalks.visible = false;
     if (fnLines) fnLines.visible = false;
+    // spheres and wires lerp under the chevrons: occluder geometry moves
+    _arrowOcclDirty = true; _sfDirty = true;
     if (u >= 1) { compactAnim = null; applyVisibility(); }
   }
   // node alpha eases toward its target so filter/focus changes fade in
-  // (visibility decisions read alphaTgt, so the fade is purely visual)
+  // (visibility decisions read alphaTgt, so the fade is purely visual);
+  // while any value still eases the sphere scales change geometry, which
+  // the chevron occlusion cache must see
   for (let i = 0; i < N; i++) {
     const d = alphaTgt[i] - alphaArr[i];
-    alphaArr[i] = Math.abs(d) < 0.003 ? alphaTgt[i] : alphaArr[i] + d * 0.15;
+    if (Math.abs(d) >= 0.003) { alphaArr[i] = alphaArr[i] + d * 0.15; _arrowOcclDirty = true; _sfDirty = true; }
+    else alphaArr[i] = alphaTgt[i];
     const hsT = i === hovered ? 1.8 : 1;
     const dh = hsT - hoverScale[i];
-    hoverScale[i] = Math.abs(dh) < 0.004 ? hsT : hoverScale[i] + dh * 0.18;
+    if (Math.abs(dh) >= 0.004) { hoverScale[i] = hoverScale[i] + dh * 0.18; _arrowOcclDirty = true; _sfDirty = true; }
+    else hoverScale[i] = hsT;
   }
   syncFileMesh();
   // idle spin pauses while the pointer is down over the canvas or a fn box
@@ -2979,22 +3101,12 @@ const level = new Int16Array(N).fill(-1);
 const HUB_EDGE_BUDGET = 12;
 const GHOST_K = 0.08;
 
-// BFS from search seeds (path/class/fn-name matches + clicked seeds) up to
-// `depth`; the direction mode picks which adjacency half the walk follows
+// BFS from clicked seeds up to `depth` (issue #33: focus starts ONLY from
+// a node click — search typing highlights in place, it never seeds); the
+// direction mode picks which adjacency half the walk follows
 function computeLevels() {
   level.fill(-1);
   const seeds = [];
-  if (query) nodes.forEach((n, i) => {
-    if (n.path.toLowerCase().includes(query) || n.cls.toLowerCase().includes(query)) {
-      if (level[i] < 0) { level[i] = 0; seeds.push(i); }
-    }
-  });
-  // fn-name seeds: a function search lights the files that own or call it
-  if (query && query.length >= 2) fnNames.forEach(nm => {
-    if (nm.toLowerCase().includes(query)) {
-      for (const f of fnOf[nm]) if (level[f] < 0) { level[f] = 0; seeds.push(f); }
-    }
-  });
   for (const s of focusSeeds) if (level[s] < 0) { level[s] = 0; seeds.push(s); }
   for (let qi = 0; qi < seeds.length; qi++) {
     const u = seeds[qi];
@@ -3280,6 +3392,9 @@ function rebuildFocusWires() {
   focusArcs.lines.visible = true;
 }
 function applyVisibility() {
+  // visibility flips change which occluder geometry exists (scale-0 gate)
+  // and rewrite alphaTgt — both fileMesh inputs
+  _arrowOcclDirty = true; _sfDirty = true;
   const focusing = computeLevels();
   focusActive = focusing;   // hover greyout defers to focus mode
   edgeFlowOn = focusing;   // tick's dash-flow pass reads this
@@ -3289,7 +3404,7 @@ function applyVisibility() {
   updateEdgeLegend(focusing);
   // fn layer only makes sense inside a focus — say so instead of ignoring clicks
   cbFnEl.disabled = !focusing;
-  cbFnEl.parentElement.title = focusing ? "" : "function layer needs a focus (search or click a node)";
+  cbFnEl.parentElement.title = focusing ? "" : "function layer needs a focus (click a node)";
   for (let i = 0; i < N; i++) {
     let a;
     if (!nodeVisible(nodes[i])) a = 0.0;   // size-0 gate = true disable
@@ -3480,8 +3595,7 @@ function applyVisibility() {
     let lit = 0;
     for (let i = 0; i < N; i++) if (level[i] >= 0 && level[i] <= 1 && nodeVisible(nodes[i])) lit++;
     const first = focusSeeds.values().next().value;
-    const label = !focusSeeds.size ? "“" + esc(query) + "”"
-      : focusSeeds.size === 1 ? esc(nodes[first].label)
+    const label = focusSeeds.size === 1 ? esc(nodes[first].label)
       : focusSeeds.size + " files";
     crumb.innerHTML = "focus: <b>" + label + "</b> · depth " + depth +
       (dirMode ? " · dir " + (dirMode === 1 ? "out" : "in") : "") + " · " + lit +
@@ -3642,7 +3756,7 @@ function updateXtLabels() {
   // collapse hides crosstalk labels too: the arcs they annotate re-target to
   // supernode centroids, so the "A - B ×n" captions would float over merged
   // piles pointing at nothing
-  const overview = !collapsed && !focusSeeds.size && !query &&
+  const overview = !collapsed && !focusSeeds.size &&
     camera.position.distanceTo(controls.target) >= lodDist;
   if (!overview) {
     xtLabs.forEach(k => { k.el.style.display = "none"; });
@@ -3688,7 +3802,7 @@ function rebuildHubs() {
   hubsEl.innerHTML = "";
   hubs = vis.slice(0, HUB_MAX).map(i => {
     const el = document.createElement("div");
-    el.className = "hub";
+    el.className = "hub" + (hlArr[i] ? " hl" : "");
     el.textContent = nodes[i].label + " · " + Math.round(degree[i]);
     el.title = nodes[i].path;
     el.onpointerenter = () => { tip.style.display = "none"; };
@@ -3882,6 +3996,8 @@ let fnJDot = null;  // reroute junction bollards (InstancedMesh spheres)
 // data) are deterministic per view, so R10 determinism holds.
 let _arrowOccl = new Float32Array(0);   // 1 = delivery chevron occluded
 let _arrowOcclCam = null;              // camera pos of the last occlusion pass
+let _arrowOcclDirty = true;            // occluder geometry moved since last pass
+let _arrowOcclPasses = 0;              // probe: occlusion passes since boot
 function aimArrows() {
   if (!fnArrows || !fnArrowPos || !fnArrowTang || !fnArrowR) return;
   const hpx = renderer.domElement.clientHeight || 900;
@@ -3898,14 +4014,24 @@ function aimArrows() {
     _arrowOccl = new Float32Array(fnArrowR.length);
     _arrowOcclCam = null;
   }
-  // recompute EVERY frame: the settle-moment state must be a pure function
-  // of the final camera pose (determinism — chevShown differed 16 vs 5 across
-  // reloads when the last pass ran mid-damping). Cost ~1ms for 45 rays.
-  if (true) {
+  // Camera-ε + dirty gate (issue #33 perf round): the pass is a pure
+  // function of (camera pose, occluder geometry), so it only needs to
+  // re-run when one of those moved. Damping frames keep re-running while
+  // the pose drifts; the last pass lands within ε (1e-4 wu ≈ 1e-5 px) of
+  // the settled pose, so the settle-moment state stays a pure function
+  // of the final view — the determinism the old recompute-every-frame
+  // guaranteed, without its 0.4ms/ray cost at rest. Geometry moves
+  // without the camera (compactAnim lerp, alpha/hover eases, visibility
+  // flips) set _arrowOcclDirty from their sites.
+  if (_arrowOcclDirty || !_arrowOcclCam ||
+      _arrowOcclCam.distanceToSquared(camera.position) > 1e-8) {
+    _arrowOcclPasses++;
     _arrowOccl.fill(0);
     const rc = new THREE.Raycaster();
     rc.far = Infinity;
     const dir = new THREE.Vector3(), org = new THREE.Vector3();
+    const occ = (fileMesh.visible ? [fileMesh, fnMesh, fnBus] : [fnMesh, fnBus])
+                .filter(Boolean);
     for (let i = 0; i < fnArrowR.length; i++) {
       org.copy(camera.position);
       dir.set(fnArrowPos[i*3], fnArrowPos[i*3+1], fnArrowPos[i*3+2]).sub(org);
@@ -3913,8 +4039,7 @@ function aimArrows() {
       dir.divideScalar(L);
       rc.set(org, dir);
       rc.far = L - 1;   // anything solid closer than the chevron blocks it
-      const occ = fileMesh.visible ? [fileMesh, fnMesh, fnBus] : [fnMesh, fnBus];
-      const hits = rc.intersectObjects(occ.filter(Boolean), false);
+      const hits = rc.intersectObjects(occ, false);
       // the delivery chevron rides 3.5wu off its TARGET box center — when
       // the wire arrives from the far side, the box's near face legitimately
       // sits between camera and chevron. That is the DELIVERY, not an
@@ -3927,7 +4052,9 @@ function aimArrows() {
       }
       if (blocked) _arrowOccl[i] = 1;
     }
-    _arrowOcclCam = camera.position.clone();
+    if (!_arrowOcclCam) _arrowOcclCam = new THREE.Vector3();
+    _arrowOcclCam.copy(camera.position);
+    _arrowOcclDirty = false;
   }
   const w = renderer.domElement.clientWidth || 1600, h = hpx;
   for (let i = 0; i < fnArrowR.length; i++) {
@@ -4043,6 +4170,7 @@ function rebuildFocusLabels(focusing) {
       el.textContent = "ƒ " + m.name + (io && io.w.length ? " ✎" + io.w.length : "");
       if (mutOnly && (!io || !io.w.length)) return;   // mutators-only filter
       el.title = nodes[m.file].path + " :: " + m.name;
+      if (hlFn.has(m.name)) el.classList.add("hl");
       el.onclick = () => showFnInfo(ix);
       flabsEl.appendChild(el);
       fLabs.push({ kind: 1, i: m.file, ix, el });
@@ -4129,6 +4257,8 @@ function rebuildFnLayer(focusing) {
   if (fnStalks) { scene.remove(fnStalks); fnStalks.geometry.dispose(); fnStalks = null; }
   fnMeta = [];
   if (!fnMode || !focusing) return;
+  // fn-tier sizing (satBoost reads fnCount) changes file-sphere scales
+  _sfDirty = true; _arrowOcclDirty = true;
   // pass 1: visible cross-file fn edges
   const visEdges = [];
   fedges.forEach(e => {
@@ -5803,7 +5933,7 @@ function mapRender() {
   // only on focus/visibility/expansion changes (cache key below).
   // focus signature ("focusVersion"): every input that changes the lit set
   // or the typed admission. pan/zoom never touch it (section 5).
-  const sig = lit.join(",") + "|" + query + "|" + mapVarsOn + "|" +
+  const sig = lit.join(",") + "|" + mapVarsOn + "|" +
     typeVisible("call") + typeVisible("signal") + typeVisible("inst");
   if (mapLayout && mapLayout.sig !== sig) mapZ = 0;   // focus change -> refit
   // tier-1 admission: file skeleton unchanged (survives section 10)
@@ -7403,20 +7533,16 @@ fnMode = cbFnEl.checked;   // checkbox is the truth; sync the flag at boot
 const cbSpinEl = document.getElementById("cbSpin");
 cbSpinEl.addEventListener("change", () => { spinEnabled = cbSpinEl.checked; });
 const bDeadEl = document.getElementById("bDead");
+// issue #33: typing NEVER starts focus or the fn tier — it highlights the
+// matches in place (spheres + labels) and fills the results list. Focus
+// (compaction, budget fan, fn satellites) begins only at a node click or
+// a results-row click, both of which run the same focus() path.
 searchEl.oninput = e => {
   query = e.target.value.toLowerCase();
-  // a fn-name hit implies satellite interest: auto-enable the fn layer
-  if (query.length >= 2 && !fnMode &&
-      fnNames.some(nm => nm.toLowerCase().includes(query))) {
-    fnMode = true;
-    document.getElementById("cbFn").checked = true;
-  }
-  applyVisibility();
-  // search-focus must land framed, not stranded in the overview: the ring,
-  // the budget fan and the info panel all read at ball distance. Same law
-  // as the click path (focus() frames the compact ball).
-  frameQueryCamera();
+  applyHighlight();
 };
+searchEl.onblur = () => setTimeout(hideSearchResults, 120);
+searchEl.onfocus = () => { if (query) buildSearchResults(); };
 depthEl.oninput = e => { depth = +e.target.value; document.getElementById("depthVal").textContent = depth; applyVisibility(); };
 document.getElementById("spread").oninput = e => {
   const v = +e.target.value / 100;
@@ -7447,11 +7573,17 @@ document.getElementById("bCollapse").onclick = e => {
 };
 function clearFocus() {
   // one scope for Esc / right-click / crumb ✕: drop the focus, the query,
-  // the back-stack and the info panel together
+  // the back-stack and the info panel together — and return every piece of
+  // focus-scoped UI to its boot value (issue #31: fnMode/depth used to
+  // stay dirty after Escape, so the next focus inherited a stale tier)
   focusSeeds.clear(); query = "";
   focusStack = [];
   document.getElementById("search").value = "";
   info.style.display = "none";
+  depth = 1; depthEl.value = 1;
+  document.getElementById("depthVal").textContent = "1";
+  fnMode = cbFnEl.checked = true;   // boot default: checked (tier shows only in focus)
+  applyHighlight();   // query is empty -> clears hlArr/hlFn/.hl classes + results
   applyVisibility();
   frameGraph();   // the camera followed the focus in; it follows the reset out
 }
@@ -7476,17 +7608,18 @@ renderer.domElement.addEventListener("contextmenu", e => {
 function resetAll() {
   activeClusters.clear(); activeDirs.clear();
   deadOnly = false; cycOnly = false; query = ""; focusSeeds.clear(); focusStack = [];
-  dirMode = 0; showSignals = true; showVar = false; fnMode = false; depth = 1;
+  dirMode = 0; showSignals = true; showVar = false; fnMode = true; depth = 1;
+  searchEl.value = ""; depthEl.value = 1;
+  applyHighlight();   // query is empty -> drops hl classes + results list
+  document.getElementById("depthVal").textContent = "1";
   mutOnly = false;
   showInst = false; showCalls = true; showTests = false; showGhost = false;
   groupsMode = false;   // coloring level is view state — reset to fine clusters
   collapsed = false; fnWasOn = false;   // supernode collapse off — resetAll's button wipe clears its .on
-  searchEl.value = ""; depthEl.value = 1;
-  document.getElementById("depthVal").textContent = "1";
+  cbFnEl.checked = true;   // boot default: functions box checked
 document.getElementById("spread").value = 100;
 document.getElementById("spreadVal").textContent = "1.0";
 applySpread(1);
-  cbFnEl.checked = false;
   info.style.display = "none";
   camTween = null;
   camera.position.set(0, 0, 1400); controls.target.set(0, 0, 0);
@@ -7710,7 +7843,7 @@ function greyLabelsDim(on) {
 }
 function hoverGrey(i) {
   if (i === hoverGreyIdx) return;
-  if (pointerDown || focusActive || deadOnly || query) {
+  if (pointerDown || focusActive || deadOnly) {
     if (hoverGreyIdx >= 0) { hoverGreyIdx = -1; applyVisibility(); greyLabelsDim(false); }
     return;
   }
@@ -7757,6 +7890,7 @@ renderer.domElement.addEventListener("pointermove", e => {
   raycaster.setFromCamera(mouse, camera);
   const targets = fnMesh ? [fileMesh, fnMesh] : [fileMesh];
   const hits = raycaster.intersectObjects(targets);
+  const hovPrev = hovered, hovFnPrev = hoveredFn;
   hovered = -1; hoveredFn = -1;
   // skip invisible nodes: filtered-out tests/tools keep raycast geometry,
   // but hovering a ghost must not pop a tooltip. Among visible hits, pick
@@ -7780,6 +7914,8 @@ renderer.domElement.addEventListener("pointermove", e => {
       if (dist < bestPx) { bestPx = dist; hovered = h.instanceId; hoveredFn = -1; }
     }
   }
+  // hover identity feeds syncFileMesh (hoverScale ease + fnOwner lift)
+  if (hovered !== hovPrev || hoveredFn !== hovFnPrev) _sfDirty = true;
   if (hoveredFn >= 0) fnStalkUpdate(fnMeta[hoveredFn].file, fnMeta[hoveredFn].p);
   else fnStalkHide();
   hoverGrey(hoveredFn >= 0 ? fnMeta[hoveredFn].file : hovered);
@@ -7899,35 +8035,6 @@ function focusSeedsCamera() {
   dir.normalize();
   tweenCamTo(c, c.clone().addScaledVector(dir, Math.min(900, 240 + r * 2)));
 }
-// frame the query match set (level-0 nodes of the search BFS): the search
-// path fills `query`, not focusSeeds, so focusSeedsCamera can't see it
-function frameQueryCamera() {
-  if (!query) { frameGraph(); return; }
-  const arr = [];
-  for (let i = 0; i < N; i++)
-    if (level[i] === 0 && !supMem[i] && alphaTgt[i] > 0.5) arr.push(i);
-  if (!arr.length) return;
-  if (arr.length === 1) { focus(arr[0]); return; }
-  // multi-match with an active fn focus: the bus tier and its pickable
-  // trunks live around the focused hub's compact ball — frame THAT ball
-  // (focus() already does), not a centroid of all seeds. Fn-name matches
-  // can sit hundreds of world-units outside the ball (degree-0 owners),
-  // and after an Escape interlude the in-flight pos[] mix pushes the
-  // centroid off the ball entirely: geometry off-screen, picking dead.
-  if (focusFileIdx >= 0 && arr.includes(focusFileIdx)) { focus(focusFileIdx); return; }
-  const c = new THREE.Vector3();
-  arr.forEach(i => c.add(new THREE.Vector3(pos[i*3], pos[i*3+1], pos[i*3+2])));
-  c.divideScalar(arr.length);
-  let r = 120;
-  arr.forEach(i => r = Math.max(r, c.distanceTo(
-    new THREE.Vector3(pos[i*3], pos[i*3+1], pos[i*3+2]))));
-  const dir = new THREE.Vector3(camera.position.x - controls.target.x,
-    camera.position.y - controls.target.y,
-    camera.position.z - controls.target.z);
-  if (dir.lengthSq() < 1) dir.set(0.42, 0.5, 0.76);
-  dir.normalize();
-  tweenCamTo(c, c.clone().addScaledVector(dir, Math.min(900, 240 + r * 2)));
-}
 // wires & buses pick in the CAPTURE phase: fn-box labels (.flab) and the
 // canvas itself sit above the wires' pixels — without this, clicking a wire
 // near the hub opens the fn instead. No wire nearby -> event passes through.
@@ -7994,6 +8101,7 @@ function resize3D() {
   if (fnLines) fnLines.material.resolution.set(w, h);
   if (fnQuiet) fnQuiet.material.resolution.set(w, h);
   if (focusArcs) focusArcs.mat.resolution.set(w, h);
+  _sfDirty = true;   // canvas height feeds the anchor/deg-floor px laws
 }
 addEventListener("resize", resize3D);
 // LOD zoom threshold: crossing it reveals/hides intra-cluster edges at
@@ -8002,7 +8110,7 @@ controls.addEventListener("change", () => {
   const c = camera.position.distanceTo(controls.target) < lodDist;
   if (c !== lodClose) {
     lodClose = c;
-    if (!focusSeeds.size && !query) applyVisibility();
+    if (!focusSeeds.size) applyVisibility();
   }
 });
 
@@ -8042,6 +8150,9 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get stubExits() { return stubExits; },  // EXPLAINED EXIT dissolve points
   get anchorBoostArr() { return anchorBoost; },  // corridor-boost px per fi (probe hook)
   get degFloorArr() { return degFloor; },  // zoomed-out min diameter px per fi (probe hook)
+  get hlArr() { return hlArr; },  // search-highlight flags per fi (probe hook)
+  get hlFnArr() { return [...hlFn]; },  // fn names matching the live query
+  get arrowOcclPasses() { return _arrowOcclPasses; },  // chevron occlusion passes since boot
   get chainGates() { return [...chainGate.entries()]; },  // per-chain first failing gate (sighting #10)
   get taperDbg() {   // EXPLAINED EXIT probe: per-leg gate state this frame
     const out = [];
