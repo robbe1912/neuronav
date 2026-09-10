@@ -106,6 +106,36 @@ def dir_seed(path: str) -> str | None:
     chain = seed_chain(path)
     return "/".join(chain) if chain else None
 
+def topk_desc(sim, k: int):
+    """Row-wise top-k column indices by descending similarity — the exact
+    index lists ``np.argsort(-sim, axis=1)[:, :k]`` yields, at argpartition
+    cost instead of a full n·log n sort per row (engine scale: seconds,
+    not tens of seconds). Exactness contract: when a row's top-(k+1)
+    values contain a duplicate — a tie straddles the cut or reorders the
+    kept set; degenerate/fake embeddings do this, real ones don't — the
+    row falls back to the full argsort, so every consumer sees lists
+    identical to the old implementation (downstream iteration order
+    feeds louvain edge insertion)."""
+    import numpy as np
+
+    n = sim.shape[1]
+    if k >= n:
+        return np.argsort(-sim, axis=1)[:, :k]
+    kk = k + 1
+    part = np.argpartition(-sim, kk - 1, axis=1)[:, :kk]
+    sv = np.take_along_axis(sim, part, axis=1)
+    order = np.argsort(-sv, axis=1, kind="stable")
+    part = np.take_along_axis(part, order, axis=1)
+    sv = np.take_along_axis(sv, order, axis=1)
+    thr = sv[:, -1]
+    tied = (sv[:, :-1] == sv[:, 1:]).any(axis=1) | (
+        (sim == thr[:, None]).sum(axis=1) > 1
+    )
+    out = part[:, :k].copy()
+    if tied.any():
+        out[tied] = np.argsort(-sim[tied], axis=1)[:, :k]
+    return out
+
 
 def communities_graph(
     ids: list[str],
@@ -484,21 +514,49 @@ def communities_graph(
         other = comms[b] if small is comms[a] else comms[a]
         return sum(G[ra][rb]["weight"] for ra in small for rb in other if G.has_edge(ra, rb))
 
+    # merge-down at engine scale (spec §4 #8): louvain fragments into
+    # hundreds of seed communities and the naive rescan re-summed every
+    # inter-community weight — an all-member-pairs edge sweep — after each
+    # of the ~C-38 merges. Pre-aggregate instead: pair weights keyed by
+    # community CONTENTS (communities are pairwise disjoint and only grow
+    # by union here, so a frozenset identifies both the community and the
+    # exact float the naive scan sums on those same set objects) and
+    # sizes as a positional column. Unchanged pairs keep their cached
+    # float — bit-identical to recomputation, O(1) per scanned pair.
+    _wkey = [frozenset(c) for c in comms]
+    _wmin = [min(k) if k else -1 for k in _wkey]
+    _wsz = [sum(len(members_of[r]) for r in c) for c in comms]
+    _wcache: dict = {}
+
+    def _cw(a: int, b: int) -> float:
+        ka, kb = _wkey[a], _wkey[b]
+        key = (ka, kb) if _wmin[a] < _wmin[b] else (kb, ka)
+        w = _wcache.get(key)
+        if w is None:
+            w = _wcache[key] = _comm_weight(a, b)
+        return w
+
     while len(comms) > TARGET_COMMS:
         best = None
         for a in range(len(comms)):
             for b in range(a + 1, len(comms)):
-                sz = sum(len(members_of[r]) for r in comms[a] | comms[b])
+                sz = _wsz[a] + _wsz[b]
                 if sz > MAX_COMM:
                     continue
-                key = (-_comm_weight(a, b), sz, a, b)
+                key = (-_cw(a, b), sz, a, b)
                 if best is None or key < best[0]:
                     best = (key, a, b)
         if best is None:
             break
         _, a, b = best
         comms[a] |= comms[b]
+        _wkey[a] = _wkey[a] | _wkey[b]
+        _wmin[a] = min(_wmin[a], _wmin[b])
+        _wsz[a] += _wsz[b]
         del comms[b]
+        del _wkey[b]
+        del _wmin[b]
+        del _wsz[b]
 
     out: list[dict] = []
     for comm in comms:
