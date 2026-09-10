@@ -8,19 +8,19 @@ drives the same focus state as `test_viz.py` (highest-degree node stem),
 and measures clutter metrics from `window.__dbg` in both layers.
 
 ```
-.venv/Scripts/python.exe -X utf8 tools/qa_readability.py              # base capture -> qa/
+.venv/Scripts/python.exe -X utf8 tools/qa_readability.py              # base capture -> .tmp/qa/
 .venv/Scripts/python.exe -X utf8 tools/qa_readability.py --declutter  # baseline battery
-.venv/Scripts/python.exe -X utf8 tools/qa_readability.py --after [--base qa/declutter_base.json]
+.venv/Scripts/python.exe -X utf8 tools/qa_readability.py --after [--base .tmp/qa/declutter_base.json]
 ```
 
-- **default**: single-view base run; writes `qa/readability_base.json` +
+- **default**: single-view base run; writes `.tmp/qa/readability_base.json` +
   gate screenshots. Exit 0 = ok.
 - **`--declutter`**: captures the multi-angle x multi-hub battery
-  (5 camera angles x global + top-8 hubs) into `qa/declutter_base.json`
+  (5 camera angles x global + top-8 hubs) into `.tmp/qa/declutter_base.json`
   plus a sha-suffixed snapshot copy and per-subject PNGs.
 - **`--after`**: reruns the same battery against the current build, prints a
   per-metric delta table, exits 1 on any clutter regression (ratchet mode).
-- everything under `qa/` is gitignored machine-local state (baselines +
+- everything under `.tmp/qa/` is gitignored machine-local state (baselines +
   screenshots measured against whichever target the local config selects) —
   NEVER commit baselines; they embed private-target measurements.
 - **`--affordance SUBJECTS`** (with `--after`): comma list of subjects whose

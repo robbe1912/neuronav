@@ -3,14 +3,14 @@
 # focus state as tests/test_viz.py (highest-degree node stem), and measures
 # ink-clutter metrics in both layers straight from window.__dbg.
 # Run: .venv/Scripts/python.exe -X utf8 tools/qa_readability.py   (exit 0 = ok)
-# Outputs: qa/readability_base.json + qa/gate_base_3d.png + qa/gate_base_map.png
+# Outputs: .tmp/qa/readability_base.json + .tmp/qa/gate_base_3d.png + .tmp/qa/gate_base_map.png
 #
 # Declutter battery (team/declutter round):
 #   python -X utf8 tools/qa_readability.py --declutter
 #     Capture the multi-angle, multi-hub baseline (5 angles x [global + top-8
-#     hubs]) into qa/declutter_base.json (+ sha-suffixed snapshot copy) and
-#     qa/declut_base_<subject>_<angle>.png screenshots.
-#   python -X utf8 tools/qa_readability.py --after [--base qa/declutter_base.json]
+#     hubs]) into .tmp/qa/declutter_base.json (+ sha-suffixed snapshot copy) and
+#     .tmp/qa/declut_base_<subject>_<angle>.png screenshots.
+#   python -X utf8 tools/qa_readability.py --after [--base .tmp/qa/declutter_base.json]
 #     Same battery against the current build; prints a per-metric delta table
 #     vs the baseline and exits 1 on any clutter regression.
 #   (both need a python with playwright; PIL NOT required — PNG ink analysis
@@ -34,7 +34,7 @@ import nav  # noqa: E402  (the bake lives in the active config's state dir)
 
 STATE = nav.STATE_DIR
 PORT = 8951
-QA = ROOT / "qa"
+QA = ROOT / ".tmp" / "qa"
 
 # --- focus token: highest-degree node's path stem (tests/test_viz.py:140-150)
 TOK_JS = """() => { const d = window.__dbg;
@@ -1050,7 +1050,7 @@ def main():
                     help="capture the declutter baseline battery")
     ap.add_argument("--after", action="store_true",
                     help="run the battery and gate it against the baseline")
-    ap.add_argument("--base", default="qa/declutter_base.json",
+    ap.add_argument("--base", default=".tmp/qa/declutter_base.json",
                     help="baseline JSON for --after (default %(default)s)")
     ap.add_argument("--affordance", default="", metavar="SUBJECTS",
                     help="with --after: comma list of subjects whose sanctioned "

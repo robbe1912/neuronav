@@ -1,7 +1,23 @@
 {
   "root": "..",
   "collection": "neuronav",
-  "include_dirs": ["."],
-  "extensions": [".py"],
-  "exclude_dirs": [".git", "__pycache__", ".venv", ".chroma", ".neuronav", "base", ".codegraph", "fixtures", ".team_scratch", "bench"]
+  "include_dirs": [
+    "."
+  ],
+  "extensions": [
+    ".py"
+  ],
+  "exclude_dirs": [
+    ".git",
+    "__pycache__",
+    ".venv",
+    ".chroma",
+    ".neuronav",
+    "base",
+    ".codegraph",
+    "fixtures",
+    ".team_scratch",
+    "bench",
+    ".tmp"
+  ]
 }
