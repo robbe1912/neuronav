@@ -7,9 +7,11 @@ at import). Never touches the real stores."""
 
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -52,6 +54,20 @@ def make_project(tmp: Path) -> Path:
     (proj / ".team_scratch" / "census.py").write_text("def leaked2():\n    return 3\n", encoding="utf-8")
     (proj / ".gitignore").write_text("build/\n", encoding="utf-8")
     return proj
+
+
+def _wait_listening(proc: subprocess.Popen, port: int, timeout_s: float = 25.0) -> bool:
+    """True once 127.0.0.1:port accepts; False if proc died or timed out."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return False
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+                return True
+        except OSError:
+            time.sleep(0.1)
+    return False
 
 
 def main() -> None:
@@ -208,6 +224,39 @@ def main() -> None:
             check("stat gate: warm rescan leaves count + ids identical", out["ids_stable"] and out["cold"]["added"] == 2)
             check("stat gate: touched file re-hashes + updates", out["touched"]["updated"] == 1 and "src/app.py" in out["touched"]["changed"], str(out["touched"]["updated"]))
             check("stat gate: re-stat'd identical file embeds nothing", out["resaved"]["updated"] == 0 and out["resaved"]["unchanged"] == 2, str(out["resaved"]["updated"]))
+        # 9. serve.py refuses a taken port loudly (issue #40): a second
+        # instance must exit nonzero and say why — never silently shadow
+        # the first listener (Windows SO_REUSEADDR double-bind).
+        serve_py = str(ROOT / "tools" / "serve.py")
+        scrub = {k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}
+        port, first = None, None
+        for cand in range(9081, 9091):  # team ports only; 8791/8792/8931 are owner/harness
+            first = subprocess.Popen(
+                [PY, "-X", "utf8", serve_py, "--port", str(cand)],
+                cwd=proj, env=scrub, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if _wait_listening(first, cand):
+                port = cand
+                break
+            first.wait()
+        check("serve: first instance listening on a team port", port is not None,
+              "9081-9090 all taken")
+        if port is not None:
+            try:
+                dup = subprocess.run(
+                    [PY, "-X", "utf8", serve_py, "--port", str(port)],
+                    cwd=proj, env=scrub, capture_output=True, text=True, timeout=90)
+                why = (dup.stdout + dup.stderr).strip()
+                check("serve: second bind on a taken port exits nonzero",
+                      dup.returncode != 0, f"rc={dup.returncode}")
+                check("serve: refusal prints the port + owner hint",
+                      str(port) in why and "Get-NetTCPConnection" in why, why[:70])
+            except subprocess.TimeoutExpired:
+                check("serve: second bind on a taken port exits nonzero", False,
+                      "second instance kept serving (timeout)")
+                check("serve: refusal prints the port + owner hint", False, "no refusal printed")
+            finally:
+                first.kill()
+                first.wait()
 if __name__ == "__main__":
     main()
     sys.exit(1 if FAILURES else 0)   # a failing run must fail the gate

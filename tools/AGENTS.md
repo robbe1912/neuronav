@@ -49,9 +49,14 @@ Operational notes:
 
 ## serve.py — no-cache dev viewer
 
-`python tools/serve.py` - binds 127.0.0.1:8791, serves the ACTIVE config's
-state dir (where the `graph.html` bake lives). Every
-response carries `Cache-Control: no-store, no-cache, must-revalidate` so the
+`python tools/serve.py [--port 8791] [--config CONFIG]` - binds 127.0.0.1
+exclusively (issue #40): SO_EXCLUSIVEADDRUSE on Windows, plain EADDRINUSE
+elsewhere — a taken port aborts startup (exit 1) with a
+`Get-NetTCPConnection -LocalPort <p>` hint instead of silently
+double-binding and shadowing the first listener. Serves the ACTIVE
+config's state dir (where the `graph.html` bake lives); `--config` is the
+NEURONAV_CONFIG equivalent, set per-process only. Every response carries
+`Cache-Control: no-store, no-cache, must-revalidate` so the
 browser always refetches `graph.html` (kills the stale-build bug class when
 iterating on the bake). Threaded, quiet logs.
 
