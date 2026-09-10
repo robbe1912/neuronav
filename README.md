@@ -57,8 +57,13 @@ Defaults: root = parent of this folder. Extensions per extractors
     "args": ["-X", "utf8", "E:\\path\\to\\neuronav\\server.py"] } } }
 ```
 
-3. Rescan once per checkout; again after big refactors. Per-checkout index
-   (`.chroma/`, gitignored) - each worktree reflects its own branch.
+3. Rescan once per project; again after big refactors. Generated state lives in
+   `<project-root>/.neuronav/` (gitignored - `tools/wire-project.ps1` adds the
+   snippet): chroma store, base shards, and the `graph.html` bake. Upgrading
+   from an older install whose state sat machine-local in `.chroma/`? Nothing
+   moves automatically: the next rescan builds a fresh `.neuronav/` store
+   (one-time re-embed), `import-base` reseeds from shards, or set `state_dir`
+   explicitly to keep the old location.
 
 ### Multiple projects from one install
 
@@ -74,9 +79,10 @@ its profile via `NEURONAV_CONFIG` in the server env:
 ```
 
 `tools/wire-project.ps1 -ProjectPath <path> [-WithBaseShards]` does all of it:
-writes the profile, (optionally) seeds from tracked shards, rescans, and wires
-`.mcp.json` / `opencode.json` in the target project. Agent-facing guidance for
-consuming repos: `templates/agents-snippet.md`.
+writes the profile (with project-local `state_dir`), appends the `.neuronav/`
+ignore snippet, (optionally) seeds from the project's own shards, rescans,
+and wires `.mcp.json` / `opencode.json` in the target project. Agent-facing
+guidance for consuming repos: `templates/agents-snippet.md`.
 
 ## Fast onboarding: base shards (skip the re-embed)
 
@@ -84,13 +90,15 @@ Export a project's trained index as gzipped shards (embeddings included,
 ~6 MB per 600 files) and track them in the project repo:
 
 ```powershell
-nav.py export-base     # writes base/manifest.json + base/shard-*.jsonl.gz
-nav.py import-base     # seeds an empty .chroma from shards; skips deleted files
+nav.py export-base     # writes <state_dir>/base/{manifest.json,shard-*.jsonl.gz}
+nav.py import-base     # seeds the project's empty store from shards; skips deleted files
 ```
 
 `import-base` guards on model/dim; `rescan` heals to the current worktree.
-Example consumer wiring: a target repo's `.neuronav/` helper script (copies
-shards in, imports, rescans, wires all client configs in one command).
+Shards travel with the project: export from one checkout's `.neuronav/base/`,
+track them in the project repo, and teammates seed straight from there via
+`wire-project.ps1 -WithBaseShards` (state is project-local — no install-side
+copies).
 
 ## 3D visualizer
 

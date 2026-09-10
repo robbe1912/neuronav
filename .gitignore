@@ -4,6 +4,7 @@
 config.json
 base/
 .codegraph/
+.neuronav/
 
 # python build artifacts
 __pycache__/

@@ -5,7 +5,7 @@ files colored by semantic cluster; red-mixed nodes contain dead-code
 candidates. Edges = aggregated structural links (call edges, scene
 instancing, scene→script attachment).
 
-Usage:  python viz.py            # writes graph.html next to this file
+Usage:  python viz.py            # writes <state_dir>/graph.html (active config)
         python viz.py out.html   # custom output path
 """
 
@@ -8088,7 +8088,8 @@ def _importmap() -> str:
 
 
 def generate(out: str | Path | None = None) -> Path:
-    out = Path(out) if out else Path(__file__).resolve().parent / "graph.html"
+    out = Path(out) if out else nav.STATE_DIR / "graph.html"
+    out.parent.mkdir(parents=True, exist_ok=True)
     data = _build_data()
     html = (_TEMPLATE.replace("__DATA__", json.dumps(data, separators=(",", ":")))
                     .replace("__IMPORTMAP__", _importmap()))

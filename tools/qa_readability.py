@@ -1,5 +1,5 @@
 # Objective readability gate for the neuronav visualizer.
-# Serves the repo root, loads graph.html in headless Chrome, drives the SAME
+# Serves the state dir of the active config, loads graph.html in headless Chrome, drives the SAME
 # focus state as tests/test_viz.py (highest-degree node stem), and measures
 # ink-clutter metrics in both layers straight from window.__dbg.
 # Run: .venv/Scripts/python.exe -X utf8 tools/qa_readability.py   (exit 0 = ok)
@@ -29,6 +29,10 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+import nav  # noqa: E402  (the bake lives in the active config's state dir)
+
+STATE = nav.STATE_DIR
 PORT = 8951
 QA = ROOT / "qa"
 
@@ -1006,7 +1010,7 @@ class ReuseTCPServer(socketserver.TCPServer):
 
 
 def _serve():
-    handler = partial(http.server.SimpleHTTPRequestHandler, directory=str(ROOT))
+    handler = partial(http.server.SimpleHTTPRequestHandler, directory=str(STATE))
     httpd = ReuseTCPServer(("127.0.0.1", PORT), handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd

@@ -6,11 +6,15 @@ import socketserver
 import threading
 import sys
 import re
+from functools import partial
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+import nav  # noqa: E402  (the bake lives in the active config's state dir)
+
 PORT = 8931
 FAILURES = []
 
@@ -23,7 +27,8 @@ def check(name, cond, detail=""):
 
 
 def main():
-    handler = http.server.SimpleHTTPRequestHandler
+    handler = partial(http.server.SimpleHTTPRequestHandler,
+                      directory=str(nav.STATE_DIR))  # bake is per-project now
     with socketserver.TCPServer(("127.0.0.1", PORT), handler) as httpd:
         t = threading.Thread(target=httpd.serve_forever, daemon=True)
         t.start()

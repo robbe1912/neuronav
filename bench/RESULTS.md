@@ -150,7 +150,7 @@ git worktree add --detach ../bench-after <after-commit>
 ```
 
 Before/after are measured in detached worktrees (`git worktree add --detach
-<dir> <commit>`), each with its own `.chroma`, so the live shared index is
+<dir> <commit>`), each with its own `.neuronav/` state store, so the live shared index is
 never touched and attribution is by commit. Ordering: run real sets first,
 fake last — fake mode wipes the worktree store for embed-mode coherence,
 and a real run after it would embed queries against sha-equal fake docs.
