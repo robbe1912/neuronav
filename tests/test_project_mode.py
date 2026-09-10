@@ -140,3 +140,4 @@ def main() -> None:
         check("visualize degrades loudly without the add-on", "viz add-on not installed" in msg, msg[:60])
 if __name__ == "__main__":
     main()
+    sys.exit(1 if FAILURES else 0)   # a failing run must fail the gate
