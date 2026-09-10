@@ -171,7 +171,8 @@ Conventional commits, lowercase scope (`feat(viz):`, `fix(config):`,
 `test:`, `docs:`). One atomic commit per verified increment. English.
 Terse bodies explaining WHY, not WHAT.
 
-- Every change lands via pull request — main is protected with enforce_admins;
+- When starting work on an issue, immediately open a DRAFT PR linked to it ("Closes #N") and push the branch — visible ownership prevents duplicate grabs; flip to ready when the gate is green.
+Every change lands via pull request — main is protected with enforce_admins;
   the owner is the sole approving reviewer. Fixes reference their issue
   ("Closes #N") and issues are closed with evidence at merge time, not left
   open. No direct pushes, no admin bypasses.
