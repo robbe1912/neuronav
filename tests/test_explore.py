@@ -1,8 +1,12 @@
 # explore tool: one call returns line-numbered source + call flow + budget
-# discipline (codegraph's measured agent-wayfinding discipline, adapted).
+# discipline (codegraph's measured agent-wayfinding discipline, adapted),
+# with 100-line windowed slices + continuation anchors (issue #69).
 # Run in its own process:
 #   NEURONAV_CONFIG=<repo>/config/neuronav.json python -X utf8 tests/test_explore.py
+# (the suite self-selects that config via setdefault below; the shell must
+# not pre-export NEURONAV_CONFIG)
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -24,6 +28,7 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 
 def main() -> int:
+    import explore as xp
     import server as s
 
     # Happy path: real query against the self-index.
@@ -35,6 +40,7 @@ def main() -> int:
     check("file header marks each block", "**" in out and ".py" in out)
     check("call flow header present", "callers:" in out or "callees:" in out or "no callers" in out)
     check("budget respected", len(out) <= 22000, f"{len(out)} chars")
+    check("funnel slices advertise continuation anchors", "pass anchor=" in out, out[-200:])
 
     # Degraded path: embedding backend down must NOT error — deterministic
     # fallback keeps the tool useful (success-shaped, never isError).
@@ -68,6 +74,84 @@ def main() -> int:
     check("cluster map section present", "== clusters ==" in out and "- " in out)
     check("file shortlist section present", "== file shortlist ==" in out)
     check("symbol section header present", "== symbols ==" in out)
+
+    # Windowed slices (issue #69): 100-line cap + deterministic continuation
+    # anchors. Hermetic core first: a synthetic 250-line file under .tmp
+    # (gitignored, on the index exclude list) drives _slice and anchor
+    # paging directly — no index needed for these.
+    fixture_rel = ".tmp/test_explore_window.py"
+    fixture = Path(xp.nav.ROOT) / fixture_rel
+    fixture.parent.mkdir(parents=True, exist_ok=True)
+    fixture.write_text(
+        "".join(f"line {i:03d} {'x' * 8}\n" for i in range(1, 251)), encoding="utf-8"
+    )
+    try:
+        codelines = lambda sl: [ln for ln in sl.splitlines() if xp._CODE_RE.match(ln)]
+
+        w1 = xp._slice(fixture_rel, 1, 250, 20_000)
+        check("window capped at 100 lines", len(codelines(w1)) == 100, f"{len(codelines(w1))}")
+        check("window anchor names the next window", w1.rstrip().endswith(
+            f'pass anchor="{fixture_rel}:101-200" to continue'))
+        check("anchor counts remaining lines", "+150 more lines" in w1)
+        check("windowing deterministic (byte-identical rerun)",
+              xp._slice(fixture_rel, 1, 250, 20_000) == w1)
+
+        w2 = xp._slice(fixture_rel, 101, 200, 20_000)
+        check("continuation window starts at line 101", w2.startswith("101\t"))
+        check("continuation ends with next-window anchor",
+              "+50 more lines" in w2 and f'anchor="{fixture_rel}:201-250"' in w2)
+
+        w3 = xp._slice(fixture_rel, 201, 250, 20_000)
+        check("final window: no anchor past EOF",
+              len(codelines(w3)) == 50 and "more lines" not in w3)
+
+        wc = xp._slice(fixture_rel, 1, 250, 600)
+        shown = len(codelines(wc))
+        m = re.search(r'anchor="[^"]*:(\d+)-(\d+)"', wc)
+        check("char cap truncates before line cap", 0 < shown < 100, f"{shown}")
+        check("anchor continues from the char-capped cut",
+              m is not None and m.group(1) == str(shown + 1))
+
+        # anchor paging through run(): next window without the funnel
+        page = xp.run("ignored query", anchor=f"{fixture_rel}:101-200")
+        check("anchor page serves the requested window",
+              page.startswith(f"** {fixture_rel} **") and "\n101\t" in page)
+        check("anchor page re-orients nothing (no repo map/clusters)",
+              "== repo map ==" not in page and "== clusters ==" not in page)
+        check("anchor page still budget-capped", len(page) <= xp.TOTAL_CAP)
+        check("bad anchor gets guidance, not error",
+              "unreadable anchor" in xp.run("q", anchor="garbage"))
+        check("stale anchor (past EOF) gets guidance, not error",
+              "anchor window is empty" in xp.run("q", anchor=f"{fixture_rel}:5000-5010"))
+
+        # Funnel path on real index data: the longest fn in the self-index
+        # must come back as a window (height law) carrying an anchor.
+        g = s.graph.get_graph()
+        path, fname, fn = max(
+            ((p, name, fn) for p, fs in g.files.items() for name, fn in fs.funcs.items()),
+            key=lambda t: (len(t[2].body.splitlines()), t[0], t[1]),
+        )
+        check("self-index has a fn big enough to exercise the window "
+              "(non-vacuous; re-point at the new longest fn if refactors split it)",
+              len(fn.body.splitlines()) > 95, f"{path}::{fname}")
+        seeds = [{"path": path, "func": fname, "line": fn.line, "score": 0.9}]
+        sec = xp._symbol_slices(g, seeds, False, xp.TOTAL_CAP, None)
+        check("funnel slice obeys the 100-line window",
+              len(codelines(sec)) <= 100, f"{len(codelines(sec))}")
+        check("funnel slice of an overflowing fn ends with an anchor",
+              "more lines - pass anchor=" in sec)
+
+        # Budget math with windows: weak second seed cliffs to a pointer
+        # line and the section stays within budget + one block of slack.
+        sec2 = xp._symbol_slices(
+            g, seeds + [dict(seeds[0], score=0.05)], False, 5_000, None)
+        check("cliff: weak hits stay pointer lines", "not shown" in sec2)
+        check("budget discipline holds under windowing",
+              len(sec2) <= 5_000 + xp.MAX_HIT_CAP + 200, f"{len(sec2)}")
+        check("degraded marker survives windowing",
+              "degraded" in xp._symbol_slices(g, seeds, True, 5_000, None).lower())
+    finally:
+        fixture.unlink(missing_ok=True)
 
     # Tool annotations: readOnlyHint must reach the MCP surface (client
     # permission gates read it).

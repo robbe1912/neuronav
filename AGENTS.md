@@ -50,7 +50,7 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `graph.py` | file/fn symbol graph, per-fn IO extraction, dead-code tiers |
 | `extractors/` | per-language parsers behind a registry (`gdscript.py`, `python.py`, `cpp.py` — tree-sitter-cpp front-end, `model.py` dataclasses) |
 | `clusters.py` | Louvain + labeler + crosstalk (imported lazily) |
-| `explore.py` | one-call orientation tool (codegraph-discipline: slices + flow + budget; one `clusters()` pass feeds both stages, issue #44) |
+| `explore.py` | one-call orientation tool (codegraph-discipline: windowed 100-line slices + continuation anchors, issue #69; one `clusters()` pass feeds both stages, issue #44) |
 | `server.py` | FastMCP stdio server; read-only tools carry `readOnlyHint`, `rescan` is the write tool; read tools auto-rescan on worktree drift (stat gate, issue #19) |
 | `viz.py` | Python `_build_data` + ONE embedded JS template string -> `graph.html` |
 | `onboard.py` | one-command project onboarding (issue #27): `init`/`wire` write `<project>/.neuronav/config.json` + MCP entries — the install stays read-only, OS-agnostic pure stdlib |

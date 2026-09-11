@@ -7,6 +7,10 @@ score-proportional allocation with a cliff to pointer lines for weak hits,
 hard total budget under the host's inline tool-result cap, and
 success-shaped output on every recoverable condition (embedding backend
 down -> lexical fallback, never an MCP error).
+
+Windowed slices (issue #69, SWE-agent ACI steal): every slice is capped at
+WINDOW_LINES and ends with a deterministic continuation anchor; passing the
+anchor back pages forward without re-querying or re-running the funnel.
 """
 from __future__ import annotations
 
@@ -22,7 +26,12 @@ TOTAL_CAP = 20_000          # chars; hosts externalize bigger results to files,
 MIN_HIT_CAP = 1_200
 MAX_HIT_CAP = 6_000
 CLIFF_FRACTION = 0.15       # hits below this share of top score: pointer only
+WINDOW_LINES = 100          # slice height cap (issue #69): SWE-agent's ACI
+                            # measured 100-line windows beating whole-file
+                            # dumps (arxiv 2405.15793); anchors page forward
 _TOKEN_RE = re.compile(r"[a-zA-Z_]{4,}")
+_CODE_RE = re.compile(r"^\d+\t")
+_ANCHOR_RE = re.compile(r"^(.+):(\d+)-(\d+)$")
 PREAMBLE_TOKENS = 900           # repo-map orientation slice; constant per repo
 CLUSTER_CAP = 1_800             # chars: cluster map section
 SHORTLIST_CAP = 1_200           # chars: file shortlist section
@@ -79,28 +88,64 @@ def _flow(g, path: str, fn_name: str) -> str:
     return f"callers: {len(callers)} ({fmt(callers) if callers else 'none - entry or dead'}) | callees: {len(callees)}"
 
 
-def _slice(path: str, fn_line: int, body: str, cap: int) -> str | None:
-    """Read-equivalent slice starting at the real `func` line, `cat -n`
-    prefixed. None when the file is unreadable."""
-    p = nav.ROOT / path
+def _anchor(path: str, next_start: int, total: int) -> str:
+    """Deterministic continuation handle naming the NEXT window (issue #69):
+    pass it back as explore(anchor=...) to page forward without re-querying."""
+    end = min(total, next_start + WINDOW_LINES - 1)
+    return (f"... +{total - next_start + 1} more lines - "
+            f'pass anchor="{path}:{next_start}-{end}" to continue')
+
+
+def _slice(path: str, start: int, end: int, cap: int) -> str | None:
+    """Read-equivalent `cat -n` window over the 1-based inclusive
+    [start, end] range: never taller than WINDOW_LINES (issue #69),
+    char-capped for the budget discipline, ending in a deterministic
+    continuation anchor whenever the file continues past the lines shown.
+    None when the file is unreadable; "" when no line fits (start past
+    EOF, or a cap smaller than the first line)."""
     try:
-        text = p.read_text(encoding="utf-8", errors="replace")
+        text = (nav.ROOT / path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
     lines = text.splitlines()
-    start = max(0, fn_line - 1)
-    # body excludes the (possibly multi-line) header; allow for it
-    end = min(len(lines), fn_line - 1 + len(body.splitlines()) + 5)
-    out = []
+    total = len(lines)
+    lo = max(0, start - 1)
+    hi = min(end, lo + WINDOW_LINES, total)
+    out: list[str] = []
     used = 0
-    for i in range(start, end):
+    for i in range(lo, hi):
         ln = f"{i + 1}\t{lines[i]}"
         if used + len(ln) > cap:
-            out.append(f"... [{path}:{i + 1} continues]")
             break
         out.append(ln)
         used += len(ln) + 1
+    if out and lo + len(out) < total:
+        out.append(_anchor(path, lo + len(out) + 1, total))
     return "\n".join(out)
+
+
+def _continue(anchor: str) -> str:
+    """Anchor paging (issue #69): serve the next window of a file a previous
+    slice pointed at — no funnel, no re-query, and zero clusters() passes
+    (the one-pass law of issue #44 holds trivially). Bad or stale anchors
+    get guidance, never an error."""
+    m = _ANCHOR_RE.match(anchor.strip())
+    if not m or int(m.group(2)) < 1 or int(m.group(3)) < int(m.group(2)):
+        return (f'unreadable anchor "{anchor}" - expected path:start-end '
+                "exactly as printed at the end of an explore slice")
+    path, start, end = m.group(1), int(m.group(2)), int(m.group(3))
+    # TOTAL_CAP minus header+anchor overhead so the backstop clamp below
+    # can never bite mid-handle
+    sl = _slice(path, start, end, TOTAL_CAP - 300)
+    if sl is None:
+        return f"anchor window unavailable: {path} is not readable"
+    code = [ln for ln in sl.splitlines() if _CODE_RE.match(ln)]
+    if not code:
+        return (f"anchor window is empty: no lines at {start} in {path} "
+                "(file shortened since the slice? re-run explore)")
+    first = code[0].split("\t", 1)[0]
+    last = code[-1].split("\t", 1)[0]
+    return f"** {path} ** lines {first}-{last}\n{sl}"
 
 
 def _cluster_map(cs: "list[dict[str, object]] | None") -> str:
@@ -136,9 +181,10 @@ def _file_shortlist(seeds: list[dict]) -> str:
 
 
 def _symbol_slices(g, seeds: list[dict], degraded: bool, budget: int, cs) -> str:
-    """Funnel leaf: Read-equivalent `cat -n` slices + call flow under the
+    """Funnel leaf: Read-equivalent `cat -n` windows + call flow under the
     codegraph budget discipline (score-proportional caps, cliff to pointer
-    lines for weak hits)."""
+    lines for weak hits) and the issue #69 window law (height cap +
+    continuation anchors)."""
     top = seeds[0]["score"]
     labels = _cluster_labels(cs)
     total = 0
@@ -163,7 +209,10 @@ def _symbol_slices(g, seeds: list[dict], degraded: bool, budget: int, cs) -> str
         header = f"** {h['path']} **  [{label}] score {h['score']:.3f}"
         flow = _flow(g, h["path"], h["func"])
         block = header
-        sl = _slice(h["path"], h["line"], body, per_cap - len(header) - len(flow) - 4)
+        # body excludes the (possibly multi-line) header; +4 keeps the
+        # pre-window height (body lines + 5) as head/context slop
+        end = h["line"] + len(body.splitlines()) + 4
+        sl = _slice(h["path"], h["line"], end, per_cap - len(header) - len(flow) - 4)
         if sl:
             block += "\n" + sl
         block += f"\n{flow}"
@@ -173,7 +222,9 @@ def _symbol_slices(g, seeds: list[dict], degraded: bool, budget: int, cs) -> str
     return "== symbols ==\n" + "\n\n".join(parts)
 
 
-def run(query: str, n: int = 4) -> str:
+def run(query: str, n: int = 4, anchor: str = "") -> str:
+    if anchor:
+        return _continue(anchor)
     n = max(1, min(n, 8))
     g = graph.get_graph()
     seeds, degraded = _seed_hits(query, n)

@@ -17,7 +17,7 @@ other code-graph tools (CodeGraph, aider repo map, SCIP).
 | `semantic_search(query, n)` | find files by meaning ("rescan and index the repo" -> nav.py), RRF-fused with BM25F |
 | `find_functions(query, n)` | same, per function with line numbers |
 | `symbol_graph(symbol, depth)` | callers/callees - refactoring safety |
-| `explore(query, n)` | one-call orientation: Read-equivalent source slices + callers/callees flow |
+| `explore(query, n, anchor)` | one-call orientation: Read-equivalent source slices + callers/callees flow; slices cap at a 100-line window ending in `pass anchor="path:start-end" to continue` — pass that anchor back to page the next window with zero re-orientation |
 | `context(path, depth)` | per-file dossier: cluster, structural+semantic neighbors, hub rank, edge types |
 | `clusters(k, min_sim)` | subsystem families from embedding geometry |
 | `crosstalk()` | which subsystem clusters are wired together (cross-cluster coupling report) |
