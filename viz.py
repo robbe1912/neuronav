@@ -2022,6 +2022,111 @@ let pickWireZ = 1;   // NDC depth of the last hit — node-front comparisons
 // read as a "pre-curved collider"), budget chords under their arcs, and
 // dead-end dim (0.012) ink that reads as nothing. Distances score to the
 // INK EDGE (4px trunk beats 2px wire at ties; the quiet tier needs margin).
+// [issue #82] 3D wire pin: persistent highlight of the wire's full path
+// (endpoints emphasized as screen-constant dots). The overlay is rebuilt
+// from the same buffers pickWireMeta reads, updated IN PLACE every frame —
+// it survives camera moves and scene rebuilds, and follows the "no
+// explanation without presence" rule: the ink vanishes with the wire, the
+// pin object itself stays (paint-tier state, never a layout rebuild).
+let pinLine = null, pinPts = null, pinLinePos = null, pinPtsPos = null;
+function updateBallPin() {
+  if (!pinLine) {
+    pinLinePos = new Float32Array(17 * 3);
+    pinLine = new THREE.Line(
+      new THREE.BufferGeometry().setAttribute("position",
+        new THREE.BufferAttribute(pinLinePos, 3)),
+      new THREE.LineBasicMaterial({ color: 0xffd166, transparent: true,
+        opacity: 0.95, depthTest: false }));
+    pinLine.renderOrder = 999; pinLine.frustumCulled = false;
+    pinPtsPos = new Float32Array(2 * 3);
+    pinPts = new THREE.Points(
+      new THREE.BufferGeometry().setAttribute("position",
+        new THREE.BufferAttribute(pinPtsPos, 3)),
+      new THREE.PointsMaterial({ color: 0xffffff, size: 9,
+        sizeAttenuation: false, transparent: true, opacity: 1,
+        depthTest: false }));
+    pinPts.renderOrder = 1000; pinPts.frustumCulled = false;
+    scene.add(pinLine); scene.add(pinPts);
+  }
+  let n = 0;
+  if (wirePin && wirePin.surface === "ball") {
+    if (wirePin.kind === "link") {
+      const li = wirePin.li;
+      // no edgeK guard here: the pin is explicit user intent and the ink
+      // pass flickers near the distance threshold — the overlay follows the
+      // pinned wire as long as its geometry resolves (2D parity: pin
+      // emphasis outranks zoom-gated ink tiers)
+      if (li >= 0 && li < links.length &&
+          bucketOf[li] >= 0 && bucketOf[li] < bucketPosIB.length) {
+        const arr = bucketPosIB[bucketOf[li]].array;
+        const fo = hwSlot[li] >= 0 ? hwSlot[li] : slotOf[li] * 6;
+        const nseg = hwSlot[li] >= 0 ? 16 : 1;
+        for (let s = 0; s < nseg && n < 16; s++) {
+          pinLinePos[n*3] = arr[fo + s*6];
+          pinLinePos[n*3+1] = arr[fo + s*6 + 1];
+          pinLinePos[n*3+2] = arr[fo + s*6 + 2]; n++;
+        }
+        pinLinePos[n*3] = arr[fo + (nseg-1)*6 + 3];
+        pinLinePos[n*3+1] = arr[fo + (nseg-1)*6 + 4];
+        pinLinePos[n*3+2] = arr[fo + (nseg-1)*6 + 5]; n++;
+      }
+    } else if (wirePin.kind === "trunk") {
+      // 3D trunk conduit: chain its busPts segments (pick parity — a
+      // culled instance parked at scale ~0 stays hidden)
+      if (fnBus && fnBus.visible && busPts && busPtsMeta) {
+        const mx = fnBus.instanceMatrix.array;
+        for (let i = 0; i < busPts.length && n < 16; i++) {
+          const m2 = busPtsMeta[i];
+          if (!m2 || m2.kind !== "trunk" ||
+              String(m2.k) !== String(wirePin.k)) continue;
+          const s2 = busPts[i];
+          if (Math.hypot(mx[i*16], mx[i*16+1], mx[i*16+2]) <= 0.001) continue;
+          if (!n) { pinLinePos[0] = s2.a[0]; pinLinePos[1] = s2.a[1];
+                    pinLinePos[2] = s2.a[2]; n = 1; }
+          pinLinePos[n*3] = s2.b[0]; pinLinePos[n*3+1] = s2.b[1];
+          pinLinePos[n*3+2] = s2.b[2]; n++;
+        }
+      }
+    } else if (wirePin.kind === "wire") {
+      // fn wire: its arc is a group of segments in the fn line meshes —
+      // find the group by meta identity, chain its segment endpoints
+      for (const mesh of [fnLines, fnQuiet, focusArcs && focusArcs.lines]) {
+        if (!mesh || !mesh.visible) continue;
+        const a2 = mesh.geometry.attributes.instanceStart.array;
+        const meta2 = mesh.userData.meta || [];
+        const per2 = mesh.userData.seg || 8;
+        for (let g = 0; g < meta2.length; g++) {
+          const m2 = meta2[g];
+          if (!m2 || m2.kind !== "wire" || m2.a !== wirePin.a ||
+              m2.b !== wirePin.b || m2.ln !== wirePin.ln) continue;
+          const last = Math.min(g * per2 + per2, a2.length / 6);
+          for (let i2 = g * per2; i2 < last && n < 16; i2++) {
+            const o2 = i2 * 6;
+            pinLinePos[n*3] = a2[o2]; pinLinePos[n*3+1] = a2[o2+1];
+            pinLinePos[n*3+2] = a2[o2+2]; n++;
+          }
+          const o3 = (last - 1) * 6;
+          pinLinePos[n*3] = a2[o3+3]; pinLinePos[n*3+1] = a2[o3+4];
+          pinLinePos[n*3+2] = a2[o3+5]; n++;
+          break;
+        }
+        if (n) break;
+      }
+    }
+  }
+  const on = n > 1;
+  pinLine.visible = pinPts.visible = on;
+  if (on) {
+    pinLine.geometry.setDrawRange(0, n);
+    pinPtsPos[0] = pinLinePos[0]; pinPtsPos[1] = pinLinePos[1];
+    pinPtsPos[2] = pinLinePos[2];
+    pinPtsPos[3] = pinLinePos[(n-1)*3]; pinPtsPos[4] = pinLinePos[(n-1)*3+1];
+    pinPtsPos[5] = pinLinePos[(n-1)*3+2];
+    pinLine.geometry.attributes.position.needsUpdate = true;
+    pinPts.geometry.attributes.position.needsUpdate = true;
+    if (wirePin) pinCover = 1;
+  } else if (wirePin && wirePin.surface === "ball") pinCover = 0;
+}
 function pickWireMeta(e) {
   const rect = renderer.domElement.getBoundingClientRect();
   const px = e.clientX - rect.left, py = e.clientY - rect.top;
@@ -2734,6 +2839,7 @@ function busLodInit() {
       present = (alphaTgt[a.a] || 0) > 0.5 || (alphaTgt[a.b] || 0) > 0.5;
     if (!present) hideWireTip();
   }
+  updateBallPin();   // [issue #82] ball-surface pin overlay, frame-synced
   // chevron aim is camera-dependent: recompute every frame
   aimArrows();
   // camera tween (focus / back-stack); a user drag cancels it
@@ -5775,11 +5881,28 @@ const mapPickRows = mapOvEl.querySelector("#mapPick .rows");
 let mapPickRc = null;
 function mapTipHide() { mapTipEl.style.display = "none"; }
 function mapClosePick() { mapPickEl.style.display = "none"; mapPickRc = null; }
+// ---- [issue #82] sticky wire selection -----------------------------------
+// ONE pinned wire at a time, PAINT-TIER ONLY: pinning never touches the
+// layout cache (ONE-layout law: sig unchanged, byte-stable bake, wires
+// set invariant). The emphasis re-resolves from an identity KEY on every
+// paint, so the pin survives pan / zoom / hover-out / repaints until it
+// is explicitly dismissed. Indices are NOT identity: layout rebuilds
+// re-create the records; keys re-resolve against the fresh arrays.
+let wirePin = null;    // {surface:'map'|'ball', kind:'wire'|'trunk'|'link', id, menu} | null
+let pinCover = 0;      // polylines the last paint emphasized (mapInfo probe)
+const wireKeyOf = w => "w|" + w.sf + "|" + w.sfn + "|" + w.df + "|" + w.dfn + "|" + w.ty;
+function wirePinSet(p) { wirePin = p; pinCover = 0; drawMapPane(); }
+function wirePinClear() { if (!wirePin) return; wirePin = null; pinCover = 0; drawMapPane(); }
 // ---- 3D wire/bus tooltip (position:fixed, follows cursor over the WebGL
 // canvas; describes the picked fn wire or bus trunk)
 const wireTipEl = document.createElement("div");
 wireTipEl.id = "wireTip";
-function hideWireTip() { wireTipEl.style.display = "none"; wireTipAnchor = null; }
+function hideWireTip() {
+  wireTipEl.style.display = "none"; wireTipAnchor = null;
+  // [issue #82] the 3D tip is TRANSIENT (auto-hides on any press — orbit
+  // drags included), so it is deliberately NOT a dismissal path: a tip-menu
+  // pin outlives it, and Esc / right-click are this surface's dismissals
+}
 document.body.appendChild(wireTipEl);
 // 3D vocabulary legend (user r5): collapsed '?' chip bottom-left; one line
 // when open. legendOpen is harness-pinned via __dbg.
@@ -5892,6 +6015,12 @@ function showWireTip(meta, cx, cy) {
   wireTipEl.textContent = wireDesc(meta);
   wireTipEl.style.display = "block";
   wireTipAnchor = meta || null;   // sighting #11: lifetime-tracked anchor
+  // [issue #82] the pin latch moved to the capture-click call site: it
+  // needs the event to separate a deliberate canvas wire click from a DOM
+  // .click() (legend chips, checkboxes, search rows dispatch clientX/Y 0,0,
+  // which projects onto whatever wire sits at that corner — a transient tip
+  // there is harmless, a sticky pin is not).
+
   const pad = 14;
   let x = cx + pad, y = cy + pad;
   const r = wireTipEl.getBoundingClientRect();
@@ -5908,6 +6037,9 @@ function mapOvCloseOne() {
   if (mapPickEl.style.display === "block") { mapClosePick(); closed = true; }
   if (mapListEl.style.display === "block") { mapListEl.style.display = "none"; closed = true; }
   if (mapFrozenIx >= 0) { mapFrozenIx = -1; closed = true; drawMapPane(); }
+  // [issue #82] closing the bundle list unpins the wire its row selected
+  // (menu-close dismissal; the list was that pin's menu)
+  if (wirePin && wirePin.menu === "list" && mapListEl.style.display === "none") wirePinClear();
   return closed;
 }
 // L2: click a named wire -> fn panel. showFnInfo reads fnMeta[k] only, so a
@@ -6002,7 +6134,14 @@ function mapOpenList(ci) {
     row.className = "row";
     row.textContent = nodes[wr.sf].label + "::" + wr.sfn + " \u2192 " +
       nodes[wr.df].label + "::" + wr.dfn + " :" + wr.line;
-    row.onclick = () => { if (wr.ty !== "var") mapShowFn(wr.df, wr.dfn); };
+    row.onclick = () => {
+      if (wr.ty !== "var") {
+        mapShowFn(wr.df, wr.dfn);
+        // [issue #82] enumerated chip-list rows are wires: clicking one
+        // pins THAT wire (menu = the open bundle list)
+        wirePinSet({ surface: "map", kind: "wire", id: wireKeyOf(wr), menu: "list" });
+      }
+    };
     mapListEl.appendChild(row);
   });
   const b = mapPane.getBoundingClientRect();
@@ -7679,6 +7818,60 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     ctx.lineWidth = 1;
     ctx.stroke();
   });
+  // [issue #82] pinned-wire emphasis: re-stroke the resolved path ON TOP
+  // at full emphasis (the pin is explicit user intent - it outranks the
+  // zoom-gated fine-ink tiers, like structure ink) with white-ringed
+  // endpoint dots. The key re-resolves on every paint, so pan/zoom/
+  // rebuild all keep the highlight alive; nothing here touches the layout.
+  if (wirePin && wirePin.surface === "map") pinCover = 0;
+  if (wirePin && wirePin.surface === "map" && wirePin.kind === "wire") {
+    const pw = L.wires.find(x => wireKeyOf(x) === wirePin.id);
+    if (pw) {
+      const g = MGLYPH[pw.ty] || MGLYPH.call;
+      ctx.setLineDash([]);
+      seg(pw, g.c, 3, pw.back ? [2, 3] : null, Math.max(dim(pw.sf, pw.df), 0.95));
+      pinCover = 1;
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = "#fff";
+      ctx.fillStyle = g.c;
+      for (const [ex, ey] of [pw.pts[0], [pw.tx, pw.ty]]) {
+        ctx.beginPath();
+        ctx.arc(ex, ey, 3.4, 0, Math.PI * 2);
+        ctx.fill(); ctx.stroke();
+      }
+    }
+  } else if (wirePin && wirePin.surface === "map" &&
+             wirePin.kind === "trunk") {
+    // [issue #82] trunk set: the corridor AND its taps — the enumerated
+    // set the pin selected; endpoints ringed like wire pins
+    const tr = mapLayout.spines.find(sp => sp.hub === "trunk" &&
+      sp.s === wirePin.s && sp.t === wirePin.t && sp.wty === wirePin.wty);
+    if (tr) {
+      const wT = Math.max(Math.min(2 + 0.85 *
+        Math.log2(tr.flowSum || tr.trunkW || 2), 5.5) * 1.6, 5 / mapZ);
+      ctx.setLineDash([]);
+      seg(tr, "#ffd166", wT, [], Math.max(dim(tr.s, tr.t), 0.95));
+      pinCover = 1;
+      mapLayout.spines.forEach(sp2 => {
+        if (sp2.hub === "tap" && sp2.tapBus && sp2.tapBus.trunk === tr) {
+          seg(sp2, "#ffd166", 2, [], 0.9);
+          pinCover++;
+        }
+      });
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = "#fff";
+      ctx.fillStyle = "#ffd166";
+      for (const p of [tr.pts[0], [tr.tx, tr.ty]]) {
+        if (!p) continue;
+        ctx.beginPath();
+        ctx.arc(p[0], p[1], 3.4, 0, Math.PI * 2);
+        ctx.fill(); ctx.stroke();
+      }
+    }
+  }
+  ctx.globalAlpha = 1;
   ctx.globalAlpha = 1;
   // screen-space furniture: map-local vars chip [F10] + footer
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -7836,6 +8029,43 @@ mapPane.addEventListener("click", e => {
       const wr = mapLayout.wires[wi];
       if (wr.ty === "var") showInfo(wr.df);   // member target is not a fn
       else mapShowFn(wr.df, wr.dfn);
+      // [issue #82] the click that opens the wire's menu latches the pin
+      // (single pin: a later selection replaces this one)
+      wirePinSet({ surface: "map", kind: "wire", id: wireKeyOf(wr), menu: "info" });
+      return;
+    }
+  }
+  // [issue #82] trunk corridors (map surface): trunk/tap spines ride in
+  // the bands between boxes — a click within the wire tolerance latches
+  // the enumerated set (trunk + its taps) and opens the bus card, the
+  // map-side twin of the 3D trunk click parity
+  if (mapLayout) {
+    const tol = 6 / mapZ;
+    let th = -1, td = tol;
+    mapLayout.spines.forEach((sp, six) => {
+      if (!sp.hub || !sp.pts || sp.pts.length < 2) return;
+      for (let k = 1; k < sp.pts.length; k++) {
+        const d = mapDistSeg(w.x, w.y, sp.pts[k-1][0], sp.pts[k-1][1],
+                             sp.pts[k][0], sp.pts[k][1]);
+        if (d < td) { td = d; th = six; }
+      }
+    });
+    if (th >= 0) {
+      const sp = mapLayout.spines[th];
+      wirePinSet({ surface: "map", kind: "trunk",
+        id: "T|" + sp.s + "|" + sp.t + "|" + sp.wty,
+        s: sp.s, t: sp.t, wty: sp.wty, menu: "tip" });
+      wireTipEl.textContent = "\ud83d\ude8c bus " + nodes[sp.s].label +
+        " \u2192 " + nodes[sp.t].label +
+        (sp.trunkW ? "  \u00d7" + sp.trunkW : "");
+      wireTipEl.style.display = "block";
+      const pad = 14;
+      let tx2 = e.clientX + pad, ty2 = e.clientY + pad;
+      const r2 = wireTipEl.getBoundingClientRect();
+      if (tx2 + r2.width > innerWidth - 8) tx2 = e.clientX - r2.width - pad;
+      if (ty2 + r2.height > innerHeight - 8) ty2 = e.clientY - r2.height - pad;
+      wireTipEl.style.left = tx2 + "px"; wireTipEl.style.top = ty2 + "px";
+      wireTipAnchor = null;   // transient card: the pin outlives it
       return;
     }
   }
@@ -7942,6 +8172,10 @@ const mapInfo = () => {
       mapLayout.spines.filter(sp => !sp.con && sp.pts.length).length +
       mapLayout.wires.length,
     probeWire: probe,
+    // [issue #82] sticky-pin probe: identity + how many polylines the
+    // current paint emphasizes (wire: 1; trunk set: trunk + taps)
+    pin: wirePin ? { surface: wirePin.surface, kind: wirePin.kind, id: wirePin.id } : null,
+    pinCover,
   };
 };
 document.getElementById("bGround").onclick = e => {
@@ -8003,6 +8237,9 @@ function clearFocus() {
   focusStack = [];
   document.getElementById("search").value = "";
   info.style.display = "none";
+  // [issue #82] hiding the fn panel closes the 2D wire's menu: a pin that
+  // menu introduced goes with it
+  if (wirePin && wirePin.menu === "info") wirePinClear();
   depth = 1; depthEl.value = 1;
   document.getElementById("depthVal").textContent = "1";
   fnMode = cbFnEl.checked = true;   // boot default: checked (tier shows only in focus)
@@ -8015,6 +8252,11 @@ function clearFocus() {
   frameGraph();   // the camera followed the focus in; it follows the reset out
 }
 addEventListener("keydown", e => {
+  // [issue #82] Esc chain, one intent per press: 1st press dismisses the
+  // sticky pin (consumed); the NEXT press walks the existing ladder —
+  // wire tip -> map overlays (picker/list/freeze) -> clear focus. A pinned
+  // highlight never silently swallows the older bindings; it queues ahead.
+  if (e.key === "Escape" && wirePin) { wirePinClear(); return; }
   if (e.key === "Escape" && wireTipEl.style.display !== "none") { hideWireTip(); return; }
   if (e.key === "Escape" && mapOvCloseOne()) return;   // map overlays own ESC first
   if (e.key === "Escape" && (focusSeeds.size || query)) clearFocus();
@@ -8030,6 +8272,16 @@ renderer.domElement.addEventListener("contextmenu", e => {
   if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
   if (focusSeeds.size || query || info.style.display !== "none") clearFocus();
 });
+// [issue #82] right-click dismisses the pin FIRST and consumes the press:
+// capture phase, ahead of every existing contextmenu handler (the 3D
+// clear-focus above included, so dismissal never fights them — the next
+// right-click, with no pin, fires the old behavior unchanged.
+document.addEventListener("contextmenu", e => {
+  if (!wirePin) return;
+  e.preventDefault();
+  e.stopPropagation();
+  wirePinClear();
+}, true);
 // reset owns EVERY piece of UI state — one click must return the app to
 // its boot state with nothing half-reset (vars and classes in lockstep)
 function resetAll() {
@@ -8471,6 +8723,11 @@ document.addEventListener("pointerdown", e => {
 }, true);          // a wire click re-shows it right after
 document.addEventListener("click", e => {
   if (!focusActive || !fnLines) return;
+  // [issue #82] click routing is by surface: the 2D map pane overlays the
+  // 3D canvas, so a wire projecting BEHIND the pane must not steal map
+  // clicks (stopPropagation here left map overlays unclosable).
+  if (e.target && (e.target.id === "mapPane" ||
+      (e.target.closest && e.target.closest("#mapOv")))) return;
   if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
   const wHit = pickWireMeta(e);
   if (!wHit) return;
@@ -8486,6 +8743,21 @@ document.addEventListener("click", e => {
   }
   e.stopPropagation();   // the label/canvas click handlers stay out
   showWireTip(wHit, e.clientX, e.clientY);
+                    // [issue #82] latch the ball-surface pin — only for
+                    // clicks that originated on the 3D canvas itself (DOM
+                    // .click() events target their element and carry 0,0
+                    // coords; the transient tip above must not become a
+                    // sticky pin from a UI-chip click).
+                    if (e.target === renderer.domElement &&
+                        (wHit.kind === "link" || wHit.kind === "wire" ||
+                         wHit.kind === "trunk")) {
+                      const pinId = wHit.kind === "link" ? "L|" + wHit.li
+                        : wHit.kind === "trunk" ? "K|" + wHit.k
+                        : "F|" + wHit.a + "|" + wHit.b + "|" + wHit.ln;
+                      wirePinSet({ surface: "ball", kind: wHit.kind,
+                        id: pinId, li: wHit.li, a: wHit.a, b: wHit.b,
+                        ln: wHit.ln, k: wHit.k, menu: "tip" });
+                    }
 }, true);
 renderer.domElement.addEventListener("click", e => {
   if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
@@ -8827,6 +9099,8 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
              y: r.top + (1 - v.y) / 2 * r.height, z: v.z };
   },
   pickWireMeta, wireDesc, showWireTip, hideWireTip,
+  get wirePin() { return wirePin; },   // [issue #82] {surface, kind, id, menu} | null
+  get pinCover() { return pinCover; },
   get litSet() { return compactIdx; }, get compactScale() { return compactScale; },
   get overlaps() { return compactOverlaps; },
   get camTween() { return camTween; }, get focusStack() { return focusStack; },

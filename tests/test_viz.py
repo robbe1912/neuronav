@@ -876,6 +876,7 @@ def run_tests():
         # Clear the 5b search focus first — greyout defers to focus mode.
         page.keyboard.press("Escape")
         page.wait_for_timeout(400)
+
         grey_setup = page.evaluate(
             """() => { const d = window.__dbg;
                  // pick a visible hub with >= 2 neighbors and a far-away node
@@ -1671,6 +1672,486 @@ def run_tests():
                       str(fn_info) + " aims=" + str(wpts))
                 check("fn panel lists all callers (no 24-cap)",
                       page.locator("#iUsedBy li.more").count() == 0)
+                # [issue #82] sticky wire selection: the click above must
+                # latch a paint-tier pin (ONE-layout: wire set unchanged)
+                pin0 = page.evaluate("() => window.__dbg.wirePin")
+                wires0 = page.evaluate("() => window.__dbg.mapInfo().wires")
+                check("wire pin latches on wire click",
+                      bool(pin0) and pin0["surface"] == "map"
+                      and pin0["kind"] == "wire" and pin0["id"], str(pin0))
+                check("wire pin emphasis resolves (pinCover)",
+                      page.evaluate(
+                          "() => window.__dbg.mapInfo().pinCover") == 1)
+                # chip-list item selection: a bundle chip's enumerated rows
+                # are wires too - two distinct row clicks must REPLACE the
+                # pin (single pin at a time)
+                chip_hits = page.evaluate("""() => {
+                    const L = window.__dbg.mapLayout;
+                    const d = window.__dbg;
+                    const pn = document.getElementById("mapPane");
+                    const out = [];
+                    for (const ch of L.chips) {
+                        if (!ch.wires || ch.wires.length < 2) continue;
+                        if (ch.wires.filter(w => w.ty !== 'var').length < 2) continue;
+                        const sx = (ch.x + ch.w / 2 - d.mapPX) * d.mapZ;
+                        const sy = (ch.y + ch.h / 2 - d.mapPY) * d.mapZ;
+                        if (sx > 20 && sy > 20 &&
+                            sx < pn.clientWidth - 20 &&
+                            sy < pn.clientHeight - 20)
+                            out.push({ sx: +sx.toFixed(1), sy: +sy.toFixed(1) });
+                        if (out.length >= 6) break;
+                    }
+                    return out; }""")
+                chip_hit = None
+                for cand in (chip_hits or []):
+                    page.mouse.click(bb["x"] + cand["sx"], bb["y"] + cand["sy"])
+                    page.wait_for_timeout(300)
+                    if page.locator("#mapList .row").count() >= 2:
+                        chip_hit = cand
+                        break
+                if chip_hit:
+                    rows = page.locator("#mapList .row")
+                    if rows.count() >= 2:
+                        rows.nth(0).click()
+                        page.wait_for_timeout(250)
+                        pinA = page.evaluate("() => window.__dbg.wirePin")
+                        rows.nth(1).click()
+                        page.wait_for_timeout(250)
+                        pinB = page.evaluate("() => window.__dbg.wirePin")
+                        check("chip-list item pins the wire",
+                              bool(pinA) and pinA["menu"] == "list",
+                              str(pinA))
+                        check("new selection replaces the pin",
+                              bool(pinB) and pinB["id"] != pinA["id"],
+                              f"{pinA} -> {pinB}")
+                        pin0 = pinB   # persistence rides the live pin
+                    else:
+                        print("SKIP chip-list pin - list rows < 2")
+                else:
+                    print(f"SKIP chip-list pin - no chip opened a list ({chip_hits})")
+                # persistence: pan, zoom, hover-out - paint-tier state must
+                # survive all three without touching the layout
+                page.mouse.move(bb["x"] + 120, bb["y"] + 520)
+                page.mouse.down()
+                page.mouse.move(bb["x"] + 260, bb["y"] + 580, steps=6)
+                page.mouse.up()
+                page.wait_for_timeout(250)
+                page.mouse.move(bb["x"] + 400, bb["y"] + 300)
+                page.mouse.wheel(0, -240)
+                page.wait_for_timeout(250)
+                page.mouse.move(bb["x"] + 60, bb["y"] + 620)
+                page.wait_for_timeout(250)
+                pin1 = page.evaluate("() => window.__dbg.wirePin")
+                wires1 = page.evaluate(
+                    "() => window.__dbg.mapInfo().wires")
+                check("wire pin survives pan/zoom/hover (paint tier)",
+                      pin1 == pin0 and wires1 == wires0,
+                      f"{pin0} -> {pin1}, wires {wires0} -> {wires1}")
+
+                # ---- [issue #82] dismissal paths ----
+                def latch_pin_via_list():
+                    hits = page.evaluate("""() => {
+                        const L = window.__dbg.mapLayout;
+                        const d = window.__dbg;
+                        const pn = document.getElementById("mapPane");
+                        const out = [];
+                        for (const ch of L.chips) {
+                            if (!ch.wires || ch.wires.length < 2) continue;
+                            if (ch.wires.filter(w => w.ty !== 'var').length < 2) continue;
+                            const sx = (ch.x + ch.w / 2 - d.mapPX) * d.mapZ;
+                            const sy = (ch.y + ch.h / 2 - d.mapPY) * d.mapZ;
+                            if (sx > 20 && sy > 20 &&
+                                sx < pn.clientWidth - 20 &&
+                                sy < pn.clientHeight - 20)
+                                out.push({ sx: +sx.toFixed(1), sy: +sy.toFixed(1) });
+                            if (out.length >= 6) break;
+                        }
+                        return out; }""")
+                    for cand in (hits or []):
+                        page.mouse.click(bb["x"] + cand["sx"], bb["y"] + cand["sy"])
+                        page.wait_for_timeout(300)
+                        # stale rows from a closed list stay in the DOM:
+                        # require the list itself to be open before clicking
+                        disp = page.evaluate(
+                            "() => document.getElementById('mapList').style.display")
+                        rows = page.locator("#mapList .row")
+                        if disp == "block" and rows.count() >= 2:
+                            rows.nth(0).click()
+                            page.wait_for_timeout(200)
+                            return page.evaluate("() => window.__dbg.wirePin")
+                    return None
+
+                # (a) Esc: the pin owns the FIRST press; the existing binding
+                # (map overlay close) fires on the NEXT one
+                if pin1 and pin1["menu"] == "list":
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(250)
+                    pinE = page.evaluate("() => window.__dbg.wirePin")
+                    coverE = page.evaluate("() => window.__dbg.pinCover")
+                    listE = page.evaluate(
+                        "() => document.getElementById('mapList').style.display")
+                    check("esc dismisses the pin before existing bindings",
+                          pinE is None and coverE == 0 and listE == "block",
+                          f"{pin1} -> {pinE}, cover {coverE}, list {listE}")
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(250)
+                    list2 = page.evaluate(
+                        "() => document.getElementById('mapList').style.display")
+                    check("next esc fires the existing binding",
+                          list2 != "block", f"list still {list2}")
+                else:
+                    print("SKIP esc chain - live pin is not a list pin")
+                # (b) right-click: dismisses the pin and ONLY the pin (the
+                # 3D clear-focus contextmenu must not fire on this press)
+                pinR = latch_pin_via_list()
+                if pinR:
+                    page.mouse.click(bb["x"] + 300, bb["y"] + 200, button="right")
+                    page.wait_for_timeout(250)
+                    pinR2 = page.evaluate("() => window.__dbg.wirePin")
+                    infoR = page.evaluate(
+                        "() => document.getElementById('info').style.display")
+                    check("right-click dismisses the pin (and only the pin)",
+                          pinR2 is None and infoR == "block",
+                          f"{pinR} -> {pinR2}, info {infoR}")
+                else:
+                    print("SKIP right-click dismiss - no chip list")
+                # (c) closing the wire menu (bundle list) unpins its selection
+                pinM = latch_pin_via_list()
+                if pinM:
+                    void_pt = page.evaluate("""() => {
+                        const d = window.__dbg;
+                        const pn = document.getElementById("mapPane");
+                        const pw = pn.clientWidth, ph = pn.clientHeight;
+                        const nearWire = (wx, wy) => {
+                            for (const w of d.mapLayout.wires) {
+                                for (let k = 1; k < w.pts.length; k++) {
+                                    const ax = w.pts[k-1][0], ay = w.pts[k-1][1];
+                                    const bx2 = w.pts[k][0], by2 = w.pts[k][1];
+                                    const dx = bx2 - ax, dy = by2 - ay;
+                                    const t = Math.max(0, Math.min(1,
+                                        ((wx-ax)*dx + (wy-ay)*dy) / (dx*dx + dy*dy || 1)));
+                                    if (Math.hypot(ax + t*dx - wx, ay + t*dy - wy) < 12 / d.mapZ)
+                                        return true;
+                                }
+                            }
+                            return false; };
+                        for (let sy = ph - 30; sy > 40; sy -= 24) {
+                            for (let sx = 70; sx < pw - 14; sx += 24) {
+                                const wx = sx / d.mapZ + d.mapPX;
+                                const wy = sy / d.mapZ + d.mapPY;
+                                const onRect = d.mapRects.some(r =>
+                                    wx >= r.x - 3 && wx <= r.x + r.w + 3 &&
+                                    wy >= r.y - 3 && wy <= r.y + r.h + 3);
+                                const onChip = d.mapLayout.chips.some(c =>
+                                    wx >= c.x - 4 && wx <= c.x + c.w + 4 &&
+                                    wy >= c.y - 4 && wy <= c.y + c.h + 4);
+                                if (onRect || onChip || nearWire(wx, wy)) continue;
+                                return { sx, sy };
+                            }
+                        }
+                        return null; }""")
+                    if void_pt:
+                        # keep the click clear of HTML overlays (the open list
+                        # sits on top of the canvas and swallows canvas clicks)
+                        ov_ok = page.evaluate(
+                            "() => { const r = document"
+                            ".getElementById('mapList').getBoundingClientRect();"
+                            " return r; }")
+                        sx = void_pt["sx"] + bb["x"]
+                        sy = void_pt["sy"] + bb["y"]
+                        if (ov_ok and sx > ov_ok["x"] - 8 and
+                                sx < ov_ok["x"] + ov_ok["width"] + 8 and
+                                sy > ov_ok["y"] - 8 and
+                                sy < ov_ok["y"] + ov_ok["height"] + 8):
+                            print("SKIP menu close - void under open list")
+                        else:
+                            page.mouse.click(sx, sy)
+                            page.wait_for_timeout(300)
+                            pinM2 = page.evaluate("() => window.__dbg.wirePin")
+                            listM = page.evaluate(
+                                "() => document.getElementById('mapList')"
+                                ".style.display")
+                            check("closing the wire menu unpins its selection",
+                                  pinM2 is None and listM != "block",
+                                  f"{pinM} -> {pinM2}, list {listM}")
+                    else:
+                        print("SKIP menu close - no void point")
+                else:
+                    print("SKIP menu close - no chip list")
+
+                # ---- [issue #82] 3D surface: corridor/wire click pins ----
+                # scan the 3D canvas (left of the map pane) for a point whose
+                # pickWireMeta resolves a pickable wire; clicking there runs
+                # the capture-phase wire handler, which opens the tip and
+                # latches the pin on the ball surface. Section 5bb left the
+                # fn layer off (hover tests); a close-up focus then ink-gates
+                # every named link below the pick threshold, so turn the fn
+                # layer on for this block and restore it after — fn wires
+                # pin identically (kind "wire").
+                # ---- [issue #82] trunk corridor pins (the enumerated set) ----
+                # re-establish focus first: the esc-chain walk above ends in
+                # clearFocus when the tip is already hidden (the orbit press
+                # hides it), which drops the map layout
+                page.fill("#search", tok)
+                page.dispatch_event("#search", "input")
+                page.wait_for_timeout(500)
+                page.evaluate("""tok => { const rows = [...document.querySelectorAll('#searchResults .row')];
+                    (rows.find(x => x.title.endsWith(tok)) || rows[0])
+                    .dispatchEvent(new PointerEvent('pointerdown', {bubbles: true})); }""", tok)
+                page.wait_for_timeout(1200)
+                # 2D: click a trunk spine — the pin covers trunk + taps and
+                # opens the bus card (map-side trunk-click parity)
+                trunk_pt = page.evaluate("""() => {
+                    const d = window.__dbg;
+                    const L = d.mapLayout;
+                    const pn = document.getElementById("mapPane");
+                    for (const sp of L.spines) {
+                        if (sp.hub !== "trunk" || !sp.pts) continue;
+                        for (let k = 1; k < sp.pts.length; k++) {
+                            const mx = (sp.pts[k-1][0] + sp.pts[k][0]) / 2;
+                            const my = (sp.pts[k-1][1] + sp.pts[k][1]) / 2;
+                            const sx = (mx - d.mapPX) * d.mapZ;
+                            const sy = (my - d.mapPY) * d.mapZ;
+                            if (sx < 14 || sy < 14 ||
+                                sx > pn.clientWidth - 14 ||
+                                sy > pn.clientHeight - 14) continue;
+                            const onRect = d.mapRects.some(r =>
+                                mx >= r.x - 8 && mx <= r.x + r.w + 8 &&
+                                my >= r.y - 8 && my <= r.y + r.h + 8);
+                            if (onRect) continue;
+                            return { sx, sy };
+                        }
+                    }
+                    return null; }""")
+                if trunk_pt:
+                    page.mouse.click(bb["x"] + trunk_pt["sx"],
+                                     bb["y"] + trunk_pt["sy"])
+                    page.wait_for_timeout(350)
+                    pinT = page.evaluate("() => window.__dbg.wirePin")
+                    coverT = page.evaluate("() => window.__dbg.pinCover")
+                    cardT = page.evaluate(
+                        "() => ({ disp: document.getElementById('wireTip')"
+                        ".style.display,"
+                        " txt: document.getElementById('wireTip')"
+                        ".textContent.slice(0, 8) })")
+                    check("map trunk click pins the enumerated set",
+                          pinT and pinT["surface"] == "map" and
+                          pinT["kind"] == "trunk" and pinT["id"],
+                          f"{pinT}")
+                    check("trunk pin emphasis covers trunk + taps",
+                          coverT >= 2, f"pinCover {coverT}")
+                    check("trunk pin opens the bus card",
+                          cardT["disp"] == "block" and
+                          cardT["txt"].startswith("\U0001f68c"),
+                          f"{cardT}")
+                    # zoom survival (paint tier, no layout rebuild)
+                    page.mouse.move(bb["x"] + 400, bb["y"] + 400)
+                    page.mouse.wheel(0, -600)
+                    page.wait_for_timeout(400)
+                    pinT2 = page.evaluate("() => window.__dbg.wirePin")
+                    coverT2 = page.evaluate("() => window.__dbg.pinCover")
+                    check("trunk pin survives zoom (paint tier)",
+                          pinT2 == pinT and coverT2 >= 2,
+                          f"{pinT} -> {pinT2}, cover {coverT2}")
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(250)
+                else:
+                    print("SKIP map trunk pin - no on-screen trunk corridor")
+                # 3D: trunk conduit click pins on the ball surface.
+                # The esc-chain walk above can end in clearFocus (tip
+                # already hidden), which drops the serve gate's focus; a
+                # fresh row-click re-frames the camera inside 2.2 ball
+                # radii (_lodServe) so conduit picks resolve.
+                page.fill("#search", tok)
+                page.dispatch_event("#search", "input")
+                page.wait_for_timeout(500)
+                page.evaluate("""tok => { const rows = [...document.querySelectorAll('#searchResults .row')];
+                    (rows.find(x => x.title.endsWith(tok)) || rows[0])
+                    .dispatchEvent(new PointerEvent('pointerdown', {bubbles: true})); }""", tok)
+                page.wait_for_timeout(1200)
+                if not page.evaluate("() => window.__dbg.lodServe"):
+                    # dolly in: serve needs the camera inside 2.2 ball
+                    # radii — a focused re-click may not move it
+                    page.mouse.move(400, 300)
+                    for _ in range(3):
+                        page.mouse.wheel(0, -600)
+                        page.wait_for_timeout(250)
+                    page.wait_for_timeout(500)
+                trunk3 = None
+                tpts = page.evaluate("""() => {
+                    const d = window.__dbg;
+                    const pn = document.getElementById("mapPane");
+                    const xmax = (pn ? pn.getBoundingClientRect().x
+                                    : innerWidth) - 14;
+                    const out = [];
+                    for (let y = 70; y < innerHeight - 40 && out.length < 5;
+                         y += 44)
+                        for (let x = 24; x < xmax && out.length < 5; x += 44) {
+                            const m = d.pickWireMeta({ clientX: x, clientY: y });
+                            if (m && m.kind === "trunk") out.push({ x, y });
+                        }
+                    return out; }""")
+                if not tpts:
+                    # the 3d-wire block's orbit can leave no conduit in the
+                    # strip — one orbit re-frames and the scan retries once
+                    page.mouse.move(400, 460)
+                    page.mouse.down()
+                    for k in range(6):
+                        page.mouse.move(400 + 18 * (k + 1), 460 + 6 * (k + 1))
+                    page.mouse.up()
+                    page.wait_for_timeout(700)
+                    tpts = page.evaluate("""() => {
+                        const d = window.__dbg;
+                        const pn = document.getElementById("mapPane");
+                        const xmax = (pn ? pn.getBoundingClientRect().x
+                                        : innerWidth) - 14;
+                        const out = [];
+                        for (let y = 70; y < innerHeight - 40 && out.length < 5;
+                             y += 44)
+                            for (let x = 24; x < xmax && out.length < 5; x += 44) {
+                                const m = d.pickWireMeta({ clientX: x, clientY: y });
+                                if (m && m.kind === "trunk") out.push({ x, y });
+                            }
+                        return out; }""")
+                for cand in tpts or []:
+                    page.mouse.move(cand["x"], cand["y"])
+                    page.wait_for_timeout(150)
+                    hov = page.evaluate(
+                        "() => ({ hf: window.__dbg.hoveredFn,"
+                        " hv: window.__dbg.hovered })")
+                    if hov["hf"] is not None and hov["hf"] >= 0:
+                        continue
+                    if hov["hv"] is not None and hov["hv"] >= 0:
+                        continue
+                    page.mouse.click(cand["x"], cand["y"])
+                    page.wait_for_timeout(300)
+                    trunk3 = page.evaluate("() => window.__dbg.wirePin")
+                    if trunk3:
+                        break
+                if trunk3:
+                    cover3t = page.evaluate("() => window.__dbg.pinCover")
+                    check("3d trunk click pins the conduit",
+                          trunk3["surface"] == "ball" and
+                          trunk3["kind"] == "trunk" and trunk3["id"],
+                          f"{trunk3}, cover {cover3t}")
+                    check("3d trunk emphasis resolves (pinCover)",
+                          cover3t == 1, f"cover {cover3t}")
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(250)
+                    trunk3b = page.evaluate("() => window.__dbg.wirePin")
+                    check("esc dismisses the 3d trunk pin",
+                          trunk3b is None, f"{trunk3} -> {trunk3b}")
+                else:
+                    print("SKIP 3d trunk pin - no pickable conduit in view")
+
+                fn_was_on = page.evaluate(
+                    "() => document.getElementById('cbFn').checked")
+
+                link_pts = page.evaluate("""() => {
+                    const d = window.__dbg;
+                    const pn = document.getElementById("mapPane");
+                    const xmax = (pn ? pn.getBoundingClientRect().x
+                                    : innerWidth) - 14;
+                    const out = [];
+                    for (let y = 70; y < innerHeight - 40 && out.length < 5;
+                         y += 44) {
+                        for (let x = 24; x < xmax && out.length < 5; x += 44) {
+                            const m = d.pickWireMeta({ clientX: x, clientY: y });
+                            if (m && (m.kind === "link" || m.kind === "wire"))
+                                out.push({ x, y });
+                        }
+                    }
+                    return out; }""")
+                if not link_pts:
+                    # pose-sensitive scan: link ink gates by camera distance
+                    # (edgeK); a real orbit drag re-frames the ink tiers and
+                    # the scan retries once before giving up
+                    page.mouse.move(400, 460)
+                    page.mouse.down()
+                    for k in range(6):
+                        page.mouse.move(400 + 18 * (k + 1), 460 + 6 * (k + 1))
+                    page.mouse.up()
+                    page.wait_for_timeout(700)
+                    link_pts = page.evaluate("""() => {
+                        const d = window.__dbg;
+                        const pn = document.getElementById("mapPane");
+                        const xmax = (pn ? pn.getBoundingClientRect().x
+                                        : innerWidth) - 14;
+                        const out = [];
+                        for (let y = 70; y < innerHeight - 40 && out.length < 5;
+                             y += 44) {
+                            for (let x = 24; x < xmax && out.length < 5; x += 44) {
+                                const m = d.pickWireMeta({ clientX: x, clientY: y });
+                                if (m && m.kind === "link")
+                                    out.push({ x, y });
+                            }
+                        }
+                        return out; }""")
+                pin3d = None
+                for cand in link_pts or []:
+                    page.mouse.move(cand["x"], cand["y"])
+                    page.wait_for_timeout(150)
+                    hov = page.evaluate(
+                        "() => ({ hf: window.__dbg.hoveredFn,"
+                        " hv: window.__dbg.hovered })")
+                    if hov["hf"] is not None and hov["hf"] >= 0:
+                        continue
+                    if hov["hv"] is not None and hov["hv"] >= 0:
+                        continue
+                    page.mouse.click(cand["x"], cand["y"])
+                    page.wait_for_timeout(300)
+                    pin3d = page.evaluate("() => window.__dbg.wirePin")
+                    if pin3d:
+                        break
+                if pin3d:
+                    cover3d = page.evaluate("() => window.__dbg.pinCover")
+                    check("3d wire click pins on the ball surface",
+                          pin3d["surface"] == "ball" and
+                          pin3d["kind"] in ("link", "wire") and pin3d["id"],
+                          f"{pin3d}, cover {cover3d}")
+                    check("3d pin emphasis resolves (pinCover)",
+                          cover3d == 1, f"cover {cover3d}")
+                    # camera orbit: paint-tier state, overlay re-derived
+                    # per frame from the bucket buffers
+                    cx0, cy0 = 400, 460
+                    page.mouse.move(cx0, cy0)
+                    page.mouse.down()
+                    for k in range(6):
+                        page.mouse.move(cx0 + 18 * (k + 1), cy0 + 6 * (k + 1))
+                        page.wait_for_timeout(40)
+                    page.mouse.up()
+                    page.wait_for_timeout(400)
+                    pin3b = page.evaluate("() => window.__dbg.wirePin")
+                    cover3b = page.evaluate("() => window.__dbg.pinCover")
+                    check("3d pin survives camera orbit (paint tier)",
+                          pin3b == pin3d and cover3b == 1,
+                          f"{pin3d} -> {pin3b}, cover {cover3b}")
+                    # esc: the pin owns the first press; the tip (transient
+                    # overlay) closes on the NEXT press per the existing chain
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(250)
+                    pin3c = page.evaluate("() => window.__dbg.wirePin")
+                    check("esc dismisses the 3d pin", pin3c is None,
+                          f"{pin3b} -> {pin3c}")
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(250)
+                    tip3c = page.evaluate(
+                        "() => document.getElementById('wireTip')"
+                        ".style.display")
+                    check("next esc closes the 3d tip (existing binding)",
+                          tip3c == "none", f"tip {tip3c}")
+                else:
+                    print("SKIP 3d wire pin - no pickable link in view")
+
+                if not fn_was_on:
+                    page.evaluate(
+                        "() => document.getElementById('cbFn').click()")
+                    page.wait_for_timeout(500)
+                # the esc walk above (tip already hidden by the orbit
+                # press) ends in clearFocus, which drops the map layout —
+                # re-enter focus (same helper the suite uses: includes the
+                # conditional depth escalation a depth-1 re-focus needs)
+                enter_focus_via_row()
             elif wpts:
                 check("map wire click opens fn panel", False,
                       f"no fn panel from {len(wpts)} clear wire aims: " + str(wpts))
