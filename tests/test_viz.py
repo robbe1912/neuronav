@@ -3192,7 +3192,12 @@ def run_tests():
                 const hx = (rc.x + rc.w / 2 - d.mapPX) * d.mapZ + bb.left;
                 const hy = (rc.y + 11 - d.mapPY) * d.mapZ + bb.top;
                 if (hx > bb.left + 20 && hx < bb.right - 20 &&
-                    hy > bb.top + 20 && hy < bb.bottom - 20)
+                    hy > bb.top + 20 && hy < bb.bottom - 20 &&
+                    // skeptic #23: DOM overlays (list chrome, tag chips)
+                    // can cover card headers - presses there are inert,
+                    // so rungs must land on the canvas itself
+                    document.elementFromPoint(hx, hy) ===
+                        document.getElementById('mapPane'))
                     return { i: rc.i, hx: hx, hy: hy };
             }
             return null; }""")
