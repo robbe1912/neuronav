@@ -1,7 +1,9 @@
 # AGENTS.md — working ON neuronav
 
-Local code-intelligence tool: vector recall (chroma + Ollama), call/signal
-graph, clusters, dead-code tiers, 3D visualizer, stdio MCP server. Python 3.11,
+Local code-intelligence tool: vector recall (chroma + a pluggable embed
+provider — Ollama by default or any OpenAI-compatible `/embeddings` endpoint,
+issue #17), call/signal graph, clusters, dead-code tiers, 3D visualizer, stdio
+MCP server. Python 3.11,
 stdlib-first; heavy deps: chromadb/httpx (vector store + embed transport), mcp
 (stdio server), numpy/networkx/scipy/scikit-learn (the cluster/graph math the
 read tools ride), plus the pinned C++ front-end pair tree-sitter==0.26.0 /
@@ -44,18 +46,19 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 
 | module | role |
 |---|---|
-| `nav.py` | config resolution, chroma collection, embedding client (Ollama), rescan/import/export-base, CLI |
+| `nav.py` | config resolution, chroma collection, embed client (provider-pluggable: ollama/openai wires, issue #17), rescan/import/export-base, CLI |
 | `graph.py` | file/fn symbol graph, per-fn IO extraction, dead-code tiers |
-| `extractors/` | per-language parsers behind a registry (`gdscript.py`, `python.py`, `model.py` dataclasses) |
+| `extractors/` | per-language parsers behind a registry (`gdscript.py`, `python.py`, `cpp.py` — tree-sitter-cpp front-end, `model.py` dataclasses) |
 | `clusters.py` | Louvain + labeler + crosstalk (imported lazily) |
-| `explore.py` | one-call orientation tool (codegraph-discipline: slices + flow + budget) |
+| `explore.py` | one-call orientation tool (codegraph-discipline: slices + flow + budget; one `clusters()` pass feeds both stages, issue #44) |
 | `server.py` | FastMCP stdio server; read-only tools carry `readOnlyHint`, `rescan` is the write tool; read tools auto-rescan on worktree drift (stat gate, issue #19) |
 | `viz.py` | Python `_build_data` + ONE embedded JS template string -> `graph.html` |
 | `onboard.py` | one-command project onboarding (issue #27): `init`/`wire` write `<project>/.neuronav/config.json` + MCP entries — the install stays read-only, OS-agnostic pure stdlib |
-| `tools/` | dev gate + viewer: `qa_readability.py` (readability/declutter gate), `serve.py` (no-cache viewer) |
+| `tools/` | dev gate + viewer: `qa_readability.py` (readability/declutter gate), `serve.py` (no-cache viewer, exclusive bind + per-OS port-owner hint) |
 | `config/` | named config profiles; `config.json` (root, gitignored) is the default |
 | `vendor/three-0.160.0/` | vendored three.js core + 4 addons, embedded at build (see below) |
-| `tests/` | 11 self-contained suites + committed fixtures (see `tests/AGENTS.md`) |
+| `bench/` | recall benchmark: golden set, `run_bench.py`, committed results (`RESULTS.md`) — the numbers `docs/comparison.md` cites |
+| `tests/` | 15 self-contained suites + committed fixtures (see `tests/AGENTS.md`) |
 | `docs/map-spec-v2.md` | spec the named-wire map layer implements |
 
 ## viz.py template laws
@@ -126,8 +129,9 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_repomap` | repo_map budget/determinism/rank ordering on synthetic graphs | stdlib + numpy |
 | `test_cpphard` | C++ extractor edge cases (macro surface, pairing, dead tiers, determinism) | tree-sitter wheels (hermetic fixtures) |
 | `test_recall` | hybrid recall: BM25F/RRF fusion, ctx hops, degraded mode | chromadb import (hermetic, `NEURONAV_EMBED_FAKE=1`) |
+| `test_embedprov` | embed provider contract (issue #17): provider select/auto-detect, ollama+openai wire adapters, env-vs-config key precedence, 429 backoff | stdlib http.server stub + chromadb import |
 | `test_project_mode` | onboarding + config discovery precedence + viz-as-add-on (issue #27) | stdlib + chromadb import (hermetic temp trees) |
-| `test_viz` | 90-check Playwright harness (real Chrome) | playwright + chrome + a fresh bake |
+| `test_viz` | 103-check Playwright harness (real Chrome) | playwright + chrome + a fresh bake |
 
 Playwright harness gotchas: launch `channel="chrome"`; it serves `graph.html`
 on port 8931 — orphaned python/chrome processes from killed runs hold the
@@ -157,6 +161,12 @@ Visualizer work also gates through `tools/qa_readability.py` (see
 - `config/<name>.json` — alternate profiles, selected via `NEURONAV_CONFIG`
   (absolute path). Relative `"root"` values resolve against the config file's
   directory.
+- An explicit `NEURONAV_CONFIG` pointing at a missing file aborts at load, and
+  a rescan matching zero files aborts too (issue #41) — an explicit config is
+  a contract, not a hint; no silent fallback that re-points the walk.
+- `.neuroignore` beside the active config (one dir name per line, `#`
+  comments) extends `exclude_dirs` without touching the json (issue #36);
+  `onboard.py init` scaffolds one pre-seeded with `.tmp`/`.team_scratch`.
 - Consumers wire per-project MCP entries that pass `NEURONAV_CONFIG` in the
   server env (see `onboard.py wire`) — one install, many projects, zero install-side edits.
 - Scratch/test dirs MUST be in `exclude_dirs` or they pollute the self-index

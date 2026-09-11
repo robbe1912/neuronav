@@ -16,4 +16,6 @@ verbatim — it is the part that changes agent behavior.
   FIRST (one call replaces grep+read loops). Grep/Glob stay SECONDARY:
   exact-string search, known file paths, or when neuronav is not wired.
 - Setup if unwired: see this repo's neuronav wiring docs (`.neuronav/` or
-  equivalent) — needs a neuronav clone + Ollama with `qwen3-embedding:0.6b`.
+  equivalent) — needs a neuronav clone + an embedding backend (default
+  Ollama, `ollama pull qwen3-embedding:0.6b`; any OpenAI-compatible
+  `/embeddings` endpoint works too).

@@ -22,6 +22,7 @@ virtuals, test prefixes, tool bases) lives only in the per-language module.
 |----------|--------|---------|
 | `.gd`, `.tscn` | `gdscript.py` | `parse_gd`, `parse_tscn`, `parse`, `ENTRY_RULES` |
 | `.py` | `python.py` | `parse`, `ENTRY_RULES` (dunder virtuals, `test_*`, module-level/`__main__`/fixture entry hints, `@property`/`@name.setter` accessors; consts = repo-module imports; graph side: `_scan_body_py` + import refs) |
+| `.h`, `.hpp`, `.cpp`, `.cc`, `.cxx` | `cpp.py` | `parse`, `ENTRY_RULES` (tree-sitter-cpp front-end + stdlib macro-surface pass: `ClassDB::`/`GDVIRTUAL` registration binds, `ADD_SIGNAL`/`ADD_PROPERTY`, `emit_signal`, `memnew`; `CPP_VIRTUALS` + registration roots; mention-count floor `CPP_MENTION_FLOOR` feeds the dead tier) |
 
 ## Interface contract
 
@@ -43,6 +44,11 @@ An extractor module must expose:
    | `name_literals: set[name]` | file-level StringName defaults (`&"m"`) and exported `*method*` var defaults (`"m"`) that may dispatch dynamically |
    | `init_calls: set[name]` | bare calls inside class-level var initializer expressions (run at instantiation) |
    | `entry_hints: set[name]` | parse-declared entry funcs (`@rpc` decorators, inline `set(v):`/`get():` property-accessor blocks) — yielded as roots by an entry rule |
+   | `imported_modules: set[str]` | python `import x` — keeps the module's funcs alive as a unit (conservative) |
+   | `from_imports: set[(mod, name)]` | python `from x import y` — binds only y (plus the receiver const) |
+   | `globals: dict[name -> type]` | C++ file-scope variables — unused statics are honest dead-code material |
+   | `aliases: dict[name -> type text]` | C++ `typedef`/`using` declarations |
+   | `private_members: set[name]` | C++ members declared under a private access region (stronger dead candidates) |
 
   Scene-like formats additionally fill `attached_script` (first script,
   kept for viz.py), `scripts` (ALL script ext_resources — handlers may live

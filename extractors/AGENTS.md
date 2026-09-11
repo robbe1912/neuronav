@@ -8,10 +8,11 @@ Full field contract: `extractors/README.md`.
 
 | module | role |
 |---|---|
-| `__init__.py` | registry: `EXTENSIONS` maps suffix -> module (`.gd`/`.tscn` -> `gdscript`, `.py` -> `python`); `registry_for(suffix)` returns module or None |
+| `__init__.py` | registry: `EXTENSIONS` maps suffix -> module (`.gd`/`.tscn` -> `gdscript`, `.py` -> `python`, `.h`/`.hpp`/`.cpp`/`.cc`/`.cxx` -> `cpp`); `registry_for(suffix)` returns module or None |
 | `model.py` | language-neutral dataclasses `FileSym` / `Func` — the parse output contract |
 | `gdscript.py` | `.gd` + `.tscn` parser, entry-point rules, IO surface scan |
-| `python.py` | `.py` parser, entry-point rules, import/member facts |
+| `python.py` | `.py` parser, entry-point rules, import/member facts; fn bodies sliced by AST spans (column-0 string lines no longer truncate them) |
+| `cpp.py` | `.h`/`.hpp`/`.cpp`/`.cc`/`.cxx` parser: tree-sitter-cpp front-end + stdlib macro-surface pass (ClassDB/GDVIRTUAL registration harvest, ADD_SIGNAL/ADD_PROPERTY, emit_signal, memnew) |
 
 ## The contract
 
@@ -28,7 +29,9 @@ every registered module — dead-code reachability starts there.
 signals, `attached_script` (first script of a .tscn — viz reads it),
 `scripts` (all ext_resources), instances, connections, members (gates `var`
 edges), consts (name -> repo relpath), name_literals, init_calls,
-entry_hints (@rpc etc), imported_modules, from_imports.
+entry_hints (@rpc etc), imported_modules, from_imports; C++ additionally
+fills `globals` (file-scope vars), `aliases` (typedef/using), and
+`private_members` (access-region members — stronger dead candidates).
 
 ## Dead-code exemptions (review-vs-likely tiers live in graph.py, fed from here)
 
@@ -59,6 +62,16 @@ sets ship with the language module:
   really dispatches the name.
 - `python.PY_VIRTUALS` — dunder dispatch (`__init__`, `__enter__`,
   `__getitem__`, ...).
+- `cpp.CPP_VIRTUALS` — engine-dispatched virtuals on engine bases; the
+  registration surface (`ClassDB::bind_method` / `bind_static_method` /
+  `bind_vararg_method`, `GDVIRTUAL` macro declarations) yields roots.
+  Files using the dynamic surface (`cpp.CPP_DYNAMIC_RE`: ClassDB,
+  GDVIRTUAL, ADD_SIGNAL, ADD_PROPERTY, emit_signal) classify their
+  unreachable funcs `review`, mirroring the .gd dispatch rule.
+- Mention-count corroboration (issue #20): a `likely`-dead C++ name
+  still mentioned elsewhere in the corpus at least
+  `cpp.CPP_MENTION_FLOOR` (2) times stays `review` — names cited via
+  strings/macros are not deletion fodder.
 
 `test_selfindex.py` pins the meta-invariant: on this repo, `likely`-dead is
 zero and server.py's MCP handlers stay in `review`.
@@ -66,7 +79,9 @@ zero and server.py's MCP handlers stay in `review`.
 ## Adding a language
 
 1. `extractors/<lang>.py` with `parse(path, rel) -> FileSym` + `ENTRY_RULES`
-   (follow `gdscript.py` / `python.py`).
+   (follow `python.py` for a stdlib-AST parser, `cpp.py` for a
+   tree-sitter front-end + regex macro pass; `gdscript.py` for the
+   scene-format variant).
 2. Register suffixes in `EXTENSIONS` (`__init__.py`).
 3. Add the suffixes to the config `extensions` list (`nav.EXTS` gates the
    walk).

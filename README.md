@@ -1,4 +1,6 @@
 # neuronav
+[![CI](https://github.com/robbe1912/neuronav/actions/workflows/ci.yml/badge.svg)](https://github.com/robbe1912/neuronav/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Local code-intelligence for AI coding agents: vector search + structural code
 graph + an interactive 3D map, exposed as a stdio MCP server. Standalone repo -
@@ -41,10 +43,16 @@ rescans after a ~2s quiet debounce.
 ## Prerequisites
 
 - Python 3.11+ (venv)
-- Ollama running locally with an embedding model: `ollama pull qwen3-embedding:0.6b`
+- An embedding backend. Default: Ollama running locally —
+  `ollama pull qwen3-embedding:0.6b`. Any OpenAI-compatible
+  `/embeddings` endpoint works too (vLLM, LM Studio, llama.cpp server,
+  Ollama's own `/v1` layer): point `embed_url` at it and, if it needs a
+  key, set `NEURONAV_EMBED_KEY` (env beats the config's `embed_api_key`,
+  so secrets stay out of tracked files). See `config/AGENTS.md`.
 - `pip install chromadb httpx "mcp<2" numpy networkx scipy scikit-learn` (into the venv)
 
-Embeddings never leave the machine. Queries need Ollama up; indexing needs it too.
+The default setup keeps embeddings on the machine; queries and indexing
+both need the backend reachable.
 
 ## Install (standalone checkout)
 
@@ -64,10 +72,13 @@ python /path/to/neuronav/onboard.py wire --index
 ```
 
 That's the whole setup: it writes `<project>/.neuronav/config.json`
-(walk-everything defaults, extensions = every registered extractor suffix),
-appends `.neuronav/` to the project's `.gitignore`, indexes the tree, bakes
-the map, and wires MCP entries (`.mcp.json` for Claude Code, `opencode.json`
-when present) with `NEURONAV_CONFIG` pinned to the project-local config.
+(walk-everything defaults, extensions = every registered extractor suffix)
+plus a `.neuroignore` beside it (one dir-name-per-line excludes, pre-seeded
+with the `.tmp`/`.team_scratch` scratch conventions — edit freely, no json
+surgery), appends `.neuronav/` to the project's `.gitignore`, indexes the
+tree, bakes the map, and wires MCP entries (`.mcp.json` for Claude Code,
+`opencode.json` when present) with `NEURONAV_CONFIG` pinned to the
+project-local config.
 **The neuronav install stays read-only** — nothing about a project is stored
 inside it, so one install serves any number of projects and the package is
 `npx`-shaped (run the tool against a repo, never edit the package).
@@ -76,7 +87,10 @@ Config discovery when you run `nav.py`/`server.py` yourself:
 `NEURONAV_CONFIG` env → `<cwd>/.neuronav/config.json` (the project-local
 one `onboard.py init` writes) → `config.json` next to `nav.py` *only when
 cwd is the checkout* (machine-local default) → pure defaults (root = cwd,
-walk everything). Read tools auto-rescan on worktree drift, so an explicit
+walk everything). An explicit `NEURONAV_CONFIG` that points at a missing
+file aborts at load, and a rescan that matches zero files aborts too — no
+silent fallback that quietly re-points the walk and purges the previous
+profile's entries. Read tools auto-rescan on worktree drift, so an explicit
 `rescan()` is only needed after big refactors. Upgrading from an install
 whose state sat machine-local? Nothing moves automatically: the next rescan
 builds a fresh `.neuronav/` store (one-time re-embed), or set `state_dir`
@@ -114,9 +128,15 @@ self-contained `graph.html` (`tools/serve.py` serves it, `tools/qa_readability.p
 gates it). Removing `viz.py` + `vendor/` strips it cleanly — `onboard.py --index`
 skips the bake with a note, the MCP `visualize()` tool answers with a
 pointer instead of a bake, and every other tool keeps working.
-Hover = 1-hop greyout, focus mode with animated call direction, strata
-(height = call depth from entry points), cluster supernodes, cycles and
-dead-code lenses, crosstalk corridors.
+Hover = 1-hop greyout, focus mode with animated call direction, live
+search with highlighted matches + click-to-focus on hubs and function
+tiers, strata (height = call depth from entry points), cluster supernodes,
+cycles and dead-code lenses, crosstalk corridors.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) — conventional commits, the suite
+gate, extractor rules. Every change lands via pull request.
 
 ## Troubleshooting
 
@@ -136,3 +156,10 @@ dead-code lenses, crosstalk corridors.
   freshness rescan could not run (embedding backend down); read tools keep
   answering from the current index and retry is suppressed for 60s. Start
   Ollama; the gate recovers by itself or via an explicit `rescan()`.
+
+- `NEURONAV_CONFIG points at '<path>', which does not exist` — deliberate
+  abort, not a fallback: the explicit var is a contract. Unset it or point
+  it at a real config json (`onboard.py init` writes one).
+- `rescan found 0 files under root=...` — the config matches nothing
+  (typo'd `include_dirs`/`extensions`); fix the config instead of
+  accepting an empty index.
