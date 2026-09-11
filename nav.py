@@ -85,9 +85,9 @@ def _apply_config(path: Path | None) -> None:
     # project-local / no-config defaults walk everything (issue #27); the
     # legacy install-config default keeps the original target-repo shape
     _walk_all = path is None or (path.parent.name == ".neuronav")
-    INCLUDE_DIRS = tuple(cfg.get("include_dirs", (".",) if _walk_all else ("scripts", "scenes", "VFX", "ai", "tests", "tools")))
+    INCLUDE_DIRS = tuple(cfg.get("include_dirs", WALK_DEFAULTS["include_dirs"] if _walk_all else ("scripts", "scenes", "VFX", "ai", "tests", "tools")))
     EXTS = set(cfg.get("extensions", sorted(_REGISTERED) if _walk_all else (".gd", ".tscn")))
-    EXCLUDE_DIRS = frozenset(cfg.get("exclude_dirs", (".git", "__pycache__", ".venv", ".neuronav", "node_modules") if _walk_all else (".git", "__pycache__")))
+    EXCLUDE_DIRS = frozenset(cfg.get("exclude_dirs", WALK_DEFAULTS["exclude_dirs"] if _walk_all else (".git", "__pycache__")))
     EXCLUDE_DIRS |= _neuroignore(path)
     EMBED_URL = str(cfg.get("embed_url", "http://127.0.0.1:11434/api/embed"))
     EMBED_MODEL = str(cfg.get("embed_model", "qwen3-embedding:0.6b"))
@@ -142,6 +142,20 @@ def _neuroignore(path: Path | None) -> frozenset[str]:
              if ln.strip() and not ln.lstrip().startswith("#")}
     return frozenset(n for n in names
                      if n not in ("", ".", "..") and "/" not in n and "\\" not in n)
+# walk-everything defaults shared by the no-config / project-local legs
+# (issue #27) and the onboard scaffold — one literal, three consumers.
+WALK_DEFAULTS = {
+    "include_dirs": (".",),
+    "exclude_dirs": (".git", "__pycache__", ".venv", ".neuronav", "node_modules"),
+}
+
+
+def use_config(path: Path) -> None:
+    """Point this process and its subprocesses at a config profile:
+    env first so children inherit, then rebind the module globals."""
+    os.environ["NEURONAV_CONFIG"] = str(path)
+    _apply_config(path)
+
 
 
 ROOT: Path
@@ -715,8 +729,7 @@ if __name__ == "__main__":
         if not cfg_file.is_file():
             print(f"config not found: {cfg_file}", file=sys.stderr)
             sys.exit(2)
-        os.environ["NEURONAV_CONFIG"] = str(cfg_file)
-        _apply_config(cfg_file)
+        use_config(cfg_file)
         argv = argv[2:]
     cmd = argv[0] if argv else "rescan"
     if cmd == "rescan":
