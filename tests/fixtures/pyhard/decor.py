@@ -12,6 +12,8 @@ class Counter:
     def __init__(self):
         self.n = 0
 
+#- @total defines func
+#- entry total
     @property
     def total(self) -> int:
         """Read via ``c.total`` — framework-dispatched, never called."""
@@ -33,10 +35,15 @@ class Counter:
         return obj
 
 
+#- @unused_helper defines func
+#- @unused_helper dead
 def unused_helper() -> int:
     return -1
 
 
+#- @use_all defines func
+#- @use_all calls @describe
+#- @use_all calls @with_start
 def use_all(c: Counter) -> str:
     c.total = 10  # attribute write fires the setter
     fresh = Counter.with_start(4)  # classmethod via ordinary call syntax

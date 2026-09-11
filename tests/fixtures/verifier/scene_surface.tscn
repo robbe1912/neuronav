@@ -1,0 +1,15 @@
+; Synthetic scene-wiring fixture for the verifier (issue #66): PackedScene
+; instancing has no committed coverage; script/instance/connection facts.
+;- script scene_helper.gd
+;- instance panel.tscn
+;- connection pressed -> _on_pressed
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scene_helper.gd" id="1"]
+[ext_resource type="PackedScene" path="res://panel.tscn" id="2"]
+
+[node name="Surface" type="Control"]
+
+[node name="Panel" parent="." instance=ExtResource("2")]
+
+[connection signal="pressed" from="." to="." method="_on_pressed"]

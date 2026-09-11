@@ -79,5 +79,9 @@ An extractor module must expose:
    language's call/emit syntax differs, extend it behind a per-format
    check keyed on `fs.ext` — parsing stays in the extractor, edge
    semantics stay in the graph.
-5. Run: `python -X utf8 -c "import graph; g = graph.get_graph(rebuild=True); print(g.dead_code()['total'])"`
+5. Add an annotated fixture: `//-`-shaped goal comments (`@fn calls @tgt`,
+   `signal x`, ...) in a synthetic source under `tests/fixtures/` —
+   `tests/test_verifier.py` checks them against `parse()` output
+   hermetically (no graph/config needed). Grammar: suite header.
+6. Run: `python -X utf8 -c "import graph; g = graph.get_graph(rebuild=True); print(g.dead_code()['total'])"`
    and compare edges/dead against the previous build.

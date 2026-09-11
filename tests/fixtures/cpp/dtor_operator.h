@@ -2,10 +2,13 @@
 // harvest as Funcs on the inline path (qualified defs already worked).
 class DtorOp {
 public:
+//- member total : int
 	int total = 0;
 
+//- @~DtorOp defines func
 	~DtorOp() { total = 0; }
 
+//- @operator+ defines func
 	DtorOp operator+(const DtorOp &p_other) const {
 		DtorOp r;
 		r.total = total + p_other.total;

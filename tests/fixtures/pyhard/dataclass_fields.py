@@ -11,17 +11,25 @@ from vec2 import Vec2
 
 @dataclass
 class Move:
+#- member delta : Vec2
     delta: Vec2 = None
+#- member label : str
     label: str = ""
 
+#- @length defines func
+#- @length calls @norm
     def length(self) -> float:
         return self.delta.norm()
 
 
+#- @use_move defines func
+#- @use_move calls @length
 def use_move(m: Move) -> str:
     return f"{m.length():.1f} {m.label}"
 
 
+#- @unused_move defines func
+#- @unused_move dead
 def unused_move() -> int:
     return 2
 

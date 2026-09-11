@@ -1,12 +1,17 @@
 [gd_scene load_steps=4 format=3]
 
+;- script hud.gd
 [ext_resource type="Script" path="res://hud.gd" id="1"]
+;- script extra.gd
 [ext_resource type="Script" path="res://extra.gd" id="2"]
 
 [node name="Main" type="Control"]
 
 [node name="Timer" type="Timer" parent="."]
 
+;- connection pressed -> _on_pressed
 [connection signal="pressed" from="Button" to="." method="_on_pressed"]
+;- connection extra_ready -> _on_extra
 [connection signal="extra_ready" from="Extra" to="." method="_on_extra"]
+;- connection timeout -> _on_missing
 [connection signal="timeout" from="Timer" to="." method="_on_missing"]
