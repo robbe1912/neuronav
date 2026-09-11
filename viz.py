@@ -8390,6 +8390,16 @@ mapPane.addEventListener("pointerup", e => {
       };
       if (onInk(mapDownPt.wx, mapDownPt.wy))
         mapJitterHit = { x: mapDownPt.wx, y: mapDownPt.wy };
+      else {
+        // [owner r5] click slop: the jitter latch rescues INK picks,
+        // but every other target died on >4px drift - the whole click
+        // was swallowed as a pan, so card headers stopped refocusing
+        // under real hands. Undo the sub-slop pan and let the click
+        // resolve through the normal path at the release point.
+        mapPX = mapDrag.px; mapPY = mapDrag.py;
+        mapClampView(); drawMapPane();
+        mapDragged = false;
+      }
     }
   }
   mapDrag = null;

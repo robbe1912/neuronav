@@ -3174,6 +3174,47 @@ def run_tests():
         else:
             print("SKIP replace-restore - no trunk pin")
 
+        # [issue #85 owner r5] the click-slop law: a real hand drifts
+        # 5-12px between press and release - before the slop restore
+        # every drifted card click was swallowed as a pan and the 3D
+        # camera never refocused (owner: "does not move the camera").
+        # Runs after the tail for the same direction-inheritance reason
+        # as the stale-list block above it.
+        drift_card = page.evaluate("""() => {
+            const d = window.__dbg;
+            const bb = document.getElementById('mapPane')
+                .getBoundingClientRect();
+            for (const rc of d.mapRects) {
+                if (rc.i === d.focusFileIdx || !rc.w || !rc.h) continue;
+                const hx = (rc.x + rc.w / 2 - d.mapPX) * d.mapZ + bb.left;
+                const hy = (rc.y + 11 - d.mapPY) * d.mapZ + bb.top;
+                if (hx > bb.left + 20 && hx < bb.right - 20 &&
+                    hy > bb.top + 20 && hy < bb.bottom - 20)
+                    return { i: rc.i, hx: hx, hy: hy };
+            }
+            return null; }""")
+        if drift_card:
+            camA = page.evaluate(
+                "() => window.__dbg.camera.position.toArray()")
+            focA = page.evaluate("() => window.__dbg.focusFileIdx")
+            page.mouse.move(drift_card["hx"] - 4, drift_card["hy"] - 3)
+            page.mouse.down()
+            for k in range(1, 7):
+                page.mouse.move(drift_card["hx"] - 4 + k,
+                                drift_card["hy"] - 3 + k)
+                page.wait_for_timeout(12)
+            page.mouse.up()
+            page.wait_for_timeout(900)
+            camB = page.evaluate(
+                "() => window.__dbg.camera.position.toArray()")
+            focB = page.evaluate("() => window.__dbg.focusFileIdx")
+            dcam = max(abs(a - b) for a, b in zip(camA, camB))
+            check("drifted card click still refocuses",
+                  focB != focA and dcam > 1,
+                  f"{focA} -> {focB}, cam delta {dcam:.1f}")
+        else:
+            print("SKIP drifted card click - no second card on screen")
+
         # artifact: screenshot of the focused fn-layer state
         page.screenshot(path=str(SHOTS / "last_run.png"), scale="css", type="png")
         print("artifact: .tmp/shots/last_run.png")
