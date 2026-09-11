@@ -24,8 +24,8 @@ import re
 from collections import Counter, defaultdict, deque
 
 import nav
+from extractors.common import PY_CONTROL_KEYWORDS
 from extractors import registry_for
-from extractors.model import FileSym, Func  # noqa: F401  (re-export)
 # language fact needed by the dead-code tier heuristic (native dispatch names)
 from extractors.gdscript import VIRTUALS, GUT_ROOTS, ADDON_VIRTUALS, MANUAL_BASES, parse_gd, parse_tscn
 from extractors.python import PY_HOOKS  # stdlib dispatch hooks (dead-scan tier)
@@ -80,9 +80,7 @@ PY_SUBSCRIPT_CALL_RE = re.compile(
 PY_MODULE_ASSIGN_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*=\s*([a-z_]\w*)\s*\(")
 # imported_call(args).method( — registry_for(path.suffix).parse(...)
 PY_RESULT_CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\(([^()]*)\)\s*\.\s*([A-Za-z_]\w*)\s*\(")
-PY_NON_CALLS = {
-    "if", "for", "while", "elif", "return", "assert", "del", "print",
-    "lambda", "not", "await", "with", "except", "raise", "yield",
+PY_NON_CALLS = PY_CONTROL_KEYWORDS | {
     "in", "is", "and", "or", "nonlocal", "global", "import", "from",
     "len", "range", "str", "int", "float", "bool", "list", "dict", "set",
     "tuple", "isinstance", "issubclass", "type", "sorted", "reversed",

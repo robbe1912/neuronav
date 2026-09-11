@@ -15,7 +15,8 @@ from typing import Iterator
 
 # extractors are leaf parsers: they read their own file and never import
 # nav (nav -> extractors -> ... must never cycle back)
-from extractors.model import FileSym, Func
+from extractors.model import FileSym
+from extractors.common import entry_keys, merge_func, scan_indented_block
 
 TAB_WIDTH = 4
 
@@ -161,11 +162,7 @@ def _entry_rpc(fs: FileSym, ctx) -> Iterator[str]:
     """@rpc-decorated funcs are invoked over the network — entry roots."""
     if fs.ext != ".gd":
         return
-    for name in fs.entry_hints:
-        fn = fs.funcs.get(name)
-        if fn:
-            yield fn.key
-
+    yield from entry_keys(fs, fs.entry_hints)
 
 def _entry_engine_props(fs: FileSym, ctx) -> Iterator[str]:
     """_get_*/_set_* property accessors (and per-base native virtuals) on
@@ -307,43 +304,9 @@ def parse_gd(path: Path, rel: str) -> FileSym:
             # `set(v):` / `get():` accessor block under a class-level var —
             # parse as a rooted pseudo-func so its body's calls stay alive
             base = _indent(line)
-            j = body_start
-            body_lines: list[str] = []
-            # triple-quoted strings can contain column-0 content that
-            # only LOOKS like a dedent — same string-state tracking as
-            # the func body scan below
-            in_tq = False
-            while j < len(lines):
-                nxt = lines[j]
-                if in_tq:
-                    body_lines.append(nxt)
-                    if nxt.count('"""') % 2 == 1 or nxt.count("'''") % 2 == 1:
-                        in_tq = False
-                    j += 1
-                    continue
-                if nxt.strip() == "":
-                    body_lines.append(nxt)
-                    j += 1
-                    continue
-                if _indent(nxt) > base:
-                    body_lines.append(nxt)
-                    if nxt.count('"""') % 2 == 1 or nxt.count("'''") % 2 == 1:
-                        in_tq = True
-                    j += 1
-                    continue
-                break
+            body, j = scan_indented_block(lines, body_start, base, _indent)
             pname = f"_{kind}_{varname}"
-            body = "\n".join(body_lines)
-            if pname in fs.funcs:
-                prev = fs.funcs[pname]
-                fs.funcs[pname] = Func(
-                    path=rel, name=pname, line=prev.line,
-                    body=prev.body + "\n" + body,
-                )
-            else:
-                fs.funcs[pname] = Func(
-                    path=rel, name=pname, line=i + 1, body=body,
-                )
+            merge_func(fs.funcs, rel, pname, i + 1, body)
             fs.entry_hints.add(pname)
             i = j
             continue
@@ -402,45 +365,11 @@ def parse_gd(path: Path, rel: str) -> FileSym:
             if "\n" in header and not header.rstrip().endswith(":") and j < len(lines):
                 header += "\n" + lines[j]
                 j += 1
-            body_lines: list[str] = []
-            # triple-quoted strings can contain column-0 content that only
-            # LOOKS like a dedent — track string state while consuming
-            in_tq = False
-            while j < len(lines):
-                nxt = lines[j]
-                if in_tq:
-                    body_lines.append(nxt)
-                    if nxt.count('"""') % 2 == 1 or nxt.count("'''") % 2 == 1:
-                        in_tq = False
-                    j += 1
-                    continue
-                if nxt.strip() == "":
-                    body_lines.append(nxt)
-                    j += 1
-                    continue
-                if _indent(nxt) > base:
-                    body_lines.append(nxt)
-                    if nxt.count('"""') % 2 == 1 or nxt.count("'''") % 2 == 1:
-                        in_tq = True
-                    j += 1
-                    continue
-                break
-            body = "\n".join(body_lines)
+            body, j = scan_indented_block(lines, j, base, _indent)
             io_params, io_ret = _parse_signature(header, name)
-            if name in fs.funcs:
-                # inner classes may legally re-declare a func name; merge
-                # conservatively so edges from BOTH bodies survive
-                prev = fs.funcs[name]
-                fs.funcs[name] = Func(
-                    path=rel, name=name, line=prev.line,
-                    body=prev.body + "\n" + body,
-                    params=prev.params or io_params, ret=prev.ret or io_ret,
-                )
-            else:
-                fs.funcs[name] = Func(
-                    path=rel, name=name, line=i + 1, body=body,
-                    params=io_params, ret=io_ret,
-                )
+            # inner classes may legally re-declare a func name; merge
+            # conservatively so edges from BOTH bodies survive
+            merge_func(fs.funcs, rel, name, i + 1, body, params=io_params, ret=io_ret)
             i = j
             continue
         i += 1

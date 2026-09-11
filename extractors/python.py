@@ -22,7 +22,8 @@ import ast
 import re
 from pathlib import Path
 
-from extractors.model import FileSym, Func
+from extractors.common import PY_CONTROL_KEYWORDS, entry_keys, merge_func
+from extractors.model import FileSym
 
 CLASS_RE = re.compile(r"^(\s*)class\s+([A-Za-z_]\w*)\s*(?:\(([^)]*)\))?\s*:")
 DEF_RE = re.compile(r"^(\s*)(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(")
@@ -44,10 +45,7 @@ PLAIN_IMPORT_RE = re.compile(r"^\s*import\s+([\w.,\s]+)$")
 MAIN_GUARD_RE = re.compile(r"^(\s*)if\s+__name__\s*==\s*['\"]__main__['\"]\s*:")
 MODULE_CONST_RE = re.compile(r"^([A-Z][A-Z0-9_]*)\s*(?::[^=]*)?=(?!=)\s*(.*)$")
 MODULE_CALL_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*\(")
-MODULE_CALL_SKIP = {
-    "if", "for", "while", "elif", "return", "assert", "del", "print",
-    "lambda", "not", "await", "with", "except", "raise", "yield",
-}
+MODULE_CALL_SKIP = PY_CONTROL_KEYWORDS
 
 # stdlib/framework dispatch hooks: methods http.server-style machinery
 # invokes reflectively on a handler subclass (base resolves outside the
@@ -98,6 +96,16 @@ def _module_rel(mod: str, cur: Path) -> str:
     return ""
 
 
+
+
+def _buffer_list_rhs(lines: list[str], i: int, rhs: str) -> tuple[str, int]:
+    """Buffer a multi-line bracketed list RHS from ``lines[i]``;
+    -> (joined_rhs, next_index)."""
+    j = i + 1
+    while rhs.count("[") > rhs.count("]") and j < len(lines):
+        rhs += " " + lines[j].strip()
+        j += 1
+    return rhs, j
 def _split_names(spec: str) -> list[str]:
     out = []
     for chunk in spec.split(","):
@@ -279,13 +287,7 @@ def parse(path: Path, rel: str) -> FileSym:
                         break
                     j += 1
             body = "\n".join(lines[i:j])
-            prev = fs.funcs.get(name)
-            if prev is not None:  # same-name merge (overloads/inner defs)
-                fs.funcs[name] = Func(
-                    path=rel, name=name, line=prev.line, body=prev.body + "\n" + body
-                )
-            else:
-                fs.funcs[name] = Func(path=rel, name=name, line=i + 1, body=body)
+            merge_func(fs.funcs, rel, name, i + 1, body)
             # self.x members live INSIDE method bodies (consumed above) —
             # scan the slice: typed annotations and constructor calls
             if class_indents and class_indents[-1] < ind:
@@ -337,11 +339,7 @@ def parse(path: Path, rel: str) -> FileSym:
         # consumers import these without any in-repo call site. Buffer
         # multi-line list literals, then harvest the quoted names.
         if stripped.startswith("__all__") and "=" in stripped:
-            buf = stripped.split("=", 1)[1]
-            j = i + 1
-            while buf.count("[") > buf.count("]") and j < n:
-                buf += " " + lines[j].strip()
-                j += 1
+            buf, j = _buffer_list_rhs(lines, i, stripped.split("=", 1)[1])
             for em in re.finditer(r"[\"']([A-Za-z_]\w*)[\"']", buf):
                 fs.entry_hints.add(em.group(1))
             i = j
@@ -352,12 +350,7 @@ def parse(path: Path, rel: str) -> FileSym:
         # iterates the list) — list them as parse-declared entry points.
         # Buffer multi-line list literals before harvesting bare idents.
         if stripped.startswith("ENTRY_RULES") and "=" in stripped:
-            rhs = stripped.split("=", 1)[1]
-            buf = rhs
-            j = i + 1
-            while buf.count("[") > buf.count("]") and j < n:
-                buf += " " + lines[j].strip()
-                j += 1
+            buf, j = _buffer_list_rhs(lines, i, stripped.split("=", 1)[1])
             for em in re.finditer(r"(?<![\w.])([A-Za-z_]\w*)(?!\s*\()", buf):
                 fs.entry_hints.add(em.group(1))
             i = j
@@ -422,10 +415,7 @@ def _entry_module(fs: FileSym, ctx):
     # fixture funcs run via the test runner — entry_hints holds both
     if fs.ext != ".py":
         return
-    for name in fs.entry_hints:
-        fn = fs.funcs.get(name)
-        if fn is not None:
-            yield fn.key
+    yield from entry_keys(fs, fs.entry_hints)
 
 
 ENTRY_RULES = [_entry_virtuals, _entry_tests, _entry_module]
