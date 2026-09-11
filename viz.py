@@ -6594,22 +6594,137 @@ function mapRender() {
     g.roster.rows.forEach((r, k) => rowOf.set(i + "\x00" + r.nm, k));
   });
   // port spreads: box-level for spines/underlays/row-less wires, row-level
-  // for wires that own a roster row
-  const outN = new Map(), inN = new Map(), outIx = new Map(), inIx = new Map();
-  edges.forEach(l => {
-    outN.set(l.s, (outN.get(l.s) || 0) + 1);
-    inN.set(l.t, (inN.get(l.t) || 0) + 1);
-  });
-  const rowTotOut = new Map(), rowTotIn = new Map(),
-        rowIxOut = new Map(), rowIxIn = new Map();
+  // ---- individual named wires (tier-2 top-1/pair): terminate ON their fn rows
+  // Blueprint-reroute buses (2D twin of the 3D bus law): named wires of the
+  // same type converging on ONE fn row (>=2) merge at a junction dot parked
+  // in open air beside the destination box; members route to the junction
+  // (arrowless), ONE shared stub delivers the whole bus into the fn row with
+  // a single arrowhead. Shared-destination only (McGee & Dingliana 2012).
+  // [issue #78] moved ahead of the port ledger: the ledger's pre-pass needs
+  // bus membership to skip destination asks for bus members (their terminus
+  // is the junction, not the box edge).
+  const busGroups = new Map();
   indiv.forEach(w => {
-    const sr = rowOf.get(w.sf + "\x00" + w.sfn);
-    if (sr === undefined) outN.set(w.sf, (outN.get(w.sf) || 0) + 1);
-    else rowTotOut.set(w.sf + "_" + sr, (rowTotOut.get(w.sf + "_" + sr) || 0) + 1);
-    const dr = rowOf.get(w.df + "\x00" + w.dfn);
-    if (dr === undefined) inN.set(w.df, (inN.get(w.df) || 0) + 1);
-    else rowTotIn.set(w.df + "_" + dr, (rowTotIn.get(w.df + "_" + dr) || 0) + 1);
+    if (w.ty === "var") return;         // var wires keep their own dot terminus
+    const k = w.df + "\x00" + w.dfn + "\x00" + w.ty;
+    let a = busGroups.get(k);
+    if (!a) busGroups.set(k, a = []);
+    a.push(w);
   });
+  const busOf = new Map();               // wire record -> its bus
+  const buses = [];                      // junction records for paint + audit
+  busGroups.forEach(a => {
+    if (a.length < 2) return;
+    const B = place.get(a[0].df);
+    if (!B) return;
+    const dRow = rowOf.get(a[0].df + "\x00" + a[0].dfn);
+    if (dRow === undefined) return;      // row-less dests keep individual routes
+    // approach side: count source boxes left vs right of the destination
+    let Lc = 0, Rc = 0;
+    a.forEach(w => {
+      const A0 = place.get(w.sf);
+      if (!A0) return;
+      if (A0.x + A0.w <= B.x) Lc++;
+      else if (A0.x >= B.x + B.w) Rc++;
+    });
+    const side = Lc >= Rc ? -1 : 1;
+    const jy = B.y + NH + dRow * RH + RH / 2;      // destination row centre
+    // junction must sit in open air: nudge outward twice, else scan the
+    // inter-box gaps at 2px pads - depth-varied chunk-row neighbours sit
+    // 10-15px apart, and the old 4px pads rejected the whole gap, leaving
+    // 9-wire arrival fans where a bus belonged (P3 root cause)
+    const jHit = (x, pad) => rects.some(r =>
+      x > r.x0 - pad && x < r.x1 + pad && jy > r.y0 - 3 && jy < r.y1 + 3);
+    let jx = side < 0 ? B.x - 14 : B.x + B.w + 14;
+    if (jHit(jx, 4)) jx = side < 0 ? jx - 10 : jx + 10;
+    if (jHit(jx, 4)) {
+      let ok = false;
+      for (let s = 4; s <= 44 && !ok; s += 2) {
+        for (const dx of (side < 0 ? [-s, s] : [s, -s])) {
+          const c = B.x + B.w * (side < 0 ? 0 : 1) + (side < 0 ? -14 : 14) + dx;
+          if (!jHit(c, 2)) { jx = c; ok = true; break; }
+        }
+      }
+      if (!ok) return;
+    }
+    const bus = { df: a[0].df, dfn: a[0].dfn, ty: a[0].ty,
+                  x: jx, y: jy, n: a.length, wires: a };
+    buses.push(bus);
+    a.forEach(w => busOf.set(w, bus));
+  });
+  // [issue #78] port ledger: every box-edge termination registers (box, edge
+  // line, caller id, target centre x); ONE packing pass then assigns evenly
+  // spaced, target-ORDERED ports per line. The old per-category (k+1)/(n+1)
+  // spreads had independent denominators per counter family, so a box-level
+  // port and a last-row port could land on the SAME edge line at the SAME
+  // fraction (audit: coincident ports, minGap 0) and port order ignored
+  // where targets sat. Lookups key on the caller's stable id (pass + array
+  // index), not an ordinal: per-box ordinal counters interleave asks across
+  // several edge lines of one box, so any drift between this pre-pass and
+  // the routing passes landed an ask on a foreign ordinal and the fraction
+  // fallback then put two termini on the same pixel. Same filters + same
+  // array order => same id in both passes; the hash-spread fallback (a miss
+  // is a replica bug) cannot coincide with a packed slot by construction.
+  const portLedger = new Map();          // "i|y" -> [{id, tx}]
+  const portXY = new Map();              // "i|y|id" -> x offset from box left
+  const portAsk = (i, y, id, tx) => {
+    const k = i + "|" + (y | 0);
+    let a = portLedger.get(k);
+    if (!a) portLedger.set(k, a = []);
+    a.push({ id, tx });
+  };
+  const portX = (i, y, id, A) => {
+    const x = portXY.get(i + "|" + (y | 0) + "|" + id);
+    if (x !== undefined) return A.x + x;
+    let h = 0;
+    for (let c = 0; c < id.length; c++) h = (h * 31 + id.charCodeAt(c)) % 9973;
+    return A.x + 4 + (h / 9973) * Math.max(8, A.w - 8);
+  };
+  {
+    edges.forEach((l, ix) => {            // underlay pass (attach/inst only)
+      if (l.ty !== "attach" && l.ty !== "inst") return;
+      const A = place.get(l.s), B = place.get(l.t);
+      if (!A || !B) return;
+      const sy = A.y + A.h;
+      const sameRow = A.row === B.row;
+      const ty = (sameRow || B.y + B.h <= sy) ? B.y + B.h : B.y;
+      portAsk(l.s, sy, "u" + ix + "s", B.x + B.w / 2);
+      portAsk(l.t, ty, "u" + ix + "d", A.x + A.w / 2);
+    });
+    edges.forEach((l, ix) => {            // spine pass (call/signal only)
+      if (l.ty === "attach" || l.ty === "inst") return;
+      const A = place.get(l.s), B = place.get(l.t);
+      if (!A || !B) return;
+      const sy = A.y + A.h;
+      const sameRow = A.row === B.row;
+      const ty = (sameRow || B.y + B.h <= sy) ? B.y + B.h : B.y;
+      portAsk(l.s, sy, "s" + ix + "s", B.x + B.w / 2);
+      portAsk(l.t, ty, "s" + ix + "d", A.x + A.w / 2);
+    });
+    indiv.forEach((w, ix) => {            // named wires: box/row terminations
+      const A = place.get(w.sf), B = place.get(w.df);
+      if (!A || !B) return;
+      const sRow = rowOf.get(w.sf + "\x00" + w.sfn);
+      const dRow = rowOf.get(w.df + "\x00" + w.dfn);
+      const sameRow = A.row === B.row;
+      const sy = sRow === undefined ? A.y + A.h : A.y + NH + (sRow + 1) * RH;
+      portAsk(w.sf, sy, "w" + ix + "s", B.x + B.w / 2);
+      if (busOf.get(w)) return;           // bus member: junction is terminus
+      const upW = !sameRow && B.y + B.h <= sy;
+      portAsk(w.df, dRow === undefined
+        ? (sameRow || upW ? B.y + B.h : B.y)
+        : (sameRow || upW ? B.y + NH + (dRow + 1) * RH : B.y + NH + dRow * RH),
+        "w" + ix + "d", A.x + A.w / 2);
+    });
+    portLedger.forEach((a, k) => {        // pack: target order, even pitch
+      const i = +k.split("|")[0];
+      const A2 = geo.get(i);
+      const inset = 4, len = Math.max(8, A2.w - 2 * inset);
+      a.sort((p, q) => p.tx - q.tx || (p.id < q.id ? -1 : p.id > q.id ? 1 : 0));
+      const pitch = Math.max(1.2, Math.min(24, len / a.length));
+      a.forEach((rec, ix2) => portXY.set(k + "|" + rec.id, inset + pitch * (ix2 + 0.5)));
+    });
+  }
   const underlays = [], spines = [], wires = [];
   const routeOrtho = (A, B, sy, ty, sameRow, sx0, tx0, bus, lanePad, yPad) => {
     // long hauls cross every chunk between the two rows — hand the router
@@ -6734,7 +6849,7 @@ function mapRender() {
   };
   // 1) attach/inst underlays: anonymous + demoted (section 1) - 1px, alpha
   //    0.40, T-junction entry, routed FIRST so named wires claim lanes first
-  edges.forEach(l => {
+  edges.forEach((l, ix) => {
     if (l.ty !== "attach" && l.ty !== "inst") return;
     const A = place.get(l.s), B = place.get(l.t);
     if (!A || !B) return;
@@ -6745,10 +6860,8 @@ function mapRender() {
     const sameRow = A.row === B.row;
     // up-hauls enter the target's bottom edge (the source sits below it)
     const ty = (sameRow || B.y + B.h <= sy) ? B.y + B.h : B.y;
-    const sIx = outIx.get(l.s) || 0; outIx.set(l.s, sIx + 1);
-    const tIx = inIx.get(l.t) || 0; inIx.set(l.t, tIx + 1);
-    const sx0 = A.x + A.w * (sIx + 1) / ((outN.get(l.s) || 1) + 1);
-    const tx0 = B.x + B.w * (tIx + 1) / ((inN.get(l.t) || 1) + 1);
+    const sx0 = portX(l.s, sy, "u" + ix + "s", A);
+    const tx0 = portX(l.t, ty, "u" + ix + "d", B);
     const ur = routeOrtho(A, B, sy, ty, sameRow, sx0, tx0, true);
     ur.flow = sameRow ? "same" : (ty > sy ? "down" : "up");
     underlays.push(Object.assign({ s: l.s, t: l.t, ty0: l.ty }, ur));
@@ -6759,7 +6872,7 @@ function mapRender() {
   //    corridor [F13]. wty = wire TYPE (sp.ty stays the y-coordinate that
   //    routeOrtho returns; the old build let the y overwrite l.ty, so every
   //    spine painted call-gray - the "near-identical gray wires" complaint).
-  edges.forEach(l => {
+  edges.forEach((l, ix) => {
     if (l.ty === "attach" || l.ty === "inst") return;
     const A = place.get(l.s), B = place.get(l.t);
     if (!A || !B) return;
@@ -6769,10 +6882,8 @@ function mapRender() {
     const sameRow = A.row === B.row;
     // up-hauls enter the target's bottom edge (the source sits below it)
     const ty = (sameRow || B.y + B.h <= sy) ? B.y + B.h : B.y;
-    const sIx = outIx.get(l.s) || 0; outIx.set(l.s, sIx + 1);
-    const tIx = inIx.get(l.t) || 0; inIx.set(l.t, tIx + 1);
-    const sx0 = A.x + A.w * (sIx + 1) / ((outN.get(l.s) || 1) + 1);
-    const tx0 = B.x + B.w * (tIx + 1) / ((inN.get(l.t) || 1) + 1);
+    const sx0 = portX(l.s, sy, "s" + ix + "s", A);
+    const tx0 = portX(l.t, ty, "s" + ix + "d", B);
     spines.push({ s: l.s, t: l.t, wty: l.ty, pair: l.s + "_" + l.t,
       amber: l.ty === "signal" && !(byPair.get(l.s + "_" + l.t) || []).length,
       sRow: A.row, tRow: B.row, sx0, tx0, sy, ty, sameRow,
@@ -6910,11 +7021,19 @@ function mapRender() {
       railSeed = Math.max(g.y0 + 3, Math.min(g.y1 - 3, railSeed));
       const rail = nextY(Math.min(P.x, Math.min(...ports)),
         Math.max(P.x, Math.max(...ports)), railSeed, g.y1, 5);
-      members.forEach(sp => {
+      members.forEach((sp, mk) => {
+        // [issue #78] the far rider's own terminus IS the trunk terminus
+        // (trunk routes to far.tx0/far.ty) - the trunk already delivers
+        // that port; a tap there would re-terminate on the same pixel
+        if (sp === far) { served.add(sp); return; }
+        // [issue #78] taps sharing one peel stagger their exit x (member
+        // order) so no two taps start on the same pixel at the peel dot
+        const ox = (mk - (members.length - 1) / 2) *
+          Math.max(2, Math.min(3, 12 / members.length));
         spines.push({ s: sp.s, t: sp.t, wty: sp.wty, pair: sp.pair,
           hub: "tap", tapBus: busRec, bez: false, tx: sp.tx0, ty: sp.ty,
           back: false, flow: dir === "same" ? "up" : dir,
-          pts: [[P.x, P.y], [P.x, rail.y], [sp.tx0, rail.y], [sp.tx0, sp.ty]] });
+          pts: [[P.x + ox, P.y], [P.x + ox, rail.y], [sp.tx0, rail.y], [sp.tx0, sp.ty]] });
         busRec.taps.push(spines[spines.length - 1]);
         served.add(sp);
         hubTaps++;
@@ -6986,77 +7105,27 @@ function mapRender() {
   // in open air beside the destination box; members route to the junction
   // (arrowless), ONE shared stub delivers the whole bus into the fn row with
   // a single arrowhead. Shared-destination only (McGee & Dingliana 2012).
-  const busGroups = new Map();
-  indiv.forEach(w => {
-    if (w.ty === "var") return;         // var wires keep their own dot terminus
-    const k = w.df + "\x00" + w.dfn + "\x00" + w.ty;
-    let a = busGroups.get(k);
-    if (!a) busGroups.set(k, a = []);
-    a.push(w);
-  });
-  const busOf = new Map();               // wire record -> its bus
-  const buses = [];                      // junction records for paint + audit
-  busGroups.forEach(a => {
-    if (a.length < 2) return;
-    const B = place.get(a[0].df);
-    if (!B) return;
-    const dRow = rowOf.get(a[0].df + "\x00" + a[0].dfn);
-    if (dRow === undefined) return;      // row-less dests keep individual routes
-    // approach side: count source boxes left vs right of the destination
-    let Lc = 0, Rc = 0;
-    a.forEach(w => {
-      const A0 = place.get(w.sf);
-      if (!A0) return;
-      if (A0.x + A0.w <= B.x) Lc++;
-      else if (A0.x >= B.x + B.w) Rc++;
-    });
-    const side = Lc >= Rc ? -1 : 1;
-    const jy = B.y + NH + dRow * RH + RH / 2;      // destination row centre
-    // junction must sit in open air: nudge outward twice, else scan the
-    // inter-box gaps at 2px pads - depth-varied chunk-row neighbours sit
-    // 10-15px apart, and the old 4px pads rejected the whole gap, leaving
-    // 9-wire arrival fans where a bus belonged (P3 root cause)
-    const jHit = (x, pad) => rects.some(r =>
-      x > r.x0 - pad && x < r.x1 + pad && jy > r.y0 - 3 && jy < r.y1 + 3);
-    let jx = side < 0 ? B.x - 14 : B.x + B.w + 14;
-    if (jHit(jx, 4)) jx = side < 0 ? jx - 10 : jx + 10;
-    if (jHit(jx, 4)) {
-      let ok = false;
-      for (let s = 4; s <= 44 && !ok; s += 2) {
-        for (const dx of (side < 0 ? [-s, s] : [s, -s])) {
-          const c = B.x + B.w * (side < 0 ? 0 : 1) + (side < 0 ? -14 : 14) + dx;
-          if (!jHit(c, 2)) { jx = c; ok = true; break; }
-        }
-      }
-      if (!ok) return;
-    }
-    const bus = { df: a[0].df, dfn: a[0].dfn, ty: a[0].ty,
-                  x: jx, y: jy, n: a.length, wires: a };
-    buses.push(bus);
-    a.forEach(w => busOf.set(w, bus));
-  });
-  indiv.forEach(w => {
+  indiv.forEach((w, ix) => {
     const A = place.get(w.sf), B = place.get(w.df);
     if (!A || !B) return;
     const sRow = rowOf.get(w.sf + "\x00" + w.sfn);
     const dRow = rowOf.get(w.df + "\x00" + w.dfn);
     const sameRow = A.row === B.row;   // chunk-row truth: fd wraps (see spines)
-    let sx0;
-    if (sRow === undefined) {
-      const sIx = outIx.get(w.sf) || 0; outIx.set(w.sf, sIx + 1);
-      sx0 = A.x + A.w * (sIx + 1) / ((outN.get(w.sf) || 1) + 1);
-    } else {
-      const kk = w.sf + "_" + sRow;
-      const sIx = rowIxOut.get(kk) || 0; rowIxOut.set(kk, sIx + 1);
-      sx0 = A.x + A.w * (sIx + 1) / ((rowTotOut.get(kk) || 1) + 1);
-    }
     const sy = sRow === undefined ? A.y + A.h : A.y + NH + (sRow + 1) * RH;
+    const sx0 = portX(w.sf, sy, "w" + ix + "s", A);
     const bus = busOf.get(w);
     if (bus) {
       // reroute member: source port -> junction dot. A 2px virtual box at
       // the junction keeps routeOrtho's lane/claim machinery authoritative.
-      const JB = { x: bus.x - 1, w: 2, y: bus.y - 1, h: 2 };
-      const wr = routeOrtho(A, JB, sy, bus.y, false, sx0, bus.x);
+      // [issue #78] members fan into the junction (per-member x offset,
+      // bus order) instead of every terminus stacking on the exact junction
+      // pixel - a tight fan reads as convergence, identical endpoints read
+      // as one wire.
+      const mi = bus.wires.indexOf(w);
+      const mOff = (mi - (bus.wires.length - 1) / 2) *
+        Math.min(4, 24 / bus.wires.length);
+      const JB = { x: bus.x - 1 + mOff, w: 2, y: bus.y - 1, h: 2 };
+      const wr = routeOrtho(A, JB, sy, bus.y, false, sx0, bus.x + mOff);
       wr.flow = bus.y > sy ? "down" : "up";
       wr.noArr = true;                   // the junction dot is the terminus
       wires.push(Object.assign({
@@ -7065,20 +7134,12 @@ function mapRender() {
       }, wr));
       return;
     }
-    let tx0;
-    if (dRow === undefined) {
-      const tIx = inIx.get(w.df) || 0; inIx.set(w.df, tIx + 1);
-      tx0 = B.x + B.w * (tIx + 1) / ((inN.get(w.df) || 1) + 1);
-    } else {
-      const kk = w.df + "_" + dRow;
-      const tIx = rowIxIn.get(kk) || 0; rowIxIn.set(kk, tIx + 1);
-      tx0 = B.x + B.w * (tIx + 1) / ((rowTotIn.get(kk) || 1) + 1);
-    }
     const upW = !sameRow && B.y + B.h <= sy;
     const ty = dRow === undefined
       ? (sameRow || upW ? B.y + B.h : B.y)
       : (sameRow || upW ? B.y + NH + (dRow + 1) * RH
                         : B.y + NH + dRow * RH);
+    const tx0 = portX(w.df, ty, "w" + ix + "d", B);
     // cardinal routing: two boxes side by side on the SAME row with a clear
     // corridor connect STRAIGHT ACROSS — exit one side edge, enter the other
     // (Unreal/Mermaid law: no dip-down-up detour for a horizontal neighbor).
@@ -7119,13 +7180,21 @@ function mapRender() {
     const dRow = rowOf.get(bus.df + "\x00" + bus.dfn);
     if (dRow === undefined) return;
     const ty = B.y + NH + dRow * RH;            // fn-row top = delivery port
-    const tx0 = B.x + B.w / 2;
+    // stubs sharing a destination fn row spread off centre deterministically
+    // (bus order) instead of stacking every arrival on the box centre
+    const lineMates = buses.filter(u =>
+      place.get(u.df) === B && u.dfn === bus.dfn);
+    const c = lineMates.indexOf(bus);
+    const spread = Math.min(14, B.w / (lineMates.length + 1));
+    const tx0 = B.x + B.w / 2 + (c - (lineMates.length - 1) / 2) * spread;
     wires.push({
       sf: bus.df, sfn: bus.dfn, df: bus.df, dfn: bus.dfn, ty: bus.ty,
       line: -1, up: false, pair: bus.df + "_bus", stub: true, busN: bus.n,
       mates: bus.wires.map(m =>
         nodes[m.sf].label + "::" + m.sfn + " \u2192 @" + m.line),
-      pts: [[bus.x, bus.y], [bus.x, ty], [tx0, ty]],
+      // [issue #78] stub departs just below the junction dot so it never
+      // shares a pixel with the centered member's arrival
+      pts: [[bus.x, bus.y + 2.5], [bus.x, ty], [tx0, ty]],
       bez: false, tx: tx0, ty, back: false, flow: "down",
     });
   });
