@@ -2032,6 +2032,20 @@ def run_tests():
                           f"{trunk3}, cover {cover3t}")
                     check("3d trunk emphasis resolves (pinCover)",
                           cover3t >= 2, f"cover {cover3t}")
+                    # [issue #84] endpoint law: both chain termini sit ON
+                    # the fn boxes the legs serve (owner: 'from the actual
+                    # start function to the actual end function'), not at
+                    # station dots on the file spheres
+                    epLaw = page.evaluate("""() => {
+                        const c = window.__dbg.pinChain || {};
+                        if (!c.boxA || !c.boxB) return null;
+                        const eq = (u, v) => u && v &&
+                            Math.abs(u[0]-v[0]) < 1e-6 &&
+                            Math.abs(u[1]-v[1]) < 1e-6 &&
+                            Math.abs(u[2]-v[2]) < 1e-6;
+                        return eq(c.ep0, c.boxA) && eq(c.ep1, c.boxB); }""")
+                    check("3d chain endpoints anchor at the fn boxes",
+                          epLaw is True, f"pinChain ep law {epLaw}")
                     page.keyboard.press("Escape")
                     page.wait_for_timeout(250)
                     trunk3b = page.evaluate("() => window.__dbg.wirePin")

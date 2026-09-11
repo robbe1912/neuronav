@@ -2030,6 +2030,8 @@ let pickWireZ = 1;   // NDC depth of the last hit — node-front comparisons
 // pin object itself stays (paint-tier state, never a layout rebuild).
 let pinLine = null, pinPts = null, pinLinePos = null, pinPtsPos = null;
 let pinMisses = 0;   // [issue #84] consecutive unresolved ball-pin frames
+let pinEp0 = null, pinEp1 = null, pinBoxA = null, pinBoxB = null;
+let pinChA = -1, pinChB = -1;   // chain file pair (probe hook)
 function updateBallPin() {
   if (!pinLine) {
     pinLinePos = new Float32Array(256 * 3);   // [issue #84] corridor chains are long
@@ -2057,7 +2059,8 @@ function updateBallPin() {
   // plus both endpoint files' legs. Clicking any segment of the chain
   // selects the whole chain; pinCover counts the chain legs resolved.
   let ep0 = null, ep1 = null, chainCover = 0;
-  let chainPts = null;
+  let chainPts = null, chainA = -1, chainB = -1;
+  let boxA = null, boxB = null;
   if (wirePin && wirePin.surface === "ball" &&
       fnBus && fnBus.visible && busPts && busPtsMeta) {
     let A = -1, B = -1, tk = null;
@@ -2107,9 +2110,44 @@ function updateBallPin() {
         chainCover++;
       }
     }
+    chainA = A; chainB = B;
   }
   if (wirePin && wirePin.surface === "ball") {
     if (chainPts && chainPts.length > 1) {
+      // [issue #84] anchor the chain at the FN BOXES the legs serve
+      // (fnMeta[i].p = hover/click anchor = rendered box position). The
+      // corridor's own geometry ends at station dots on the file spheres;
+      // the visible terminus the owner reads is the box. A fn-wire pin
+      // knows its exact fns (wirePin.a/b); a trunk/link pin takes each
+      // file's box nearest to that side's chain end (deterministic:
+      // nearest, ties by fnMeta index).
+      const boxOf = (file, refPt) => {
+        if (file < 0 || !fnMeta || !fnMeta.length) return null;
+        let best = null, bd2 = Infinity;
+        for (let i2 = 0; i2 < fnMeta.length; i2++) {
+          const m2 = fnMeta[i2];
+          if (m2.file !== file || !m2.p) continue;
+          if (m2.agg && !m2.count) continue;   // scale-0 stub, invisible
+          if (!m2.p[0] && !m2.p[1] && !m2.p[2]) continue;   // unfilled
+          const d2 = (m2.p[0] - refPt[0]) ** 2 + (m2.p[1] - refPt[1]) ** 2 +
+                     (m2.p[2] - refPt[2]) ** 2;
+          if (d2 < bd2 - 1e-9) { bd2 = d2; best = m2.p; }
+        }
+        return best;
+      };
+      boxA = null; boxB = null;
+      if (wirePin.kind === "wire" && fnMeta &&
+          wirePin.a >= 0 && wirePin.a < fnMeta.length &&
+          wirePin.b >= 0 && wirePin.b < fnMeta.length) {
+        const pa = fnMeta[wirePin.a].p, pb = fnMeta[wirePin.b].p;
+        if (pa && (pa[0] || pa[1] || pa[2])) boxA = pa;
+        if (pb && (pb[0] || pb[1] || pb[2])) boxB = pb;
+      } else if (chainA >= 0 && chainB >= 0) {
+        boxA = boxOf(chainA, chainPts[0]);
+        boxB = boxOf(chainB, chainPts[chainPts.length - 1]);
+      }
+      if (boxA) chainPts.unshift(boxA.slice());
+      if (boxB) chainPts.push(boxB.slice());
       for (let i2 = 0; i2 < chainPts.length && n < 256; i2++) {
         pinLinePos[n*3] = chainPts[i2][0]; pinLinePos[n*3+1] = chainPts[i2][1];
         pinLinePos[n*3+2] = chainPts[i2][2]; n++;
@@ -2124,7 +2162,7 @@ function updateBallPin() {
                      (chainPts[i2][2] - chainPts[j2][2]) ** 2;
           if (d2 > bd + 1e-9) { bd = d2; bi = i2; bj = j2; }
         }
-      ep0 = chainPts[bi]; ep1 = chainPts[bj];
+      ep0 = boxA || chainPts[bi]; ep1 = boxB || chainPts[bj];
     } else if (wirePin.kind === "link") {
       const li = wirePin.li;
       // no edgeK guard here: the pin is explicit user intent and the ink
@@ -2208,6 +2246,8 @@ function updateBallPin() {
     pinPts.geometry.attributes.position.needsUpdate = true;
     if (wirePin) pinCover = chainCover > 0 ? chainCover : 1;
   } else if (wirePin && wirePin.surface === "ball") pinCover = 0;
+  pinEp0 = ep0; pinEp1 = ep1; pinBoxA = boxA; pinBoxB = boxB;
+  pinChA = chainA; pinChB = chainB;
 }
 function pickWireMeta(e) {
   const rect = renderer.domElement.getBoundingClientRect();
@@ -9071,6 +9111,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get jDotArrays() { return { of: fnJDotOf, st: fnJDotSt, legs: fnJDotLegs, key: fnJDotKey }; },
   get stubExits() { return stubExits; },  // EXPLAINED EXIT dissolve points
   get anchorBoostArr() { return anchorBoost; },  // corridor-boost px per fi (probe hook)
+  get pinChain() { return { a: pinChA, b: pinChB, boxA: pinBoxA, boxB: pinBoxB, ep0: pinEp0, ep1: pinEp1 }; },  // [issue #84] fn-box endpoint law probe hook
   get degFloorArr() { return degFloor; },  // zoomed-out min diameter px per fi (probe hook)
   get hlArr() { return hlArr; },  // search-highlight flags per fi (probe hook)
   get hlFnArr() { return [...hlFn]; },  // fn names matching the live query
