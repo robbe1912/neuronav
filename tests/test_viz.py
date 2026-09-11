@@ -1781,8 +1781,10 @@ def run_tests():
                             return page.evaluate("() => window.__dbg.wirePin")
                     return None
 
-                # (a) Esc: the pin owns the FIRST press; the existing binding
-                # (map overlay close) fires on the NEXT one
+                # (a) Esc: one press dismisses the pin AND the menu it owns
+                # atomically (issue #84 / skeptic #4 - the old two-press
+                # chain orphaned the list between presses); the ladder walk
+                # past the pin's own surface is pinned by the 3d block
                 if pin1 and pin1["menu"] == "list":
                     page.keyboard.press("Escape")
                     page.wait_for_timeout(250)
@@ -1790,15 +1792,9 @@ def run_tests():
                     coverE = page.evaluate("() => window.__dbg.pinCover")
                     listE = page.evaluate(
                         "() => document.getElementById('mapList').style.display")
-                    check("esc dismisses the pin before existing bindings",
-                          pinE is None and coverE == 0 and listE == "block",
+                    check("esc dismisses the pin and its menu atomically",
+                          pinE is None and coverE == 0 and listE != "block",
                           f"{pin1} -> {pinE}, cover {coverE}, list {listE}")
-                    page.keyboard.press("Escape")
-                    page.wait_for_timeout(250)
-                    list2 = page.evaluate(
-                        "() => document.getElementById('mapList').style.display")
-                    check("next esc fires the existing binding",
-                          list2 != "block", f"list still {list2}")
                 else:
                     print("SKIP esc chain - live pin is not a list pin")
                 # (b) right-click: dismisses the pin and ONLY the pin (the
@@ -2035,7 +2031,21 @@ def run_tests():
                           trunk3["kind"] == "trunk" and trunk3["id"],
                           f"{trunk3}, cover {cover3t}")
                     check("3d trunk emphasis resolves (pinCover)",
-                          cover3t == 1, f"cover {cover3t}")
+                          cover3t >= 2, f"cover {cover3t}")
+                    # [issue #84] endpoint law: both chain termini sit ON
+                    # the fn boxes the legs serve (owner: 'from the actual
+                    # start function to the actual end function'), not at
+                    # station dots on the file spheres
+                    epLaw = page.evaluate("""() => {
+                        const c = window.__dbg.pinChain || {};
+                        if (!c.boxA || !c.boxB) return null;
+                        const eq = (u, v) => u && v &&
+                            Math.abs(u[0]-v[0]) < 1e-6 &&
+                            Math.abs(u[1]-v[1]) < 1e-6 &&
+                            Math.abs(u[2]-v[2]) < 1e-6;
+                        return eq(c.ep0, c.boxA) && eq(c.ep1, c.boxB); }""")
+                    check("3d chain endpoints anchor at the fn boxes",
+                          epLaw is True, f"pinChain ep law {epLaw}")
                     page.keyboard.press("Escape")
                     page.wait_for_timeout(250)
                     trunk3b = page.evaluate("() => window.__dbg.wirePin")
@@ -2109,8 +2119,22 @@ def run_tests():
                           pin3d["surface"] == "ball" and
                           pin3d["kind"] in ("link", "wire") and pin3d["id"],
                           f"{pin3d}, cover {cover3d}")
+                    # [issue #85 owner r2] the pin tip must PERSIST with a
+                    # from->to description while the pin lives
+                    txt3a = page.evaluate(
+                        "() => document.getElementById('wireTip')"
+                        ".textContent")
+                    disp3a = page.evaluate(
+                        "() => document.getElementById('wireTip')"
+                        ".style.display")
+
+                    check("3d pin tip persists with from->to",
+                          disp3a == "block" and
+                          ("\u2192" in txt3a or "\u2193" in txt3a) and
+                          len(txt3a) > 8,
+                          f"{disp3a} {txt3a[:50]!r}")
                     check("3d pin emphasis resolves (pinCover)",
-                          cover3d == 1, f"cover {cover3d}")
+                          cover3d >= 1, f"cover {cover3d}")
                     # camera orbit: paint-tier state, overlay re-derived
                     # per frame from the bucket buffers
                     cx0, cy0 = 400, 460
@@ -2124,8 +2148,13 @@ def run_tests():
                     pin3b = page.evaluate("() => window.__dbg.wirePin")
                     cover3b = page.evaluate("() => window.__dbg.pinCover")
                     check("3d pin survives camera orbit (paint tier)",
-                          pin3b == pin3d and cover3b == 1,
+                          pin3b == pin3d and cover3b >= 1,
                           f"{pin3d} -> {pin3b}, cover {cover3b}")
+                    tip3b2 = page.evaluate(
+                        "() => document.getElementById('wireTip')"
+                        ".style.display")
+                    check("pin tip survives the orbit press",
+                          tip3b2 == "block", f"tip {tip3b2}")
                     # esc: the pin owns the first press; the tip (transient
                     # overlay) closes on the NEXT press per the existing chain
                     page.keyboard.press("Escape")
@@ -2152,6 +2181,198 @@ def run_tests():
                 # re-enter focus (same helper the suite uses: includes the
                 # conditional depth escalation a depth-1 re-focus needs)
                 enter_focus_via_row()
+
+                # ---- [issue #84] real-hand interaction battery ----
+                # jitter: a sub-10px drift press on wire ink is a PICK at
+                # the press origin (skeptic #2a: the old >4px pan-guard
+                # swallowed real clicks; synthetic zero-drift clicks masked
+                # it)
+                wpt = page.evaluate("""() => {
+                    const d = window.__dbg, L = d.mapLayout;
+                    if (!L) return null;
+                    const pn = document.getElementById('mapPane');
+                    const bb = pn.getBoundingClientRect();
+                    for (const w of L.wires) {
+                        if (w.bez || w.ty === 'var' || w.pts.length < 2) continue;
+                        const a = w.pts[Math.floor(w.pts.length / 2) - 1];
+                        const b = w.pts[Math.floor(w.pts.length / 2)];
+                        const wx = (a[0] + b[0]) / 2, wy = (a[1] + b[1]) / 2;
+                        const sx = (wx - d.mapPX) * d.mapZ + bb.left;
+                        const sy = (wy - d.mapPY) * d.mapZ + bb.top;
+                        if (sx > bb.left + 8 && sx < bb.right - 8 &&
+                            sy > bb.top + 8 && sy < bb.bottom - 8)
+                            return { sx: sx, sy: sy };
+                    }
+                    return null; }""")
+                if wpt:
+                    page.mouse.move(wpt["sx"] - 14, wpt["sy"] - 10)
+                    page.mouse.move(wpt["sx"], wpt["sy"], steps=3)
+                    page.mouse.down()
+                    page.mouse.move(wpt["sx"] + 6, wpt["sy"] + 4)
+                    page.wait_for_timeout(60)
+                    page.mouse.up()
+                    page.wait_for_timeout(300)
+                    pinJ = page.evaluate("() => window.__dbg.wirePin")
+                    check("jittered wire click still pins (sub-10px drift latch)",
+                          pinJ and pinJ["surface"] == "map" and pinJ["kind"] == "wire",
+                          f"{wpt} -> {pinJ}")
+                    # [issue #85 owner r1] the pin emphasis must be the app
+                    # accent, not the ambient white wire mass - sample the
+                    # canvas at the pin midpoint; reverting to white/gray
+                    # fails this (no teal pixel in the window)
+                    if pinJ:
+                        acc = page.evaluate("""(w) => {
+                            const d = window.__dbg, L = d.mapLayout;
+                            if (!L) return null;
+                            const wr = L.wires.find(
+                                x => d.wireKeyOf(x) === w.id);
+                            if (!wr || !wr.pts || wr.pts.length < 2)
+                                return null;
+                            // #mapPane IS the 2D canvas (mapRender draws it)
+                            const cv = document.getElementById('mapPane');
+                            if (!cv || !cv.getContext) return null;
+                            const bb = cv.getBoundingClientRect();
+                            const dpr = cv.width / (cv.clientWidth || 1);
+                            const ctx = cv.getContext('2d');
+                            // sample 5 stations along the polyline - a
+                            // dashed emphasis can gap at any single point
+                            let teal = false;
+                            const N = wr.pts.length;
+                            for (let s = 0; s < 5 && !teal; s++) {
+                                const p = wr.pts[Math.min(
+                                    N - 1, Math.round((N - 1) * s / 4))];
+                                const sx = (p[0] - d.mapPX) * d.mapZ + bb.left;
+                                const sy = (p[1] - d.mapPY) * d.mapZ + bb.top;
+                                const cx0 = Math.round((sx - bb.left) * dpr);
+                                const cy0 = Math.round((sy - bb.top) * dpr);
+                                for (let dx = -3; dx <= 3 && !teal; dx++)
+                                  for (let dy = -3; dy <= 3 && !teal; dy++) {
+                                    const q = ctx.getImageData(cx0 + dx,
+                                        cy0 + dy, 1, 1).data;
+                                    if (q[3] < 30) continue;
+                                    if (q[1] > q[0] + 40 && q[1] > q[2] + 10)
+                                        teal = true;
+                                  }
+                            }
+                            return { teal }; }""", pinJ)
+                        check("pinned map wire paints in the accent",
+                              acc is not None and acc["teal"],
+                              f"{acc} at {wpt}")
+                    # void click: uniform dismissal for ANY leftover pin
+                    # (skeptic #6: only list-pins died before)
+                    if pinJ:
+                        vpt = page.evaluate("""() => {
+                            const d = window.__dbg, L = d.mapLayout;
+                            const pn = document.getElementById('mapPane');
+                            const bb = pn.getBoundingClientRect();
+                            for (let sy = bb.bottom - 20; sy > bb.top + 20; sy -= 24) {
+                                for (let sx = bb.left + 20; sx < bb.right - 20; sx += 24) {
+                                    const wx = (sx - bb.left) / d.mapZ + d.mapPX;
+                                    const wy = (sy - bb.top) / d.mapZ + d.mapPY;
+                                    if (d.mapWireAt(wx, wy) >= 0) continue;
+                                    let inRect = false;
+                                    for (const rc of L.rects)
+                                        if (wx >= rc.x - 3 && wx <= rc.x + rc.w + 3 &&
+                                            wy >= rc.y - 3 && wy <= rc.y + rc.h + 3)
+                                            { inRect = true; break; }
+                                    if (inRect) continue;
+                                    return { sx: sx, sy: sy };
+                                }
+                            }
+                            return null; }""")
+                        if vpt:
+                            page.mouse.click(vpt["sx"], vpt["sy"])
+                            page.wait_for_timeout(250)
+                            pinV = page.evaluate("() => window.__dbg.wirePin")
+                            check("void click unpins any stale pin",
+                                  pinV is None, f"{pinJ} -> {pinV} at {vpt}")
+                        else:
+                            print("SKIP void unpin - no clear pane point")
+                    # focus change: a card refocus rebuilds the layout and
+                    # must clear the map pin (skeptic #5) - latch a FRESH
+                    # pin first (the void check above just cleared it)
+                    page.mouse.click(wpt["sx"], wpt["sy"])
+                    page.wait_for_timeout(300)
+                    pinF0 = page.evaluate("() => window.__dbg.wirePin")
+                    if pinF0:
+                        card2 = page.evaluate("""() => {
+                            const d = window.__dbg;
+                            const pn = document.getElementById('mapPane');
+                            const bb = pn.getBoundingClientRect();
+                            for (const rc of d.mapRects) {
+                                if (rc.i === d.focusFileIdx) continue;
+                                const sx = (rc.x + rc.w / 2 - d.mapPX) * d.mapZ + bb.left;
+                                const sy = (rc.y + 11 - d.mapPY) * d.mapZ + bb.top;
+                                if (sx > bb.left + 8 && sx < bb.right - 8 &&
+                                    sy > bb.top + 8 && sy < bb.bottom - 8)
+                                    return { sx: sx, sy: sy, i: rc.i };
+                            }
+                            return null; }""")
+                        if card2:
+                            page.mouse.move(card2["sx"] - 12, card2["sy"] - 8)
+                            page.mouse.move(card2["sx"], card2["sy"], steps=3)
+                            page.mouse.click(card2["sx"], card2["sy"])
+                            page.wait_for_timeout(700)
+                            pinF1 = page.evaluate("() => window.__dbg.wirePin")
+                            check("focus change clears the map pin",
+                                  pinF1 is None, f"{pinF0} -> {pinF1} via card {card2['i']}")
+                            # 3d camera must keep orbiting after the card
+                            # click (skeptic #3: a label swallowing the
+                            # orbit grab used to leave the camera dead)
+                            p0 = page.evaluate(
+                                "() => window.__dbg.camera.position.toArray()")
+                            page.mouse.move(600, 450)
+                            page.mouse.down()
+                            for k in range(6):
+                                page.mouse.move(600 + 22 * (k + 1),
+                                                450 + 6 * (k + 1))
+                            page.mouse.up()
+                            page.wait_for_timeout(400)
+                            p1 = page.evaluate(
+                                "() => window.__dbg.camera.position.toArray()")
+                            moved = sum((a - b) ** 2
+                                        for a, b in zip(p0, p1)) ** 0.5
+                            check("2d card click keeps the 3d camera orbiting",
+                                  moved > 1, f"orbit delta {moved:.2f}")
+                        else:
+                            print("SKIP focus-change clear - no second card in view")
+                    # label drag: drags off a label forward to the orbit
+                    # camera and the trailing label click is suppressed
+                    lab = page.evaluate("""() => {
+                        const pn = document.getElementById('mapPane');
+                        const xr = pn ? pn.getBoundingClientRect().x : innerWidth;
+                        for (const el of document.querySelectorAll('#hubs .hub, #flabs .flab')) {
+                            const r = el.getBoundingClientRect();
+                            if (r.left > 4 && r.right < xr - 4 &&
+                                r.top > 4 && r.bottom < innerHeight - 4)
+                                return { x: r.left + r.width / 2,
+                                         y: r.top + r.height / 2 };
+                        }
+                        return null; }""")
+                    if lab:
+                        seeds0 = page.evaluate(
+                            "() => window.__dbg.focusSeeds.size")
+                        p0 = page.evaluate(
+                            "() => window.__dbg.camera.position.toArray()")
+                        page.mouse.move(lab["x"], lab["y"])
+                        page.mouse.down()
+                        for k in range(8):
+                            page.mouse.move(lab["x"] + 25 * (k + 1),
+                                            lab["y"] + 6 * (k + 1))
+                            page.wait_for_timeout(30)
+                        page.mouse.up()
+                        page.wait_for_timeout(400)
+                        p1 = page.evaluate(
+                            "() => window.__dbg.camera.position.toArray()")
+                        movedL = sum((a - b) ** 2
+                                     for a, b in zip(p0, p1)) ** 0.5
+                        seeds1 = page.evaluate(
+                            "() => window.__dbg.focusSeeds.size")
+                        check("label drag orbits; its click is suppressed",
+                              movedL > 1 and seeds1 == seeds0,
+                              f"orbit {movedL:.2f}, seeds {seeds0}->{seeds1}")
+                    else:
+                        print("SKIP label drag - no label in view")
             elif wpts:
                 check("map wire click opens fn panel", False,
                       f"no fn panel from {len(wpts)} clear wire aims: " + str(wpts))
@@ -2410,6 +2631,611 @@ def run_tests():
             )
             check("trunk click opens the rider card",
                   card.startswith("\U0001F68C bus ") and "→" in card, card[:80])
+        # [issue #85 owner r3] corridor-complete legs: clicking a
+        # junction leg must latch the FULL corridor (its dominant
+        # trunk), with the persistent bus pair summary on the tip
+        # junction legs only carry pick ink in the serve tier (camera
+        # within 2.2 ball radii) - wheel-zoom in like a user reading
+        # junctions until _lodServe flips on
+        for _ in range(6):
+            if page.evaluate("() => !!window.__dbg.lodServe"):
+                break
+            c = page.evaluate(
+                "() => { const r = window.__dbg.renderer"
+                ".domElement.getBoundingClientRect();"
+                " return {x: r.left + r.width / 2,"
+                " y: r.top + r.height / 2}; }")
+            page.mouse.move(c["x"], c["y"])
+            page.mouse.wheel(0, -400)
+            page.wait_for_timeout(250)
+        leg_pts = page.evaluate("""() => {
+            const d = window.__dbg;
+            // the tail collapsed the map pane: scan canvas-local
+            // like the tail does (full-width 3D canvas, left=0)
+            const el = d.renderer.domElement,
+                  r = el.getBoundingClientRect();
+            const out = [];
+            for (let x = 16; x < r.width && out.length < 4; x += 30)
+              for (let y = 16; y < r.height && out.length < 4;
+                   y += 30) {
+                const m = d.pickWireMeta({ clientX: r.left + x,
+                                           clientY: r.top + y });
+                if (m && m.kind === "jleg")
+                    out.push({ x: r.left + x, y: r.top + y });
+              }
+            return out; }""")
+        pinLg = None
+        for cand in leg_pts or []:
+            page.mouse.move(cand["x"], cand["y"])
+            page.wait_for_timeout(150)
+            hov = page.evaluate(
+                "() => ({ hf: window.__dbg.hoveredFn,"
+                " hv: window.__dbg.hovered })")
+            if (hov["hf"] is not None and hov["hf"] >= 0) or \
+               (hov["hv"] is not None and hov["hv"] >= 0):
+                continue
+            page.mouse.click(cand["x"], cand["y"])
+            page.wait_for_timeout(400)
+            pinLg = page.evaluate("() => window.__dbg.wirePin")
+            if pinLg:
+                leg_used = cand
+                break
+        if pinLg and pinLg["kind"] == "trunk":
+            covLg = page.evaluate("() => window.__dbg.pinCover")
+            tipLg = page.evaluate(
+                "() => document.getElementById('wireTip')"
+                ".textContent")
+            check("junction leg click pins the full corridor",
+                  pinLg["surface"] == "ball" and covLg >= 2,
+                  f"{leg_used} -> {pinLg}, cover {covLg}")
+            check("leg pin tip shows the bus pair summary",
+                  "bus" in tipLg and "\u2192" in tipLg,
+                  (tipLg or "")[:60])
+
+            # [issue #85 owner r4] the overlay must LIE ON the corridor:
+            # every long consecutive overlay hop's midpoint stays
+            # within a few px of the corridor's own instance geometry
+            # (the pre-fix emission-order polyline chord-ed box-to-box)
+            geoLg = page.evaluate("""() => {
+                const d = window.__dbg, pin = d.wirePin, pts = d.pinPath;
+                if (!pin || !pin.k || !pts || pts.length < 3) return null;
+                const prefs = [];
+                for (const S of (d.fnStations || []))
+                    if (S.tks.indexOf(pin.k) >= 0)
+                        prefs.push("L|" + S.fi + "|" + S.id + "|");
+                const mm = d.fnBus.instanceMatrix.array, segs = [];
+                for (let i = 0; i < d.busPtsMeta.length; i++) {
+                    const mt = d.busPtsMeta[i]; if (!mt) continue;
+                    const k = String(mt.k || "");
+                    const hit = (mt.kind === "trunk" && k === pin.k) ||
+                        (k.charCodeAt(0) === 76 &&
+                         prefs.some(p => k.startsWith(p)));
+                    if (!hit) continue;
+                    if (Math.hypot(mm[i*16], mm[i*16+1], mm[i*16+2])
+                        <= 0.001) continue;
+                    segs.push([d.busPts[i].a, d.busPts[i].b]);
+                }
+                if (!segs.length) return { ok: false, why: "no pieces" };
+                const cam = d.camera, el = d.renderer.domElement,
+                      r = el.getBoundingClientRect();
+                // THREE is module-scoped - project by hand from the
+                // camera's column-major matrix elements
+                const prj = p => {
+                    const mi = cam.matrixWorldInverse.elements,
+                          pm = cam.projectionMatrix.elements;
+                    const x = p[0]*mi[0] + p[1]*mi[4] + p[2]*mi[8] + mi[12];
+                    const y = p[0]*mi[1] + p[1]*mi[5] + p[2]*mi[9] + mi[13];
+                    const z = p[0]*mi[2] + p[1]*mi[6] + p[2]*mi[10] + mi[14];
+                    const w = p[0]*mi[3] + p[1]*mi[7] + p[2]*mi[11] + mi[15];
+                    const cx = x*pm[0] + y*pm[4] + z*pm[8] + pm[12];
+                    const cy = x*pm[1] + y*pm[5] + z*pm[9] + pm[13];
+                    const cw = x*pm[3] + y*pm[7] + z*pm[11] + pm[15];
+                    return [(cx/cw * 0.5 + 0.5) * r.width + r.left,
+                            (-cy/cw * 0.5 + 0.5) * r.height + r.top]; };
+                const ppx = pts.map(prj);
+                const spx = segs.map(sg => [prj(sg[0]), prj(sg[1])]);
+                const d2s = (p, a, b) => {
+                    const dx = b[0] - a[0], dy = b[1] - a[1];
+                    const L2 = dx * dx + dy * dy || 1e-9;
+                    let t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2;
+                    t = Math.max(0, Math.min(1, t));
+                    return Math.hypot(p[0] - (a[0] + dx * t),
+                                      p[1] - (a[1] + dy * t)); };
+                let worst = 0, nchk = 0, nex = 0;
+                // hops 0->1 and n-2->n-1 are the fn-box anchor stubs -
+                // off-corridor BY DESIGN (endpoint law); interior hops
+                // must ride the geometry exactly, except straight
+                // bridges over LOD-culled piece holes (bounded well
+                // under chord scale - a box-to-box chord regression is
+                // hundreds of px)
+                for (let i = 2; i < ppx.length - 1; i++) {
+                    const a = ppx[i - 1], b = ppx[i];
+                    if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 4) continue;
+                    nchk++;
+                    const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+                    let dm = Infinity;
+                    for (const sg of spx)
+                        dm = Math.min(dm, d2s(mid, sg[0], sg[1]));
+                    if (dm < 1.0) nex++;
+                    if (dm > worst) worst = dm;
+                }
+                return { ok: true, worst, nchk, nex, nseg: spx.length,
+                         npts: pts.length }; }""")
+            if geoLg and geoLg.get("ok"):
+                check("pinned polyline rides the corridor geometry",
+                      geoLg["nchk"] >= 2 and geoLg["worst"] <= 40.0
+                      and geoLg["nex"] >= geoLg["nchk"] * 0.8,
+                      f"worst {geoLg['worst']:.1f}px, exact "
+                      f"{geoLg['nex']}/{geoLg['nchk']} hops, "
+                      f"{geoLg['nseg']} pieces, {geoLg['npts']} pts")
+            elif geoLg:
+                print(f"SKIP geometry check - {geoLg}")
+
+            # [issue #85 owner r4] the corridor itself reads selected:
+            # covered instances tint toward the accent (sibling = leg
+            # outside the corridor, stock color); restore is checked
+            # after dismissal below
+            tintLg = page.evaluate("""() => {
+                const d = window.__dbg, pin = d.wirePin;
+                if (!pin || !pin.k || !d.fnBus || !d.fnBus.instanceColor)
+                    return null;
+                const prefs = [];
+                for (const S of (d.fnStations || []))
+                    if (S.tks.indexOf(pin.k) >= 0)
+                        prefs.push("L|" + S.fi + "|" + S.id + "|");
+                const mm = d.fnBus.instanceMatrix.array,
+                      ca = d.fnBus.instanceColor.array;
+                let q = -1, sib = -1;
+                for (let i = 0; i < d.busPtsMeta.length; i++) {
+                    const mt = d.busPtsMeta[i]; if (!mt) continue;
+                    const k = String(mt.k || "");
+                    const hit = (mt.kind === "trunk" && k === pin.k) ||
+                        (k.charCodeAt(0) === 76 &&
+                         prefs.some(p => k.startsWith(p)));
+                    if (hit && q < 0 &&
+                        Math.hypot(mm[i*16], mm[i*16+1], mm[i*16+2]) > 0.001)
+                        q = i;
+                    else if (!hit && k.charCodeAt(0) === 76 && sib < 0)
+                        sib = i;
+                }
+                if (q < 0 || sib < 0) return { ok: false, q, sib };
+                return { ok: true, q, sib,
+                    t: [ca[q*3], ca[q*3+1], ca[q*3+2]],
+                    sib0: [ca[sib*3], ca[sib*3+1], ca[sib*3+2]] }; }""")
+            if tintLg and tintLg.get("ok"):
+                check("pinned corridor instances tint the accent",
+                      tintLg["t"][1] > tintLg["t"][0] + 0.08
+                      and tintLg["t"][1] > 0.35,
+                      f"piece {tintLg['q']} rgb "
+                      f"{[round(v, 2) for v in tintLg['t']]}")
+
+            # press on the leg again: the transient tip hides on
+            # pointerdown and the pin re-asserts it next frame
+            page.mouse.move(leg_used["x"], leg_used["y"])
+            page.mouse.down()
+            page.mouse.up()
+            page.wait_for_timeout(400)
+            pinLg2 = page.evaluate("() => window.__dbg.wirePin")
+            tipLg2 = page.evaluate(
+                "() => document.getElementById('wireTip')"
+                ".style.display")
+            check("pin tip survives a press while pinned",
+                  tipLg2 == "block" and pinLg2 == pinLg,
+                  f"tip {tipLg2}, {pinLg} == {pinLg2}")
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(250)
+            pinLg3 = page.evaluate("() => window.__dbg.wirePin")
+            tipLg3 = page.evaluate(
+                "() => document.getElementById('wireTip')"
+                ".style.display")
+            check("esc clears the leg pin and its tip",
+                  pinLg3 is None and tipLg3 == "none",
+                  f"pin {pinLg3}, tip {tipLg3}")
+            if tintLg and tintLg.get("ok"):
+                tintOff = page.evaluate("""(q) => {
+                    const d = window.__dbg;
+                    const ca = d.fnBus.instanceColor.array;
+                    return [ca[q*3], ca[q*3+1], ca[q*3+2]]; }""",
+                    tintLg["q"])
+                check("corridor tint restores on dismissal",
+                      all(abs(a - b) < 0.02 for a, b in
+                          zip(tintOff, tintLg["sib0"])),
+                      f"piece {tintLg['q']} rgb "
+                      f"{[round(v, 2) for v in tintOff]} vs sibling "
+                      f"{[round(v, 2) for v in tintLg['sib0']]}")
+        else:
+            print("SKIP junction leg click - no leg ink in view")
+
+        # [issue #84] skeptic #14: a focus rebuild must not leave the
+        # trunk bundle list open with stale corridor rows - latch a pin
+        # THROUGH the list (menu=list), refocus via a card header clear
+        # of the open list, then require both the list and the pin gone.
+        # Runs AFTER the stateful tail probe on purpose: the card
+        # refocus rotates the camera approach direction focus()
+        # inherits, and the trunk-scan grid above is sensitive to it
+        # (bisected: the latch alone is clean, the extra refocus is
+        # what the tail saw).
+        page.evaluate("() => document.getElementById('bMap').click()")
+        page.wait_for_timeout(700)
+        try:
+            pinL = latch_pin_via_list()
+        except NameError:
+            pinL = None
+        if pinL and pinL.get("menu") == "list":
+            card3 = page.evaluate("""() => {
+                const d = window.__dbg;
+                const pn = document.getElementById('mapPane');
+                const bb = pn.getBoundingClientRect();
+                const lr = document.getElementById('mapList')
+                    .getBoundingClientRect();
+                for (const rc of d.mapRects) {
+                    if (rc.i === d.focusFileIdx) continue;
+                    const sx = (rc.x + rc.w / 2 - d.mapPX) * d.mapZ + bb.left;
+                    const sy = (rc.y + 11 - d.mapPY) * d.mapZ + bb.top;
+                    if (sx > bb.left + 8 && sx < bb.right - 8 &&
+                        sy > bb.top + 8 && sy < bb.bottom - 8 &&
+                        (sx < lr.x - 8 || sx > lr.x + lr.width + 8 ||
+                         sy < lr.y - 8 || sy > lr.y + lr.height + 8))
+                        return { sx: sx, sy: sy, i: rc.i };
+                }
+                return null; }""")
+            if card3:
+                page.mouse.move(card3["sx"] - 12, card3["sy"] - 8)
+                page.mouse.move(card3["sx"], card3["sy"], steps=3)
+                page.mouse.click(card3["sx"], card3["sy"])
+                page.wait_for_timeout(700)
+                listR = page.evaluate(
+                    "() => document.getElementById('mapList').style.display")
+                pinR = page.evaluate("() => window.__dbg.wirePin")
+                check("focus rebuild closes the stale bundle list",
+                      listR != "block" and pinR is None,
+                      f"list {listR}, pin {pinL} -> {pinR} via card {card3['i']}")
+            else:
+                print("SKIP stale list close - no card clear of list")
+        else:
+            print("SKIP stale list close - no list-menu pin")
+
+        # [issue #85 owner r1 / groundskeeper] trunk corridors paint in
+        # the accent: latch a REAL trunk spine pin - the chip-list pin
+        # is a wire and never matched a trunk spine, so the old probe
+        # was unreachable and silently self-skipped - then pixel-probe
+        # the painted corridor midpoint.
+        tspine = page.evaluate("""() => {
+            const d = window.__dbg, L = d.mapLayout;
+            if (!L || !L.spines) return null;
+            const bb = document.getElementById('mapPane')
+                .getBoundingClientRect();
+            for (const sp of L.spines) {
+                if (sp.hub !== "trunk" || !sp.pts || sp.pts.length < 2)
+                    continue;
+                const m = sp.pts[Math.floor(sp.pts.length / 2)];
+                const sx = (m[0] - d.mapPX) * d.mapZ + bb.left;
+                const sy = (m[1] - d.mapPY) * d.mapZ + bb.top;
+                if (sx > bb.left + 10 && sx < bb.right - 10 &&
+                    sy > bb.top + 10 && sy < bb.bottom - 10)
+                    return { sx: Math.round(sx), sy: Math.round(sy) };
+            }
+            return null; }""")
+        if tspine:
+            page.mouse.click(tspine["sx"], tspine["sy"])
+            page.wait_for_timeout(400)
+            pinT = page.evaluate("() => window.__dbg.wirePin")
+            tcol = page.evaluate("""(m) => {
+                const cv = document.getElementById('mapPane');
+                const r2 = cv.getBoundingClientRect();
+                const dpr = window.devicePixelRatio || 1;
+                const cx0 = Math.round((m.sx - r2.left) * dpr);
+                const cy0 = Math.round((m.sy - r2.top) * dpr);
+                const ctx = cv.getContext('2d');
+                let teal = false;
+                for (let dx = -5; dx <= 5 && !teal; dx++)
+                    for (let dy = -5; dy <= 5 && !teal; dy++) {
+                        const p = ctx.getImageData(cx0 + dx, cy0 + dy,
+                            1, 1).data;
+                        if (p[3] < 30) continue;
+                        if (p[1] > p[0] + 40 && p[1] > p[2] + 10)
+                            teal = true;
+                    }
+                return { teal }; }""", tspine)
+            check("pinned trunk corridor paints in the accent",
+                  pinT is not None and pinT.get("surface") == "map"
+                  and tcol["teal"],
+                  f"{tspine} -> {pinT}, {tcol}")
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(250)
+        else:
+            print("SKIP trunk accent probe - no on-screen trunk spine")
+
+        # [skeptic #16] a stale ball pin must reap after a refocus
+        # rebuild (cover 0 -> gone in ~1s). A db8047d tip throw stalled
+        # the rAF chain and made the pin immortal - #17's guard must
+        # keep the reap alive and the run error-free.
+        pe0 = []
+        page.on("pageerror", lambda e: pe0.append(str(e)))
+        bp = None
+        for _ in range(3):
+            cands = page.evaluate("""() => { const d = window.__dbg;
+                const el = d.renderer.domElement,
+                      r = el.getBoundingClientRect();
+                // stay left of the 2D map pane - clicks behind it hit
+                // the pane DOM and never latch a ball pin
+                const xmax = document.getElementById('mapPane')
+                    .getBoundingClientRect().left - 14;
+                const out = [];
+                for (let x = 24; x < xmax && x < r.width - 24 &&
+                     out.length < 12; x += 40)
+                    for (let y = 70; y < r.height - 24 &&
+                         out.length < 12; y += 40) {
+                        const m = d.pickWireMeta({
+                            clientX: r.left + x, clientY: r.top + y });
+                        // any pickable kind latches a ball pin -
+                        // wire/trunk directly, jleg via the corridor
+                        // latch, link via its own latch
+                        if (m && (m.kind === "wire" || m.kind === "trunk" ||
+                                  m.kind === "jleg" || m.kind === "link"))
+                            out.push([Math.round(r.left + x),
+                                      Math.round(r.top + y)]);
+                    }
+                return out; }""")
+            for c in (cands or []):
+                page.mouse.move(c[0], c[1])
+                page.wait_for_timeout(120)
+                hov = page.evaluate("() => ({ hf: window.__dbg.hoveredFn,"
+                                    " hv: window.__dbg.hovered })")
+                if (hov["hf"] is not None and hov["hf"] >= 0) or \
+                   (hov["hv"] is not None and hov["hv"] >= 0):
+                    continue
+                page.mouse.click(c[0], c[1])
+                page.wait_for_timeout(400)
+                bp = page.evaluate("() => window.__dbg.wirePin")
+                if bp and bp.get("surface") == "ball":
+                    break
+            if bp and bp.get("surface") == "ball":
+                break
+        if bp and bp.get("surface") == "ball":
+            card4 = page.evaluate("""() => {
+                const d = window.__dbg;
+                const bb = document.getElementById('mapPane')
+                    .getBoundingClientRect();
+                for (const rc of d.mapRects) {
+                    if (rc.i === d.focusFileIdx) continue;
+                    const sx = (rc.x + rc.w / 2 - d.mapPX) * d.mapZ
+                        + bb.left;
+                    const sy = (rc.y + 11 - d.mapPY) * d.mapZ + bb.top;
+                    if (sx > bb.left + 8 && sx < bb.right - 8 &&
+                        sy > bb.top + 8 && sy < bb.bottom - 8)
+                        return { sx: Math.round(sx), sy: Math.round(sy) };
+                }
+                return null; }""")
+            if card4:
+                page.mouse.move(card4["sx"] - 12, card4["sy"] - 8)
+                page.mouse.move(card4["sx"], card4["sy"], steps=3)
+                page.mouse.click(card4["sx"], card4["sy"])
+                page.wait_for_timeout(1800)
+                bp2 = page.evaluate("() => window.__dbg.wirePin")
+                check("stale ball pin reaps after refocus",
+                      bp2 is None and not pe0,
+                      f"{bp} -> {bp2}, pageerrors {pe0[:1]}")
+            else:
+                print("SKIP stale reap - no card for refocus")
+        else:
+            print(f"SKIP stale reap - no ball pin latched "
+                  f"(cands {len(cands or [])})")
+
+        # [skeptic #19] replacing a trunk pin (tint ON) with a link
+        # pin must restore the corridor tint - the replace path never
+        # dies, so the updateBallPin head guard is the only trigger
+        pinTk = None
+        for _t in range(3):
+            tc = page.evaluate("""() => { const d = window.__dbg;
+                const el = d.renderer.domElement,
+                      r = el.getBoundingClientRect();
+                const xmax = document.getElementById('mapPane')
+                    .getBoundingClientRect().left - 14;
+                const out = [];
+                for (let x = 24; x < xmax && x < r.width - 24 &&
+                     out.length < 12; x += 40)
+                    for (let y = 70; y < r.height - 24 &&
+                         out.length < 12; y += 40) {
+                        const m = d.pickWireMeta({
+                            clientX: r.left + x, clientY: r.top + y });
+                        if (m && (m.kind === "trunk" || m.kind === "jleg")
+                            && document.elementFromPoint(
+                                r.left + x, r.top + y) === el)
+                            out.push([Math.round(r.left + x),
+                                      Math.round(r.top + y)]);
+                    }
+                return out; }""")
+            for c in (tc or []):
+                page.mouse.move(c[0], c[1])
+                page.wait_for_timeout(120)
+                hov = page.evaluate("() => ({ hf: window.__dbg.hoveredFn,"
+                                    " hv: window.__dbg.hovered })")
+                if (hov["hf"] is not None and hov["hf"] >= 0) or \
+                   (hov["hv"] is not None and hov["hv"] >= 0):
+                    continue
+                page.mouse.click(c[0], c[1])
+                page.wait_for_timeout(400)
+                pk = page.evaluate("() => window.__dbg.wirePin")
+                if pk and pk.get("kind") == "trunk":
+                    pinTk = pk
+                    break
+            if pinTk:
+                break
+        if pinTk:
+            tkq = page.evaluate("""() => {
+                const d = window.__dbg, pin = d.wirePin;
+                if (!pin || !pin.k || !d.fnBus || !d.fnBus.instanceColor)
+                    return null;
+                const prefs = [];
+                for (const S of (d.fnStations || []))
+                    if (S.tks.indexOf(pin.k) >= 0)
+                        prefs.push("L|" + S.fi + "|" + S.id + "|");
+                const mm = d.fnBus.instanceMatrix.array;
+                let q = -1, sib = -1;
+                for (let i = 0; i < d.busPtsMeta.length; i++) {
+                    const mt = d.busPtsMeta[i]; if (!mt) continue;
+                    const k = String(mt.k || "");
+                    const hit = (mt.kind === "trunk" && k === pin.k) ||
+                        (k.charCodeAt(0) === 76 &&
+                         prefs.some(p => k.startsWith(p)));
+                    if (hit && q < 0 &&
+                        Math.hypot(mm[i*16], mm[i*16+1], mm[i*16+2]) > 0.001)
+                        q = i;
+                    else if (!hit && k.charCodeAt(0) === 76 && sib < 0)
+                        sib = i;
+                }
+                if (q < 0) return null;
+                const ca = d.fnBus.instanceColor.array;
+                // bus pieces carry per-piece stock colors - the
+                // baseline is THIS piece's captured original, not a
+                // sibling's (siblings differ)
+                const pt = d.pinTint;
+                // pinTintOrig: per-piece [r,g,b] triplets, position-
+                // indexed against pinTinted
+                const ix = pt.tinted.indexOf(q);
+                const q0 = ix >= 0 ? pt.orig[ix] : null;
+                if (!q0) return null;
+                return { q, q0,
+                         on: [ca[q*3], ca[q*3+1], ca[q*3+2]] }; }""")
+            if tkq:
+                pinRpl = None
+                for _t in range(3):
+                    lc = page.evaluate("""() => { const d = window.__dbg;
+                        const el = d.renderer.domElement,
+                              r = el.getBoundingClientRect();
+                        const xmax = document.getElementById('mapPane')
+                            .getBoundingClientRect().left - 14;
+                        const out = [];
+                        for (let x = 24; x < xmax && x < r.width - 24 &&
+                             out.length < 12; x += 40)
+                            for (let y = 70; y < r.height - 24 &&
+                                 out.length < 12; y += 40) {
+                                const m = d.pickWireMeta({
+                                    clientX: r.left + x,
+                                    clientY: r.top + y });
+                                if (m && (m.kind === "link" ||
+                                          m.kind === "wire") &&
+                                    document.elementFromPoint(
+                                        r.left + x, r.top + y) === el)
+                                    out.push([Math.round(r.left + x),
+                                              Math.round(r.top + y)]);
+                            }
+                        return out; }""")
+                    # the persistent pin tip is a DOM overlay - a
+                    # click that lands on it never reaches the canvas
+                    tipR = page.evaluate(
+                        "() => { const t = document.getElementById"
+                        "('wireTip'); if (!t || t.style.display === "
+                        "'none') return null; const r = t."
+                        "getBoundingClientRect(); return [r.left, r.top,"
+                        " r.right, r.bottom]; }")
+                    for c in (lc or []):
+                        if tipR and tipR[0] - 24 < c[0] < tipR[2] + 24 \
+                           and tipR[1] - 24 < c[1] < tipR[3] + 24:
+                            continue
+                        page.mouse.move(c[0], c[1])
+                        page.wait_for_timeout(120)
+                        hov = page.evaluate(
+                            "() => ({ hf: window.__dbg.hoveredFn,"
+                            " hv: window.__dbg.hovered })")
+                        if (hov["hf"] is not None and hov["hf"] >= 0) or \
+                           (hov["hv"] is not None and hov["hv"] >= 0):
+                            continue
+                        page.mouse.click(c[0], c[1])
+                        page.wait_for_timeout(400)
+                        pr = page.evaluate("() => window.__dbg.wirePin")
+                        if pr and pr.get("kind") in ("link", "wire") and \
+                           pr.get("id") != pinTk.get("id"):
+                            pinRpl = pr
+                            break
+                    if pinRpl:
+                        break
+                if pinRpl:
+                    tkOff = page.evaluate("""(q) => {
+                        const d = window.__dbg;
+                        const ca = d.fnBus.instanceColor.array;
+                        return [ca[q*3], ca[q*3+1], ca[q*3+2]]; }""",
+                        tkq["q"])
+                    check("replaced pin restores the corridor tint",
+                          all(abs(a - b) < 0.02 for a, b in
+                              zip(tkOff, tkq["q0"])),
+                          f"trunk {pinTk['id']} tint on "
+                          f"{[round(v, 2) for v in tkq['on']]} -> "
+                          f"{pinRpl['kind']} pin, piece {tkq['q']} rgb "
+                          f"{[round(v, 2) for v in tkOff]} vs stock "
+                          f"{[round(v, 2) for v in tkq['q0']]}")
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(250)
+                else:
+                    print("SKIP replace-restore - no link/wire pin")
+            else:
+                print("SKIP replace-restore - no covered piece")
+        else:
+            print("SKIP replace-restore - no trunk pin")
+
+        # [issue #85 owner r5] the click-slop law: a real hand drifts
+        # 5-12px between press and release - before the slop restore
+        # every drifted card click was swallowed as a pan and the 3D
+        # camera never refocused (owner: "does not move the camera").
+        # Contract: sub-12px TOTAL travel resolves as a click AT THE
+        # PRESS ORIGIN (skeptic #22: release-point resolution let
+        # 8-11px drifts exit the header band); >=12px is a pan. Runs
+        # after the tail for the same direction-inheritance reason as
+        # the stale-list block above it.
+        drift_card = page.evaluate("""() => {
+            const d = window.__dbg;
+            const bb = document.getElementById('mapPane')
+                .getBoundingClientRect();
+            for (const rc of d.mapRects) {
+                if (rc.i === d.focusFileIdx || !rc.w || !rc.h) continue;
+                const hx = (rc.x + rc.w / 2 - d.mapPX) * d.mapZ + bb.left;
+                const hy = (rc.y + 11 - d.mapPY) * d.mapZ + bb.top;
+                if (hx > bb.left + 20 && hx < bb.right - 20 &&
+                    hy > bb.top + 20 && hy < bb.bottom - 20 &&
+                    // skeptic #23: DOM overlays (list chrome, tag chips)
+                    // can cover card headers - presses there are inert,
+                    // so rungs must land on the canvas itself
+                    document.elementFromPoint(hx, hy) ===
+                        document.getElementById('mapPane'))
+                    return { i: rc.i, hx: hx, hy: hy };
+            }
+            return null; }""")
+        if drift_card:
+            camA = page.evaluate(
+                "() => window.__dbg.camera.position.toArray()")
+            focA = page.evaluate("() => window.__dbg.focusFileIdx")
+            page.mouse.move(drift_card["hx"] - 5, drift_card["hy"] - 4)
+            page.mouse.down()
+            for k in range(1, 7):
+                page.mouse.move(drift_card["hx"] - 5 + k,
+                                drift_card["hy"] - 4 + k)
+                page.wait_for_timeout(12)
+            page.mouse.up()
+            page.wait_for_timeout(900)
+            camB = page.evaluate(
+                "() => window.__dbg.camera.position.toArray()")
+            focB = page.evaluate("() => window.__dbg.focusFileIdx")
+            dcam = max(abs(a - b) for a, b in zip(camA, camB))
+            check("drifted card click still refocuses",
+                  focB != focA and dcam > 1,
+                  f"{focA} -> {focB}, cam delta {dcam:.1f}")
+            # negative rung: >=12px travel is a pan, not a click - the
+            # press must NOT refocus (boundary is travel, not per-axis)
+            page.mouse.move(drift_card["hx"] - 6, drift_card["hy"] - 5)
+            page.mouse.down()
+            for k in range(1, 8):
+                page.mouse.move(drift_card["hx"] - 6 + k,
+                                drift_card["hy"] - 5 + k)
+                page.wait_for_timeout(12)
+            page.mouse.up()
+            page.wait_for_timeout(700)
+            focC = page.evaluate("() => window.__dbg.focusFileIdx")
+            check("drift past the slop pans instead of clicking",
+                  focC == focB, f"{focB} stays {focC}")
+        else:
+            print("SKIP drifted card click - no second card on screen")
+
         # artifact: screenshot of the focused fn-layer state
         page.screenshot(path=str(SHOTS / "last_run.png"), scale="css", type="png")
         print("artifact: .tmp/shots/last_run.png")

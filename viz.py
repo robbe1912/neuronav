@@ -2029,28 +2029,239 @@ let pickWireZ = 1;   // NDC depth of the last hit — node-front comparisons
 // explanation without presence" rule: the ink vanishes with the wire, the
 // pin object itself stays (paint-tier state, never a layout rebuild).
 let pinLine = null, pinPts = null, pinLinePos = null, pinPtsPos = null;
+let pinMisses = 0;   // [issue #84] consecutive unresolved ball-pin frames
+let pinPathPts = null;
+// [skeptic #16] roster generation: bumped on every fn-layer rebuild.
+// Ball pins index fnMeta/links/arc buckets - after a refocus those
+// arrays are fresh and the stale indices either throw (#17) or
+// silently "find" ink that is not the pinned thing (a link pin kept
+// its arc alive on the rebuilt roster). A pin dies with its roster.
+let rosterGen = 0;   // [issue #85 owner r4] walked pin polyline (probe hook)
+let pinTinted = [];      // [issue #85 owner r4] tinted busPts indices
+let pinTintOrig = [];    // parallel [r,g,b] originals for restore
+let pinTintBus = null;   // fnBus the tint was written into (swap guard)
+let pinTintKey = null;   // wirePin.id the tint belongs to
+let pinEp0 = null, pinEp1 = null, pinBoxA = null, pinBoxB = null;
+let pinChA = -1, pinChB = -1;   // chain file pair (probe hook)
 function updateBallPin() {
+  // [skeptic #16] identity death, independent of ink/tip work: a ball
+  // pin from a previous roster generation is meaningless (stale
+  // fnMeta/links indices) - clear it outright instead of waiting for
+  // the ink-based misses counter
+  if (wirePin && wirePin.surface === "ball" && wirePin.gen !== rosterGen) {
+    wirePinClear();
+    return;
+  }
   if (!pinLine) {
-    pinLinePos = new Float32Array(17 * 3);
+    pinLinePos = new Float32Array(256 * 3);   // [issue #84] corridor chains are long
     pinLine = new THREE.Line(
       new THREE.BufferGeometry().setAttribute("position",
         new THREE.BufferAttribute(pinLinePos, 3)),
-      new THREE.LineBasicMaterial({ color: 0xffd166, transparent: true,
+      // [skeptic #18] one selection language: the 3D overlay joins the
+        // 2D map's PIN_ACCENT (#1de9b6) instead of stray amber
+        new THREE.LineBasicMaterial({ color: 0x1de9b6, transparent: true,
         opacity: 0.95, depthTest: false }));
     pinLine.renderOrder = 999; pinLine.frustumCulled = false;
     pinPtsPos = new Float32Array(2 * 3);
     pinPts = new THREE.Points(
       new THREE.BufferGeometry().setAttribute("position",
         new THREE.BufferAttribute(pinPtsPos, 3)),
-      new THREE.PointsMaterial({ color: 0xffffff, size: 9,
+      new THREE.PointsMaterial({ color: 0xffffff, size: 10,   // [issue #84] endpoint sprite boost
         sizeAttenuation: false, transparent: true, opacity: 1,
         depthTest: false }));
     pinPts.renderOrder = 1000; pinPts.frustumCulled = false;
     scene.add(pinLine); scene.add(pinPts);
   }
   let n = 0;
+  // [issue #84] corridor-complete law: a pin covers the WHOLE chain —
+  // node -> leg -> station -> trunk -> station -> leg -> node — from the
+  // actual start file to the actual end file. Trunk, link and fn-wire
+  // clicks resolve to the same chain: the corridor trunk owning the pair
+  // plus both endpoint files' legs. Clicking any segment of the chain
+  // selects the whole chain; pinCover counts the chain legs resolved.
+  let ep0 = null, ep1 = null, chainCover = 0;
+  let chainPts = null, chainA = -1, chainB = -1;
+  let chainPieces = null, chainTintIdx = null;
+  let boxA = null, boxB = null;
+  // [skeptic #19] restore on ANY tint-key mismatch: a replaced pin
+  // (trunk -> wire/link) never dies, so the only path that can put the
+  // corridor back is this head guard - the tint block only ever runs
+  // for corridor pins (chainTintIdx is empty otherwise)
+  if (!wirePin || wirePin.surface !== "ball" ||
+      pinTintKey !== wirePin.id) pinTintRestore();
+  if (wirePin && wirePin.surface === "ball" &&
+      fnBus && fnBus.visible && busPts && busPtsMeta) {
+    let A = -1, B = -1, tk = null;
+    if (wirePin.kind === "trunk") tk = String(wirePin.k);
+    else if (wirePin.kind === "link" && wirePin.li >= 0 &&
+             wirePin.li < links.length) {
+      A = links[wirePin.li].s; B = links[wirePin.li].t;
+    } else if (wirePin.kind === "wire" && fnMeta &&
+               wirePin.a >= 0 && wirePin.a < fnMeta.length &&
+               wirePin.b >= 0 && wirePin.b < fnMeta.length) {
+      A = fnMeta[wirePin.a].file; B = fnMeta[wirePin.b].file;
+    }
+    if (!tk && A >= 0) {
+      for (let i = 0; i < busPtsMeta.length; i++) {
+        const m2 = busPtsMeta[i];
+        if (!m2 || m2.kind !== "trunk") continue;
+        const pp = String(m2.k).split(">");
+        if ((+pp[0] === A && +pp[1] === B) || (+pp[0] === B && +pp[1] === A)) {
+          tk = String(m2.k); break;
+        }
+      }
+    }
+    if (tk) {
+      const tp = tk.split(">"); A = +tp[0]; B = +tp[1];
+      const prefixes = [];
+      for (const S of (fnStationsArr || []))
+        if (S.tks.indexOf(tk) >= 0) prefixes.push("L|" + S.fi + "|" + S.id + "|");
+      const mx = fnBus.instanceMatrix.array;
+      chainPts = [];
+      chainPieces = [];
+      chainTintIdx = [];
+      for (let i = 0; i < busPts.length; i++) {
+        const m2 = busPtsMeta[i];
+        if (!m2) continue;
+        const k2 = String(m2.k || "");
+        let hit = false;
+        if (m2.kind === "trunk" && k2 === tk) hit = true;
+        else if (prefixes.length && k2.charCodeAt(0) === 76) {   // leg key
+          for (const pref of prefixes) if (k2.startsWith(pref)) { hit = true; break; }
+        }
+        if (!hit) continue;
+        // pick/render parity: a culled instance parked at scale ~0 stays out
+        if (Math.hypot(mx[i*16], mx[i*16+1], mx[i*16+2]) <= 0.001) continue;
+        const s2 = busPts[i];
+        // [issue #85 owner r4] collect pieces; the fill walks them into
+        // one continuous path - emission order is station-grouped and
+        // chords the polyline straight across the corridor
+        chainPieces.push([s2.a, s2.b]);
+        chainTintIdx.push(i);
+        chainCover++;
+      }
+    }
+    chainA = A; chainB = B;
+  }
   if (wirePin && wirePin.surface === "ball") {
-    if (wirePin.kind === "link") {
+    if (chainPieces && chainPieces.length) {
+      // [issue #84] anchor the chain at the FN BOXES the legs serve
+      // (fnMeta[i].p = hover/click anchor = rendered box position). The
+      // corridor's own geometry ends at station dots on the file spheres;
+      // the visible terminus the owner reads is the box. A fn-wire pin
+      // knows its exact fns (wirePin.a/b); a trunk/link pin takes each
+      // file's box nearest to that side's chain end (deterministic:
+      // nearest, ties by fnMeta index).
+      const boxOf = (file, refPt) => {
+        if (file < 0 || !fnMeta || !fnMeta.length) return null;
+        let best = null, bd2 = Infinity;
+        for (let i2 = 0; i2 < fnMeta.length; i2++) {
+          const m2 = fnMeta[i2];
+          if (m2.file !== file || !m2.p) continue;
+          if (m2.agg && !m2.count) continue;   // scale-0 stub, invisible
+          if (!m2.p[0] && !m2.p[1] && !m2.p[2]) continue;   // unfilled
+          const d2 = (m2.p[0] - refPt[0]) ** 2 + (m2.p[1] - refPt[1]) ** 2 +
+                     (m2.p[2] - refPt[2]) ** 2;
+          if (d2 < bd2 - 1e-9) { bd2 = d2; best = m2.p; }
+        }
+        return best;
+      };
+      boxA = null; boxB = null;
+      if (wirePin.kind === "wire" && fnMeta &&
+          wirePin.a >= 0 && wirePin.a < fnMeta.length &&
+          wirePin.b >= 0 && wirePin.b < fnMeta.length) {
+        const pa = fnMeta[wirePin.a].p, pb = fnMeta[wirePin.b].p;
+        if (pa && (pa[0] || pa[1] || pa[2])) boxA = pa;
+        if (pb && (pb[0] || pb[1] || pb[2])) boxB = pb;
+      } else if (chainA >= 0 && chainB >= 0) {
+        // [owner r4 hotfix] chainPts is BUILT by the walk below - the
+        // reference ends come from the raw pieces (pre-fix this read
+        // undefined and threw out of tick: cover 0, dead rAF, reaped pin)
+        boxA = boxOf(chainA, chainPieces[0][0]);
+        boxB = boxOf(chainB, chainPieces[chainPieces.length - 1][1]);
+      }
+      // [issue #85 owner r4] walk the pieces into one continuous path
+      // anchor-to-anchor: the overlay must lie ON the corridor geometry
+      // it emphasizes, not chord between emission-order waypoints
+      // (owner: "straight from a to b"). Greedy nearest-endpoint walk;
+      // strict < keeps first-index ties (deterministic every frame).
+      const wpts = [];
+      let cur = boxA ? boxA.slice() : chainPieces[0][0].slice();
+      wpts.push(cur.slice());
+      let left = chainPieces.length;
+      const used = new Array(chainPieces.length).fill(false);
+      while (left > 0) {
+        // prefer a topological join: corridor pieces share exact
+        // endpoints (bollards, junctions, trunk splits), so an endpoint
+        // coinciding with cur is the true next piece - pure nearest
+        // greedy mis-joins same-bollard legs of other branches
+        let bi2 = -1, bfar = null, exact = false, bd2 = Infinity;
+        for (let p2 = 0; p2 < chainPieces.length; p2++) {
+          if (used[p2]) continue;
+          const e0 = chainPieces[p2][0], e1 = chainPieces[p2][1];
+          const d0 = (e0[0]-cur[0])*(e0[0]-cur[0]) +
+                     (e0[1]-cur[1])*(e0[1]-cur[1]) +
+                     (e0[2]-cur[2])*(e0[2]-cur[2]);
+          const d1 = (e1[0]-cur[0])*(e1[0]-cur[0]) +
+                     (e1[1]-cur[1])*(e1[1]-cur[1]) +
+                     (e1[2]-cur[2])*(e1[2]-cur[2]);
+          const dd = d0 <= d1 ? d0 : d1;
+          const ex0 = d0 <= 1e-6, ex1 = d1 <= 1e-6;
+          if (ex0 || ex1) {
+            if (!exact || dd < bd2 - 1e-9) {
+              exact = true; bd2 = dd; bi2 = p2; bfar = ex0 ? e1 : e0;
+            }
+            continue;
+          }
+          if (exact) continue;
+          if (dd < bd2 - 1e-9) { bd2 = dd; bi2 = p2; bfar = d0 <= d1 ? e1 : e0; }
+        }
+        if (bi2 < 0) break;
+        used[bi2] = true; left--;
+        cur = bfar;
+        wpts.push(cur.slice());
+      }
+      if (boxB) wpts.push(boxB.slice());
+      chainPts = wpts;
+      for (let i2 = 0; i2 < chainPts.length && n < 256; i2++) {
+        pinLinePos[n*3] = chainPts[i2][0]; pinLinePos[n*3+1] = chainPts[i2][1];
+        pinLinePos[n*3+2] = chainPts[i2][2]; n++;
+      }
+      pinPathPts = chainPts.map(p3 => p3.slice());
+      // [issue #85 owner r4] the corridor itself reads selected: lerp the
+      // covered instances toward the pin accent (0.114/0.914/0.714 =
+      // #1de9b6). One shot per pin; originals captured from the buffer
+      // before the write; the LOD serve pass only rewrites matrices, so
+      // this paint-tier tint never fights culling or picking.
+      if (fnBus && fnBus.instanceColor && chainTintIdx.length &&
+          pinTintKey !== wirePin.id) {
+        pinTintRestore();
+        pinTinted = chainTintIdx.slice();
+        pinTintBus = fnBus;
+        pinTintKey = wirePin.id;
+        const ca = fnBus.instanceColor.array;
+        for (const q of pinTinted)
+          pinTintOrig.push([ca[q*3], ca[q*3+1], ca[q*3+2]]);
+        for (let q2 = 0; q2 < pinTinted.length; q2++) {
+          const ix = pinTinted[q2], oc = pinTintOrig[q2];
+          ca[ix*3]   = oc[0] + (0.114 - oc[0]) * 0.55;
+          ca[ix*3+1] = oc[1] + (0.914 - oc[1]) * 0.55;
+          ca[ix*3+2] = oc[2] + (0.714 - oc[2]) * 0.55;
+        }
+        fnBus.instanceColor.needsUpdate = true;
+      }
+      // endpoint emphasis: the chain's extreme pair — deterministic max
+      // mutual distance, ties broken by index order (stable every frame)
+      let bi = 0, bj = chainPts.length - 1, bd = -1;
+      for (let i2 = 0; i2 < chainPts.length; i2++)
+        for (let j2 = i2 + 1; j2 < chainPts.length; j2++) {
+          const d2 = (chainPts[i2][0] - chainPts[j2][0]) ** 2 +
+                     (chainPts[i2][1] - chainPts[j2][1]) ** 2 +
+                     (chainPts[i2][2] - chainPts[j2][2]) ** 2;
+          if (d2 > bd + 1e-9) { bd = d2; bi = i2; bj = j2; }
+        }
+      ep0 = boxA || chainPts[bi]; ep1 = boxB || chainPts[bj];
+    } else if (wirePin.kind === "link") {
       const li = wirePin.li;
       // no edgeK guard here: the pin is explicit user intent and the ink
       // pass flickers near the distance threshold — the overlay follows the
@@ -2116,16 +2327,39 @@ function updateBallPin() {
   }
   const on = n > 1;
   pinLine.visible = pinPts.visible = on;
+  if (wirePin && wirePin.surface === "ball") {
+    // skeptic #5: reap a ball pin that stopped resolving (focus change
+    // rebuilt the fn layer out from under it) — invisible stale selection
+    if (on) pinMisses = 0;
+    else if (++pinMisses > 60) { pinMisses = 0; wirePinClear(); return; }
+  }
   if (on) {
     pinLine.geometry.setDrawRange(0, n);
-    pinPtsPos[0] = pinLinePos[0]; pinPtsPos[1] = pinLinePos[1];
-    pinPtsPos[2] = pinLinePos[2];
-    pinPtsPos[3] = pinLinePos[(n-1)*3]; pinPtsPos[4] = pinLinePos[(n-1)*3+1];
-    pinPtsPos[5] = pinLinePos[(n-1)*3+2];
+    const e0 = ep0 || [pinLinePos[0], pinLinePos[1], pinLinePos[2]];
+    const e1 = ep1 || [pinLinePos[(n-1)*3], pinLinePos[(n-1)*3+1],
+                       pinLinePos[(n-1)*3+2]];
+    pinPtsPos[0] = e0[0]; pinPtsPos[1] = e0[1]; pinPtsPos[2] = e0[2];
+    pinPtsPos[3] = e1[0]; pinPtsPos[4] = e1[1]; pinPtsPos[5] = e1[2];
     pinLine.geometry.attributes.position.needsUpdate = true;
     pinPts.geometry.attributes.position.needsUpdate = true;
-    if (wirePin) pinCover = 1;
+    if (wirePin) pinCover = chainCover > 0 ? chainCover : 1;
   } else if (wirePin && wirePin.surface === "ball") pinCover = 0;
+  pinEp0 = ep0; pinEp1 = ep1; pinBoxA = boxA; pinBoxB = boxB;
+  pinChA = chainA; pinChB = chainB;
+  // [issue #85 owner r2] persistent from->to: while a ball pin lives
+  // the tip surface carries the pin description. A fresh hover owns
+  // the surface until the press hides it; the pin re-asserts next
+  // frame (wireTipAnchor doubles as the pin - the lifetime tracker
+  // reads the same .k / .a / .b fields pins carry).
+  if (wirePin && wirePin.surface === "ball" && !wireTipAnchor) {
+    let pd = null;
+    try { pd = pinDesc(wirePin); } catch (e) { pd = null; }
+    if (pd) {
+      if (wireTipEl.textContent !== pd) wireTipEl.textContent = pd;
+      wireTipEl.style.display = "block";
+      wireTipAnchor = wirePin;
+    }
+  }
 }
 function pickWireMeta(e) {
   const rect = renderer.domElement.getBoundingClientRect();
@@ -3925,6 +4159,38 @@ function updateXtLabels() {
 // label LOD (Gource --dir-name-depth / Obsidian text-fade steal): overview
 // keeps the classic top-12 landmarks; zooming in raises the cap so context
 // names appear exactly when the user is close enough to read them
+// [issue #84] skeptic #3: hub/file labels are pointer-events:auto
+// chips floating over the 3D canvas. A press on a label never reaches
+// the canvas, so an orbit grab that starts on a label was dead (the
+// label swallowed the pointerdown; OrbitControls binds it on the
+// canvas only). Once the press moves >4px we hand the gesture over
+// with one synthetic pointerdown at the current point - OrbitControls
+// (r160) binds move/up on ownerDocument, so the rest of the drag is
+// native. The label's own click is suppressed for that press (chromium
+// fires click even after a large same-element drag, which would have
+// refocused the node on every orbit release).
+function armLabelDrag(el) {
+  let sx = 0, sy = 0, fwd = false;
+  el.addEventListener("pointerdown", e => { sx = e.clientX; sy = e.clientY; fwd = false; });
+  el.addEventListener("pointermove", e => {
+    if (fwd || !sx) return;
+    if (Math.hypot(e.clientX - sx, e.clientY - sy) < 4) return;
+    fwd = true; el.__labDrag = true;
+    renderer.domElement.dispatchEvent(new PointerEvent("pointerdown", {
+      clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId,
+      pointerType: "mouse", isPrimary: true, buttons: 1, bubbles: true }));
+  });
+  const done = () => { sx = 0; fwd = false; };
+  el.addEventListener("pointerup", done);
+  el.addEventListener("pointercancel", done);
+  el.addEventListener("click", e => {
+    if (el.__labDrag) {
+      el.__labDrag = false; done();
+      e.stopImmediatePropagation(); e.preventDefault();
+    }
+  }, true);
+}
+
 const HUB_N = 12;
 const HUB_MAX = 40;
 let hubCapNow = HUB_N;   // live zoom-driven cap, exposed via __dbg.hubCap
@@ -3944,6 +4210,7 @@ function rebuildHubs() {
     el.textContent = nodes[i].label + " · " + Math.round(degree[i]);
     el.title = nodes[i].path;
     el.onpointerenter = () => { tip.style.display = "none"; };
+    armLabelDrag(el);
     el.onclick = () => { pushFocusState(); showInfo(i); focusSeeds.clear(); focusSeeds.add(i); applyVisibility(); focus(i); mapCenterOn(i); };
     hubsEl.appendChild(el);
     return { i, el };
@@ -4403,6 +4670,7 @@ function rebuildFocusLabels(focusing) {
     el.className = "flab";
     el.textContent = nodes[i].label;
     el.title = nodes[i].path;
+    armLabelDrag(el);
     el.onclick = () => { pushFocusState(); focusSeeds.clear(); focusSeeds.add(i); showInfo(i); buildContainment(); applyVisibility(); focus(i); };
     flabsEl.appendChild(el);
     fLabs.push({ kind: 0, i, ix: -1, el });
@@ -4446,6 +4714,7 @@ function rebuildFocusLabels(focusing) {
       if (mutOnly && (!io || !io.w.length)) return;   // mutators-only filter
       el.title = nodes[m.file].path + " :: " + m.name;
       if (hlFn.has(m.name)) el.classList.add("hl");
+      armLabelDrag(el);
       el.onclick = () => showFnInfo(ix);
       flabsEl.appendChild(el);
       fLabs.push({ kind: 1, i: m.file, ix, el });
@@ -4536,6 +4805,7 @@ function rebuildFnLayer(focusing) {
   fnArrowLeg = null;
   if (fnStalks) { scene.remove(fnStalks); fnStalks.geometry.dispose(); fnStalks = null; }
   fnMeta = [];
+  rosterGen++;   // stale ball pins die with their roster (#16)
   if (!fnMode || !focusing) return;
   // fn-tier sizing (satBoost reads fnCount) changes file-sphere scales
   _sfDirty = true; _arrowOcclDirty = true;
@@ -5837,6 +6107,8 @@ const mapInkEval = () => {
   else if (mapInkOn && mapZ < mapInkLo) mapInkOn = false;
 };
 let mapDrag = null, mapDragged = false;
+let mapDownPt = null;    // [issue #84] press origin: jitter-click resolution
+let mapJitterHit = null; // [issue #84] press-on-ink + <10px drift = a pick
 let mapRects = [];             // last drawn node rects (click hit-testing)
 // map-center-on-selection: a 3D node click asks the 2D pane to pan the
 // node's box to pane center (exactly once) and pulse it. Pane closed =
@@ -5892,7 +6164,35 @@ let wirePin = null;    // {surface:'map'|'ball', kind:'wire'|'trunk'|'link', id,
 let pinCover = 0;      // polylines the last paint emphasized (mapInfo probe)
 const wireKeyOf = w => "w|" + w.sf + "|" + w.sfn + "|" + w.df + "|" + w.dfn + "|" + w.ty;
 function wirePinSet(p) { wirePin = p; pinCover = 0; drawMapPane(); }
-function wirePinClear() { if (!wirePin) return; wirePin = null; pinCover = 0; drawMapPane(); }
+// [issue #85 owner r1] pinned-wire emphasis: the app accent (the same
+// teal the search box, focus rows and bus tips use) - white-on-white
+// pins were indistinguishable from the ambient wire mass. One constant
+// shared by every map pin pass (wire, spine single, trunk corridor).
+const PIN_ACCENT = "#1de9b6";
+function pinTintRestore() {
+  // [issue #85 owner r4] put the corridor instances' colors back. Skips a
+  // rebuilt fnBus (indices would mismatch a fresh buffer); the new mesh
+  // carries its own colors.
+  if (!pinTinted.length) return;
+  if (pinTintBus && fnBus && pinTintBus === fnBus && fnBus.instanceColor) {
+    const ca = fnBus.instanceColor.array;
+    for (let q = 0; q < pinTinted.length; q++) {
+      const ix = pinTinted[q], oc = pinTintOrig[q];
+      ca[ix*3] = oc[0]; ca[ix*3+1] = oc[1]; ca[ix*3+2] = oc[2];
+    }
+    fnBus.instanceColor.needsUpdate = true;
+  }
+  pinTinted = []; pinTintOrig = []; pinTintBus = null; pinTintKey = null;
+}
+function wirePinClear() {
+  if (!wirePin) return;
+  pinTintRestore();
+  wirePin = null; pinCover = 0;
+  // [issue #85 owner r2] the persistent pin tip dies with the pin on
+  // every dismissal path (esc, right-click, void, refocus, reap)
+  hideWireTip();
+  drawMapPane();
+}
 // ---- 3D wire/bus tooltip (position:fixed, follows cursor over the WebGL
 // canvas; describes the picked fn wire or bus trunk)
 const wireTipEl = document.createElement("div");
@@ -6011,6 +6311,35 @@ function wireDesc(meta) {
     (meta.ln >= 0 ? "  @L" + meta.ln : "") +
     "\n  ↓ into\n" + dst.path + " :: " + b.name + "()";
 }
+// [issue #85 owner r2] from -> to for a LATCHED pin: while the pin
+// lives the tip surface carries this instead of fading after the
+// click (the transient tip is what the owner never saw). Trunk/
+// conduit pins show the bus-card pair summary; wire pins name both
+// fns with their file context; link pins reuse the link description.
+function pinDesc(pin) {
+  // [skeptic #17] a pin can outlive the roster it indexed: a refocus
+  // rebuild swaps fnMeta/links wholesale and the stale indices threw
+  // TypeError out of the per-frame tick - which also stalled the #16
+  // reap (the rAF chain dies with the throw). Guard every roster read;
+  // a pin with no live description just gets no tip.
+  if (pin.kind === "trunk") {
+    const tm = trunkMetaMap && trunkMetaMap.get(pin.k);
+    return tm ? wireDesc(tm) : null;
+  }
+  if (pin.kind === "link") {
+    if (!links || pin.li < 0 || pin.li >= links.length) return null;
+    return wireDesc({ kind: "link", li: pin.li });
+  }
+  // wire pins carry the same {a, b, ln} the line metas do - wireDesc
+  // already resolves both ends' paths + fn names for that shape (a
+  // hand-rolled fnMeta probe went stale against rebuilt rosters)
+  if (pin.kind === "wire") {
+    if (!fnMeta || pin.a < 0 || pin.a >= fnMeta.length ||
+        pin.b < 0 || pin.b >= fnMeta.length) return null;
+    return wireDesc({ kind: "wire", a: pin.a, b: pin.b, ln: pin.ln });
+  }
+  return null;
+}
 function showWireTip(meta, cx, cy) {
   wireTipEl.textContent = wireDesc(meta);
   wireTipEl.style.display = "block";
@@ -6060,8 +6389,12 @@ const mapDistSeg = (px, py, ax, ay, bx, by) => {
   return Math.hypot(px - ax - t * dx, py - ay - t * dy);
 };
 function mapWireAt(wx, wy) {
+  // [issue #84] named wires are 1.5px strokes in dense walls - 6px screen
+  // tolerance missed real aims; 10px is the pick band now. The ink gate
+  // stays: named-wire ink paints ink-gated, so picks are gated identically
+  // (parity; trunk/tap spines paint un-gated and their hit-test is too).
   if (!mapLayout || !mapInkOn) return -1;   // ink tier off: no invisible-wire hits
-  const tol = 6 / mapZ;
+  const tol = 10 / mapZ;
   let best = -1, bd = tol;
   mapLayout.wires.forEach((w, ix) => {
     if (w.bez) {   // S-curve: sample the cubic pin-to-pin
@@ -6086,8 +6419,10 @@ function mapWireAt(wx, wy) {
       if (d < bd) { bd = d; best = ix; }
     }
   });
+  mapWireLastD = best >= 0 ? bd : Infinity;   // [issue #84] caller-side carve-outs
   return best;
 }
+let mapWireLastD = Infinity;
 function mapChipAt(wx, wy) {
   if (!mapLayout) return -1;
   for (let c = 0; c < mapLayout.chips.length; c++) {
@@ -6273,7 +6608,22 @@ function mapRender() {
   // or the typed admission. pan/zoom never touch it (section 5).
   const sig = lit.join(",") + "|" + mapVarsOn + "|" +
     typeVisible("call") + typeVisible("signal") + typeVisible("inst");
-  if (mapLayout && mapLayout.sig !== sig) mapZ = 0;   // focus change -> refit
+  // [issue #84] skeptic #5: a REBUILT layout (sig change = focus/pivot
+  // change) invalidates every map-pin id - clear instead of keeping an
+  // invisible stale selection. Guarded by the rebuild itself: mapRender
+  // repaints every frame, and pinning must survive repaints (paint tier).
+  // (the ball surface reaps unresolved pins frame-counted in updateBallPin)
+  if (mapLayout && mapLayout.sig !== sig) {
+    mapZ = 0;   // focus change -> refit
+    // [issue #84] skeptic #14: the rebuilt layout also invalidates the
+    // overlays keyed to it - the trunk bundle list's rows enumerate the
+    // OLD corridor (stale wire ids, stale anchor), so it cannot survive
+    // the rebuild. mapOvCloseOne dismisses the overlay family (its #82
+    // rule unpins the list-menu pin); the direct clear below catches map
+    // pins whose menu was not the list.
+    mapOvCloseOne();
+    if (wirePin && wirePin.surface === "map") wirePinClear();
+  }
   // tier-1 admission: file skeleton unchanged (survives section 10)
   const litSet = new Set(lit);
   const cand = [];
@@ -7824,17 +8174,37 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   // endpoint dots. The key re-resolves on every paint, so pan/zoom/
   // rebuild all keep the highlight alive; nothing here touches the layout.
   if (wirePin && wirePin.surface === "map") pinCover = 0;
+  if (wirePin && wirePin.surface === "map" && wirePin.kind === "wire" &&
+      wirePin.id.charCodeAt(0) === 83 /* "S" */) {
+    // [issue #84] spine single/leader pair stroke: stroke the spine itself
+    const ps = L.spines.find(x2 => !x2.hub && x2.s === wirePin.s &&
+                                   x2.t === wirePin.t && x2.wty === wirePin.wty);
+    if (ps && ps.pts && ps.pts.length > 1) {
+      ctx.setLineDash([]);
+      // [issue #85 owner r1] emphasis is the accent, not the wire's own
+      // type color (call wires ARE the white mass the pin hides in)
+      seg(ps, PIN_ACCENT, 3, null, Math.max(dim(ps.s, ps.t), 0.95));
+      pinCover = 1;
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 1.4; ctx.strokeStyle = "#fff"; ctx.fillStyle = PIN_ACCENT;
+      const pe = ps.pts[ps.pts.length - 1];
+      for (const [ex, ey] of [ps.pts[0], pe]) {
+        ctx.beginPath(); ctx.arc(ex, ey, 3.4, 0, Math.PI * 2);
+        ctx.fill(); ctx.stroke();
+      }
+    }
+  }
   if (wirePin && wirePin.surface === "map" && wirePin.kind === "wire") {
     const pw = L.wires.find(x => wireKeyOf(x) === wirePin.id);
     if (pw) {
-      const g = MGLYPH[pw.ty] || MGLYPH.call;
       ctx.setLineDash([]);
-      seg(pw, g.c, 3, pw.back ? [2, 3] : null, Math.max(dim(pw.sf, pw.df), 0.95));
+      // [issue #85 owner r1] accent emphasis (see PIN_ACCENT)
+      seg(pw, PIN_ACCENT, 3, pw.back ? [2, 3] : null, Math.max(dim(pw.sf, pw.df), 0.95));
       pinCover = 1;
       ctx.globalAlpha = 1;
       ctx.lineWidth = 1.4;
       ctx.strokeStyle = "#fff";
-      ctx.fillStyle = g.c;
+      ctx.fillStyle = PIN_ACCENT;
       for (const [ex, ey] of [pw.pts[0], [pw.tx, pw.ty]]) {
         ctx.beginPath();
         ctx.arc(ex, ey, 3.4, 0, Math.PI * 2);
@@ -7851,18 +8221,19 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
       const wT = Math.max(Math.min(2 + 0.85 *
         Math.log2(tr.flowSum || tr.trunkW || 2), 5.5) * 1.6, 5 / mapZ);
       ctx.setLineDash([]);
-      seg(tr, "#ffd166", wT, [], Math.max(dim(tr.s, tr.t), 0.95));
+      // [issue #85 owner r1] accent emphasis (see PIN_ACCENT)
+      seg(tr, PIN_ACCENT, wT, [], Math.max(dim(tr.s, tr.t), 0.95));
       pinCover = 1;
       mapLayout.spines.forEach(sp2 => {
         if (sp2.hub === "tap" && sp2.tapBus && sp2.tapBus.trunk === tr) {
-          seg(sp2, "#ffd166", 2, [], 0.9);
+          seg(sp2, PIN_ACCENT, 2, [], 0.9);
           pinCover++;
         }
       });
       ctx.globalAlpha = 1;
       ctx.lineWidth = 1.4;
       ctx.strokeStyle = "#fff";
-      ctx.fillStyle = "#ffd166";
+      ctx.fillStyle = PIN_ACCENT;
       for (const p of [tr.pts[0], [tr.tx, tr.ty]]) {
         if (!p) continue;
         ctx.beginPath();
@@ -7989,13 +8360,59 @@ mapPane.addEventListener("pointerdown", e => {
   if (!mapVisible) return;
   mapClosePick();   // canvas input closes the picker [F11]
   mapDrag = { x: e.clientX, y: e.clientY, px: mapPX, py: mapPY, moved: false };
+  const db = mapPane.getBoundingClientRect();
+  mapDownPt = { sx: e.clientX, sy: e.clientY,
+                wx: (e.clientX - db.left) / mapZ + mapPX,
+                wy: (e.clientY - db.top) / mapZ + mapPY };
+  mapJitterHit = null;
   mapPane.setPointerCapture(e.pointerId);
 });
-mapPane.addEventListener("pointerup", () => {
-  if (mapDrag) { mapDragged = mapDrag.moved; mapDrag = null; }
+mapPane.addEventListener("pointerup", e => {
+  if (!mapDrag) return;
+  mapDragged = mapDrag.moved;
+  mapJitterHit = null;
+  // [issue #84] skeptic #2a: real hands drift 5-12px between down/up.
+  // A press that BEGAN on wire or spine ink and traveled <12px screen
+  // is a pick, not a pan - resolve against the press origin (world
+  // coords are stable under the sub-12px pan that already applied).
+  if (mapDragged && mapDownPt && mapLayout) {
+    if (Math.hypot(e.clientX - mapDownPt.sx, e.clientY - mapDownPt.sy) < 12) {
+      const onInk = (wx, wy) => {
+        if (mapWireAt(wx, wy) >= 0) return true;
+        const tol2 = 10 / mapZ;
+        for (const sp of mapLayout.spines) {
+          if (!sp.pts || sp.pts.length < 2) continue;
+          for (let k = 1; k < sp.pts.length; k++)
+            if (mapDistSeg(wx, wy, sp.pts[k-1][0], sp.pts[k-1][1],
+                           sp.pts[k][0], sp.pts[k][1]) < tol2) return true;
+        }
+        return false;
+      };
+      // resolve BOTH rescue classes at the press origin: the ink
+      // latch picks the wire the press began on, and the slop click
+      // keeps the header the hand aimed at - resolving at the release
+      // point let 8-11px drifts exit the thin header band and die
+      // (skeptic #22: measured boundary 6/8px per-axis, not 10)
+      mapJitterHit = { x: mapDownPt.wx, y: mapDownPt.wy };
+      if (!onInk(mapDownPt.wx, mapDownPt.wy)) {
+        // [owner r5] click slop: the jitter latch rescues INK picks,
+        // but every other target died on >4px drift - the whole click
+        // was swallowed as a pan, so card headers stopped refocusing
+        // under real hands. Undo the sub-slop pan and let the click
+        // resolve through the normal path.
+        mapPX = mapDrag.px; mapPY = mapDrag.py;
+        mapClampView(); drawMapPane();
+        mapDragged = false;
+      }
+    }
+  }
+  mapDrag = null;
 });
 mapPane.addEventListener("click", e => {
-  if (mapDragged) { mapDragged = false; return; }   // it was a pan, not a pick
+  if (mapDragged) {
+    mapDragged = false;
+    if (!mapJitterHit) return;   // it was a pan, not a pick
+  }
   clearTimeout(mapRefocusTimer);
   // 0. screen-space furniture first: vars chip [F10]
   const mb = mapPane.getBoundingClientRect();
@@ -8006,7 +8423,8 @@ mapPane.addEventListener("click", e => {
     drawMapPane();
     return;
   }
-  const w = mapToWorld(e);
+  const w = mapJitterHit || mapToWorld(e);
+  mapJitterHit = null;
   // 1. bundle chip -> pinned enumeration list (section 7)
   const ci = mapChipAt(w.x, w.y);
   if (ci >= 0) { mapOpenList(ci); return; }
@@ -8025,7 +8443,10 @@ mapPane.addEventListener("click", e => {
       inHeader = w.y < rc.y + ((rc.rows.length || rc.more) ? NH : rc.h);
       break;
     }
-    if (!inHeader) {
+    // [issue #84] skeptic #2b: a stroke riding the header band is still
+    // the user's aim - the header only wins when the press is >4px screen
+    // CLEAR of the stroke (mapWireLastD set by the mapWireAt call above)
+    if (!inHeader || mapWireLastD < 4 / mapZ) {
       const wr = mapLayout.wires[wi];
       if (wr.ty === "var") showInfo(wr.df);   // member target is not a fn
       else mapShowFn(wr.df, wr.dfn);
@@ -8040,10 +8461,14 @@ mapPane.addEventListener("click", e => {
   // the enumerated set (trunk + its taps) and opens the bus card, the
   // map-side twin of the 3D trunk click parity
   if (mapLayout) {
-    const tol = 6 / mapZ;
+    // [issue #84] 10px band to match mapWireAt; singles/leaders (no .hub)
+    // are pickable too - they are visible pair strokes, and #84 wants a
+    // hit target on every visible segment. Ungated by design: spines
+    // paint un-gated at every zoom (parity, see mapWireAt).
+    const tol = 10 / mapZ;
     let th = -1, td = tol;
     mapLayout.spines.forEach((sp, six) => {
-      if (!sp.hub || !sp.pts || sp.pts.length < 2) return;
+      if (!sp.pts || sp.pts.length < 2) return;
       for (let k = 1; k < sp.pts.length; k++) {
         const d = mapDistSeg(w.x, w.y, sp.pts[k-1][0], sp.pts[k-1][1],
                              sp.pts[k][0], sp.pts[k][1]);
@@ -8052,6 +8477,24 @@ mapPane.addEventListener("click", e => {
     });
     if (th >= 0) {
       const sp = mapLayout.spines[th];
+      if (!sp.hub) {
+        // [issue #84] single/leader pair stroke: pin it like a wire; the
+        // fn panel stays closed (spines carry pair identity, not fn rows)
+        wirePinSet({ surface: "map", kind: "wire",
+          id: "S|" + sp.s + "|" + sp.t + "|" + sp.wty,
+          s: sp.s, t: sp.t, wty: sp.wty, menu: "tip" });
+        wireTipEl.textContent = "wire pair " + nodes[sp.s].label +
+          " \u2192 " + nodes[sp.t].label + "  \u00d7" + (sp.flowSum || 1);
+        wireTipEl.style.display = "block";
+        const padS = 14;
+        let txS = e.clientX + padS, tyS = e.clientY + padS;
+        const rS = wireTipEl.getBoundingClientRect();
+        if (txS + rS.width > innerWidth - 8) txS = e.clientX - rS.width - padS;
+        if (tyS + rS.height > innerHeight - 8) tyS = e.clientY - rS.height - padS;
+        wireTipEl.style.left = txS + "px"; wireTipEl.style.top = tyS + "px";
+        wireTipAnchor = null;
+        return;
+      }
       wirePinSet({ surface: "map", kind: "trunk",
         id: "T|" + sp.s + "|" + sp.t + "|" + sp.wty,
         s: sp.s, t: sp.t, wty: sp.wty, menu: "tip" });
@@ -8100,6 +8543,9 @@ mapPane.addEventListener("click", e => {
   }
   // void: unpin the list, close the picker, drop the freeze
   if (mapListEl.style.display === "block" || mapFrozenIx >= 0) mapOvCloseOne();
+  // [issue #84] skeptic #6: uniform dismissal - a void click clears any
+  // remaining pin (info/tip pins used to survive it while list pins died)
+  if (wirePin) wirePinClear();
 });
 mapPane.addEventListener("dblclick", e => {
   if (!mapVisible) return;
@@ -8256,7 +8702,16 @@ addEventListener("keydown", e => {
   // sticky pin (consumed); the NEXT press walks the existing ladder —
   // wire tip -> map overlays (picker/list/freeze) -> clear focus. A pinned
   // highlight never silently swallows the older bindings; it queues ahead.
-  if (e.key === "Escape" && wirePin) { wirePinClear(); return; }
+  if (e.key === "Escape" && wirePin) {
+    // [issue #84] skeptic #4: one press = one intent, dismiss the sticky
+    // selection WHOLE - the pin AND the overlay it owns - instead of
+    // leaving an orphaned list/picker behind. The NEXT press walks the
+    // existing ladder (tip -> map overlays -> clear focus) as pinned.
+    const pinMenu = wirePin.menu;
+    wirePinClear();
+    if (pinMenu === "list") mapOvCloseOne();
+    return;
+  }
   if (e.key === "Escape" && wireTipEl.style.display !== "none") { hideWireTip(); return; }
   if (e.key === "Escape" && mapOvCloseOne()) return;   // map overlays own ESC first
   if (e.key === "Escape" && (focusSeeds.size || query)) clearFocus();
@@ -8750,13 +9205,52 @@ document.addEventListener("click", e => {
                     // sticky pin from a UI-chip click).
                     if (e.target === renderer.domElement &&
                         (wHit.kind === "link" || wHit.kind === "wire" ||
-                         wHit.kind === "trunk")) {
-                      const pinId = wHit.kind === "link" ? "L|" + wHit.li
-                        : wHit.kind === "trunk" ? "K|" + wHit.k
-                        : "F|" + wHit.a + "|" + wHit.b + "|" + wHit.ln;
-                      wirePinSet({ surface: "ball", kind: wHit.kind,
-                        id: pinId, li: wHit.li, a: wHit.a, b: wHit.b,
-                        ln: wHit.ln, k: wHit.k, menu: "tip" });
+                         wHit.kind === "trunk" || wHit.kind === "jleg")) {
+                      // [issue #85 owner r3] corridor-complete: a
+                      // junction leg stands for its corridor. The leg
+                      // key is "L|fi|stationId|subIdx" (it carries no
+                      // trunk), so resolve the station and pin its
+                      // DOMINANT trunk - most rider wires, ties break
+                      // by station order. Deterministic.
+                      let latch = null;
+                      if (wHit.kind === "jleg") {
+                        const sid = +String(wHit.k).split("|")[2];
+                        const S = (fnStationsArr || []).find(
+                          x => x.fi === wHit.fi && x.id === sid);
+                        let bestTk = null, bestN = -1;
+                        for (const tk2 of (S ? S.tks : [])) {
+                          const tm = trunkMetaMap && trunkMetaMap.get(tk2);
+                          const n2 = tm && tm.mates ? tm.mates.length : 0;
+                          if (n2 > bestN) { bestN = n2; bestTk = tk2; }
+                        }
+                        if (bestTk != null)
+                          latch = { surface: "ball", kind: "trunk",
+                            id: "K|" + bestTk, k: bestTk, menu: "tip",
+                            gen: rosterGen };
+                      } else {
+                        const pinId = wHit.kind === "link" ? "L|" + wHit.li
+                          : wHit.kind === "trunk" ? "K|" + wHit.k
+                          : "F|" + wHit.a + "|" + wHit.b + "|" + wHit.ln;
+                        latch = { surface: "ball", kind: wHit.kind,
+                          id: pinId, li: wHit.li, a: wHit.a, b: wHit.b,
+                          ln: wHit.ln, k: wHit.k, menu: "tip",
+                          gen: rosterGen };
+                      }
+                      if (latch) {
+                        wirePinSet(latch);
+                        // [issue #85 owner r2] the tip is pin-owned
+                        // from the first frame: the transient
+                        // wireDesc the click showed must give way to
+                        // the pin's from->to (its "↓ into" wording
+                        // has no arrow and outlives stale)
+                        let pd2 = null;
+                        try { pd2 = pinDesc(latch); } catch (e) { pd2 = null; }
+                        if (pd2) {
+                          wireTipEl.textContent = pd2;
+                          wireTipEl.style.display = "block";
+                          wireTipAnchor = latch;
+                        }
+                      }
                     }
 }, true);
 renderer.domElement.addEventListener("click", e => {
@@ -8849,6 +9343,10 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get jDotArrays() { return { of: fnJDotOf, st: fnJDotSt, legs: fnJDotLegs, key: fnJDotKey }; },
   get stubExits() { return stubExits; },  // EXPLAINED EXIT dissolve points
   get anchorBoostArr() { return anchorBoost; },  // corridor-boost px per fi (probe hook)
+  get pinPath() { return pinPathPts; },
+  get pinTint() { return { tinted: pinTinted ? pinTinted.slice() : [],
+    orig: pinTintOrig ? pinTintOrig.slice() : [], key: pinTintKey }; },  // [issue #85 owner r4] probe hook
+  get pinChain() { return { a: pinChA, b: pinChB, boxA: pinBoxA, boxB: pinBoxB, ep0: pinEp0, ep1: pinEp1 }; },  // [issue #84] fn-box endpoint law probe hook
   get degFloorArr() { return degFloor; },  // zoomed-out min diameter px per fi (probe hook)
   get hlArr() { return hlArr; },  // search-highlight flags per fi (probe hook)
   get hlFnArr() { return [...hlFn]; },  // fn names matching the live query
@@ -9120,7 +9618,8 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnStalk() { return fnStalk; },
   syncFileMesh,
   mapPane: { canvas: mapPane, draw: drawMapPane },
-  mwires, mapInfo, get mapVars() { return mapVarsOn; }, mapExpandUser,
+  mwires, mapInfo, mapWireAt, wireKeyOf,   // [issue #84] probe surface: hit-test named wires
+  get mapVars() { return mapVarsOn; }, mapExpandUser,
   get mapZ() { return mapZ; }, get mapPX() { return mapPX; },
   get mapPY() { return mapPY; }, mapClampView,
   get mapInkOn() { return mapInkOn; },
