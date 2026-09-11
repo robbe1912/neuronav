@@ -1877,6 +1877,82 @@ def run_tests():
                         print("SKIP menu close - no void point")
                 else:
                     print("SKIP menu close - no chip list")
+
+                # ---- [issue #82] 3D surface: corridor/wire click pins ----
+                # scan the 3D canvas (left of the map pane) for a point whose
+                # pickWireMeta resolves a named link; clicking there runs the
+                # capture-phase wire handler, which opens the tip and latches
+                # the pin on the ball surface
+                link_pts = page.evaluate("""() => {
+                    const d = window.__dbg;
+                    const pn = document.getElementById("mapPane");
+                    const xmax = (pn ? pn.getBoundingClientRect().x
+                                    : innerWidth) - 14;
+                    const out = [];
+                    for (let y = 70; y < innerHeight - 40 && out.length < 5;
+                         y += 44) {
+                        for (let x = 24; x < xmax && out.length < 5; x += 44) {
+                            const m = d.pickWireMeta({ clientX: x, clientY: y });
+                            if (m && m.kind === "link")
+                                out.push({ x, y });
+                        }
+                    }
+                    return out; }""")
+                pin3d = None
+                for cand in link_pts or []:
+                    page.mouse.move(cand["x"], cand["y"])
+                    page.wait_for_timeout(150)
+                    hov = page.evaluate(
+                        "() => ({ hf: window.__dbg.hoveredFn,"
+                        " hv: window.__dbg.hovered })")
+                    if hov["hf"] is not None and hov["hf"] >= 0:
+                        continue
+                    if hov["hv"] is not None and hov["hv"] >= 0:
+                        continue
+                    page.mouse.click(cand["x"], cand["y"])
+                    page.wait_for_timeout(300)
+                    pin3d = page.evaluate("() => window.__dbg.wirePin")
+                    if pin3d:
+                        break
+                if pin3d:
+                    cover3d = page.evaluate("() => window.__dbg.pinCover")
+                    check("3d wire click pins on the ball surface",
+                          pin3d["surface"] == "ball" and
+                          pin3d["kind"] in ("link", "wire") and pin3d["id"],
+                          f"{pin3d}, cover {cover3d}")
+                    check("3d pin emphasis resolves (pinCover)",
+                          cover3d == 1, f"cover {cover3d}")
+                    # camera orbit: paint-tier state, overlay re-derived
+                    # per frame from the bucket buffers
+                    cx0, cy0 = 400, 460
+                    page.mouse.move(cx0, cy0)
+                    page.mouse.down()
+                    for k in range(6):
+                        page.mouse.move(cx0 + 18 * (k + 1), cy0 + 6 * (k + 1))
+                        page.wait_for_timeout(40)
+                    page.mouse.up()
+                    page.wait_for_timeout(400)
+                    pin3b = page.evaluate("() => window.__dbg.wirePin")
+                    cover3b = page.evaluate("() => window.__dbg.pinCover")
+                    check("3d pin survives camera orbit (paint tier)",
+                          pin3b == pin3d and cover3b == 1,
+                          f"{pin3d} -> {pin3b}, cover {cover3b}")
+                    # esc: the pin owns the first press; the tip (transient
+                    # overlay) closes on the NEXT press per the existing chain
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(250)
+                    pin3c = page.evaluate("() => window.__dbg.wirePin")
+                    check("esc dismisses the 3d pin", pin3c is None,
+                          f"{pin3b} -> {pin3c}")
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(250)
+                    tip3c = page.evaluate(
+                        "() => document.getElementById('wireTip')"
+                        ".style.display")
+                    check("next esc closes the 3d tip (existing binding)",
+                          tip3c == "none", f"tip {tip3c}")
+                else:
+                    print("SKIP 3d wire pin - no pickable link in view")
             elif wpts:
                 check("map wire click opens fn panel", False,
                       f"no fn panel from {len(wpts)} clear wire aims: " + str(wpts))

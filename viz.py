@@ -2022,6 +2022,94 @@ let pickWireZ = 1;   // NDC depth of the last hit — node-front comparisons
 // read as a "pre-curved collider"), budget chords under their arcs, and
 // dead-end dim (0.012) ink that reads as nothing. Distances score to the
 // INK EDGE (4px trunk beats 2px wire at ties; the quiet tier needs margin).
+// [issue #82] 3D wire pin: persistent highlight of the wire's full path
+// (endpoints emphasized as screen-constant dots). The overlay is rebuilt
+// from the same buffers pickWireMeta reads, updated IN PLACE every frame —
+// it survives camera moves and scene rebuilds, and follows the "no
+// explanation without presence" rule: the ink vanishes with the wire, the
+// pin object itself stays (paint-tier state, never a layout rebuild).
+let pinLine = null, pinPts = null, pinLinePos = null, pinPtsPos = null;
+function updateBallPin() {
+  if (!pinLine) {
+    pinLinePos = new Float32Array(17 * 3);
+    pinLine = new THREE.Line(
+      new THREE.BufferGeometry().setAttribute("position",
+        new THREE.BufferAttribute(pinLinePos, 3)),
+      new THREE.LineBasicMaterial({ color: 0xffd166, transparent: true,
+        opacity: 0.95, depthTest: false }));
+    pinLine.renderOrder = 999; pinLine.frustumCulled = false;
+    pinPtsPos = new Float32Array(2 * 3);
+    pinPts = new THREE.Points(
+      new THREE.BufferGeometry().setAttribute("position",
+        new THREE.BufferAttribute(pinPtsPos, 3)),
+      new THREE.PointsMaterial({ color: 0xffffff, size: 9,
+        sizeAttenuation: false, transparent: true, opacity: 1,
+        depthTest: false }));
+    pinPts.renderOrder = 1000; pinPts.frustumCulled = false;
+    scene.add(pinLine); scene.add(pinPts);
+  }
+  let n = 0;
+  if (wirePin && wirePin.surface === "ball") {
+    if (wirePin.kind === "link") {
+      const li = wirePin.li;
+      // no edgeK guard here: the pin is explicit user intent and the ink
+      // pass flickers near the distance threshold — the overlay follows the
+      // pinned wire as long as its geometry resolves (2D parity: pin
+      // emphasis outranks zoom-gated ink tiers)
+      if (li >= 0 && li < links.length &&
+          bucketOf[li] >= 0 && bucketOf[li] < bucketPosIB.length) {
+        const arr = bucketPosIB[bucketOf[li]].array;
+        const fo = hwSlot[li] >= 0 ? hwSlot[li] : slotOf[li] * 6;
+        const nseg = hwSlot[li] >= 0 ? 16 : 1;
+        for (let s = 0; s < nseg && n < 16; s++) {
+          pinLinePos[n*3] = arr[fo + s*6];
+          pinLinePos[n*3+1] = arr[fo + s*6 + 1];
+          pinLinePos[n*3+2] = arr[fo + s*6 + 2]; n++;
+        }
+        pinLinePos[n*3] = arr[fo + (nseg-1)*6 + 3];
+        pinLinePos[n*3+1] = arr[fo + (nseg-1)*6 + 4];
+        pinLinePos[n*3+2] = arr[fo + (nseg-1)*6 + 5]; n++;
+      }
+    } else if (wirePin.kind === "wire") {
+      // fn wire: its arc is a group of segments in the fn line meshes —
+      // find the group by meta identity, chain its segment endpoints
+      for (const mesh of [fnLines, fnQuiet, focusArcs && focusArcs.lines]) {
+        if (!mesh || !mesh.visible) continue;
+        const a2 = mesh.geometry.attributes.instanceStart.array;
+        const meta2 = mesh.userData.meta || [];
+        const per2 = mesh.userData.seg || 8;
+        for (let g = 0; g < meta2.length; g++) {
+          const m2 = meta2[g];
+          if (!m2 || m2.kind !== "wire" || m2.a !== wirePin.a ||
+              m2.b !== wirePin.b || m2.ln !== wirePin.ln) continue;
+          const last = Math.min(g * per2 + per2, a2.length / 6);
+          for (let i2 = g * per2; i2 < last && n < 16; i2++) {
+            const o2 = i2 * 6;
+            pinLinePos[n*3] = a2[o2]; pinLinePos[n*3+1] = a2[o2+1];
+            pinLinePos[n*3+2] = a2[o2+2]; n++;
+          }
+          const o3 = (last - 1) * 6;
+          pinLinePos[n*3] = a2[o3+3]; pinLinePos[n*3+1] = a2[o3+4];
+          pinLinePos[n*3+2] = a2[o3+5]; n++;
+          break;
+        }
+        if (n) break;
+      }
+    }
+  }
+  const on = n > 1;
+  pinLine.visible = pinPts.visible = on;
+  if (on) {
+    pinLine.geometry.setDrawRange(0, n);
+    pinPtsPos[0] = pinLinePos[0]; pinPtsPos[1] = pinLinePos[1];
+    pinPtsPos[2] = pinLinePos[2];
+    pinPtsPos[3] = pinLinePos[(n-1)*3]; pinPtsPos[4] = pinLinePos[(n-1)*3+1];
+    pinPtsPos[5] = pinLinePos[(n-1)*3+2];
+    pinLine.geometry.attributes.position.needsUpdate = true;
+    pinPts.geometry.attributes.position.needsUpdate = true;
+    if (wirePin) pinCover = 1;
+  } else if (wirePin && wirePin.surface === "ball") pinCover = 0;
+}
 function pickWireMeta(e) {
   const rect = renderer.domElement.getBoundingClientRect();
   const px = e.clientX - rect.left, py = e.clientY - rect.top;
@@ -2734,6 +2822,7 @@ function busLodInit() {
       present = (alphaTgt[a.a] || 0) > 0.5 || (alphaTgt[a.b] || 0) > 0.5;
     if (!present) hideWireTip();
   }
+  updateBallPin();   // [issue #82] ball-surface pin overlay, frame-synced
   // chevron aim is camera-dependent: recompute every frame
   aimArrows();
   // camera tween (focus / back-stack); a user drag cancels it
@@ -5793,10 +5882,9 @@ const wireTipEl = document.createElement("div");
 wireTipEl.id = "wireTip";
 function hideWireTip() {
   wireTipEl.style.display = "none"; wireTipAnchor = null;
-  // [issue #82] the tip IS the 3D wire menu: closing it unpins the wire it
-  // introduced (a wire click re-pins right after via showWireTip, so a
-  // click-through reads as replace, not dismiss)
-  if (wirePin && wirePin.menu === "tip") wirePinClear();
+  // [issue #82] the 3D tip is TRANSIENT (auto-hides on any press — orbit
+  // drags included), so it is deliberately NOT a dismissal path: a tip-menu
+  // pin outlives it, and Esc / right-click are this surface's dismissals
 }
 document.body.appendChild(wireTipEl);
 // 3D vocabulary legend (user r5): collapsed '?' chip bottom-left; one line
@@ -5910,6 +5998,14 @@ function showWireTip(meta, cx, cy) {
   wireTipEl.textContent = wireDesc(meta);
   wireTipEl.style.display = "block";
   wireTipAnchor = meta || null;   // sighting #11: lifetime-tracked anchor
+  // [issue #82] a 3D wire click latches the pin on the ball surface; the
+  // tip is transient (see hideWireTip), so the pin outlives it — Esc and
+  // right-click are this surface's dismissal paths
+  if (meta && (meta.kind === "link" || meta.kind === "wire"))
+    wirePinSet({ surface: "ball", kind: meta.kind,
+      id: meta.kind === "link" ? "L|" + meta.li
+                               : "F|" + meta.a + "|" + meta.b + "|" + meta.ln,
+      li: meta.li, a: meta.a, b: meta.b, ln: meta.ln, menu: "tip" });
   const pad = 14;
   let x = cx + pad, y = cy + pad;
   const r = wireTipEl.getBoundingClientRect();
