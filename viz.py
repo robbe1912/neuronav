@@ -262,25 +262,17 @@ def _build_data() -> dict:
     fedges.sort(key=lambda e: (e[0], e[1], e[2], e[3], e[4]))
 
     # signal wires: scene connections resolved against the scene's script
-    # ext_resources, mirroring graph._wire_tscn's script_rels cascade
-    # (multi-script scenes try every script; attached_script only when no
-    # ext_resource script is indexed). A connection resolving in N scripts
-    # yields N rows; one resolving in none counts into meta.sig_unresolved
-    # — the anonymous amber corridor channel (map-spec-v2 §1/F13).
+    # ext_resources via graph.script_rels — the same cascade _wire_tscn
+    # wires edges from, so the corridor channel can never drift from the
+    # graph. A connection resolving in N scripts yields N rows; one
+    # resolving in none counts into meta.sig_unresolved — the anonymous
+    # amber corridor channel (map-spec-v2 §1/F13).
     sig_resolved = 0
     sig_unresolved = 0
     for rel, fs in g.files.items():
         if fs.ext != ".tscn" or rel not in idx:
             continue
-        script_rels = [
-            s_rel
-            for s in fs.scripts
-            if (s_rel := s.removeprefix("res://")) in g.files
-        ]
-        if not script_rels and fs.attached_script:
-            s_rel = fs.attached_script.removeprefix("res://")
-            if s_rel in g.files:
-                script_rels.append(s_rel)
+        script_rels = g.script_rels(fs)
         for sig_name, handler in fs.connections:
             hit = [
                 s_rel

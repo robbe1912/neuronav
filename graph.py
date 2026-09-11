@@ -680,22 +680,29 @@ class Graph:
         self.reverse[dst].add(src)
         self.edge_types[(src, dst)].add(ty)
 
+    def script_rels(self, fs: FileSym) -> list[str]:
+        """Indexed scripts for a scene, in resolution order: ext_resource
+        scripts first (file order), the attached script only when none of
+        them is indexed. One authoritative cascade — viz's signal-wire
+        channel resolves against the same list (map-spec-v2 §1/F13)."""
+        rels = [
+            s_rel
+            for s in fs.scripts
+            if (s_rel := self._res_to_rel(s)) and s_rel in self.files
+        ]
+        if not rels and fs.attached_script:
+            s_rel = self._res_to_rel(fs.attached_script)
+            if s_rel and s_rel in self.files:
+                rels.append(s_rel)
+        return rels
+
     def _wire_tscn(self) -> None:
         for rel, fs in self.files.items():
             if fs.ext != ".tscn":
                 continue
             # multi-script scenes: a handler may live on ANY of the scene's
             # script ext_resources, not just the first attached one
-            script_rels = [
-                s_rel
-                for s in fs.scripts
-                if (s_rel := self._res_to_rel(s)) and s_rel in self.files
-            ]
-            if not script_rels and fs.attached_script:
-                s_rel = self._res_to_rel(fs.attached_script)
-                if s_rel and s_rel in self.files:
-                    script_rels.append(s_rel)
-            for script_rel in script_rels:
+            for script_rel in self.script_rels(fs):
                 for _, handler in fs.connections:
                     if handler in self.files[script_rel].funcs:
                         key = f"{script_rel}::{handler}"
