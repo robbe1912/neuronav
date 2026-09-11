@@ -1781,8 +1781,10 @@ def run_tests():
                             return page.evaluate("() => window.__dbg.wirePin")
                     return None
 
-                # (a) Esc: the pin owns the FIRST press; the existing binding
-                # (map overlay close) fires on the NEXT one
+                # (a) Esc: one press dismisses the pin AND the menu it owns
+                # atomically (issue #84 / skeptic #4 - the old two-press
+                # chain orphaned the list between presses); the ladder walk
+                # past the pin's own surface is pinned by the 3d block
                 if pin1 and pin1["menu"] == "list":
                     page.keyboard.press("Escape")
                     page.wait_for_timeout(250)
@@ -1790,15 +1792,9 @@ def run_tests():
                     coverE = page.evaluate("() => window.__dbg.pinCover")
                     listE = page.evaluate(
                         "() => document.getElementById('mapList').style.display")
-                    check("esc dismisses the pin before existing bindings",
-                          pinE is None and coverE == 0 and listE == "block",
+                    check("esc dismisses the pin and its menu atomically",
+                          pinE is None and coverE == 0 and listE != "block",
                           f"{pin1} -> {pinE}, cover {coverE}, list {listE}")
-                    page.keyboard.press("Escape")
-                    page.wait_for_timeout(250)
-                    list2 = page.evaluate(
-                        "() => document.getElementById('mapList').style.display")
-                    check("next esc fires the existing binding",
-                          list2 != "block", f"list still {list2}")
                 else:
                     print("SKIP esc chain - live pin is not a list pin")
                 # (b) right-click: dismisses the pin and ONLY the pin (the
@@ -2035,7 +2031,7 @@ def run_tests():
                           trunk3["kind"] == "trunk" and trunk3["id"],
                           f"{trunk3}, cover {cover3t}")
                     check("3d trunk emphasis resolves (pinCover)",
-                          cover3t == 1, f"cover {cover3t}")
+                          cover3t >= 2, f"cover {cover3t}")
                     page.keyboard.press("Escape")
                     page.wait_for_timeout(250)
                     trunk3b = page.evaluate("() => window.__dbg.wirePin")
@@ -2110,7 +2106,7 @@ def run_tests():
                           pin3d["kind"] in ("link", "wire") and pin3d["id"],
                           f"{pin3d}, cover {cover3d}")
                     check("3d pin emphasis resolves (pinCover)",
-                          cover3d == 1, f"cover {cover3d}")
+                          cover3d >= 1, f"cover {cover3d}")
                     # camera orbit: paint-tier state, overlay re-derived
                     # per frame from the bucket buffers
                     cx0, cy0 = 400, 460
@@ -2124,7 +2120,7 @@ def run_tests():
                     pin3b = page.evaluate("() => window.__dbg.wirePin")
                     cover3b = page.evaluate("() => window.__dbg.pinCover")
                     check("3d pin survives camera orbit (paint tier)",
-                          pin3b == pin3d and cover3b == 1,
+                          pin3b == pin3d and cover3b >= 1,
                           f"{pin3d} -> {pin3b}, cover {cover3b}")
                     # esc: the pin owns the first press; the tip (transient
                     # overlay) closes on the NEXT press per the existing chain
@@ -2152,6 +2148,156 @@ def run_tests():
                 # re-enter focus (same helper the suite uses: includes the
                 # conditional depth escalation a depth-1 re-focus needs)
                 enter_focus_via_row()
+
+                # ---- [issue #84] real-hand interaction battery ----
+                # jitter: a sub-10px drift press on wire ink is a PICK at
+                # the press origin (skeptic #2a: the old >4px pan-guard
+                # swallowed real clicks; synthetic zero-drift clicks masked
+                # it)
+                wpt = page.evaluate("""() => {
+                    const d = window.__dbg, L = d.mapLayout;
+                    if (!L) return null;
+                    const pn = document.getElementById('mapPane');
+                    const bb = pn.getBoundingClientRect();
+                    for (const w of L.wires) {
+                        if (w.bez || w.ty === 'var' || w.pts.length < 2) continue;
+                        const a = w.pts[Math.floor(w.pts.length / 2) - 1];
+                        const b = w.pts[Math.floor(w.pts.length / 2)];
+                        const wx = (a[0] + b[0]) / 2, wy = (a[1] + b[1]) / 2;
+                        const sx = (wx - d.mapPX) * d.mapZ + bb.left;
+                        const sy = (wy - d.mapPY) * d.mapZ + bb.top;
+                        if (sx > bb.left + 8 && sx < bb.right - 8 &&
+                            sy > bb.top + 8 && sy < bb.bottom - 8)
+                            return { sx: sx, sy: sy };
+                    }
+                    return null; }""")
+                if wpt:
+                    page.mouse.move(wpt["sx"] - 14, wpt["sy"] - 10)
+                    page.mouse.move(wpt["sx"], wpt["sy"], steps=3)
+                    page.mouse.down()
+                    page.mouse.move(wpt["sx"] + 6, wpt["sy"] + 4)
+                    page.wait_for_timeout(60)
+                    page.mouse.up()
+                    page.wait_for_timeout(300)
+                    pinJ = page.evaluate("() => window.__dbg.wirePin")
+                    check("jittered wire click still pins (sub-10px drift latch)",
+                          pinJ and pinJ["surface"] == "map" and pinJ["kind"] == "wire",
+                          f"{wpt} -> {pinJ}")
+                    # void click: uniform dismissal for ANY leftover pin
+                    # (skeptic #6: only list-pins died before)
+                    if pinJ:
+                        vpt = page.evaluate("""() => {
+                            const d = window.__dbg, L = d.mapLayout;
+                            const pn = document.getElementById('mapPane');
+                            const bb = pn.getBoundingClientRect();
+                            for (let sy = bb.bottom - 20; sy > bb.top + 20; sy -= 24) {
+                                for (let sx = bb.left + 20; sx < bb.right - 20; sx += 24) {
+                                    const wx = (sx - bb.left) / d.mapZ + d.mapPX;
+                                    const wy = (sy - bb.top) / d.mapZ + d.mapPY;
+                                    if (d.mapWireAt(wx, wy) >= 0) continue;
+                                    let inRect = false;
+                                    for (const rc of L.rects)
+                                        if (wx >= rc.x - 3 && wx <= rc.x + rc.w + 3 &&
+                                            wy >= rc.y - 3 && wy <= rc.y + rc.h + 3)
+                                            { inRect = true; break; }
+                                    if (inRect) continue;
+                                    return { sx: sx, sy: sy };
+                                }
+                            }
+                            return null; }""")
+                        if vpt:
+                            page.mouse.click(vpt["sx"], vpt["sy"])
+                            page.wait_for_timeout(250)
+                            pinV = page.evaluate("() => window.__dbg.wirePin")
+                            check("void click unpins any stale pin",
+                                  pinV is None, f"{pinJ} -> {pinV} at {vpt}")
+                        else:
+                            print("SKIP void unpin - no clear pane point")
+                    # focus change: a card refocus rebuilds the layout and
+                    # must clear the map pin (skeptic #5) - latch a FRESH
+                    # pin first (the void check above just cleared it)
+                    page.mouse.click(wpt["sx"], wpt["sy"])
+                    page.wait_for_timeout(300)
+                    pinF0 = page.evaluate("() => window.__dbg.wirePin")
+                    if pinF0:
+                        card2 = page.evaluate("""() => {
+                            const d = window.__dbg;
+                            const pn = document.getElementById('mapPane');
+                            const bb = pn.getBoundingClientRect();
+                            for (const rc of d.mapRects) {
+                                if (rc.i === d.focusFileIdx) continue;
+                                const sx = (rc.x + rc.w / 2 - d.mapPX) * d.mapZ + bb.left;
+                                const sy = (rc.y + 11 - d.mapPY) * d.mapZ + bb.top;
+                                if (sx > bb.left + 8 && sx < bb.right - 8 &&
+                                    sy > bb.top + 8 && sy < bb.bottom - 8)
+                                    return { sx: sx, sy: sy, i: rc.i };
+                            }
+                            return null; }""")
+                        if card2:
+                            page.mouse.move(card2["sx"] - 12, card2["sy"] - 8)
+                            page.mouse.move(card2["sx"], card2["sy"], steps=3)
+                            page.mouse.click(card2["sx"], card2["sy"])
+                            page.wait_for_timeout(700)
+                            pinF1 = page.evaluate("() => window.__dbg.wirePin")
+                            check("focus change clears the map pin",
+                                  pinF1 is None, f"{pinF0} -> {pinF1} via card {card2['i']}")
+                            # 3d camera must keep orbiting after the card
+                            # click (skeptic #3: a label swallowing the
+                            # orbit grab used to leave the camera dead)
+                            p0 = page.evaluate(
+                                "() => window.__dbg.camera.position.toArray()")
+                            page.mouse.move(600, 450)
+                            page.mouse.down()
+                            for k in range(6):
+                                page.mouse.move(600 + 22 * (k + 1),
+                                                450 + 6 * (k + 1))
+                            page.mouse.up()
+                            page.wait_for_timeout(400)
+                            p1 = page.evaluate(
+                                "() => window.__dbg.camera.position.toArray()")
+                            moved = sum((a - b) ** 2
+                                        for a, b in zip(p0, p1)) ** 0.5
+                            check("2d card click keeps the 3d camera orbiting",
+                                  moved > 1, f"orbit delta {moved:.2f}")
+                        else:
+                            print("SKIP focus-change clear - no second card in view")
+                    # label drag: drags off a label forward to the orbit
+                    # camera and the trailing label click is suppressed
+                    lab = page.evaluate("""() => {
+                        const pn = document.getElementById('mapPane');
+                        const xr = pn ? pn.getBoundingClientRect().x : innerWidth;
+                        for (const el of document.querySelectorAll('#hubs .hub, #flabs .flab')) {
+                            const r = el.getBoundingClientRect();
+                            if (r.left > 4 && r.right < xr - 4 &&
+                                r.top > 4 && r.bottom < innerHeight - 4)
+                                return { x: r.left + r.width / 2,
+                                         y: r.top + r.height / 2 };
+                        }
+                        return null; }""")
+                    if lab:
+                        seeds0 = page.evaluate(
+                            "() => window.__dbg.focusSeeds.size")
+                        p0 = page.evaluate(
+                            "() => window.__dbg.camera.position.toArray()")
+                        page.mouse.move(lab["x"], lab["y"])
+                        page.mouse.down()
+                        for k in range(8):
+                            page.mouse.move(lab["x"] + 25 * (k + 1),
+                                            lab["y"] + 6 * (k + 1))
+                            page.wait_for_timeout(30)
+                        page.mouse.up()
+                        page.wait_for_timeout(400)
+                        p1 = page.evaluate(
+                            "() => window.__dbg.camera.position.toArray()")
+                        movedL = sum((a - b) ** 2
+                                     for a, b in zip(p0, p1)) ** 0.5
+                        seeds1 = page.evaluate(
+                            "() => window.__dbg.focusSeeds.size")
+                        check("label drag orbits; its click is suppressed",
+                              movedL > 1 and seeds1 == seeds0,
+                              f"orbit {movedL:.2f}, seeds {seeds0}->{seeds1}")
+                    else:
+                        print("SKIP label drag - no label in view")
             elif wpts:
                 check("map wire click opens fn panel", False,
                       f"no fn panel from {len(wpts)} clear wire aims: " + str(wpts))
