@@ -6204,8 +6204,37 @@ function mapRender() {
     (a.sf - b.sf) ||
     (a.sfn < b.sfn ? -1 : a.sfn > b.sfn ? 1 : 0) ||
     (a.line - b.line);
+  // [issue #78] pair aggregation: every admitted pair used to draw its top-1
+  // named wire, so a dense focus set fanned 50+ individual wires through the
+  // mid-band channels - the "wire wall" the audit measured at wy 720-960.
+  // Thresholds (clutter research): N=1 stays a labeled wire; 2-3 keep the
+  // top-1 wire + corridor + xN chip; N>=4 collapse to corridor + chip; any
+  // pair touching a hub (degree >= MAP_HUB_T1) is corridor + chip unless it
+  // sits in that hub's top-4 by multiplicity - hubs keep a legible budget
+  // of individual wires, everything else rides its corridor.
+  const pairN = new Map();
+  byPair.forEach((a, k) => pairN.set(k, a.length));
+  const hubTop = new Map();    // hub i -> top-4 pair keys allowed a wire
+  byPair.forEach((a, k) => {
+    for (const end of [a[0].sf, a[0].df]) {
+      if (degree[end] < MAP_HUB_T1) continue;
+      let s = hubTop.get(end);
+      if (!s) hubTop.set(end, s = []);
+      s.push(k);
+    }
+  });
+  hubTop.forEach((ks, i) => hubTop.set(i, new Set(ks.sort((p, q) =>
+    (pairN.get(q) || 0) - (pairN.get(p) || 0) || (p < q ? -1 : p > q ? 1 : 0))
+    .slice(0, 4))));
   const indiv = [];            // top-1 per pair: drawn + labeled [F14]
-  byPair.forEach(a => { a.sort(rk); indiv.push(a[0]); });
+  byPair.forEach((a, k) => {
+    a.sort(rk);
+    const hubEnd = degree[a[0].sf] >= MAP_HUB_T1 ? a[0].sf
+      : degree[a[0].df] >= MAP_HUB_T1 ? a[0].df : -1;
+    const inBudget = hubEnd >= 0 && hubTop.get(hubEnd).has(k);
+    if (!inBudget && (a.length >= 4 || hubEnd >= 0)) return;  // corridor + xN
+    indiv.push(a[0]);
+  });
   indiv.sort(rk);
   const indivSet = new Set(indiv);
   // ---- rosters (section 4) ----
@@ -7397,15 +7426,15 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   };
   // render order (section 9): underlays -> spines (taps, singles, trunks) ->
   // hub junction dots -> wires -> boxes/rosters -> labels/chips/terminators.
-  // Underlay alpha 0.18 (declutter lever 5). Zoom-gated ink tiers: the fine
+  // Underlay alpha 0.12 (ink budget, declutter lever 5). Zoom-gated ink tiers: the fine
   // layers (underlays, named wires, port dots/arrowheads) hide when zoomed
   // out - PAINT-ONLY, the layout never changes (mapInkEval hysteresis).
   // Structure (spines, buses, junction dots, boxes, chips) stays on always.
   if (mapInkOn) L.underlays.forEach(u => {
     seg(u, MGLYPH[u.ty0] ? MGLYPH[u.ty0].c : MGLYPH.attach.c, 1,
-        MGLYPH.attach.dash, 0.18 * dim(u.s, u.t));
+        MGLYPH.attach.dash, 0.12 * dim(u.s, u.t));   // [issue #78] ink budget
     // T-junction terminator: short tick across the entry, no arrow
-    ctx.globalAlpha = 0.18 * dim(u.s, u.t);
+    ctx.globalAlpha = 0.12 * dim(u.s, u.t);   // [issue #78] ink budget
     ctx.setLineDash([]);
     ctx.beginPath();
     ctx.moveTo(u.tx - 4, u.ty); ctx.lineTo(u.tx + 4, u.ty);
@@ -7551,7 +7580,20 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
       }
     }
   }
+  // [issue #78] fit-zoom badge LOD (paint tier): below z 0.85 the fit view
+  // keeps only the top peel badges and top origin badges by rider count -
+  // the badge flood lived at fit zoom, spread over many small trunks (a
+  // per-hub budget cannot cut it: most hubs own one peel). Layout keeps
+  // every chip (mapInfo contract); zoom-in restores the full set.
+  const chipLOD = new Set();
+  if (mapZ < 0.85) {
+    const top = (a, k) => a.sort((p, q) => q.n - p.n || p.row - q.row ||
+      p.s - q.s).slice(0, k).forEach(ch => chipLOD.add(ch));
+    top(L.chips.filter(ch => ch.peel), 6);
+    top(L.chips.filter(ch => ch.origin), 6);
+  }
   L.chips.forEach(ch => {
+    if ((ch.peel || ch.origin) && !chipLOD.has(ch)) return;
     const g = MGLYPH[ch.ty] || MGLYPH.call;
     const sw = ch.w * mapZ, sh = ch.h * mapZ;
     const a = m2s(ch.x + ch.w / 2, ch.y + ch.h / 2);
