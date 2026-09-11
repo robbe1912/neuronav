@@ -2070,6 +2070,23 @@ function updateBallPin() {
         pinLinePos[n*3+1] = arr[fo + (nseg-1)*6 + 4];
         pinLinePos[n*3+2] = arr[fo + (nseg-1)*6 + 5]; n++;
       }
+    } else if (wirePin.kind === "trunk") {
+      // 3D trunk conduit: chain its busPts segments (pick parity — a
+      // culled instance parked at scale ~0 stays hidden)
+      if (fnBus && fnBus.visible && busPts && busPtsMeta) {
+        const mx = fnBus.instanceMatrix.array;
+        for (let i = 0; i < busPts.length && n < 16; i++) {
+          const m2 = busPtsMeta[i];
+          if (!m2 || m2.kind !== "trunk" ||
+              String(m2.k) !== String(wirePin.k)) continue;
+          const s2 = busPts[i];
+          if (Math.hypot(mx[i*16], mx[i*16+1], mx[i*16+2]) <= 0.001) continue;
+          if (!n) { pinLinePos[0] = s2.a[0]; pinLinePos[1] = s2.a[1];
+                    pinLinePos[2] = s2.a[2]; n = 1; }
+          pinLinePos[n*3] = s2.b[0]; pinLinePos[n*3+1] = s2.b[1];
+          pinLinePos[n*3+2] = s2.b[2]; n++;
+        }
+      }
     } else if (wirePin.kind === "wire") {
       // fn wire: its arc is a group of segments in the fn line meshes —
       // find the group by meta identity, chain its segment endpoints
@@ -5998,14 +6015,12 @@ function showWireTip(meta, cx, cy) {
   wireTipEl.textContent = wireDesc(meta);
   wireTipEl.style.display = "block";
   wireTipAnchor = meta || null;   // sighting #11: lifetime-tracked anchor
-  // [issue #82] a 3D wire click latches the pin on the ball surface; the
-  // tip is transient (see hideWireTip), so the pin outlives it — Esc and
-  // right-click are this surface's dismissal paths
-  if (meta && (meta.kind === "link" || meta.kind === "wire"))
-    wirePinSet({ surface: "ball", kind: meta.kind,
-      id: meta.kind === "link" ? "L|" + meta.li
-                               : "F|" + meta.a + "|" + meta.b + "|" + meta.ln,
-      li: meta.li, a: meta.a, b: meta.b, ln: meta.ln, menu: "tip" });
+  // [issue #82] the pin latch moved to the capture-click call site: it
+  // needs the event to separate a deliberate canvas wire click from a DOM
+  // .click() (legend chips, checkboxes, search rows dispatch clientX/Y 0,0,
+  // which projects onto whatever wire sits at that corner — a transient tip
+  // there is harmless, a sticky pin is not).
+
   const pad = 14;
   let x = cx + pad, y = cy + pad;
   const r = wireTipEl.getBoundingClientRect();
@@ -7808,7 +7823,7 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   // zoom-gated fine-ink tiers, like structure ink) with white-ringed
   // endpoint dots. The key re-resolves on every paint, so pan/zoom/
   // rebuild all keep the highlight alive; nothing here touches the layout.
-  pinCover = 0;
+  if (wirePin && wirePin.surface === "map") pinCover = 0;
   if (wirePin && wirePin.surface === "map" && wirePin.kind === "wire") {
     const pw = L.wires.find(x => wireKeyOf(x) === wirePin.id);
     if (pw) {
@@ -7823,6 +7838,35 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
       for (const [ex, ey] of [pw.pts[0], [pw.tx, pw.ty]]) {
         ctx.beginPath();
         ctx.arc(ex, ey, 3.4, 0, Math.PI * 2);
+        ctx.fill(); ctx.stroke();
+      }
+    }
+  } else if (wirePin && wirePin.surface === "map" &&
+             wirePin.kind === "trunk") {
+    // [issue #82] trunk set: the corridor AND its taps — the enumerated
+    // set the pin selected; endpoints ringed like wire pins
+    const tr = mapLayout.spines.find(sp => sp.hub === "trunk" &&
+      sp.s === wirePin.s && sp.t === wirePin.t && sp.wty === wirePin.wty);
+    if (tr) {
+      const wT = Math.max(Math.min(2 + 0.85 *
+        Math.log2(tr.flowSum || tr.trunkW || 2), 5.5) * 1.6, 5 / mapZ);
+      ctx.setLineDash([]);
+      seg(tr, "#ffd166", wT, [], Math.max(dim(tr.s, tr.t), 0.95));
+      pinCover = 1;
+      mapLayout.spines.forEach(sp2 => {
+        if (sp2.hub === "tap" && sp2.tapBus && sp2.tapBus.trunk === tr) {
+          seg(sp2, "#ffd166", 2, [], 0.9);
+          pinCover++;
+        }
+      });
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = "#fff";
+      ctx.fillStyle = "#ffd166";
+      for (const p of [tr.pts[0], [tr.tx, tr.ty]]) {
+        if (!p) continue;
+        ctx.beginPath();
+        ctx.arc(p[0], p[1], 3.4, 0, Math.PI * 2);
         ctx.fill(); ctx.stroke();
       }
     }
@@ -7988,6 +8032,40 @@ mapPane.addEventListener("click", e => {
       // [issue #82] the click that opens the wire's menu latches the pin
       // (single pin: a later selection replaces this one)
       wirePinSet({ surface: "map", kind: "wire", id: wireKeyOf(wr), menu: "info" });
+      return;
+    }
+  }
+  // [issue #82] trunk corridors (map surface): trunk/tap spines ride in
+  // the bands between boxes — a click within the wire tolerance latches
+  // the enumerated set (trunk + its taps) and opens the bus card, the
+  // map-side twin of the 3D trunk click parity
+  if (mapLayout) {
+    const tol = 6 / mapZ;
+    let th = -1, td = tol;
+    mapLayout.spines.forEach((sp, six) => {
+      if (!sp.hub || !sp.pts || sp.pts.length < 2) return;
+      for (let k = 1; k < sp.pts.length; k++) {
+        const d = mapDistSeg(w.x, w.y, sp.pts[k-1][0], sp.pts[k-1][1],
+                             sp.pts[k][0], sp.pts[k][1]);
+        if (d < td) { td = d; th = six; }
+      }
+    });
+    if (th >= 0) {
+      const sp = mapLayout.spines[th];
+      wirePinSet({ surface: "map", kind: "trunk",
+        id: "T|" + sp.s + "|" + sp.t + "|" + sp.wty,
+        s: sp.s, t: sp.t, wty: sp.wty, menu: "tip" });
+      wireTipEl.textContent = "\ud83d\ude8c bus " + nodes[sp.s].label +
+        " \u2192 " + nodes[sp.t].label +
+        (sp.trunkW ? "  \u00d7" + sp.trunkW : "");
+      wireTipEl.style.display = "block";
+      const pad = 14;
+      let tx2 = e.clientX + pad, ty2 = e.clientY + pad;
+      const r2 = wireTipEl.getBoundingClientRect();
+      if (tx2 + r2.width > innerWidth - 8) tx2 = e.clientX - r2.width - pad;
+      if (ty2 + r2.height > innerHeight - 8) ty2 = e.clientY - r2.height - pad;
+      wireTipEl.style.left = tx2 + "px"; wireTipEl.style.top = ty2 + "px";
+      wireTipAnchor = null;   // transient card: the pin outlives it
       return;
     }
   }
@@ -8665,6 +8743,21 @@ document.addEventListener("click", e => {
   }
   e.stopPropagation();   // the label/canvas click handlers stay out
   showWireTip(wHit, e.clientX, e.clientY);
+                    // [issue #82] latch the ball-surface pin — only for
+                    // clicks that originated on the 3D canvas itself (DOM
+                    // .click() events target their element and carry 0,0
+                    // coords; the transient tip above must not become a
+                    // sticky pin from a UI-chip click).
+                    if (e.target === renderer.domElement &&
+                        (wHit.kind === "link" || wHit.kind === "wire" ||
+                         wHit.kind === "trunk")) {
+                      const pinId = wHit.kind === "link" ? "L|" + wHit.li
+                        : wHit.kind === "trunk" ? "K|" + wHit.k
+                        : "F|" + wHit.a + "|" + wHit.b + "|" + wHit.ln;
+                      wirePinSet({ surface: "ball", kind: wHit.kind,
+                        id: pinId, li: wHit.li, a: wHit.a, b: wHit.b,
+                        ln: wHit.ln, k: wHit.k, menu: "tip" });
+                    }
 }, true);
 renderer.domElement.addEventListener("click", e => {
   if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;

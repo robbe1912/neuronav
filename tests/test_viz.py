@@ -876,6 +876,7 @@ def run_tests():
         # Clear the 5b search focus first — greyout defers to focus mode.
         page.keyboard.press("Escape")
         page.wait_for_timeout(400)
+
         grey_setup = page.evaluate(
             """() => { const d = window.__dbg;
                  // pick a visible hub with >= 2 neighbors and a far-away node
@@ -1880,9 +1881,172 @@ def run_tests():
 
                 # ---- [issue #82] 3D surface: corridor/wire click pins ----
                 # scan the 3D canvas (left of the map pane) for a point whose
-                # pickWireMeta resolves a named link; clicking there runs the
-                # capture-phase wire handler, which opens the tip and latches
-                # the pin on the ball surface
+                # pickWireMeta resolves a pickable wire; clicking there runs
+                # the capture-phase wire handler, which opens the tip and
+                # latches the pin on the ball surface. Section 5bb left the
+                # fn layer off (hover tests); a close-up focus then ink-gates
+                # every named link below the pick threshold, so turn the fn
+                # layer on for this block and restore it after — fn wires
+                # pin identically (kind "wire").
+                # ---- [issue #82] trunk corridor pins (the enumerated set) ----
+                # re-establish focus first: the esc-chain walk above ends in
+                # clearFocus when the tip is already hidden (the orbit press
+                # hides it), which drops the map layout
+                page.fill("#search", tok)
+                page.dispatch_event("#search", "input")
+                page.wait_for_timeout(500)
+                page.evaluate("""tok => { const rows = [...document.querySelectorAll('#searchResults .row')];
+                    (rows.find(x => x.title.endsWith(tok)) || rows[0])
+                    .dispatchEvent(new PointerEvent('pointerdown', {bubbles: true})); }""", tok)
+                page.wait_for_timeout(1200)
+                # 2D: click a trunk spine — the pin covers trunk + taps and
+                # opens the bus card (map-side trunk-click parity)
+                trunk_pt = page.evaluate("""() => {
+                    const d = window.__dbg;
+                    const L = d.mapLayout;
+                    const pn = document.getElementById("mapPane");
+                    for (const sp of L.spines) {
+                        if (sp.hub !== "trunk" || !sp.pts) continue;
+                        for (let k = 1; k < sp.pts.length; k++) {
+                            const mx = (sp.pts[k-1][0] + sp.pts[k][0]) / 2;
+                            const my = (sp.pts[k-1][1] + sp.pts[k][1]) / 2;
+                            const sx = (mx - d.mapPX) * d.mapZ;
+                            const sy = (my - d.mapPY) * d.mapZ;
+                            if (sx < 14 || sy < 14 ||
+                                sx > pn.clientWidth - 14 ||
+                                sy > pn.clientHeight - 14) continue;
+                            const onRect = d.mapRects.some(r =>
+                                mx >= r.x - 8 && mx <= r.x + r.w + 8 &&
+                                my >= r.y - 8 && my <= r.y + r.h + 8);
+                            if (onRect) continue;
+                            return { sx, sy };
+                        }
+                    }
+                    return null; }""")
+                if trunk_pt:
+                    page.mouse.click(bb["x"] + trunk_pt["sx"],
+                                     bb["y"] + trunk_pt["sy"])
+                    page.wait_for_timeout(350)
+                    pinT = page.evaluate("() => window.__dbg.wirePin")
+                    coverT = page.evaluate("() => window.__dbg.pinCover")
+                    cardT = page.evaluate(
+                        "() => ({ disp: document.getElementById('wireTip')"
+                        ".style.display,"
+                        " txt: document.getElementById('wireTip')"
+                        ".textContent.slice(0, 8) })")
+                    check("map trunk click pins the enumerated set",
+                          pinT and pinT["surface"] == "map" and
+                          pinT["kind"] == "trunk" and pinT["id"],
+                          f"{pinT}")
+                    check("trunk pin emphasis covers trunk + taps",
+                          coverT >= 2, f"pinCover {coverT}")
+                    check("trunk pin opens the bus card",
+                          cardT["disp"] == "block" and
+                          cardT["txt"].startswith("\U0001f68c"),
+                          f"{cardT}")
+                    # zoom survival (paint tier, no layout rebuild)
+                    page.mouse.move(bb["x"] + 400, bb["y"] + 400)
+                    page.mouse.wheel(0, -600)
+                    page.wait_for_timeout(400)
+                    pinT2 = page.evaluate("() => window.__dbg.wirePin")
+                    coverT2 = page.evaluate("() => window.__dbg.pinCover")
+                    check("trunk pin survives zoom (paint tier)",
+                          pinT2 == pinT and coverT2 >= 2,
+                          f"{pinT} -> {pinT2}, cover {coverT2}")
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(250)
+                else:
+                    print("SKIP map trunk pin - no on-screen trunk corridor")
+                # 3D: trunk conduit click pins on the ball surface.
+                # The esc-chain walk above can end in clearFocus (tip
+                # already hidden), which drops the serve gate's focus; a
+                # fresh row-click re-frames the camera inside 2.2 ball
+                # radii (_lodServe) so conduit picks resolve.
+                page.fill("#search", tok)
+                page.dispatch_event("#search", "input")
+                page.wait_for_timeout(500)
+                page.evaluate("""tok => { const rows = [...document.querySelectorAll('#searchResults .row')];
+                    (rows.find(x => x.title.endsWith(tok)) || rows[0])
+                    .dispatchEvent(new PointerEvent('pointerdown', {bubbles: true})); }""", tok)
+                page.wait_for_timeout(1200)
+                if not page.evaluate("() => window.__dbg.lodServe"):
+                    # dolly in: serve needs the camera inside 2.2 ball
+                    # radii — a focused re-click may not move it
+                    page.mouse.move(400, 300)
+                    for _ in range(3):
+                        page.mouse.wheel(0, -600)
+                        page.wait_for_timeout(250)
+                    page.wait_for_timeout(500)
+                trunk3 = None
+                tpts = page.evaluate("""() => {
+                    const d = window.__dbg;
+                    const pn = document.getElementById("mapPane");
+                    const xmax = (pn ? pn.getBoundingClientRect().x
+                                    : innerWidth) - 14;
+                    const out = [];
+                    for (let y = 70; y < innerHeight - 40 && out.length < 5;
+                         y += 44)
+                        for (let x = 24; x < xmax && out.length < 5; x += 44) {
+                            const m = d.pickWireMeta({ clientX: x, clientY: y });
+                            if (m && m.kind === "trunk") out.push({ x, y });
+                        }
+                    return out; }""")
+                if not tpts:
+                    # the 3d-wire block's orbit can leave no conduit in the
+                    # strip — one orbit re-frames and the scan retries once
+                    page.mouse.move(400, 460)
+                    page.mouse.down()
+                    for k in range(6):
+                        page.mouse.move(400 + 18 * (k + 1), 460 + 6 * (k + 1))
+                    page.mouse.up()
+                    page.wait_for_timeout(700)
+                    tpts = page.evaluate("""() => {
+                        const d = window.__dbg;
+                        const pn = document.getElementById("mapPane");
+                        const xmax = (pn ? pn.getBoundingClientRect().x
+                                        : innerWidth) - 14;
+                        const out = [];
+                        for (let y = 70; y < innerHeight - 40 && out.length < 5;
+                             y += 44)
+                            for (let x = 24; x < xmax && out.length < 5; x += 44) {
+                                const m = d.pickWireMeta({ clientX: x, clientY: y });
+                                if (m && m.kind === "trunk") out.push({ x, y });
+                            }
+                        return out; }""")
+                for cand in tpts or []:
+                    page.mouse.move(cand["x"], cand["y"])
+                    page.wait_for_timeout(150)
+                    hov = page.evaluate(
+                        "() => ({ hf: window.__dbg.hoveredFn,"
+                        " hv: window.__dbg.hovered })")
+                    if hov["hf"] is not None and hov["hf"] >= 0:
+                        continue
+                    if hov["hv"] is not None and hov["hv"] >= 0:
+                        continue
+                    page.mouse.click(cand["x"], cand["y"])
+                    page.wait_for_timeout(300)
+                    trunk3 = page.evaluate("() => window.__dbg.wirePin")
+                    if trunk3:
+                        break
+                if trunk3:
+                    cover3t = page.evaluate("() => window.__dbg.pinCover")
+                    check("3d trunk click pins the conduit",
+                          trunk3["surface"] == "ball" and
+                          trunk3["kind"] == "trunk" and trunk3["id"],
+                          f"{trunk3}, cover {cover3t}")
+                    check("3d trunk emphasis resolves (pinCover)",
+                          cover3t == 1, f"cover {cover3t}")
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(250)
+                    trunk3b = page.evaluate("() => window.__dbg.wirePin")
+                    check("esc dismisses the 3d trunk pin",
+                          trunk3b is None, f"{trunk3} -> {trunk3b}")
+                else:
+                    print("SKIP 3d trunk pin - no pickable conduit in view")
+
+                fn_was_on = page.evaluate(
+                    "() => document.getElementById('cbFn').checked")
+
                 link_pts = page.evaluate("""() => {
                     const d = window.__dbg;
                     const pn = document.getElementById("mapPane");
@@ -1893,11 +2057,36 @@ def run_tests():
                          y += 44) {
                         for (let x = 24; x < xmax && out.length < 5; x += 44) {
                             const m = d.pickWireMeta({ clientX: x, clientY: y });
-                            if (m && m.kind === "link")
+                            if (m && (m.kind === "link" || m.kind === "wire"))
                                 out.push({ x, y });
                         }
                     }
                     return out; }""")
+                if not link_pts:
+                    # pose-sensitive scan: link ink gates by camera distance
+                    # (edgeK); a real orbit drag re-frames the ink tiers and
+                    # the scan retries once before giving up
+                    page.mouse.move(400, 460)
+                    page.mouse.down()
+                    for k in range(6):
+                        page.mouse.move(400 + 18 * (k + 1), 460 + 6 * (k + 1))
+                    page.mouse.up()
+                    page.wait_for_timeout(700)
+                    link_pts = page.evaluate("""() => {
+                        const d = window.__dbg;
+                        const pn = document.getElementById("mapPane");
+                        const xmax = (pn ? pn.getBoundingClientRect().x
+                                        : innerWidth) - 14;
+                        const out = [];
+                        for (let y = 70; y < innerHeight - 40 && out.length < 5;
+                             y += 44) {
+                            for (let x = 24; x < xmax && out.length < 5; x += 44) {
+                                const m = d.pickWireMeta({ clientX: x, clientY: y });
+                                if (m && m.kind === "link")
+                                    out.push({ x, y });
+                            }
+                        }
+                        return out; }""")
                 pin3d = None
                 for cand in link_pts or []:
                     page.mouse.move(cand["x"], cand["y"])
@@ -1953,6 +2142,16 @@ def run_tests():
                           tip3c == "none", f"tip {tip3c}")
                 else:
                     print("SKIP 3d wire pin - no pickable link in view")
+
+                if not fn_was_on:
+                    page.evaluate(
+                        "() => document.getElementById('cbFn').click()")
+                    page.wait_for_timeout(500)
+                # the esc walk above (tip already hidden by the orbit
+                # press) ends in clearFocus, which drops the map layout —
+                # re-enter focus (same helper the suite uses: includes the
+                # conditional depth escalation a depth-1 re-focus needs)
+                enter_focus_via_row()
             elif wpts:
                 check("map wire click opens fn panel", False,
                       f"no fn panel from {len(wpts)} clear wire aims: " + str(wpts))
