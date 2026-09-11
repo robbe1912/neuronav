@@ -428,43 +428,10 @@ def _ctx_overview(g) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool(annotations=READONLY)
-def context(path: str = "", depth: int = 1) -> str:
-    """Subsystem map for one repo file — the orientation tool for agents.
-
-    Fresh-agent entry point: pass a res:// path (or repo-relative) and get
-    a text map — its cluster (label, confidence, member hubs by in-degree),
-    structural neighbors grouped by edge type (call/signal/var/attach/inst
-    with counts and direction, depth 1-3), top semantic neighbors (embedding
-    cosine), and hub status (in-degree rank). Called with no path, returns
-    the all-clusters overview instead (label, size, top members, external
-    edges). Build from existing clusters + graph + vector index; no new deps.
-    """
-    _auto_rescan()
-    depth = max(1, min(depth, 3))
-    p = path.strip()
-    g = graph.get_graph()
-    if not p:
-        return _ctx_overview(g)
-    if p.startswith("res://"):
-        p = p[len("res://"):]
-    p = p.replace("\\", "/").lstrip("/")
-    if p not in g.files:
-        import difflib
-
-        close = difflib.get_close_matches(p, list(g.files), n=3, cutoff=0.4)
-        sug = f" Closest matches: {', '.join(close)}" if close else ""
-        return f"unknown file: {p} — pass a repo-relative or res:// path, or rescan first.{sug}"
-    fs = g.files[p]
-    adj, indeg = _ctx_adjacency(g)
+def _render_membership(p: str, cs: list, indeg: dict[str, int]) -> list[str]:
+    """Cluster block: label, confidence, this file's in-degree rank,
+    top members."""
     lines: list[str] = []
-    if fs.class_name and fs.extends:
-        tag = f"{fs.class_name} extends {fs.extends}"
-    else:
-        tag = fs.class_name or fs.extends or fs.ext
-    lines.append(f"res://{p}  [{tag}]")
-
-    cs = nav.clusters()
     mine = next((c for c in cs if any(pp == p for pp, _ in c["paths"])), None)
     if mine is None:
         lines.append("cluster: unclustered")
@@ -484,8 +451,13 @@ def context(path: str = "", depth: int = 1) -> str:
             lines.append(f"    {v:>3}  res://{pp}{cls}")
         if len(members) > 12:
             lines.append(f"    … +{len(members) - 12} more")
+    return lines
 
-    lines.append(f"structural neighbors (depth {depth}):")
+
+def _render_neighbors(p: str, adj: dict, indeg: dict[str, int], depth: int) -> list[str]:
+    """Structural block: direct neighbors by edge type + direction,
+    2-hop ring when depth >= 2."""
+    lines = [f"structural neighbors (depth {depth}):"]
     if p not in adj:
         lines.append("  none — isolated file")
     else:
@@ -523,15 +495,24 @@ def context(path: str = "", depth: int = 1) -> str:
                 lines.append(f"  2-hop ({len(hop2)} files, top {len(h2)} by in-degree):")
                 for f2, via in h2:
                     lines.append(f"    res://{f2}  via res://{via}")
+    return lines
 
-    lines.append("semantic neighbors (cosine):")
+
+def _render_semantic(p: str) -> list[str]:
+    """Embedding-cosine neighbor block (empty -> rescan hint)."""
+    lines = ["semantic neighbors (cosine):"]
     sem = _ctx_semantic(p)
     if not sem:
         lines.append("  n/a (file not embedded — rescan first)")
     else:
         for s, fid in sem:
             lines.append(f"  {s:.3f}  res://{fid}")
+    return lines
 
+
+def _render_hub(p: str, g, indeg: dict[str, int]) -> list[str]:
+    """Hub status: in-degree + percentile rank over all files."""
+    lines: list[str] = []
     ind = indeg.get(p, 0)
     ranked = sorted(g.files, key=lambda f: -indeg.get(f, 0))
     rank = ranked.index(p) + 1
@@ -543,6 +524,47 @@ def context(path: str = "", depth: int = 1) -> str:
         )
     else:
         lines.append(f"hub: in-degree 0 — rank {rank} of {total} files (leaf)")
+    return lines
+
+
+@mcp.tool(annotations=READONLY)
+def context(path: str = "", depth: int = 1) -> str:
+    """Subsystem map for one repo file — the orientation tool for agents.
+
+    Fresh-agent entry point: pass a res:// path (or repo-relative) and get
+    a text map — its cluster (label, confidence, member hubs by in-degree),
+    structural neighbors grouped by edge type (call/signal/var/attach/inst
+    with counts and direction, depth 1-3), top semantic neighbors (embedding
+    cosine), and hub status (in-degree rank). Called with no path, returns
+    the all-clusters overview instead (label, size, top members, external
+    edges). Build from existing clusters + graph + vector index; no new deps.
+    """
+    _auto_rescan()
+    depth = max(1, min(depth, 3))
+    p = path.strip()
+    g = graph.get_graph()
+    if not p:
+        return _ctx_overview(g)
+    if p.startswith("res://"):
+        p = p[len("res://"):]
+    p = p.replace("\\", "/").lstrip("/")
+    if p not in g.files:
+        import difflib
+
+        close = difflib.get_close_matches(p, list(g.files), n=3, cutoff=0.4)
+        sug = f" Closest matches: {', '.join(close)}" if close else ""
+        return f"unknown file: {p} — pass a repo-relative or res:// path, or rescan first.{sug}"
+    fs = g.files[p]
+    adj, indeg = _ctx_adjacency(g)
+    if fs.class_name and fs.extends:
+        tag = f"{fs.class_name} extends {fs.extends}"
+    else:
+        tag = fs.class_name or fs.extends or fs.ext
+    lines = [f"res://{p}  [{tag}]"]
+    lines += _render_membership(p, nav.clusters(), indeg)
+    lines += _render_neighbors(p, adj, indeg, depth)
+    lines += _render_semantic(p)
+    lines += _render_hub(p, g, indeg)
     return "\n".join(lines)
 
 
