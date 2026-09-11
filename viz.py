@@ -8372,11 +8372,11 @@ mapPane.addEventListener("pointerup", e => {
   mapDragged = mapDrag.moved;
   mapJitterHit = null;
   // [issue #84] skeptic #2a: real hands drift 5-12px between down/up.
-  // A press that BEGAN on wire or spine ink and traveled <10px screen
+  // A press that BEGAN on wire or spine ink and traveled <12px screen
   // is a pick, not a pan - resolve against the press origin (world
-  // coords are stable under the sub-10px pan that already applied).
+  // coords are stable under the sub-12px pan that already applied).
   if (mapDragged && mapDownPt && mapLayout) {
-    if (Math.hypot(e.clientX - mapDownPt.sx, e.clientY - mapDownPt.sy) < 10) {
+    if (Math.hypot(e.clientX - mapDownPt.sx, e.clientY - mapDownPt.sy) < 12) {
       const onInk = (wx, wy) => {
         if (mapWireAt(wx, wy) >= 0) return true;
         const tol2 = 10 / mapZ;
@@ -8388,14 +8388,18 @@ mapPane.addEventListener("pointerup", e => {
         }
         return false;
       };
-      if (onInk(mapDownPt.wx, mapDownPt.wy))
-        mapJitterHit = { x: mapDownPt.wx, y: mapDownPt.wy };
-      else {
+      // resolve BOTH rescue classes at the press origin: the ink
+      // latch picks the wire the press began on, and the slop click
+      // keeps the header the hand aimed at - resolving at the release
+      // point let 8-11px drifts exit the thin header band and die
+      // (skeptic #22: measured boundary 6/8px per-axis, not 10)
+      mapJitterHit = { x: mapDownPt.wx, y: mapDownPt.wy };
+      if (!onInk(mapDownPt.wx, mapDownPt.wy)) {
         // [owner r5] click slop: the jitter latch rescues INK picks,
         // but every other target died on >4px drift - the whole click
         // was swallowed as a pan, so card headers stopped refocusing
         // under real hands. Undo the sub-slop pan and let the click
-        // resolve through the normal path at the release point.
+        // resolve through the normal path.
         mapPX = mapDrag.px; mapPY = mapDrag.py;
         mapClampView(); drawMapPane();
         mapDragged = false;

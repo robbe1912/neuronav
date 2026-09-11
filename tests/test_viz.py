@@ -3178,8 +3178,11 @@ def run_tests():
         # 5-12px between press and release - before the slop restore
         # every drifted card click was swallowed as a pan and the 3D
         # camera never refocused (owner: "does not move the camera").
-        # Runs after the tail for the same direction-inheritance reason
-        # as the stale-list block above it.
+        # Contract: sub-12px TOTAL travel resolves as a click AT THE
+        # PRESS ORIGIN (skeptic #22: release-point resolution let
+        # 8-11px drifts exit the header band); >=12px is a pan. Runs
+        # after the tail for the same direction-inheritance reason as
+        # the stale-list block above it.
         drift_card = page.evaluate("""() => {
             const d = window.__dbg;
             const bb = document.getElementById('mapPane')
@@ -3197,11 +3200,11 @@ def run_tests():
             camA = page.evaluate(
                 "() => window.__dbg.camera.position.toArray()")
             focA = page.evaluate("() => window.__dbg.focusFileIdx")
-            page.mouse.move(drift_card["hx"] - 4, drift_card["hy"] - 3)
+            page.mouse.move(drift_card["hx"] - 5, drift_card["hy"] - 4)
             page.mouse.down()
             for k in range(1, 7):
-                page.mouse.move(drift_card["hx"] - 4 + k,
-                                drift_card["hy"] - 3 + k)
+                page.mouse.move(drift_card["hx"] - 5 + k,
+                                drift_card["hy"] - 4 + k)
                 page.wait_for_timeout(12)
             page.mouse.up()
             page.wait_for_timeout(900)
@@ -3212,6 +3215,19 @@ def run_tests():
             check("drifted card click still refocuses",
                   focB != focA and dcam > 1,
                   f"{focA} -> {focB}, cam delta {dcam:.1f}")
+            # negative rung: >=12px travel is a pan, not a click - the
+            # press must NOT refocus (boundary is travel, not per-axis)
+            page.mouse.move(drift_card["hx"] - 6, drift_card["hy"] - 5)
+            page.mouse.down()
+            for k in range(1, 8):
+                page.mouse.move(drift_card["hx"] - 6 + k,
+                                drift_card["hy"] - 5 + k)
+                page.wait_for_timeout(12)
+            page.mouse.up()
+            page.wait_for_timeout(700)
+            focC = page.evaluate("() => window.__dbg.focusFileIdx")
+            check("drift past the slop pans instead of clicking",
+                  focC == focB, f"{focB} stays {focC}")
         else:
             print("SKIP drifted card click - no second card on screen")
 
