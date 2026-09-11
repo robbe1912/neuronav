@@ -412,14 +412,34 @@ def _check_model(col: chromadb.Collection) -> None:
         )
 
 
-def _collection() -> chromadb.Collection:
-    client = chromadb.PersistentClient(path=str(DB_DIR))
-    col = client.get_or_create_collection(
-        name=COLLECTION,
+def client() -> "chromadb.PersistentClient":
+    """Chroma client at the configured store (one construction point)."""
+    return chromadb.PersistentClient(path=str(DB_DIR))
+
+
+def fns_name() -> str:
+    """Fn-level sibling collection name — '-fns' rides the main
+    collection so per-config stores never mix function vectors."""
+    return f"{COLLECTION}-fns"
+
+
+def _named_collection(name: str) -> chromadb.Collection:
+    col = client().get_or_create_collection(
+        name=name,
         metadata={"hnsw:space": "cosine"},
     )
     _check_model(col)
     return col
+
+
+def _collection() -> chromadb.Collection:
+    """Main file-level collection."""
+    return _named_collection(COLLECTION)
+
+
+def fns_collection() -> chromadb.Collection:
+    """Fn-level sibling (graph.sync_functions / find_functions)."""
+    return _named_collection(fns_name())
 
 
 def rescan() -> dict[str, int]:
@@ -775,11 +795,10 @@ if __name__ == "__main__":
                 print(f"  {wp['a']} <-> {wp['b']} : {wp['edges']} edges (top: {tops})")
     elif cmd == "drop":
         _clusters_memo.clear()  # the store is going away
-        import chromadb as _c
-        client = _c.PersistentClient(path=str(DB_DIR))
-        for name in (COLLECTION, f"{COLLECTION}-fns"):
+        cl = client()
+        for name in (COLLECTION, fns_name()):
             try:
-                client.delete_collection(name)
+                cl.delete_collection(name)
                 print(f"dropped {name}")
             except Exception:
                 print(f"{name}: not present")

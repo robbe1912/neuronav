@@ -1218,17 +1218,9 @@ def _normalize_body(body: str) -> str:
 
 
 def _fn_collection() -> "chromadb.Collection":
-    import chromadb
-
-    client = chromadb.PersistentClient(path=str(nav.DB_DIR))
     # per-config collection: two checkouts/projects sharing one .chroma dir
     # must not mix function vectors (hardcoded name collided across configs)
-    col = client.get_or_create_collection(
-        name=f"{nav.COLLECTION}-fns",
-        metadata={"hnsw:space": "cosine"},
-    )
-    nav._check_model(col)
-    return col
+    return nav.fns_collection()
 
 
 def _all_filesyms() -> dict[str, FileSym]:
