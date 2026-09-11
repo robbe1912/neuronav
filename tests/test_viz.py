@@ -2119,6 +2119,40 @@ def run_tests():
                           pin3d["surface"] == "ball" and
                           pin3d["kind"] in ("link", "wire") and pin3d["id"],
                           f"{pin3d}, cover {cover3d}")
+                    # [issue #85 owner r2] the pin tip must PERSIST with a
+                    # from->to description while the pin lives
+                    txt3a = page.evaluate(
+                        "() => document.getElementById('wireTip')"
+                        ".textContent")
+                    disp3a = page.evaluate(
+                        "() => document.getElementById('wireTip')"
+                        ".style.display")
+                    # DIAG r2: discriminate last-frame-hidden vs idle-rAF
+                    raf = page.evaluate(
+                        "() => new Promise(res => requestAnimationFrame("
+                        "() => requestAnimationFrame(() => res("
+                        "{ end: document.getElementById('wireTip')"
+                        ".style.display,"
+                        "  anchor: !!window.__dbg.wirePin }))) )")
+                    idle = page.evaluate(
+                        "() => document.getElementById('wireTip')"
+                        ".style.display")
+                    raf2 = page.evaluate(
+                        "() => new Promise(res => requestAnimationFrame("
+                        "() => requestAnimationFrame(() => res("
+                        "document.getElementById('wireTip')"
+                        ".style.display))) )")
+                    tk = page.evaluate(
+                        "() => { const a = window.__dbg.pinTicks;"
+                        " return new Promise(res => setTimeout(() => "
+                        "res({ a, b: window.__dbg.pinTicks }), 400)); }")
+                    print("DIAG r2:", {"raf": raf, "idle": idle,
+                                       "raf2": raf2, "ticks": tk})
+                    check("3d pin tip persists with from->to",
+                          disp3a == "block" and
+                          ("\u2192" in txt3a or "\u2193" in txt3a) and
+                          len(txt3a) > 8,
+                          f"{disp3a} {txt3a[:50]!r}")
                     check("3d pin emphasis resolves (pinCover)",
                           cover3d >= 1, f"cover {cover3d}")
                     # camera orbit: paint-tier state, overlay re-derived
@@ -2136,6 +2170,11 @@ def run_tests():
                     check("3d pin survives camera orbit (paint tier)",
                           pin3b == pin3d and cover3b >= 1,
                           f"{pin3d} -> {pin3b}, cover {cover3b}")
+                    tip3b2 = page.evaluate(
+                        "() => document.getElementById('wireTip')"
+                        ".style.display")
+                    check("pin tip survives the orbit press",
+                          tip3b2 == "block", f"tip {tip3b2}")
                     # esc: the pin owns the first press; the tip (transient
                     # overlay) closes on the NEXT press per the existing chain
                     page.keyboard.press("Escape")
@@ -2197,6 +2236,48 @@ def run_tests():
                     check("jittered wire click still pins (sub-10px drift latch)",
                           pinJ and pinJ["surface"] == "map" and pinJ["kind"] == "wire",
                           f"{wpt} -> {pinJ}")
+                    # [issue #85 owner r1] the pin emphasis must be the app
+                    # accent, not the ambient white wire mass - sample the
+                    # canvas at the pin midpoint; reverting to white/gray
+                    # fails this (no teal pixel in the window)
+                    if pinJ:
+                        acc = page.evaluate("""(w) => {
+                            const d = window.__dbg, L = d.mapLayout;
+                            if (!L) return null;
+                            const wr = L.wires.find(
+                                x => d.wireKeyOf(x) === w.id);
+                            if (!wr || !wr.pts || wr.pts.length < 2)
+                                return null;
+                            // #mapPane IS the 2D canvas (mapRender draws it)
+                            const cv = document.getElementById('mapPane');
+                            if (!cv || !cv.getContext) return null;
+                            const bb = cv.getBoundingClientRect();
+                            const dpr = cv.width / (cv.clientWidth || 1);
+                            const ctx = cv.getContext('2d');
+                            // sample 5 stations along the polyline - a
+                            // dashed emphasis can gap at any single point
+                            let teal = false;
+                            const N = wr.pts.length;
+                            for (let s = 0; s < 5 && !teal; s++) {
+                                const p = wr.pts[Math.min(
+                                    N - 1, Math.round((N - 1) * s / 4))];
+                                const sx = (p[0] - d.mapPX) * d.mapZ + bb.left;
+                                const sy = (p[1] - d.mapPY) * d.mapZ + bb.top;
+                                const cx0 = Math.round((sx - bb.left) * dpr);
+                                const cy0 = Math.round((sy - bb.top) * dpr);
+                                for (let dx = -3; dx <= 3 && !teal; dx++)
+                                  for (let dy = -3; dy <= 3 && !teal; dy++) {
+                                    const q = ctx.getImageData(cx0 + dx,
+                                        cy0 + dy, 1, 1).data;
+                                    if (q[3] < 30) continue;
+                                    if (q[1] > q[0] + 40 && q[1] > q[2] + 10)
+                                        teal = true;
+                                  }
+                            }
+                            return { teal }; }""", pinJ)
+                        check("pinned map wire paints in the accent",
+                              acc is not None and acc["teal"],
+                              f"{acc} at {wpt}")
                     # void click: uniform dismissal for ANY leftover pin
                     # (skeptic #6: only list-pins died before)
                     if pinJ:
@@ -2570,6 +2651,91 @@ def run_tests():
             )
             check("trunk click opens the rider card",
                   card.startswith("\U0001F68C bus ") and "→" in card, card[:80])
+        # [issue #85 owner r3] corridor-complete legs: clicking a
+        # junction leg must latch the FULL corridor (its dominant
+        # trunk), with the persistent bus pair summary on the tip
+        # junction legs only carry pick ink in the serve tier (camera
+        # within 2.2 ball radii) - wheel-zoom in like a user reading
+        # junctions until _lodServe flips on
+        for _ in range(6):
+            if page.evaluate("() => !!window.__dbg.lodServe"):
+                break
+            c = page.evaluate(
+                "() => { const r = window.__dbg.renderer"
+                ".domElement.getBoundingClientRect();"
+                " return {x: r.left + r.width / 2,"
+                " y: r.top + r.height / 2}; }")
+            page.mouse.move(c["x"], c["y"])
+            page.mouse.wheel(0, -400)
+            page.wait_for_timeout(250)
+        leg_pts = page.evaluate("""() => {
+            const d = window.__dbg;
+            // the tail collapsed the map pane: scan canvas-local
+            // like the tail does (full-width 3D canvas, left=0)
+            const el = d.renderer.domElement,
+                  r = el.getBoundingClientRect();
+            const out = [];
+            for (let x = 16; x < r.width && out.length < 4; x += 30)
+              for (let y = 16; y < r.height && out.length < 4;
+                   y += 30) {
+                const m = d.pickWireMeta({ clientX: r.left + x,
+                                           clientY: r.top + y });
+                if (m && m.kind === "jleg")
+                    out.push({ x: r.left + x, y: r.top + y });
+              }
+            return out; }""")
+        pinLg = None
+        for cand in leg_pts or []:
+            page.mouse.move(cand["x"], cand["y"])
+            page.wait_for_timeout(150)
+            hov = page.evaluate(
+                "() => ({ hf: window.__dbg.hoveredFn,"
+                " hv: window.__dbg.hovered })")
+            if (hov["hf"] is not None and hov["hf"] >= 0) or \
+               (hov["hv"] is not None and hov["hv"] >= 0):
+                continue
+            page.mouse.click(cand["x"], cand["y"])
+            page.wait_for_timeout(400)
+            pinLg = page.evaluate("() => window.__dbg.wirePin")
+            if pinLg:
+                leg_used = cand
+                break
+        if pinLg and pinLg["kind"] == "trunk":
+            covLg = page.evaluate("() => window.__dbg.pinCover")
+            tipLg = page.evaluate(
+                "() => document.getElementById('wireTip')"
+                ".textContent")
+            check("junction leg click pins the full corridor",
+                  pinLg["surface"] == "ball" and covLg >= 2,
+                  f"{leg_used} -> {pinLg}, cover {covLg}")
+            check("leg pin tip shows the bus pair summary",
+                  "bus" in tipLg and "\u2192" in tipLg,
+                  (tipLg or "")[:60])
+            # press on the leg again: the transient tip hides on
+            # pointerdown and the pin re-asserts it next frame
+            page.mouse.move(leg_used["x"], leg_used["y"])
+            page.mouse.down()
+            page.mouse.up()
+            page.wait_for_timeout(400)
+            pinLg2 = page.evaluate("() => window.__dbg.wirePin")
+            tipLg2 = page.evaluate(
+                "() => document.getElementById('wireTip')"
+                ".style.display")
+            check("pin tip survives a press while pinned",
+                  tipLg2 == "block" and pinLg2 == pinLg,
+                  f"tip {tipLg2}, {pinLg} == {pinLg2}")
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(250)
+            pinLg3 = page.evaluate("() => window.__dbg.wirePin")
+            tipLg3 = page.evaluate(
+                "() => document.getElementById('wireTip')"
+                ".style.display")
+            check("esc clears the leg pin and its tip",
+                  pinLg3 is None and tipLg3 == "none",
+                  f"pin {pinLg3}, tip {tipLg3}")
+        else:
+            print("SKIP junction leg click - no leg ink in view")
+
         # [issue #84] skeptic #14: a focus rebuild must not leave the
         # trunk bundle list open with stale corridor rows - latch a pin
         # THROUGH the list (menu=list), refocus via a card header clear
@@ -2586,6 +2752,37 @@ def run_tests():
         except NameError:
             pinL = None
         if pinL and pinL.get("menu") == "list":
+            # [issue #85 owner r1] trunk corridors paint in the same accent
+            trcol = page.evaluate("""(pin) => {
+                const d = window.__dbg, L = d.mapLayout;
+                if (!L || !pin) return null;
+                const sp = L.spines.find(x => x.hub === "trunk" &&
+                    x.s === pin.s && x.t === pin.t && x.wty === pin.wty);
+                if (!sp || !sp.pts || sp.pts.length < 2) return null;
+                const bb = document.getElementById('mapPane')
+                    .getBoundingClientRect();
+                // #mapPane IS the 2D canvas (mapRender draws it)
+                const cv = document.getElementById('mapPane');
+                if (!cv || !cv.getContext) return null;
+                const r2 = cv.getBoundingClientRect();
+                const dpr = window.devicePixelRatio || 1;
+                const m = sp.pts[Math.floor(sp.pts.length / 2)];
+                const sx = (m[0] - d.mapPX) * d.mapZ + bb.left;
+                const sy = (m[1] - d.mapPY) * d.mapZ + bb.top;
+                const cx0 = Math.round((sx - r2.left) * dpr);
+                const cy0 = Math.round((sy - r2.top) * dpr);
+                const ctx = cv.getContext('2d');
+                let teal = false;
+                for (let dx = -4; dx <= 4 && !teal; dx++)
+                  for (let dy = -4; dy <= 4 && !teal; dy++) {
+                    const p = ctx.getImageData(cx0 + dx, cy0 + dy, 1, 1).data;
+                    if (p[3] < 30) continue;
+                    if (p[1] > p[0] + 40 && p[1] > p[2] + 10) teal = true;
+                  }
+                return { teal }; }""", pinL)
+            if trcol is not None:
+                check("pinned trunk corridor paints in the accent",
+                      trcol["teal"], f"{trcol}")
             card3 = page.evaluate("""() => {
                 const d = window.__dbg;
                 const pn = document.getElementById('mapPane');

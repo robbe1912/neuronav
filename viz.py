@@ -2248,6 +2248,19 @@ function updateBallPin() {
   } else if (wirePin && wirePin.surface === "ball") pinCover = 0;
   pinEp0 = ep0; pinEp1 = ep1; pinBoxA = boxA; pinBoxB = boxB;
   pinChA = chainA; pinChB = chainB;
+  // [issue #85 owner r2] persistent from->to: while a ball pin lives
+  // the tip surface carries the pin description. A fresh hover owns
+  // the surface until the press hides it; the pin re-asserts next
+  // frame (wireTipAnchor doubles as the pin - the lifetime tracker
+  // reads the same .k / .a / .b fields pins carry).
+  if (wirePin && wirePin.surface === "ball" && !wireTipAnchor) {
+    const pd = pinDesc(wirePin);
+    if (pd) {
+      if (wireTipEl.textContent !== pd) wireTipEl.textContent = pd;
+      wireTipEl.style.display = "block";
+      wireTipAnchor = wirePin;
+    }
+  }
 }
 function pickWireMeta(e) {
   const rect = renderer.domElement.getBoundingClientRect();
@@ -6051,7 +6064,19 @@ let wirePin = null;    // {surface:'map'|'ball', kind:'wire'|'trunk'|'link', id,
 let pinCover = 0;      // polylines the last paint emphasized (mapInfo probe)
 const wireKeyOf = w => "w|" + w.sf + "|" + w.sfn + "|" + w.df + "|" + w.dfn + "|" + w.ty;
 function wirePinSet(p) { wirePin = p; pinCover = 0; drawMapPane(); }
-function wirePinClear() { if (!wirePin) return; wirePin = null; pinCover = 0; drawMapPane(); }
+// [issue #85 owner r1] pinned-wire emphasis: the app accent (the same
+// teal the search box, focus rows and bus tips use) - white-on-white
+// pins were indistinguishable from the ambient wire mass. One constant
+// shared by every map pin pass (wire, spine single, trunk corridor).
+const PIN_ACCENT = "#1de9b6";
+function wirePinClear() {
+  if (!wirePin) return;
+  wirePin = null; pinCover = 0;
+  // [issue #85 owner r2] the persistent pin tip dies with the pin on
+  // every dismissal path (esc, right-click, void, refocus, reap)
+  hideWireTip();
+  drawMapPane();
+}
 // ---- 3D wire/bus tooltip (position:fixed, follows cursor over the WebGL
 // canvas; describes the picked fn wire or bus trunk)
 const wireTipEl = document.createElement("div");
@@ -6169,6 +6194,24 @@ function wireDesc(meta) {
   return ty + " wire\n" + src.path + " :: " + a.name + "()" +
     (meta.ln >= 0 ? "  @L" + meta.ln : "") +
     "\n  ↓ into\n" + dst.path + " :: " + b.name + "()";
+}
+// [issue #85 owner r2] from -> to for a LATCHED pin: while the pin
+// lives the tip surface carries this instead of fading after the
+// click (the transient tip is what the owner never saw). Trunk/
+// conduit pins show the bus-card pair summary; wire pins name both
+// fns with their file context; link pins reuse the link description.
+function pinDesc(pin) {
+  if (pin.kind === "trunk") {
+    const tm = trunkMetaMap && trunkMetaMap.get(pin.k);
+    return tm ? wireDesc(tm) : null;
+  }
+  if (pin.kind === "link") return wireDesc({ kind: "link", li: pin.li });
+  // wire pins carry the same {a, b, ln} the line metas do - wireDesc
+  // already resolves both ends' paths + fn names for that shape (a
+  // hand-rolled fnMeta probe went stale against rebuilt rosters)
+  if (pin.kind === "wire")
+    return wireDesc({ kind: "wire", a: pin.a, b: pin.b, ln: pin.ln });
+  return null;
 }
 function showWireTip(meta, cx, cy) {
   wireTipEl.textContent = wireDesc(meta);
@@ -8010,12 +8053,13 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     const ps = L.spines.find(x2 => !x2.hub && x2.s === wirePin.s &&
                                    x2.t === wirePin.t && x2.wty === wirePin.wty);
     if (ps && ps.pts && ps.pts.length > 1) {
-      const g = MGLYPH[ps.wty] || MGLYPH.call;
       ctx.setLineDash([]);
-      seg(ps, g.c, 3, null, Math.max(dim(ps.s, ps.t), 0.95));
+      // [issue #85 owner r1] emphasis is the accent, not the wire's own
+      // type color (call wires ARE the white mass the pin hides in)
+      seg(ps, PIN_ACCENT, 3, null, Math.max(dim(ps.s, ps.t), 0.95));
       pinCover = 1;
       ctx.globalAlpha = 1;
-      ctx.lineWidth = 1.4; ctx.strokeStyle = "#fff"; ctx.fillStyle = g.c;
+      ctx.lineWidth = 1.4; ctx.strokeStyle = "#fff"; ctx.fillStyle = PIN_ACCENT;
       const pe = ps.pts[ps.pts.length - 1];
       for (const [ex, ey] of [ps.pts[0], pe]) {
         ctx.beginPath(); ctx.arc(ex, ey, 3.4, 0, Math.PI * 2);
@@ -8026,14 +8070,14 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   if (wirePin && wirePin.surface === "map" && wirePin.kind === "wire") {
     const pw = L.wires.find(x => wireKeyOf(x) === wirePin.id);
     if (pw) {
-      const g = MGLYPH[pw.ty] || MGLYPH.call;
       ctx.setLineDash([]);
-      seg(pw, g.c, 3, pw.back ? [2, 3] : null, Math.max(dim(pw.sf, pw.df), 0.95));
+      // [issue #85 owner r1] accent emphasis (see PIN_ACCENT)
+      seg(pw, PIN_ACCENT, 3, pw.back ? [2, 3] : null, Math.max(dim(pw.sf, pw.df), 0.95));
       pinCover = 1;
       ctx.globalAlpha = 1;
       ctx.lineWidth = 1.4;
       ctx.strokeStyle = "#fff";
-      ctx.fillStyle = g.c;
+      ctx.fillStyle = PIN_ACCENT;
       for (const [ex, ey] of [pw.pts[0], [pw.tx, pw.ty]]) {
         ctx.beginPath();
         ctx.arc(ex, ey, 3.4, 0, Math.PI * 2);
@@ -8050,18 +8094,19 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
       const wT = Math.max(Math.min(2 + 0.85 *
         Math.log2(tr.flowSum || tr.trunkW || 2), 5.5) * 1.6, 5 / mapZ);
       ctx.setLineDash([]);
-      seg(tr, "#ffd166", wT, [], Math.max(dim(tr.s, tr.t), 0.95));
+      // [issue #85 owner r1] accent emphasis (see PIN_ACCENT)
+      seg(tr, PIN_ACCENT, wT, [], Math.max(dim(tr.s, tr.t), 0.95));
       pinCover = 1;
       mapLayout.spines.forEach(sp2 => {
         if (sp2.hub === "tap" && sp2.tapBus && sp2.tapBus.trunk === tr) {
-          seg(sp2, "#ffd166", 2, [], 0.9);
+          seg(sp2, PIN_ACCENT, 2, [], 0.9);
           pinCover++;
         }
       });
       ctx.globalAlpha = 1;
       ctx.lineWidth = 1.4;
       ctx.strokeStyle = "#fff";
-      ctx.fillStyle = "#ffd166";
+      ctx.fillStyle = PIN_ACCENT;
       for (const p of [tr.pts[0], [tr.tx, tr.ty]]) {
         if (!p) continue;
         ctx.beginPath();
@@ -9019,13 +9064,49 @@ document.addEventListener("click", e => {
                     // sticky pin from a UI-chip click).
                     if (e.target === renderer.domElement &&
                         (wHit.kind === "link" || wHit.kind === "wire" ||
-                         wHit.kind === "trunk")) {
-                      const pinId = wHit.kind === "link" ? "L|" + wHit.li
-                        : wHit.kind === "trunk" ? "K|" + wHit.k
-                        : "F|" + wHit.a + "|" + wHit.b + "|" + wHit.ln;
-                      wirePinSet({ surface: "ball", kind: wHit.kind,
-                        id: pinId, li: wHit.li, a: wHit.a, b: wHit.b,
-                        ln: wHit.ln, k: wHit.k, menu: "tip" });
+                         wHit.kind === "trunk" || wHit.kind === "jleg")) {
+                      // [issue #85 owner r3] corridor-complete: a
+                      // junction leg stands for its corridor. The leg
+                      // key is "L|fi|stationId|subIdx" (it carries no
+                      // trunk), so resolve the station and pin its
+                      // DOMINANT trunk - most rider wires, ties break
+                      // by station order. Deterministic.
+                      let latch = null;
+                      if (wHit.kind === "jleg") {
+                        const sid = +String(wHit.k).split("|")[2];
+                        const S = (fnStationsArr || []).find(
+                          x => x.fi === wHit.fi && x.id === sid);
+                        let bestTk = null, bestN = -1;
+                        for (const tk2 of (S ? S.tks : [])) {
+                          const tm = trunkMetaMap && trunkMetaMap.get(tk2);
+                          const n2 = tm && tm.mates ? tm.mates.length : 0;
+                          if (n2 > bestN) { bestN = n2; bestTk = tk2; }
+                        }
+                        if (bestTk != null)
+                          latch = { surface: "ball", kind: "trunk",
+                            id: "K|" + bestTk, k: bestTk, menu: "tip" };
+                      } else {
+                        const pinId = wHit.kind === "link" ? "L|" + wHit.li
+                          : wHit.kind === "trunk" ? "K|" + wHit.k
+                          : "F|" + wHit.a + "|" + wHit.b + "|" + wHit.ln;
+                        latch = { surface: "ball", kind: wHit.kind,
+                          id: pinId, li: wHit.li, a: wHit.a, b: wHit.b,
+                          ln: wHit.ln, k: wHit.k, menu: "tip" };
+                      }
+                      if (latch) {
+                        wirePinSet(latch);
+                        // [issue #85 owner r2] the tip is pin-owned
+                        // from the first frame: the transient
+                        // wireDesc the click showed must give way to
+                        // the pin's from->to (its "↓ into" wording
+                        // has no arrow and outlives stale)
+                        const pd2 = pinDesc(latch);
+                        if (pd2) {
+                          wireTipEl.textContent = pd2;
+                          wireTipEl.style.display = "block";
+                          wireTipAnchor = latch;
+                        }
+                      }
                     }
 }, true);
 renderer.domElement.addEventListener("click", e => {
@@ -9390,7 +9471,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnStalk() { return fnStalk; },
   syncFileMesh,
   mapPane: { canvas: mapPane, draw: drawMapPane },
-  mwires, mapInfo, mapWireAt,   // [issue #84] probe surface: hit-test named wires
+  mwires, mapInfo, mapWireAt, wireKeyOf,   // [issue #84] probe surface: hit-test named wires
   get mapVars() { return mapVarsOn; }, mapExpandUser,
   get mapZ() { return mapZ; }, get mapPX() { return mapPX; },
   get mapPY() { return mapPY; }, mapClampView,
