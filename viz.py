@@ -2029,9 +2029,10 @@ let pickWireZ = 1;   // NDC depth of the last hit — node-front comparisons
 // explanation without presence" rule: the ink vanishes with the wire, the
 // pin object itself stays (paint-tier state, never a layout rebuild).
 let pinLine = null, pinPts = null, pinLinePos = null, pinPtsPos = null;
+let pinMisses = 0;   // [issue #84] consecutive unresolved ball-pin frames
 function updateBallPin() {
   if (!pinLine) {
-    pinLinePos = new Float32Array(17 * 3);
+    pinLinePos = new Float32Array(256 * 3);   // [issue #84] corridor chains are long
     pinLine = new THREE.Line(
       new THREE.BufferGeometry().setAttribute("position",
         new THREE.BufferAttribute(pinLinePos, 3)),
@@ -2042,15 +2043,89 @@ function updateBallPin() {
     pinPts = new THREE.Points(
       new THREE.BufferGeometry().setAttribute("position",
         new THREE.BufferAttribute(pinPtsPos, 3)),
-      new THREE.PointsMaterial({ color: 0xffffff, size: 9,
+      new THREE.PointsMaterial({ color: 0xffffff, size: 10,   // [issue #84] endpoint sprite boost
         sizeAttenuation: false, transparent: true, opacity: 1,
         depthTest: false }));
     pinPts.renderOrder = 1000; pinPts.frustumCulled = false;
     scene.add(pinLine); scene.add(pinPts);
   }
   let n = 0;
+  // [issue #84] corridor-complete law: a pin covers the WHOLE chain —
+  // node -> leg -> station -> trunk -> station -> leg -> node — from the
+  // actual start file to the actual end file. Trunk, link and fn-wire
+  // clicks resolve to the same chain: the corridor trunk owning the pair
+  // plus both endpoint files' legs. Clicking any segment of the chain
+  // selects the whole chain; pinCover counts the chain legs resolved.
+  let ep0 = null, ep1 = null, chainCover = 0;
+  let chainPts = null;
+  if (wirePin && wirePin.surface === "ball" &&
+      fnBus && fnBus.visible && busPts && busPtsMeta) {
+    let A = -1, B = -1, tk = null;
+    if (wirePin.kind === "trunk") tk = String(wirePin.k);
+    else if (wirePin.kind === "link" && wirePin.li >= 0 &&
+             wirePin.li < links.length) {
+      A = links[wirePin.li].s; B = links[wirePin.li].t;
+    } else if (wirePin.kind === "wire" && fnMeta &&
+               wirePin.a >= 0 && wirePin.a < fnMeta.length &&
+               wirePin.b >= 0 && wirePin.b < fnMeta.length) {
+      A = fnMeta[wirePin.a].file; B = fnMeta[wirePin.b].file;
+    }
+    if (!tk && A >= 0) {
+      for (let i = 0; i < busPtsMeta.length; i++) {
+        const m2 = busPtsMeta[i];
+        if (!m2 || m2.kind !== "trunk") continue;
+        const pp = String(m2.k).split(">");
+        if ((+pp[0] === A && +pp[1] === B) || (+pp[0] === B && +pp[1] === A)) {
+          tk = String(m2.k); break;
+        }
+      }
+    }
+    if (tk) {
+      const tp = tk.split(">"); A = +tp[0]; B = +tp[1];
+      const prefixes = [];
+      for (const S of (fnStationsArr || []))
+        if (S.tks.indexOf(tk) >= 0) prefixes.push("L|" + S.fi + "|" + S.id + "|");
+      const mx = fnBus.instanceMatrix.array;
+      chainPts = [];
+      for (let i = 0; i < busPts.length; i++) {
+        const m2 = busPtsMeta[i];
+        if (!m2) continue;
+        const k2 = String(m2.k || "");
+        let hit = false;
+        if (m2.kind === "trunk" && k2 === tk) hit = true;
+        else if (prefixes.length && k2.charCodeAt(0) === 76) {   // leg key
+          for (const pref of prefixes) if (k2.startsWith(pref)) { hit = true; break; }
+        }
+        if (!hit) continue;
+        // pick/render parity: a culled instance parked at scale ~0 stays out
+        if (Math.hypot(mx[i*16], mx[i*16+1], mx[i*16+2]) <= 0.001) continue;
+        const s2 = busPts[i];
+        const lastPt = chainPts[chainPts.length - 1];
+        if (!lastPt || lastPt[0] !== s2.a[0] || lastPt[1] !== s2.a[1] ||
+            lastPt[2] !== s2.a[2]) chainPts.push(s2.a);
+        chainPts.push(s2.b);
+        chainCover++;
+      }
+    }
+  }
   if (wirePin && wirePin.surface === "ball") {
-    if (wirePin.kind === "link") {
+    if (chainPts && chainPts.length > 1) {
+      for (let i2 = 0; i2 < chainPts.length && n < 256; i2++) {
+        pinLinePos[n*3] = chainPts[i2][0]; pinLinePos[n*3+1] = chainPts[i2][1];
+        pinLinePos[n*3+2] = chainPts[i2][2]; n++;
+      }
+      // endpoint emphasis: the chain's extreme pair — deterministic max
+      // mutual distance, ties broken by index order (stable every frame)
+      let bi = 0, bj = chainPts.length - 1, bd = -1;
+      for (let i2 = 0; i2 < chainPts.length; i2++)
+        for (let j2 = i2 + 1; j2 < chainPts.length; j2++) {
+          const d2 = (chainPts[i2][0] - chainPts[j2][0]) ** 2 +
+                     (chainPts[i2][1] - chainPts[j2][1]) ** 2 +
+                     (chainPts[i2][2] - chainPts[j2][2]) ** 2;
+          if (d2 > bd + 1e-9) { bd = d2; bi = i2; bj = j2; }
+        }
+      ep0 = chainPts[bi]; ep1 = chainPts[bj];
+    } else if (wirePin.kind === "link") {
       const li = wirePin.li;
       // no edgeK guard here: the pin is explicit user intent and the ink
       // pass flickers near the distance threshold — the overlay follows the
@@ -2116,15 +2191,22 @@ function updateBallPin() {
   }
   const on = n > 1;
   pinLine.visible = pinPts.visible = on;
+  if (wirePin && wirePin.surface === "ball") {
+    // skeptic #5: reap a ball pin that stopped resolving (focus change
+    // rebuilt the fn layer out from under it) — invisible stale selection
+    if (on) pinMisses = 0;
+    else if (++pinMisses > 60) { pinMisses = 0; wirePinClear(); return; }
+  }
   if (on) {
     pinLine.geometry.setDrawRange(0, n);
-    pinPtsPos[0] = pinLinePos[0]; pinPtsPos[1] = pinLinePos[1];
-    pinPtsPos[2] = pinLinePos[2];
-    pinPtsPos[3] = pinLinePos[(n-1)*3]; pinPtsPos[4] = pinLinePos[(n-1)*3+1];
-    pinPtsPos[5] = pinLinePos[(n-1)*3+2];
+    const e0 = ep0 || [pinLinePos[0], pinLinePos[1], pinLinePos[2]];
+    const e1 = ep1 || [pinLinePos[(n-1)*3], pinLinePos[(n-1)*3+1],
+                       pinLinePos[(n-1)*3+2]];
+    pinPtsPos[0] = e0[0]; pinPtsPos[1] = e0[1]; pinPtsPos[2] = e0[2];
+    pinPtsPos[3] = e1[0]; pinPtsPos[4] = e1[1]; pinPtsPos[5] = e1[2];
     pinLine.geometry.attributes.position.needsUpdate = true;
     pinPts.geometry.attributes.position.needsUpdate = true;
-    if (wirePin) pinCover = 1;
+    if (wirePin) pinCover = chainCover > 0 ? chainCover : 1;
   } else if (wirePin && wirePin.surface === "ball") pinCover = 0;
 }
 function pickWireMeta(e) {
