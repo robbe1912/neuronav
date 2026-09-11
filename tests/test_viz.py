@@ -2711,6 +2711,123 @@ def run_tests():
             check("leg pin tip shows the bus pair summary",
                   "bus" in tipLg and "\u2192" in tipLg,
                   (tipLg or "")[:60])
+
+            # [issue #85 owner r4] the overlay must LIE ON the corridor:
+            # every long consecutive overlay hop's midpoint stays
+            # within a few px of the corridor's own instance geometry
+            # (the pre-fix emission-order polyline chord-ed box-to-box)
+            geoLg = page.evaluate("""() => {
+                const d = window.__dbg, pin = d.wirePin, pts = d.pinPath;
+                if (!pin || !pin.k || !pts || pts.length < 3) return null;
+                const prefs = [];
+                for (const S of (d.fnStations || []))
+                    if (S.tks.indexOf(pin.k) >= 0)
+                        prefs.push("L|" + S.fi + "|" + S.id + "|");
+                const mm = d.fnBus.instanceMatrix.array, segs = [];
+                for (let i = 0; i < d.busPtsMeta.length; i++) {
+                    const mt = d.busPtsMeta[i]; if (!mt) continue;
+                    const k = String(mt.k || "");
+                    const hit = (mt.kind === "trunk" && k === pin.k) ||
+                        (k.charCodeAt(0) === 76 &&
+                         prefs.some(p => k.startsWith(p)));
+                    if (!hit) continue;
+                    if (Math.hypot(mm[i*16], mm[i*16+1], mm[i*16+2])
+                        <= 0.001) continue;
+                    segs.push([d.busPts[i].a, d.busPts[i].b]);
+                }
+                if (!segs.length) return { ok: false, why: "no pieces" };
+                const cam = d.camera, el = d.renderer.domElement,
+                      r = el.getBoundingClientRect();
+                // THREE is module-scoped - project by hand from the
+                // camera's column-major matrix elements
+                const prj = p => {
+                    const mi = cam.matrixWorldInverse.elements,
+                          pm = cam.projectionMatrix.elements;
+                    const x = p[0]*mi[0] + p[1]*mi[4] + p[2]*mi[8] + mi[12];
+                    const y = p[0]*mi[1] + p[1]*mi[5] + p[2]*mi[9] + mi[13];
+                    const z = p[0]*mi[2] + p[1]*mi[6] + p[2]*mi[10] + mi[14];
+                    const w = p[0]*mi[3] + p[1]*mi[7] + p[2]*mi[11] + mi[15];
+                    const cx = x*pm[0] + y*pm[4] + z*pm[8] + pm[12];
+                    const cy = x*pm[1] + y*pm[5] + z*pm[9] + pm[13];
+                    const cw = x*pm[3] + y*pm[7] + z*pm[11] + pm[15];
+                    return [(cx/cw * 0.5 + 0.5) * r.width + r.left,
+                            (-cy/cw * 0.5 + 0.5) * r.height + r.top]; };
+                const ppx = pts.map(prj);
+                const spx = segs.map(sg => [prj(sg[0]), prj(sg[1])]);
+                const d2s = (p, a, b) => {
+                    const dx = b[0] - a[0], dy = b[1] - a[1];
+                    const L2 = dx * dx + dy * dy || 1e-9;
+                    let t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2;
+                    t = Math.max(0, Math.min(1, t));
+                    return Math.hypot(p[0] - (a[0] + dx * t),
+                                      p[1] - (a[1] + dy * t)); };
+                let worst = 0, nchk = 0, nex = 0;
+                // hops 0->1 and n-2->n-1 are the fn-box anchor stubs -
+                // off-corridor BY DESIGN (endpoint law); interior hops
+                // must ride the geometry exactly, except straight
+                // bridges over LOD-culled piece holes (bounded well
+                // under chord scale - a box-to-box chord regression is
+                // hundreds of px)
+                for (let i = 2; i < ppx.length - 1; i++) {
+                    const a = ppx[i - 1], b = ppx[i];
+                    if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 4) continue;
+                    nchk++;
+                    const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+                    let dm = Infinity;
+                    for (const sg of spx)
+                        dm = Math.min(dm, d2s(mid, sg[0], sg[1]));
+                    if (dm < 1.0) nex++;
+                    if (dm > worst) worst = dm;
+                }
+                return { ok: true, worst, nchk, nex, nseg: spx.length,
+                         npts: pts.length }; }""")
+            if geoLg and geoLg.get("ok"):
+                check("pinned polyline rides the corridor geometry",
+                      geoLg["nchk"] >= 2 and geoLg["worst"] <= 40.0
+                      and geoLg["nex"] >= geoLg["nchk"] * 0.8,
+                      f"worst {geoLg['worst']:.1f}px, exact "
+                      f"{geoLg['nex']}/{geoLg['nchk']} hops, "
+                      f"{geoLg['nseg']} pieces, {geoLg['npts']} pts")
+            elif geoLg:
+                print(f"SKIP geometry check - {geoLg}")
+
+            # [issue #85 owner r4] the corridor itself reads selected:
+            # covered instances tint toward the accent (sibling = leg
+            # outside the corridor, stock color); restore is checked
+            # after dismissal below
+            tintLg = page.evaluate("""() => {
+                const d = window.__dbg, pin = d.wirePin;
+                if (!pin || !pin.k || !d.fnBus || !d.fnBus.instanceColor)
+                    return null;
+                const prefs = [];
+                for (const S of (d.fnStations || []))
+                    if (S.tks.indexOf(pin.k) >= 0)
+                        prefs.push("L|" + S.fi + "|" + S.id + "|");
+                const mm = d.fnBus.instanceMatrix.array,
+                      ca = d.fnBus.instanceColor.array;
+                let q = -1, sib = -1;
+                for (let i = 0; i < d.busPtsMeta.length; i++) {
+                    const mt = d.busPtsMeta[i]; if (!mt) continue;
+                    const k = String(mt.k || "");
+                    const hit = (mt.kind === "trunk" && k === pin.k) ||
+                        (k.charCodeAt(0) === 76 &&
+                         prefs.some(p => k.startsWith(p)));
+                    if (hit && q < 0 &&
+                        Math.hypot(mm[i*16], mm[i*16+1], mm[i*16+2]) > 0.001)
+                        q = i;
+                    else if (!hit && k.charCodeAt(0) === 76 && sib < 0)
+                        sib = i;
+                }
+                if (q < 0 || sib < 0) return { ok: false, q, sib };
+                return { ok: true, q, sib,
+                    t: [ca[q*3], ca[q*3+1], ca[q*3+2]],
+                    sib0: [ca[sib*3], ca[sib*3+1], ca[sib*3+2]] }; }""")
+            if tintLg and tintLg.get("ok"):
+                check("pinned corridor instances tint the accent",
+                      tintLg["t"][1] > tintLg["t"][0] + 0.08
+                      and tintLg["t"][1] > 0.35,
+                      f"piece {tintLg['q']} rgb "
+                      f"{[round(v, 2) for v in tintLg['t']]}")
             # press on the leg again: the transient tip hides on
             # pointerdown and the pin re-asserts it next frame
             page.mouse.move(leg_used["x"], leg_used["y"])
@@ -2733,6 +2850,18 @@ def run_tests():
             check("esc clears the leg pin and its tip",
                   pinLg3 is None and tipLg3 == "none",
                   f"pin {pinLg3}, tip {tipLg3}")
+            if tintLg and tintLg.get("ok"):
+                tintOff = page.evaluate("""(q) => {
+                    const d = window.__dbg;
+                    const ca = d.fnBus.instanceColor.array;
+                    return [ca[q*3], ca[q*3+1], ca[q*3+2]]; }""",
+                    tintLg["q"])
+                check("corridor tint restores on dismissal",
+                      all(abs(a - b) < 0.02 for a, b in
+                          zip(tintOff, tintLg["sib0"])),
+                      f"piece {tintLg['q']} rgb "
+                      f"{[round(v, 2) for v in tintOff]} vs sibling "
+                      f"{[round(v, 2) for v in tintLg['sib0']]}")
         else:
             print("SKIP junction leg click - no leg ink in view")
 
@@ -2752,37 +2881,6 @@ def run_tests():
         except NameError:
             pinL = None
         if pinL and pinL.get("menu") == "list":
-            # [issue #85 owner r1] trunk corridors paint in the same accent
-            trcol = page.evaluate("""(pin) => {
-                const d = window.__dbg, L = d.mapLayout;
-                if (!L || !pin) return null;
-                const sp = L.spines.find(x => x.hub === "trunk" &&
-                    x.s === pin.s && x.t === pin.t && x.wty === pin.wty);
-                if (!sp || !sp.pts || sp.pts.length < 2) return null;
-                const bb = document.getElementById('mapPane')
-                    .getBoundingClientRect();
-                // #mapPane IS the 2D canvas (mapRender draws it)
-                const cv = document.getElementById('mapPane');
-                if (!cv || !cv.getContext) return null;
-                const r2 = cv.getBoundingClientRect();
-                const dpr = window.devicePixelRatio || 1;
-                const m = sp.pts[Math.floor(sp.pts.length / 2)];
-                const sx = (m[0] - d.mapPX) * d.mapZ + bb.left;
-                const sy = (m[1] - d.mapPY) * d.mapZ + bb.top;
-                const cx0 = Math.round((sx - r2.left) * dpr);
-                const cy0 = Math.round((sy - r2.top) * dpr);
-                const ctx = cv.getContext('2d');
-                let teal = false;
-                for (let dx = -4; dx <= 4 && !teal; dx++)
-                  for (let dy = -4; dy <= 4 && !teal; dy++) {
-                    const p = ctx.getImageData(cx0 + dx, cy0 + dy, 1, 1).data;
-                    if (p[3] < 30) continue;
-                    if (p[1] > p[0] + 40 && p[1] > p[2] + 10) teal = true;
-                  }
-                return { teal }; }""", pinL)
-            if trcol is not None:
-                check("pinned trunk corridor paints in the accent",
-                      trcol["teal"], f"{trcol}")
             card3 = page.evaluate("""() => {
                 const d = window.__dbg;
                 const pn = document.getElementById('mapPane');
@@ -2815,6 +2913,133 @@ def run_tests():
                 print("SKIP stale list close - no card clear of list")
         else:
             print("SKIP stale list close - no list-menu pin")
+
+        # [issue #85 owner r1 / groundskeeper] trunk corridors paint in
+        # the accent: latch a REAL trunk spine pin - the chip-list pin
+        # is a wire and never matched a trunk spine, so the old probe
+        # was unreachable and silently self-skipped - then pixel-probe
+        # the painted corridor midpoint.
+        tspine = page.evaluate("""() => {
+            const d = window.__dbg, L = d.mapLayout;
+            if (!L || !L.spines) return null;
+            const bb = document.getElementById('mapPane')
+                .getBoundingClientRect();
+            for (const sp of L.spines) {
+                if (sp.hub !== "trunk" || !sp.pts || sp.pts.length < 2)
+                    continue;
+                const m = sp.pts[Math.floor(sp.pts.length / 2)];
+                const sx = (m[0] - d.mapPX) * d.mapZ + bb.left;
+                const sy = (m[1] - d.mapPY) * d.mapZ + bb.top;
+                if (sx > bb.left + 10 && sx < bb.right - 10 &&
+                    sy > bb.top + 10 && sy < bb.bottom - 10)
+                    return { sx: Math.round(sx), sy: Math.round(sy) };
+            }
+            return null; }""")
+        if tspine:
+            page.mouse.click(tspine["sx"], tspine["sy"])
+            page.wait_for_timeout(400)
+            pinT = page.evaluate("() => window.__dbg.wirePin")
+            tcol = page.evaluate("""(m) => {
+                const cv = document.getElementById('mapPane');
+                const r2 = cv.getBoundingClientRect();
+                const dpr = window.devicePixelRatio || 1;
+                const cx0 = Math.round((m.sx - r2.left) * dpr);
+                const cy0 = Math.round((m.sy - r2.top) * dpr);
+                const ctx = cv.getContext('2d');
+                let teal = false;
+                for (let dx = -5; dx <= 5 && !teal; dx++)
+                    for (let dy = -5; dy <= 5 && !teal; dy++) {
+                        const p = ctx.getImageData(cx0 + dx, cy0 + dy,
+                            1, 1).data;
+                        if (p[3] < 30) continue;
+                        if (p[1] > p[0] + 40 && p[1] > p[2] + 10)
+                            teal = true;
+                    }
+                return { teal }; }""", tspine)
+            check("pinned trunk corridor paints in the accent",
+                  pinT is not None and pinT.get("surface") == "map"
+                  and tcol["teal"],
+                  f"{tspine} -> {pinT}, {tcol}")
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(250)
+        else:
+            print("SKIP trunk accent probe - no on-screen trunk spine")
+
+        # [skeptic #16] a stale ball pin must reap after a refocus
+        # rebuild (cover 0 -> gone in ~1s). A db8047d tip throw stalled
+        # the rAF chain and made the pin immortal - #17's guard must
+        # keep the reap alive and the run error-free.
+        pe0 = []
+        page.on("pageerror", lambda e: pe0.append(str(e)))
+        bp = None
+        for _ in range(3):
+            cands = page.evaluate("""() => { const d = window.__dbg;
+                const el = d.renderer.domElement,
+                      r = el.getBoundingClientRect();
+                // stay left of the 2D map pane - clicks behind it hit
+                // the pane DOM and never latch a ball pin
+                const xmax = document.getElementById('mapPane')
+                    .getBoundingClientRect().left - 14;
+                const out = [];
+                for (let x = 24; x < xmax && x < r.width - 24 &&
+                     out.length < 12; x += 40)
+                    for (let y = 70; y < r.height - 24 &&
+                         out.length < 12; y += 40) {
+                        const m = d.pickWireMeta({
+                            clientX: r.left + x, clientY: r.top + y });
+                        // any pickable kind latches a ball pin -
+                        // wire/trunk directly, jleg via the corridor
+                        // latch, link via its own latch
+                        if (m && (m.kind === "wire" || m.kind === "trunk" ||
+                                  m.kind === "jleg" || m.kind === "link"))
+                            out.push([Math.round(r.left + x),
+                                      Math.round(r.top + y)]);
+                    }
+                return out; }""")
+            for c in (cands or []):
+                page.mouse.move(c[0], c[1])
+                page.wait_for_timeout(120)
+                hov = page.evaluate("() => ({ hf: window.__dbg.hoveredFn,"
+                                    " hv: window.__dbg.hovered })")
+                if (hov["hf"] is not None and hov["hf"] >= 0) or \
+                   (hov["hv"] is not None and hov["hv"] >= 0):
+                    continue
+                page.mouse.click(c[0], c[1])
+                page.wait_for_timeout(400)
+                bp = page.evaluate("() => window.__dbg.wirePin")
+                if bp and bp.get("surface") == "ball":
+                    break
+            if bp and bp.get("surface") == "ball":
+                break
+        if bp and bp.get("surface") == "ball":
+            card4 = page.evaluate("""() => {
+                const d = window.__dbg;
+                const bb = document.getElementById('mapPane')
+                    .getBoundingClientRect();
+                for (const rc of d.mapRects) {
+                    if (rc.i === d.focusFileIdx) continue;
+                    const sx = (rc.x + rc.w / 2 - d.mapPX) * d.mapZ
+                        + bb.left;
+                    const sy = (rc.y + 11 - d.mapPY) * d.mapZ + bb.top;
+                    if (sx > bb.left + 8 && sx < bb.right - 8 &&
+                        sy > bb.top + 8 && sy < bb.bottom - 8)
+                        return { sx: Math.round(sx), sy: Math.round(sy) };
+                }
+                return null; }""")
+            if card4:
+                page.mouse.move(card4["sx"] - 12, card4["sy"] - 8)
+                page.mouse.move(card4["sx"], card4["sy"], steps=3)
+                page.mouse.click(card4["sx"], card4["sy"])
+                page.wait_for_timeout(1800)
+                bp2 = page.evaluate("() => window.__dbg.wirePin")
+                check("stale ball pin reaps after refocus",
+                      bp2 is None and not pe0,
+                      f"{bp} -> {bp2}, pageerrors {pe0[:1]}")
+            else:
+                print("SKIP stale reap - no card for refocus")
+        else:
+            print(f"SKIP stale reap - no ball pin latched "
+                  f"(cands {len(cands or [])})")
 
         # artifact: screenshot of the focused fn-layer state
         page.screenshot(path=str(SHOTS / "last_run.png"), scale="css", type="png")

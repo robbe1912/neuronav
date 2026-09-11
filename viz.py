@@ -2030,15 +2030,36 @@ let pickWireZ = 1;   // NDC depth of the last hit — node-front comparisons
 // pin object itself stays (paint-tier state, never a layout rebuild).
 let pinLine = null, pinPts = null, pinLinePos = null, pinPtsPos = null;
 let pinMisses = 0;   // [issue #84] consecutive unresolved ball-pin frames
+let pinPathPts = null;
+// [skeptic #16] roster generation: bumped on every fn-layer rebuild.
+// Ball pins index fnMeta/links/arc buckets - after a refocus those
+// arrays are fresh and the stale indices either throw (#17) or
+// silently "find" ink that is not the pinned thing (a link pin kept
+// its arc alive on the rebuilt roster). A pin dies with its roster.
+let rosterGen = 0;   // [issue #85 owner r4] walked pin polyline (probe hook)
+let pinTinted = [];      // [issue #85 owner r4] tinted busPts indices
+let pinTintOrig = [];    // parallel [r,g,b] originals for restore
+let pinTintBus = null;   // fnBus the tint was written into (swap guard)
+let pinTintKey = null;   // wirePin.id the tint belongs to
 let pinEp0 = null, pinEp1 = null, pinBoxA = null, pinBoxB = null;
 let pinChA = -1, pinChB = -1;   // chain file pair (probe hook)
 function updateBallPin() {
+  // [skeptic #16] identity death, independent of ink/tip work: a ball
+  // pin from a previous roster generation is meaningless (stale
+  // fnMeta/links indices) - clear it outright instead of waiting for
+  // the ink-based misses counter
+  if (wirePin && wirePin.surface === "ball" && wirePin.gen !== rosterGen) {
+    wirePinClear();
+    return;
+  }
   if (!pinLine) {
     pinLinePos = new Float32Array(256 * 3);   // [issue #84] corridor chains are long
     pinLine = new THREE.Line(
       new THREE.BufferGeometry().setAttribute("position",
         new THREE.BufferAttribute(pinLinePos, 3)),
-      new THREE.LineBasicMaterial({ color: 0xffd166, transparent: true,
+      // [skeptic #18] one selection language: the 3D overlay joins the
+        // 2D map's PIN_ACCENT (#1de9b6) instead of stray amber
+        new THREE.LineBasicMaterial({ color: 0x1de9b6, transparent: true,
         opacity: 0.95, depthTest: false }));
     pinLine.renderOrder = 999; pinLine.frustumCulled = false;
     pinPtsPos = new Float32Array(2 * 3);
@@ -2060,7 +2081,9 @@ function updateBallPin() {
   // selects the whole chain; pinCover counts the chain legs resolved.
   let ep0 = null, ep1 = null, chainCover = 0;
   let chainPts = null, chainA = -1, chainB = -1;
+  let chainPieces = null, chainTintIdx = null;
   let boxA = null, boxB = null;
+  if (!wirePin || wirePin.surface !== "ball") pinTintRestore();
   if (wirePin && wirePin.surface === "ball" &&
       fnBus && fnBus.visible && busPts && busPtsMeta) {
     let A = -1, B = -1, tk = null;
@@ -2090,6 +2113,8 @@ function updateBallPin() {
         if (S.tks.indexOf(tk) >= 0) prefixes.push("L|" + S.fi + "|" + S.id + "|");
       const mx = fnBus.instanceMatrix.array;
       chainPts = [];
+      chainPieces = [];
+      chainTintIdx = [];
       for (let i = 0; i < busPts.length; i++) {
         const m2 = busPtsMeta[i];
         if (!m2) continue;
@@ -2103,17 +2128,18 @@ function updateBallPin() {
         // pick/render parity: a culled instance parked at scale ~0 stays out
         if (Math.hypot(mx[i*16], mx[i*16+1], mx[i*16+2]) <= 0.001) continue;
         const s2 = busPts[i];
-        const lastPt = chainPts[chainPts.length - 1];
-        if (!lastPt || lastPt[0] !== s2.a[0] || lastPt[1] !== s2.a[1] ||
-            lastPt[2] !== s2.a[2]) chainPts.push(s2.a);
-        chainPts.push(s2.b);
+        // [issue #85 owner r4] collect pieces; the fill walks them into
+        // one continuous path - emission order is station-grouped and
+        // chords the polyline straight across the corridor
+        chainPieces.push([s2.a, s2.b]);
+        chainTintIdx.push(i);
         chainCover++;
       }
     }
     chainA = A; chainB = B;
   }
   if (wirePin && wirePin.surface === "ball") {
-    if (chainPts && chainPts.length > 1) {
+    if (chainPieces && chainPieces.length) {
       // [issue #84] anchor the chain at the FN BOXES the legs serve
       // (fnMeta[i].p = hover/click anchor = rendered box position). The
       // corridor's own geometry ends at station dots on the file spheres;
@@ -2143,14 +2169,81 @@ function updateBallPin() {
         if (pa && (pa[0] || pa[1] || pa[2])) boxA = pa;
         if (pb && (pb[0] || pb[1] || pb[2])) boxB = pb;
       } else if (chainA >= 0 && chainB >= 0) {
-        boxA = boxOf(chainA, chainPts[0]);
-        boxB = boxOf(chainB, chainPts[chainPts.length - 1]);
+        // [owner r4 hotfix] chainPts is BUILT by the walk below - the
+        // reference ends come from the raw pieces (pre-fix this read
+        // undefined and threw out of tick: cover 0, dead rAF, reaped pin)
+        boxA = boxOf(chainA, chainPieces[0][0]);
+        boxB = boxOf(chainB, chainPieces[chainPieces.length - 1][1]);
       }
-      if (boxA) chainPts.unshift(boxA.slice());
-      if (boxB) chainPts.push(boxB.slice());
+      // [issue #85 owner r4] walk the pieces into one continuous path
+      // anchor-to-anchor: the overlay must lie ON the corridor geometry
+      // it emphasizes, not chord between emission-order waypoints
+      // (owner: "straight from a to b"). Greedy nearest-endpoint walk;
+      // strict < keeps first-index ties (deterministic every frame).
+      const wpts = [];
+      let cur = boxA ? boxA.slice() : chainPieces[0][0].slice();
+      wpts.push(cur.slice());
+      let left = chainPieces.length;
+      const used = new Array(chainPieces.length).fill(false);
+      while (left > 0) {
+        // prefer a topological join: corridor pieces share exact
+        // endpoints (bollards, junctions, trunk splits), so an endpoint
+        // coinciding with cur is the true next piece - pure nearest
+        // greedy mis-joins same-bollard legs of other branches
+        let bi2 = -1, bfar = null, exact = false, bd2 = Infinity;
+        for (let p2 = 0; p2 < chainPieces.length; p2++) {
+          if (used[p2]) continue;
+          const e0 = chainPieces[p2][0], e1 = chainPieces[p2][1];
+          const d0 = (e0[0]-cur[0])*(e0[0]-cur[0]) +
+                     (e0[1]-cur[1])*(e0[1]-cur[1]) +
+                     (e0[2]-cur[2])*(e0[2]-cur[2]);
+          const d1 = (e1[0]-cur[0])*(e1[0]-cur[0]) +
+                     (e1[1]-cur[1])*(e1[1]-cur[1]) +
+                     (e1[2]-cur[2])*(e1[2]-cur[2]);
+          const dd = d0 <= d1 ? d0 : d1;
+          const ex0 = d0 <= 1e-6, ex1 = d1 <= 1e-6;
+          if (ex0 || ex1) {
+            if (!exact || dd < bd2 - 1e-9) {
+              exact = true; bd2 = dd; bi2 = p2; bfar = ex0 ? e1 : e0;
+            }
+            continue;
+          }
+          if (exact) continue;
+          if (dd < bd2 - 1e-9) { bd2 = dd; bi2 = p2; bfar = d0 <= d1 ? e1 : e0; }
+        }
+        if (bi2 < 0) break;
+        used[bi2] = true; left--;
+        cur = bfar;
+        wpts.push(cur.slice());
+      }
+      if (boxB) wpts.push(boxB.slice());
+      chainPts = wpts;
       for (let i2 = 0; i2 < chainPts.length && n < 256; i2++) {
         pinLinePos[n*3] = chainPts[i2][0]; pinLinePos[n*3+1] = chainPts[i2][1];
         pinLinePos[n*3+2] = chainPts[i2][2]; n++;
+      }
+      pinPathPts = chainPts.map(p3 => p3.slice());
+      // [issue #85 owner r4] the corridor itself reads selected: lerp the
+      // covered instances toward the pin accent (0.114/0.914/0.714 =
+      // #1de9b6). One shot per pin; originals captured from the buffer
+      // before the write; the LOD serve pass only rewrites matrices, so
+      // this paint-tier tint never fights culling or picking.
+      if (fnBus && fnBus.instanceColor && chainTintIdx.length &&
+          pinTintKey !== wirePin.id) {
+        pinTintRestore();
+        pinTinted = chainTintIdx.slice();
+        pinTintBus = fnBus;
+        pinTintKey = wirePin.id;
+        const ca = fnBus.instanceColor.array;
+        for (const q of pinTinted)
+          pinTintOrig.push([ca[q*3], ca[q*3+1], ca[q*3+2]]);
+        for (let q2 = 0; q2 < pinTinted.length; q2++) {
+          const ix = pinTinted[q2], oc = pinTintOrig[q2];
+          ca[ix*3]   = oc[0] + (0.114 - oc[0]) * 0.55;
+          ca[ix*3+1] = oc[1] + (0.914 - oc[1]) * 0.55;
+          ca[ix*3+2] = oc[2] + (0.714 - oc[2]) * 0.55;
+        }
+        fnBus.instanceColor.needsUpdate = true;
       }
       // endpoint emphasis: the chain's extreme pair — deterministic max
       // mutual distance, ties broken by index order (stable every frame)
@@ -2254,7 +2347,8 @@ function updateBallPin() {
   // frame (wireTipAnchor doubles as the pin - the lifetime tracker
   // reads the same .k / .a / .b fields pins carry).
   if (wirePin && wirePin.surface === "ball" && !wireTipAnchor) {
-    const pd = pinDesc(wirePin);
+    let pd = null;
+    try { pd = pinDesc(wirePin); } catch (e) { pd = null; }
     if (pd) {
       if (wireTipEl.textContent !== pd) wireTipEl.textContent = pd;
       wireTipEl.style.display = "block";
@@ -4706,6 +4800,7 @@ function rebuildFnLayer(focusing) {
   fnArrowLeg = null;
   if (fnStalks) { scene.remove(fnStalks); fnStalks.geometry.dispose(); fnStalks = null; }
   fnMeta = [];
+  rosterGen++;   // stale ball pins die with their roster (#16)
   if (!fnMode || !focusing) return;
   // fn-tier sizing (satBoost reads fnCount) changes file-sphere scales
   _sfDirty = true; _arrowOcclDirty = true;
@@ -6069,8 +6164,24 @@ function wirePinSet(p) { wirePin = p; pinCover = 0; drawMapPane(); }
 // pins were indistinguishable from the ambient wire mass. One constant
 // shared by every map pin pass (wire, spine single, trunk corridor).
 const PIN_ACCENT = "#1de9b6";
+function pinTintRestore() {
+  // [issue #85 owner r4] put the corridor instances' colors back. Skips a
+  // rebuilt fnBus (indices would mismatch a fresh buffer); the new mesh
+  // carries its own colors.
+  if (!pinTinted.length) return;
+  if (pinTintBus && fnBus && pinTintBus === fnBus && fnBus.instanceColor) {
+    const ca = fnBus.instanceColor.array;
+    for (let q = 0; q < pinTinted.length; q++) {
+      const ix = pinTinted[q], oc = pinTintOrig[q];
+      ca[ix*3] = oc[0]; ca[ix*3+1] = oc[1]; ca[ix*3+2] = oc[2];
+    }
+    fnBus.instanceColor.needsUpdate = true;
+  }
+  pinTinted = []; pinTintOrig = []; pinTintBus = null; pinTintKey = null;
+}
 function wirePinClear() {
   if (!wirePin) return;
+  pinTintRestore();
   wirePin = null; pinCover = 0;
   // [issue #85 owner r2] the persistent pin tip dies with the pin on
   // every dismissal path (esc, right-click, void, refocus, reap)
@@ -6201,16 +6312,27 @@ function wireDesc(meta) {
 // conduit pins show the bus-card pair summary; wire pins name both
 // fns with their file context; link pins reuse the link description.
 function pinDesc(pin) {
+  // [skeptic #17] a pin can outlive the roster it indexed: a refocus
+  // rebuild swaps fnMeta/links wholesale and the stale indices threw
+  // TypeError out of the per-frame tick - which also stalled the #16
+  // reap (the rAF chain dies with the throw). Guard every roster read;
+  // a pin with no live description just gets no tip.
   if (pin.kind === "trunk") {
     const tm = trunkMetaMap && trunkMetaMap.get(pin.k);
     return tm ? wireDesc(tm) : null;
   }
-  if (pin.kind === "link") return wireDesc({ kind: "link", li: pin.li });
+  if (pin.kind === "link") {
+    if (!links || pin.li < 0 || pin.li >= links.length) return null;
+    return wireDesc({ kind: "link", li: pin.li });
+  }
   // wire pins carry the same {a, b, ln} the line metas do - wireDesc
   // already resolves both ends' paths + fn names for that shape (a
   // hand-rolled fnMeta probe went stale against rebuilt rosters)
-  if (pin.kind === "wire")
+  if (pin.kind === "wire") {
+    if (!fnMeta || pin.a < 0 || pin.a >= fnMeta.length ||
+        pin.b < 0 || pin.b >= fnMeta.length) return null;
     return wireDesc({ kind: "wire", a: pin.a, b: pin.b, ln: pin.ln });
+  }
   return null;
 }
 function showWireTip(meta, cx, cy) {
@@ -9084,14 +9206,16 @@ document.addEventListener("click", e => {
                         }
                         if (bestTk != null)
                           latch = { surface: "ball", kind: "trunk",
-                            id: "K|" + bestTk, k: bestTk, menu: "tip" };
+                            id: "K|" + bestTk, k: bestTk, menu: "tip",
+                            gen: rosterGen };
                       } else {
                         const pinId = wHit.kind === "link" ? "L|" + wHit.li
                           : wHit.kind === "trunk" ? "K|" + wHit.k
                           : "F|" + wHit.a + "|" + wHit.b + "|" + wHit.ln;
                         latch = { surface: "ball", kind: wHit.kind,
                           id: pinId, li: wHit.li, a: wHit.a, b: wHit.b,
-                          ln: wHit.ln, k: wHit.k, menu: "tip" };
+                          ln: wHit.ln, k: wHit.k, menu: "tip",
+                          gen: rosterGen };
                       }
                       if (latch) {
                         wirePinSet(latch);
@@ -9100,7 +9224,8 @@ document.addEventListener("click", e => {
                         // wireDesc the click showed must give way to
                         // the pin's from->to (its "↓ into" wording
                         // has no arrow and outlives stale)
-                        const pd2 = pinDesc(latch);
+                        let pd2 = null;
+                        try { pd2 = pinDesc(latch); } catch (e) { pd2 = null; }
                         if (pd2) {
                           wireTipEl.textContent = pd2;
                           wireTipEl.style.display = "block";
@@ -9199,6 +9324,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get jDotArrays() { return { of: fnJDotOf, st: fnJDotSt, legs: fnJDotLegs, key: fnJDotKey }; },
   get stubExits() { return stubExits; },  // EXPLAINED EXIT dissolve points
   get anchorBoostArr() { return anchorBoost; },  // corridor-boost px per fi (probe hook)
+  get pinPath() { return pinPathPts; },  // [issue #85 owner r4] probe hook
   get pinChain() { return { a: pinChA, b: pinChB, boxA: pinBoxA, boxB: pinBoxB, ep0: pinEp0, ep1: pinEp1 }; },  // [issue #84] fn-box endpoint law probe hook
   get degFloorArr() { return degFloor; },  // zoomed-out min diameter px per fi (probe hook)
   get hlArr() { return hlArr; },  // search-highlight flags per fi (probe hook)
