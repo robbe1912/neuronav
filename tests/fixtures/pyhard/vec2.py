@@ -9,12 +9,17 @@ from dataclasses import dataclass
 
 @dataclass
 class Vec2:
+#- member x : float
     x: float = 0.0
+#- member y : float
     y: float = 0.0
 
+#- @norm defines func
     def norm(self) -> float:
         return (self.x * self.x + self.y * self.y) ** 0.5
 
 
+#- @unused_vec defines func
+#- @unused_vec dead
 def unused_vec() -> int:
     return 1

@@ -1,6 +1,6 @@
 # AGENTS.md — tests/
 
-Sixteen self-contained suites. Each is a standalone script — no pytest — run in
+Seventeen self-contained suites. Each is a standalone script — no pytest — run in
 its own process:
 
 ```
@@ -35,6 +35,7 @@ the rest are local gates.
 | `test_embedprov` | embed provider contract (issue #17): provider select/auto-detect, ollama+openai wire adapters, env-vs-config key precedence, keyless no-header, 401 loud, 429 retry, batch chunking, no-pad mismatches, fake-mode isolation | stdlib http.server stub on an ephemeral loopback port + chromadb import |
 | `test_project_mode` | onboarding (issue #27): discovery precedence env > project-local > checkout, `onboard.init`/`wire` scaffolds incl. `.neuroignore` (issue #36), viz add-on degrade | stdlib + chromadb import (fresh subprocesses, fake embeds) |
 | `test_viz` | 103-check Playwright harness over the real baked page | playwright + chrome + a fresh `graph.html` bake |
+| `test_verifier` | Kythe-style verifier fixtures (issue #66): `//-`-shaped goal comments inlined in fixture sources, asserted against extractor output (FileSym + cpp scan_calls); `@fn dead` is corpus-local liveness | stdlib + tree-sitter/tree-sitter-cpp for the C++ goals — extractor-level only: no config, no index, no chroma |
 
 `probe_scene_placement.py` is a manual probe script, not a suite.
 
@@ -50,6 +51,9 @@ Suites pick their own config; the shell must not pre-export one:
 - `test_pyhard` / `test_mwires` write a generated temp config under the
   system temp dir pointing at `tests/fixtures/<name>` only — they never touch
   the real index.
+- `test_verifier` never touches config at all — it calls extractor
+  `parse()` directly, so an exported `NEURONAV_CONFIG` is simply unseen
+  (the one suite an exported var cannot leak into).
 - `test_autorescan` generates its own temp TARGET TREE + config under the
   system temp dir (separate state dirs for the in-process and e2e-server
   sections) and self-sets `NEURONAV_EMBED_FAKE=1` — never run it against a
@@ -92,6 +96,11 @@ Suites pick their own config; the shell must not pre-export one:
 - `fixtures/cpp/*.h` + `*.cpp` — C++ extractor fixtures: macro/
   registration surface, `.h`/`.cpp` pairing, dead tiers, and the
   mention-rescue pair (`mention_rescue.cpp` + its caller).
+- `fixtures/verifier/*` — synthetic annotated fixtures for extractor
+  facts with no committed coverage (gd declared surface, tscn PackedScene
+  instancing). Goal-comment grammar: `tests/test_verifier.py` header;
+  pyhard/cpp/mwires fixtures carry the same `//-`/`#-`/`;-` goals
+  inlined above the constructs they assert.
 - Suites copy nothing into the real index; generated configs go to the
   system temp dir.
 

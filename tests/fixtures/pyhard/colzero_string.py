@@ -9,6 +9,8 @@ unused_colzero_helper stays dead: nothing references it.
 """
 
 
+#- @payload defines func
+#- @payload calls @edge_after_string
 def payload() -> str:
     doc = """
 column-0 text inside the string — NOT a dedent
@@ -18,6 +20,7 @@ column-0 text inside the string — NOT a dedent
     return doc
 
 
+#- @edge_after_string defines func
 def edge_after_string() -> int:
     return 1
 
@@ -25,5 +28,7 @@ def edge_after_string() -> int:
 payload()
 
 
+#- @unused_colzero_helper defines func
+#- @unused_colzero_helper dead
 def unused_colzero_helper() -> int:
     return 2
