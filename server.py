@@ -4,8 +4,10 @@ Works from any clone/worktree: paths resolve relative to the checkout the
 tool lives in. Clients: OpenCode, Claude Code, VS Code, Codex (all stdio MCP).
 
 Tools:
-- explore(query, n=4): START HERE for "how does X work" — one call returns
-  line-numbered source slices + callers/callees flow for the best hits;
+- explore(query, n=4, anchor=""): START HERE for "how does X work" — one call
+  returns windowed line-numbered source slices + callers/callees flow for the
+  best hits; slices ending mid-file print a continuation anchor — pass it back
+  to page forward without re-querying;
 - repo_map(budget_tokens=2048): token-budget repo map — files ranked by
   structural PageRank with key signatures, tree-grouped by dir; the cheap
   orientation preamble to call before any search
@@ -62,17 +64,22 @@ def _fmt(hits: list[dict]) -> str:
 
 
 @mcp.tool(annotations=READONLY)
-def explore(query: str, n: int = 4) -> str:
+def explore(query: str, n: int = 4, anchor: str = "") -> str:
     """One-call orientation for "how does X work" questions.
 
     Seeds on the function-level vector index (lexical fallback when the
     embedding backend is down), returns Read-equivalent `cat -n` source
     slices with real line numbers, plus a callers/callees flow line per
-    hit. Weak hits become pointer lines instead of noise; total output is
-    budget-capped so nothing externalizes to a file mid-answer.
+    hit. Slices are capped at a 100-line window (issue #69); when a file
+    continues past the window the slice ends with
+    `... +N more lines - pass anchor="path:start-end" to continue` —
+    call explore again with exactly that anchor string (query ignored)
+    to page forward without re-querying. Weak hits become pointer lines
+    instead of noise; total output is budget-capped so nothing
+    externalizes to a file mid-answer.
     """
     _auto_rescan()
-    return _explore.run(query, n)
+    return _explore.run(query, n, anchor)
 
 
 MAX_MAP_BUDGET = 8192
