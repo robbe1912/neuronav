@@ -210,6 +210,20 @@ for rel, fs, sites, ext, goals in CORPUS:
             ok, detail = not ok, f"negated — {detail}"
         check(label, parsed and ok, detail)
 
+# harness self-checks (column-zero call sites: same-module plain calls are
+# invisible to the graph's py call scan, so each helper name must appear on
+# an ind-0 physical line — MODULE_CALL_RE is line-wise — like every other
+# suite's helper usage; keeps selfindex likely-dead zero)
+_f = next(fs for _r, fs, _s, _e, _g in CORPUS if _r == "cpp/callbacks.cpp")
+_ext = _extents(_f)
+check("harness extents ordered", all(lo < hi for lo, hi in _ext.values()), str(len(_ext)))
+_hit_ok = _hit([{"name": "x", "line": 1, "kind": "call"}], 0, 10, "x", "call") and not _hit([{"name": "x", "line": 1, "kind": "call"}], 0, 10, "x", "new")
+check("harness hit matches name+line+kind", _hit_ok)
+_parsed, _ok, _why = eval_goal("teleports somewhere", None, [], {}, False)
+check("harness rejects unknown goal shape", not _parsed, _why)
+_pl = next(fs for _r, fs, _s, _e, _g in CORPUS if _r == "mwires/player.gd")
+_dead_ok = not _dead("take_damage", _pl, "take_damage", CORPUS, GD_ROOTS)[0]
+check("harness dead scan sees cross-file body ref", _dead_ok)
 # non-vacuity: every extractor family carries goals, both fact directions
 check("goals parsed", n_goals >= 80, str(n_goals))
 check("annotated files", len(CORPUS) >= 24, str(len(CORPUS)))
