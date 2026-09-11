@@ -45,9 +45,9 @@ def init(project: Path | None = None, index: bool = False) -> Path:
     cfg = {
         "root": str(proj),
         "collection": "main",
-        "include_dirs": ["."],
+        "include_dirs": list(nav.WALK_DEFAULTS["include_dirs"]),
         "extensions": sorted(EXTENSIONS),
-        "exclude_dirs": [".git", "__pycache__", ".venv", ".neuronav", "node_modules"],
+        "exclude_dirs": list(nav.WALK_DEFAULTS["exclude_dirs"]),
     }
     cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8", newline="\n")
     ig = state / ".neuroignore"
@@ -65,8 +65,7 @@ def init(project: Path | None = None, index: bool = False) -> Path:
         if ".neuronav/" not in lines:
             with open(gi, "a", encoding="utf-8", newline="\n") as f:
                 f.write(".neuronav/\n" if lines and lines[-1] == "" else "\n.neuronav/\n")
-    os.environ["NEURONAV_CONFIG"] = str(cfg_path)
-    nav._apply_config(cfg_path)
+    nav.use_config(cfg_path)
     if index:
         _index()
     return cfg_path
@@ -82,8 +81,7 @@ def wire(project: Path | None = None, index: bool = False) -> Path:
     if not cfg_path.is_file():
         init(proj, index=index)
     else:
-        os.environ["NEURONAV_CONFIG"] = str(cfg_path)
-        nav._apply_config(cfg_path)
+        nav.use_config(cfg_path)
         if index:
             _index()
     server = str(TOOL_DIR / "server.py")

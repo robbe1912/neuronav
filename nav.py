@@ -85,9 +85,9 @@ def _apply_config(path: Path | None) -> None:
     # project-local / no-config defaults walk everything (issue #27); the
     # legacy install-config default keeps the original target-repo shape
     _walk_all = path is None or (path.parent.name == ".neuronav")
-    INCLUDE_DIRS = tuple(cfg.get("include_dirs", (".",) if _walk_all else ("scripts", "scenes", "VFX", "ai", "tests", "tools")))
+    INCLUDE_DIRS = tuple(cfg.get("include_dirs", WALK_DEFAULTS["include_dirs"] if _walk_all else ("scripts", "scenes", "VFX", "ai", "tests", "tools")))
     EXTS = set(cfg.get("extensions", sorted(_REGISTERED) if _walk_all else (".gd", ".tscn")))
-    EXCLUDE_DIRS = frozenset(cfg.get("exclude_dirs", (".git", "__pycache__", ".venv", ".neuronav", "node_modules") if _walk_all else (".git", "__pycache__")))
+    EXCLUDE_DIRS = frozenset(cfg.get("exclude_dirs", WALK_DEFAULTS["exclude_dirs"] if _walk_all else (".git", "__pycache__")))
     EXCLUDE_DIRS |= _neuroignore(path)
     EMBED_URL = str(cfg.get("embed_url", "http://127.0.0.1:11434/api/embed"))
     EMBED_MODEL = str(cfg.get("embed_model", "qwen3-embedding:0.6b"))
@@ -124,6 +124,8 @@ def _apply_config(path: Path | None) -> None:
         STATE_DIR = STATE_DIR.resolve()
     DB_DIR = STATE_DIR / "chroma"
     BASE_DIR = STATE_DIR / "base"
+    # the cluster cache belongs to the store this config resolves to
+    _clusters_memo.clear()
 
 
 def _neuroignore(path: Path | None) -> frozenset[str]:
@@ -140,6 +142,20 @@ def _neuroignore(path: Path | None) -> frozenset[str]:
              if ln.strip() and not ln.lstrip().startswith("#")}
     return frozenset(n for n in names
                      if n not in ("", ".", "..") and "/" not in n and "\\" not in n)
+# walk-everything defaults shared by the no-config / project-local legs
+# (issue #27) and the onboard scaffold — one literal, three consumers.
+WALK_DEFAULTS = {
+    "include_dirs": (".",),
+    "exclude_dirs": (".git", "__pycache__", ".venv", ".neuronav", "node_modules"),
+}
+
+
+def use_config(path: Path) -> None:
+    """Point this process and its subprocesses at a config profile:
+    env first so children inherit, then rebind the module globals."""
+    os.environ["NEURONAV_CONFIG"] = str(path)
+    _apply_config(path)
+
 
 
 ROOT: Path
@@ -156,6 +172,9 @@ WATCH_INTERVAL_S: float
 STATE_DIR: Path
 DB_DIR: Path
 BASE_DIR: Path
+# clusters() result cache (K2/#86): same engine args + unchanged store
+# -> the same list object, so 10 call-sites stop re-running Louvain.
+_clusters_memo: dict[tuple, list] = {}
 _apply_config(_discover_config())
 
 MAX_EMBED_CHARS = 30_000  # keep under Ollama context; head of .tscn has script links
@@ -393,20 +412,41 @@ def _check_model(col: chromadb.Collection) -> None:
         )
 
 
-def _collection() -> chromadb.Collection:
-    client = chromadb.PersistentClient(path=str(DB_DIR))
-    col = client.get_or_create_collection(
-        name=COLLECTION,
+def client() -> "chromadb.PersistentClient":
+    """Chroma client at the configured store (one construction point)."""
+    return chromadb.PersistentClient(path=str(DB_DIR))
+
+
+def fns_name() -> str:
+    """Fn-level sibling collection name — '-fns' rides the main
+    collection so per-config stores never mix function vectors."""
+    return f"{COLLECTION}-fns"
+
+
+def _named_collection(name: str) -> chromadb.Collection:
+    col = client().get_or_create_collection(
+        name=name,
         metadata={"hnsw:space": "cosine"},
     )
     _check_model(col)
     return col
 
 
+def _collection() -> chromadb.Collection:
+    """Main file-level collection."""
+    return _named_collection(COLLECTION)
+
+
+def fns_collection() -> chromadb.Collection:
+    """Fn-level sibling (graph.sync_functions / find_functions)."""
+    return _named_collection(fns_name())
+
+
 def rescan() -> dict[str, int]:
     """Incremental index: add/update changed files, purge deleted ones.
     Warm passes skip read+hash via the stat fingerprint (issue #42); the
     sha stays the content identity."""
+    _clusters_memo.clear()  # embeddings changed — recompute on demand
     with _db_lock():
         return _rescan_locked()
 
@@ -534,22 +574,25 @@ def clusters(
     min_sim: float = 0.6,
     split_sim: float = 0.65,
     blob_min: int = 60,
-    cross_sim: float = 0.75,
-    resolution: float = 1.0,
 ) -> list[dict[str, object]]:
-    """Subsystem clusters. Default engine (resolution not None): Louvain
-    community detection over a hybrid weighted graph — mutual-kNN
-    embedding sims (weight = sim * 0.7) + structural edges from graph.py
-    (call/signal capped 5 per file pair, attach/inst 1.5); tests/ files
-    get their own community, loose files join the community dominating
-    their dir seed (see clusters.communities_graph). Resolution 1.5
-    chosen by sweep ({1.0: 49 clusters/largest 131, 1.2: 35/74, 1.5:
-    29/69, 1.8: 30/70}). Legacy engine (resolution=None): dir-seeded
-    mutual-kNN union-find (full-dir-chain seeds, blob-scale seed groups
-    need cross_sim). Either way mega-blobs are then split + every cluster
-    labeled (see clusters.finalize).
+    """Subsystem clusters: Louvain community detection over a hybrid
+    weighted graph — mutual-kNN embedding sims (weight = sim * 0.7) +
+    structural edges from graph.py (call/signal capped 5 per file pair,
+    attach/inst 1.5); tests/ files get their own community, loose files
+    join the community dominating their dir seed (see
+    clusters.communities_graph). Resolution swept {1.0: 49 clusters/
+    largest 131, 1.2: 35/74, 1.5: 29/69, 1.8: 30/70} — the knob lives
+    in clusters.communities_graph (default 1.0). Mega-blobs are then
+    split + every cluster labeled (see clusters.finalize).
     Returns [{id, size, paths: [(path, class_name)], label, confidence,
-    method}]."""
+    method}]. Memoized (K2/#86): callers share ONE list per argument
+    tuple while the store is unchanged — invalidated by rescan(),
+    import_base(), `drop` and _apply_config (profile switch). Treat the
+    returned list as read-only."""
+    memo_key = (k, min_sim, split_sim, blob_min)
+    hit = _clusters_memo.get(memo_key)
+    if hit is not None:
+        return hit
     import numpy as np
 
     col = _collection()
@@ -569,77 +612,21 @@ def clusters(
 
     knn = _clusters.topk_desc(sim, k)
 
-    out: list[dict[str, object]] = []
-    adj = None  # structural adjacency from the louvain engine (hub gating)
-    units = None  # welded scene+script units (survive finalize splits)
-    if resolution is None:
-        # legacy engine: dir-seeded mutual-kNN union-find
-        parent = list(range(len(ids)))
-
-        def find(x: int) -> int:
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        def union(a: int, b: int) -> None:
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[max(ra, rb)] = min(ra, rb)
-
-        from collections import Counter
-
-        seed = [_clusters.dir_seed(p) for p in ids]
-        seed_n = Counter(s for s in seed if s)
-
-        # cluster scripts and scenes separately: tscn headers dominate
-        # embeddings, mixing them chains unrelated files
-        gd_idx = [i for i, m in enumerate(metas) if (m or {}).get("ext") == ".gd"]
-        tscn_idx = [i for i, m in enumerate(metas) if (m or {}).get("ext") == ".tscn"]
-        for subset in (gd_idx, tscn_idx):
-            sset = set(subset)
-            for i in subset:
-                for j in knn[i]:
-                    j = int(j)
-                    if j in sset and i in knn[j] and sim[i, j] >= min_sim:
-                        si, sj = seed[i], seed[j]
-                        # same-seed unions at min_sim only while the seed
-                        # group is small; blob-scale flat folders need the
-                        # high bar (Qwen3-0.6B over-merge chaining)
-                        if si is None or sj is None:
-                            union(i, j)
-                        elif si == sj:
-                            if sim[i, j] >= cross_sim or seed_n[si] < _clusters.BIG_SEED_MAX:
-                                union(i, j)
-                        elif sim[i, j] >= cross_sim:
-                            union(i, j)
-
-        groups: dict[int, list[int]] = {}
-        for i in range(len(ids)):
-            groups.setdefault(find(i), []).append(i)
-        for members in groups.values():
-            items = sorted(
-                (
-                    ids[m],
-                    str((metas[m] or {}).get("class_name", "")),
-                )
-                for m in members
-            )
-            out.append({"id": len(out), "size": len(items), "paths": items})
-    else:
-        # louvain hybrid: structural edges + embedding sims; adj feeds the
-        # labeler's autoload hub gating, units keep scene+script welds
-        # intact through finalize's embedding split passes
-        out, adj, units = _clusters.communities_graph(
-            ids, metas, mat, sim, knn, min_sim=min_sim, resolution=resolution
-        )
+    # louvain hybrid: structural edges + embedding sims; adj feeds the
+    # labeler's autoload hub gating, units keep scene+script welds
+    # intact through finalize's embedding split passes
+    out, adj, units = _clusters.communities_graph(
+        ids, metas, mat, sim, knn, min_sim=min_sim
+    )
     out.sort(key=lambda c: -int(c["size"]))
     for idx, c in enumerate(out):
         c["id"] = idx
 
-    return _clusters.finalize(
+    result = _clusters.finalize(
         out, ids, mat, split_sim=split_sim, blob_min=blob_min, adj=adj, units=units
     )
+    _clusters_memo[memo_key] = result
+    return result
 
 
 # ---- base index (tracked shards) -------------------------------------------
@@ -712,6 +699,7 @@ def export_base() -> dict[str, object]:
 def import_base() -> dict[str, int | str]:
     """Seed local chroma from tracked shards. Skips ids whose files no
     longer exist (deleted/renamed since export) — rescan heals the rest."""
+    _clusters_memo.clear()  # store repopulated — recompute on demand
     with _db_lock():
         col = _collection()
         if col.count():
@@ -761,8 +749,7 @@ if __name__ == "__main__":
         if not cfg_file.is_file():
             print(f"config not found: {cfg_file}", file=sys.stderr)
             sys.exit(2)
-        os.environ["NEURONAV_CONFIG"] = str(cfg_file)
-        _apply_config(cfg_file)
+        use_config(cfg_file)
         argv = argv[2:]
     cmd = argv[0] if argv else "rescan"
     if cmd == "rescan":
@@ -807,11 +794,11 @@ if __name__ == "__main__":
                 tops = ", ".join(f"{t['pair']} x{t['w']}" for t in wp["top_files"])
                 print(f"  {wp['a']} <-> {wp['b']} : {wp['edges']} edges (top: {tops})")
     elif cmd == "drop":
-        import chromadb as _c
-        client = _c.PersistentClient(path=str(DB_DIR))
-        for name in (COLLECTION, f"{COLLECTION}-fns"):
+        _clusters_memo.clear()  # the store is going away
+        cl = client()
+        for name in (COLLECTION, fns_name()):
             try:
-                client.delete_collection(name)
+                cl.delete_collection(name)
                 print(f"dropped {name}")
             except Exception:
                 print(f"{name}: not present")

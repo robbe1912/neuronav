@@ -24,8 +24,8 @@ import re
 from collections import Counter, defaultdict, deque
 
 import nav
+from extractors.common import PY_CONTROL_KEYWORDS
 from extractors import registry_for
-from extractors.model import FileSym, Func  # noqa: F401  (re-export)
 # language fact needed by the dead-code tier heuristic (native dispatch names)
 from extractors.gdscript import VIRTUALS, GUT_ROOTS, ADDON_VIRTUALS, MANUAL_BASES, parse_gd, parse_tscn
 from extractors.python import PY_HOOKS  # stdlib dispatch hooks (dead-scan tier)
@@ -80,9 +80,7 @@ PY_SUBSCRIPT_CALL_RE = re.compile(
 PY_MODULE_ASSIGN_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*=\s*([a-z_]\w*)\s*\(")
 # imported_call(args).method( — registry_for(path.suffix).parse(...)
 PY_RESULT_CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\(([^()]*)\)\s*\.\s*([A-Za-z_]\w*)\s*\(")
-PY_NON_CALLS = {
-    "if", "for", "while", "elif", "return", "assert", "del", "print",
-    "lambda", "not", "await", "with", "except", "raise", "yield",
+PY_NON_CALLS = PY_CONTROL_KEYWORDS | {
     "in", "is", "and", "or", "nonlocal", "global", "import", "from",
     "len", "range", "str", "int", "float", "bool", "list", "dict", "set",
     "tuple", "isinstance", "issubclass", "type", "sorted", "reversed",
@@ -682,22 +680,29 @@ class Graph:
         self.reverse[dst].add(src)
         self.edge_types[(src, dst)].add(ty)
 
+    def script_rels(self, fs: FileSym) -> list[str]:
+        """Indexed scripts for a scene, in resolution order: ext_resource
+        scripts first (file order), the attached script only when none of
+        them is indexed. One authoritative cascade — viz's signal-wire
+        channel resolves against the same list (map-spec-v2 §1/F13)."""
+        rels = [
+            s_rel
+            for s in fs.scripts
+            if (s_rel := self._res_to_rel(s)) and s_rel in self.files
+        ]
+        if not rels and fs.attached_script:
+            s_rel = self._res_to_rel(fs.attached_script)
+            if s_rel and s_rel in self.files:
+                rels.append(s_rel)
+        return rels
+
     def _wire_tscn(self) -> None:
         for rel, fs in self.files.items():
             if fs.ext != ".tscn":
                 continue
             # multi-script scenes: a handler may live on ANY of the scene's
             # script ext_resources, not just the first attached one
-            script_rels = [
-                s_rel
-                for s in fs.scripts
-                if (s_rel := self._res_to_rel(s)) and s_rel in self.files
-            ]
-            if not script_rels and fs.attached_script:
-                s_rel = self._res_to_rel(fs.attached_script)
-                if s_rel and s_rel in self.files:
-                    script_rels.append(s_rel)
-            for script_rel in script_rels:
+            for script_rel in self.script_rels(fs):
                 for _, handler in fs.connections:
                     if handler in self.files[script_rel].funcs:
                         key = f"{script_rel}::{handler}"
@@ -1218,17 +1223,9 @@ def _normalize_body(body: str) -> str:
 
 
 def _fn_collection() -> "chromadb.Collection":
-    import chromadb
-
-    client = chromadb.PersistentClient(path=str(nav.DB_DIR))
     # per-config collection: two checkouts/projects sharing one .chroma dir
     # must not mix function vectors (hardcoded name collided across configs)
-    col = client.get_or_create_collection(
-        name=f"{nav.COLLECTION}-fns",
-        metadata={"hnsw:space": "cosine"},
-    )
-    nav._check_model(col)
-    return col
+    return nav.fns_collection()
 
 
 def _all_filesyms() -> dict[str, FileSym]:

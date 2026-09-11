@@ -25,6 +25,7 @@ macros. General call-graph edges and writes/mut_params are deferred (v1.1)
 
 import bisect
 import re
+from extractors.common import balanced_span, entry_keys
 from pathlib import Path
 from typing import Iterable, NamedTuple
 
@@ -124,8 +125,8 @@ RE_ADD_SIGNAL_SN = re.compile(r"ADD_SIGNAL\(\s*MethodInfo\(\s*(?:Core|Scene)Stri
 # ADD_PROPERTY(PropertyInfo(Variant::T, "p", ...), "set_p", "get_p").
 # PropertyInfo args can nest parens two levels (vformat(...)), accessors
 # may be empty, and property names may contain '/' ("transform/notify"),
-# so the call is balanced-scanned (see _call_span) and split into head
-# (type, prop) / tail (setter, getter) instead of one flat pattern.
+# so the call is balanced-scanned (common.balanced_span) and split into
+# head (type, prop) / tail (setter, getter) instead of one flat pattern.
 RE_PROP_HEAD = re.compile(r"\s*PropertyInfo\(\s*([^,]+),\s*\"([^\"]+)\"")
 RE_PROP_TAIL = re.compile(r",\s*\"(\w*)\"\s*,\s*\"(\w*)\"\s*\)\s*$")
 # BIND_ENUM_CONSTANT(X) and BIND_ENUM_CONSTANT(Qualified::X)
@@ -219,23 +220,6 @@ class Virt(NamedTuple):
     line: int
 
 
-def _call_span(text: str, open_idx: int) -> int:
-    """Index just past the balanced ``)`` for the ``(`` at open_idx.
-
-    Registration macro calls carry nested parens and no trailing ``;``
-    (GDVIRTUAL declarations) — statement-scoped regex runs past the call.
-    """
-    depth = 0
-    for i in range(open_idx, len(text)):
-        c = text[i]
-        if c == "(":
-            depth += 1
-        elif c == ")":
-            depth -= 1
-            if depth == 0:
-                return i + 1
-    return len(text)
-
 
 def _strip_template(name: str) -> str:
     """Drop a balanced ``<...>`` suffix: ``Base<int>`` -> ``Base``.
@@ -286,7 +270,7 @@ def harvest_registration(text: str) -> dict[str, list]:
 
     props: list[Prop] = []
     for m in re.finditer(r"\bADD_PROPERTY\(", text):
-        end = _call_span(text, m.end() - 1)
+        end = balanced_span(text, m.end() - 1)
         call = text[m.end():end]
         head = RE_PROP_HEAD.search(call)
         tail = RE_PROP_TAIL.search(call)
@@ -304,7 +288,7 @@ def harvest_registration(text: str) -> dict[str, list]:
 
     gdvirtuals: list[Virt] = []
     for m in RE_GDV_START.finditer(text):
-        end = _call_span(text, m.end() - 1)
+        end = balanced_span(text, m.end() - 1)
         for name in RE_GDV_NAME.findall(text[m.end():end]):
             gdvirtuals.append(Virt(name, line_of(m)))
 
@@ -598,20 +582,14 @@ def _entry_classdb(fs: FileSym, ctx) -> Iterable[str]:
     property-system dispatch — no static caller exists."""
     if fs.ext not in CPP_EXTS:
         return
-    for nm in sorted(fs.entry_hints):
-        fn = fs.funcs.get(nm)
-        if fn is not None:
-            yield fn.key
+    yield from entry_keys(fs, sorted(fs.entry_hints))
 
 
 def _entry_virtuals(fs: FileSym, ctx) -> Iterable[str]:
     """Object virtual overrides (_notification analogues), engine-called."""
     if fs.ext not in CPP_EXTS:
         return
-    for nm in sorted(CPP_VIRTUALS):
-        fn = fs.funcs.get(nm)
-        if fn is not None:
-            yield fn.key
+    yield from entry_keys(fs, sorted(CPP_VIRTUALS))
 
 
 def _entry_gdvirtual(fs: FileSym, ctx) -> Iterable[str]:
@@ -621,10 +599,7 @@ def _entry_gdvirtual(fs: FileSym, ctx) -> Iterable[str]:
     ``cpp_gdvirtuals``; same-file declarations also land in entry_hints."""
     if fs.ext not in CPP_EXTS:
         return
-    for nm in sorted(getattr(ctx, "cpp_gdvirtuals", ())):
-        fn = fs.funcs.get(nm)
-        if fn is not None:
-            yield fn.key
+    yield from entry_keys(fs, sorted(getattr(ctx, "cpp_gdvirtuals", ())))
 
 
 ENTRY_RULES = [_entry_classdb, _entry_virtuals, _entry_gdvirtual]

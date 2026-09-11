@@ -84,6 +84,25 @@ def _churn_hot(paths: list[str]) -> list[float] | None:
         return None
 
 
+def _cap_rows(units, prio_key, cost_of, cap: int):
+    """Greedy byte-budget keep over serializable units (spec §4 row 10).
+
+    Walks units in deterministic priority order, keeps each while it
+    still fits under cap; returns (kept units in walk order, units
+    dropped). The keep/drop decision depends only on priority order and
+    per-unit cost — callers own the arrangement (pair grouping, index
+    order, dict rebuild)."""
+    budget = cap
+    kept = []
+    for u in sorted(units, key=prio_key):
+        cost = cost_of(u)
+        if cost > budget:
+            continue
+        budget -= cost
+        kept.append(u)
+    return kept, len(units) - len(kept)
+
+
 def _build_data() -> dict:
     g = graph.get_graph()
     clusters = nav.clusters()
@@ -243,25 +262,17 @@ def _build_data() -> dict:
     fedges.sort(key=lambda e: (e[0], e[1], e[2], e[3], e[4]))
 
     # signal wires: scene connections resolved against the scene's script
-    # ext_resources, mirroring graph._wire_tscn's script_rels cascade
-    # (multi-script scenes try every script; attached_script only when no
-    # ext_resource script is indexed). A connection resolving in N scripts
-    # yields N rows; one resolving in none counts into meta.sig_unresolved
-    # — the anonymous amber corridor channel (map-spec-v2 §1/F13).
+    # ext_resources via graph.script_rels — the same cascade _wire_tscn
+    # wires edges from, so the corridor channel can never drift from the
+    # graph. A connection resolving in N scripts yields N rows; one
+    # resolving in none counts into meta.sig_unresolved — the anonymous
+    # amber corridor channel (map-spec-v2 §1/F13).
     sig_resolved = 0
     sig_unresolved = 0
     for rel, fs in g.files.items():
         if fs.ext != ".tscn" or rel not in idx:
             continue
-        script_rels = [
-            s_rel
-            for s in fs.scripts
-            if (s_rel := s.removeprefix("res://")) in g.files
-        ]
-        if not script_rels and fs.attached_script:
-            s_rel = fs.attached_script.removeprefix("res://")
-            if s_rel in g.files:
-                script_rels.append(s_rel)
+        script_rels = g.script_rels(fs)
         for sig_name, handler in fs.connections:
             hit = [
                 s_rel
@@ -307,17 +318,18 @@ def _build_data() -> dict:
             return (sum(len(json.dumps(fedges[i], separators=(",", ":"))) + 1 for i in fe)
                     + sum(len(json.dumps(mwires[i], separators=(",", ":"))) + 1 for i in mw))
 
-        budget = _WIRE_BYTE_CAP
+        kept_pairs, _pairs_dropped = _cap_rows(
+            list(groups),
+            prio_key=lambda p: (
+                -_rank.get(paths[p[0]], 0.0) - _rank.get(paths[p[1]], 0.0),
+                paths[p[0]], paths[p[1]],
+            ),
+            cost_of=_pair_cost,
+            cap=_WIRE_BYTE_CAP,
+        )
         keep_fe: list[int] = []
         keep_mw: list[int] = []
-        for pair in sorted(groups, key=lambda p: (
-            -_rank.get(paths[p[0]], 0.0) - _rank.get(paths[p[1]], 0.0),
-            paths[p[0]], paths[p[1]],
-        )):
-            cost = _pair_cost(pair)
-            if cost > budget:
-                continue
-            budget -= cost
+        for pair in kept_pairs:
             keep_fe.extend(groups[pair][0])
             keep_mw.extend(groups[pair][1])
         wire_dropped = (len(fedges) - len(keep_fe)) + (len(mwires) - len(keep_mw))
@@ -442,8 +454,11 @@ def _build_data() -> dict:
     # a failed offline pass aborts the build loudly.
     pos_baked = None
     depths, cyc_ids = _strata_analysis(len(nodes), links)
-    # churn boost is part of the rendered radius - the overlap relax MUST
-    # use the same radii the browser draws or hot files overlap neighbors
+    # git-churn channel — ONE read of git state per bake (D2/#86): it
+    # feeds both the layout radii and DATA.hot below, so a mid-bake
+    # commit can never bake layout ≠ legend. The overlap relax MUST
+    # use the same radii the browser draws or hot files overlap
+    # neighbors; None when git/history is unavailable.
     hot = _churn_hot([nd["path"] for nd in nodes])
     try:
         pos_baked = _layout(
@@ -523,21 +538,15 @@ def _build_data() -> dict:
     hw_dropped = 0
     _HW_BYTE_CAP = 1_500_000
     if len(json.dumps(hw, separators=(",", ":"))) > _HW_BYTE_CAP:
-        order = sorted(range(len(hw)), key=lambda i: (-links[hw[i][0]]["w"], hw[i][0]))
-        budget = _HW_BYTE_CAP
-        kept_hw: list[int] = []
-        for i in order:
-            cost = len(json.dumps(hw[i], separators=(",", ":"))) + 1
-            if cost > budget:
-                continue
-            budget -= cost
-            kept_hw.append(i)
+        kept_hw, _ = _cap_rows(
+            range(len(hw)),
+            prio_key=lambda i: (-links[hw[i][0]]["w"], hw[i][0]),
+            cost_of=lambda i: len(json.dumps(hw[i], separators=(",", ":"))) + 1,
+            cap=_HW_BYTE_CAP,
+        )
         hw_dropped = len(hw) - len(kept_hw)
         hw = [hw[i] for i in sorted(kept_hw)]
 
-    # git-churn channel: optional (None when git/history unavailable → DATA.hot
-    # absent → renderer leaves sizes untouched, no legend note)
-    hot = _churn_hot([nd["path"] for nd in nodes])
 
     # per-function IO surface (params / ret / member writes / mutated params),
     # keyed "path::func". consumed by the fn click panel (signature line +
@@ -565,18 +574,16 @@ def _build_data() -> dict:
     if len(json.dumps(fio, separators=(",", ":"))) > _FIO_BYTE_CAP:
         if _rank is None:
             _rank = g.pagerank()
-        budget = _FIO_BYTE_CAP
-        kept_fio: dict = {}
-        for k, v in sorted(fio.items(), key=lambda kv: (
-            -_rank.get(kv[0].split("::", 1)[0], 0.0), kv[0],
-        )):
-            cost = len(json.dumps([k, v], separators=(",", ":"))) + 1
-            if cost > budget:
-                continue
-            budget -= cost
-            kept_fio[k] = v
-        fio_dropped = len(fio) - len(kept_fio)
-        fio = kept_fio
+        kept_units, _ = _cap_rows(
+            list(fio.items()),
+            prio_key=lambda kv: (
+                -_rank.get(kv[0].split("::", 1)[0], 0.0), kv[0],
+            ),
+            cost_of=lambda kv: len(json.dumps([kv[0], kv[1]], separators=(",", ":"))) + 1,
+            cap=_FIO_BYTE_CAP,
+        )
+        fio_dropped = len(fio) - len(kept_units)
+        fio = dict(kept_units)
 
 
     # crosstalk corridors: top inter-cluster file pairs by edge count, baked
