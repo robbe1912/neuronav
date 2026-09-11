@@ -4007,6 +4007,38 @@ function updateXtLabels() {
 // label LOD (Gource --dir-name-depth / Obsidian text-fade steal): overview
 // keeps the classic top-12 landmarks; zooming in raises the cap so context
 // names appear exactly when the user is close enough to read them
+// [issue #84] skeptic #3: hub/file labels are pointer-events:auto
+// chips floating over the 3D canvas. A press on a label never reaches
+// the canvas, so an orbit grab that starts on a label was dead (the
+// label swallowed the pointerdown; OrbitControls binds it on the
+// canvas only). Once the press moves >4px we hand the gesture over
+// with one synthetic pointerdown at the current point - OrbitControls
+// (r160) binds move/up on ownerDocument, so the rest of the drag is
+// native. The label's own click is suppressed for that press (chromium
+// fires click even after a large same-element drag, which would have
+// refocused the node on every orbit release).
+function armLabelDrag(el) {
+  let sx = 0, sy = 0, fwd = false;
+  el.addEventListener("pointerdown", e => { sx = e.clientX; sy = e.clientY; fwd = false; });
+  el.addEventListener("pointermove", e => {
+    if (fwd || !sx) return;
+    if (Math.hypot(e.clientX - sx, e.clientY - sy) < 4) return;
+    fwd = true; el.__labDrag = true;
+    renderer.domElement.dispatchEvent(new PointerEvent("pointerdown", {
+      clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId,
+      pointerType: "mouse", isPrimary: true, buttons: 1, bubbles: true }));
+  });
+  const done = () => { sx = 0; fwd = false; };
+  el.addEventListener("pointerup", done);
+  el.addEventListener("pointercancel", done);
+  el.addEventListener("click", e => {
+    if (el.__labDrag) {
+      el.__labDrag = false; done();
+      e.stopImmediatePropagation(); e.preventDefault();
+    }
+  }, true);
+}
+
 const HUB_N = 12;
 const HUB_MAX = 40;
 let hubCapNow = HUB_N;   // live zoom-driven cap, exposed via __dbg.hubCap
@@ -4026,6 +4058,7 @@ function rebuildHubs() {
     el.textContent = nodes[i].label + " · " + Math.round(degree[i]);
     el.title = nodes[i].path;
     el.onpointerenter = () => { tip.style.display = "none"; };
+    armLabelDrag(el);
     el.onclick = () => { pushFocusState(); showInfo(i); focusSeeds.clear(); focusSeeds.add(i); applyVisibility(); focus(i); mapCenterOn(i); };
     hubsEl.appendChild(el);
     return { i, el };
@@ -4485,6 +4518,7 @@ function rebuildFocusLabels(focusing) {
     el.className = "flab";
     el.textContent = nodes[i].label;
     el.title = nodes[i].path;
+    armLabelDrag(el);
     el.onclick = () => { pushFocusState(); focusSeeds.clear(); focusSeeds.add(i); showInfo(i); buildContainment(); applyVisibility(); focus(i); };
     flabsEl.appendChild(el);
     fLabs.push({ kind: 0, i, ix: -1, el });
@@ -4528,6 +4562,7 @@ function rebuildFocusLabels(focusing) {
       if (mutOnly && (!io || !io.w.length)) return;   // mutators-only filter
       el.title = nodes[m.file].path + " :: " + m.name;
       if (hlFn.has(m.name)) el.classList.add("hl");
+      armLabelDrag(el);
       el.onclick = () => showFnInfo(ix);
       flabsEl.appendChild(el);
       fLabs.push({ kind: 1, i: m.file, ix, el });
