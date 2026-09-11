@@ -37,9 +37,10 @@ check("self likely-dead is zero", dead["by_tier"].get("likely", 0) == 0,
 
 # server.py MCP handlers are framework dispatch: review tier, never likely
 # (window covers handler funcs + their private helpers: 15 at bb4b762,
-# +1 for the context overview helper)
+# +1 context overview helper, +4 context render helpers from the #86
+# K5 split — bounded growth, tier still review)
 handlers = [c for c in dead["candidates"] if c["path"] == "server.py"]
-check("server handlers stay review", 5 <= len(handlers) <= 20
+check("server handlers stay review", 5 <= len(handlers) <= 24
       and all(c["tier"] == "review" for c in handlers),
       f"{len(handlers)} handler candidates, tiers={sorted({c['tier'] for c in handlers})}")
 
