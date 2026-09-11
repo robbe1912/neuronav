@@ -1,6 +1,6 @@
 # AGENTS.md — tests/
 
-Fifteen self-contained suites. Each is a standalone script — no pytest — run in
+Sixteen self-contained suites. Each is a standalone script — no pytest — run in
 its own process:
 
 ```
@@ -9,9 +9,10 @@ its own process:
 
 Exit 0 = all pass. Each suite bootstraps `sys.path` to the repo root and
 uses a local `check(name, cond)` helper (PASS/FAIL lines + failure count).
-CI (`.github/workflows/ci.yml`) runs the six hermetic suites on ubuntu
+CI (`.github/workflows/ci.yml`) runs the seven hermetic suites on ubuntu
 with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
-`test_pyhard`, `test_cpphard`, `test_autorescan`, `test_project_mode`);
+`test_pyhard`, `test_cpphard`, `test_autorescan`, `test_searchtext`,
+`test_project_mode`);
 the rest are local gates.
 
 ## Suites
@@ -27,6 +28,7 @@ the rest are local gates.
 | `test_explore` | explore() happy/degraded/no-hit paths + MCP tool annotations | mcp + chroma + populated self-index |
 | `test_server_stdio` | MCP stdio end-to-end: spawns server.py, drives JSON-RPC, asserts the context tool answers | mcp + default-config target repo |
 | `test_autorescan` | auto-rescan stat gate (issue #19): read-tool freshness, TTL burst guard, embed-failure cooldown, `watch_interval_s` watcher — in-process pins + two stdio e2e servers | mcp + chromadb + numpy/networkx/scipy/scikit-learn (hermetic temp target + `NEURONAV_EMBED_FAKE=1`) |
+| `test_searchtext` | capped `search_text` tool (issue #68): file:line:row shape, deterministic order, 20-file/3-line caps with markers + totals, `files_only`, glob, graceful regex errors | mcp + chromadb (hermetic temp config, `NEURONAV_EMBED_FAKE=1`) |
 | `test_repomap` | repo_map budget bound, byte determinism, rank ordering, god-hub saturation on synthetic graphs | stdlib + numpy (no index, no embeddings) |
 | `test_mwires` | named-wire map exports (`mwires`/`fns`/`meta` contract, map-spec-v2 §0) | chromadb import only (self-sets `NEURONAV_EMBED_FAKE=1`) |
 | `test_recall` | hybrid recall fusion, ctx hops, degraded mode (real+fake modes) | chromadb import; exact-rank pins need a real-embedded store |

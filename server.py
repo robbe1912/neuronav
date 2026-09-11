@@ -13,6 +13,9 @@ Tools:
   hits carry src provenance and 1-hop ctx neighbors
 - find_functions(query, n=6): semantic search over individual functions
 - symbol_graph(symbol, depth=1): callers/callees around a function or class
+- search_text(pattern, glob="", files_only=False): regex text search over
+  the indexed files — grep-class queries (exact strings, TODOs, literals),
+  Zoekt-style caps: 20 files / 3 lines each, truncation markers + totals
 - dead_code(): functions unreachable from any entry point (candidates only)
 - duplicates(): exact-clone function bodies (normalized hash groups)
 - clusters(k, min_sim): subsystem clusters over the embedding space
@@ -28,6 +31,8 @@ Tools:
 
 from __future__ import annotations
 
+import fnmatch
+import re
 import sys
 import threading
 import time
@@ -134,6 +139,80 @@ def find_functions(query: str, n: int = 6) -> str:
     return "\n".join(
         f"{h['score']:0.3f}  {h['path']}#{h['func']}:{h['line']}" for h in hits
     )
+
+
+# Zoekt-style cap discipline (issue #68): summarized, capped search output
+# beats verbose paging (SWE-agent 12.0% -> 18.0% on SWE-bench Lite) —
+# hard caps + truncation markers + total counts keep the answer
+# token-bounded and tell the agent when to narrow.
+SEARCH_MAX_FILES = 20
+SEARCH_MAX_LINES = 3
+SEARCH_LINE_CHARS = 200
+
+
+@mcp.tool(annotations=READONLY)
+def search_text(pattern: str, glob: str = "", files_only: bool = False) -> str:
+    """Regex text search over the indexed files — the grep-class tool.
+
+    Exact strings and regex the semantic+symbol tools structurally miss:
+    literals, TODOs, error messages, config keys. Rows are
+    file:line:matched-line, ordered by path then line, hard-capped at
+    20 files / 3 lines each (Zoekt-style) with per-file and global
+    truncation markers plus the total match count — when the cap fires,
+    narrow with glob= or a tighter pattern.
+    """
+    _auto_rescan()
+    if not pattern:
+        return "no pattern given — pass a regex, e.g. search_text('TODO')"
+    try:
+        rx = re.compile(pattern)
+    except re.error as exc:
+        return f"invalid regex {pattern!r}: {exc}"
+    g = graph.get_graph()
+    if not g.files:
+        return "no results (index empty — call rescan first)"
+    matched: list[tuple[str, int, list[tuple[int, str]]]] = []
+    scanned = 0
+    total = 0
+    for path in sorted(g.files):  # deterministic: path, then line order
+        if glob and not fnmatch.fnmatch(path, glob):
+            continue
+        scanned += 1
+        try:
+            text = nav._read_text(nav.ROOT / path)
+        except OSError:
+            continue  # vanished mid-walk; the next rescan reconciles
+        hits = [
+            (i, ln.rstrip())
+            for i, ln in enumerate(text.splitlines(), 1)
+            if rx.search(ln)
+        ]
+        if not hits:
+            continue
+        total += len(hits)
+        matched.append((path, len(hits), hits[:SEARCH_MAX_LINES]))
+    if not matched:
+        return f"no matches for {pattern!r} in {scanned} indexed files"
+    lines: list[str] = [_here(g)]
+    for path, n, hits in matched[:SEARCH_MAX_FILES]:
+        if files_only:
+            lines.append(path)
+            continue
+        for i, ln in hits:
+            ln = ln if len(ln) <= SEARCH_LINE_CHARS else ln[:SEARCH_LINE_CHARS] + "…"
+            lines.append(f"{path}:{i}:{ln}")
+        if n > SEARCH_MAX_LINES:
+            lines.append(f"… and {n - SEARCH_MAX_LINES} more matches in {path}")
+    n_files = len(matched)
+    plural = "" if n_files == 1 else "s"
+    if n_files > SEARCH_MAX_FILES:
+        lines.append(
+            f"… truncated at {SEARCH_MAX_FILES} files: {total} matches in "
+            f"{n_files} file{plural} — narrow the pattern or pass glob="
+        )
+    else:
+        lines.append(f"{total} matches in {n_files} file{plural}")
+    return "\n".join(lines)
 
 
 @mcp.tool(annotations=READONLY)
