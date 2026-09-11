@@ -5775,6 +5775,18 @@ const mapPickRows = mapOvEl.querySelector("#mapPick .rows");
 let mapPickRc = null;
 function mapTipHide() { mapTipEl.style.display = "none"; }
 function mapClosePick() { mapPickEl.style.display = "none"; mapPickRc = null; }
+// ---- [issue #82] sticky wire selection -----------------------------------
+// ONE pinned wire at a time, PAINT-TIER ONLY: pinning never touches the
+// layout cache (ONE-layout law: sig unchanged, byte-stable bake, wires
+// set invariant). The emphasis re-resolves from an identity KEY on every
+// paint, so the pin survives pan / zoom / hover-out / repaints until it
+// is explicitly dismissed. Indices are NOT identity: layout rebuilds
+// re-create the records; keys re-resolve against the fresh arrays.
+let wirePin = null;    // {surface:'map'|'ball', kind:'wire'|'trunk'|'link', id, menu} | null
+let pinCover = 0;      // polylines the last paint emphasized (mapInfo probe)
+const wireKeyOf = w => "w|" + w.sf + "|" + w.sfn + "|" + w.df + "|" + w.dfn + "|" + w.ty;
+function wirePinSet(p) { wirePin = p; pinCover = 0; drawMapPane(); }
+function wirePinClear() { if (!wirePin) return; wirePin = null; pinCover = 0; drawMapPane(); }
 // ---- 3D wire/bus tooltip (position:fixed, follows cursor over the WebGL
 // canvas; describes the picked fn wire or bus trunk)
 const wireTipEl = document.createElement("div");
@@ -6002,7 +6014,14 @@ function mapOpenList(ci) {
     row.className = "row";
     row.textContent = nodes[wr.sf].label + "::" + wr.sfn + " \u2192 " +
       nodes[wr.df].label + "::" + wr.dfn + " :" + wr.line;
-    row.onclick = () => { if (wr.ty !== "var") mapShowFn(wr.df, wr.dfn); };
+    row.onclick = () => {
+      if (wr.ty !== "var") {
+        mapShowFn(wr.df, wr.dfn);
+        // [issue #82] enumerated chip-list rows are wires: clicking one
+        // pins THAT wire (menu = the open bundle list)
+        wirePinSet({ surface: "map", kind: "wire", id: wireKeyOf(wr), menu: "list" });
+      }
+    };
     mapListEl.appendChild(row);
   });
   const b = mapPane.getBoundingClientRect();
@@ -7679,6 +7698,31 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     ctx.lineWidth = 1;
     ctx.stroke();
   });
+  // [issue #82] pinned-wire emphasis: re-stroke the resolved path ON TOP
+  // at full emphasis (the pin is explicit user intent - it outranks the
+  // zoom-gated fine-ink tiers, like structure ink) with white-ringed
+  // endpoint dots. The key re-resolves on every paint, so pan/zoom/
+  // rebuild all keep the highlight alive; nothing here touches the layout.
+  pinCover = 0;
+  if (wirePin && wirePin.surface === "map" && wirePin.kind === "wire") {
+    const pw = L.wires.find(x => wireKeyOf(x) === wirePin.id);
+    if (pw) {
+      const g = MGLYPH[pw.ty] || MGLYPH.call;
+      ctx.setLineDash([]);
+      seg(pw, g.c, 3, pw.back ? [2, 3] : null, Math.max(dim(pw.sf, pw.df), 0.95));
+      pinCover = 1;
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = "#fff";
+      ctx.fillStyle = g.c;
+      for (const [ex, ey] of [pw.pts[0], [pw.tx, pw.ty]]) {
+        ctx.beginPath();
+        ctx.arc(ex, ey, 3.4, 0, Math.PI * 2);
+        ctx.fill(); ctx.stroke();
+      }
+    }
+  }
+  ctx.globalAlpha = 1;
   ctx.globalAlpha = 1;
   // screen-space furniture: map-local vars chip [F10] + footer
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -7836,6 +7880,9 @@ mapPane.addEventListener("click", e => {
       const wr = mapLayout.wires[wi];
       if (wr.ty === "var") showInfo(wr.df);   // member target is not a fn
       else mapShowFn(wr.df, wr.dfn);
+      // [issue #82] the click that opens the wire's menu latches the pin
+      // (single pin: a later selection replaces this one)
+      wirePinSet({ surface: "map", kind: "wire", id: wireKeyOf(wr), menu: "info" });
       return;
     }
   }
@@ -7942,6 +7989,10 @@ const mapInfo = () => {
       mapLayout.spines.filter(sp => !sp.con && sp.pts.length).length +
       mapLayout.wires.length,
     probeWire: probe,
+    // [issue #82] sticky-pin probe: identity + how many polylines the
+    // current paint emphasizes (wire: 1; trunk set: trunk + taps)
+    pin: wirePin ? { surface: wirePin.surface, kind: wirePin.kind, id: wirePin.id } : null,
+    pinCover,
   };
 };
 document.getElementById("bGround").onclick = e => {
@@ -8827,6 +8878,8 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
              y: r.top + (1 - v.y) / 2 * r.height, z: v.z };
   },
   pickWireMeta, wireDesc, showWireTip, hideWireTip,
+  get wirePin() { return wirePin; },   // [issue #82] {surface, kind, id, menu} | null
+  get pinCover() { return pinCover; },
   get litSet() { return compactIdx; }, get compactScale() { return compactScale; },
   get overlaps() { return compactOverlaps; },
   get camTween() { return camTween; }, get focusStack() { return focusStack; },

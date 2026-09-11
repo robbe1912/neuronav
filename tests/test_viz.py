@@ -1671,6 +1671,81 @@ def run_tests():
                       str(fn_info) + " aims=" + str(wpts))
                 check("fn panel lists all callers (no 24-cap)",
                       page.locator("#iUsedBy li.more").count() == 0)
+                # [issue #82] sticky wire selection: the click above must
+                # latch a paint-tier pin (ONE-layout: wire set unchanged)
+                pin0 = page.evaluate("() => window.__dbg.wirePin")
+                wires0 = page.evaluate("() => window.__dbg.mapInfo().wires")
+                check("wire pin latches on wire click",
+                      bool(pin0) and pin0["surface"] == "map"
+                      and pin0["kind"] == "wire" and pin0["id"], str(pin0))
+                check("wire pin emphasis resolves (pinCover)",
+                      page.evaluate(
+                          "() => window.__dbg.mapInfo().pinCover") == 1)
+                # chip-list item selection: a bundle chip's enumerated rows
+                # are wires too - two distinct row clicks must REPLACE the
+                # pin (single pin at a time)
+                chip_hits = page.evaluate("""() => {
+                    const L = window.__dbg.mapLayout;
+                    const d = window.__dbg;
+                    const pn = document.getElementById("mapPane");
+                    const out = [];
+                    for (const ch of L.chips) {
+                        if (!ch.wires || ch.wires.length < 2) continue;
+                        if (ch.wires.filter(w => w.ty !== 'var').length < 2) continue;
+                        const sx = (ch.x + ch.w / 2 - d.mapPX) * d.mapZ;
+                        const sy = (ch.y + ch.h / 2 - d.mapPY) * d.mapZ;
+                        if (sx > 20 && sy > 20 &&
+                            sx < pn.clientWidth - 20 &&
+                            sy < pn.clientHeight - 20)
+                            out.push({ sx: +sx.toFixed(1), sy: +sy.toFixed(1) });
+                        if (out.length >= 6) break;
+                    }
+                    return out; }""")
+                chip_hit = None
+                for cand in (chip_hits or []):
+                    page.mouse.click(bb["x"] + cand["sx"], bb["y"] + cand["sy"])
+                    page.wait_for_timeout(300)
+                    if page.locator("#mapList .row").count() >= 2:
+                        chip_hit = cand
+                        break
+                if chip_hit:
+                    rows = page.locator("#mapList .row")
+                    if rows.count() >= 2:
+                        rows.nth(0).click()
+                        page.wait_for_timeout(250)
+                        pinA = page.evaluate("() => window.__dbg.wirePin")
+                        rows.nth(1).click()
+                        page.wait_for_timeout(250)
+                        pinB = page.evaluate("() => window.__dbg.wirePin")
+                        check("chip-list item pins the wire",
+                              bool(pinA) and pinA["menu"] == "list",
+                              str(pinA))
+                        check("new selection replaces the pin",
+                              bool(pinB) and pinB["id"] != pinA["id"],
+                              f"{pinA} -> {pinB}")
+                        pin0 = pinB   # persistence rides the live pin
+                    else:
+                        print("SKIP chip-list pin - list rows < 2")
+                else:
+                    print(f"SKIP chip-list pin - no chip opened a list ({chip_hits})")
+                # persistence: pan, zoom, hover-out - paint-tier state must
+                # survive all three without touching the layout
+                page.mouse.move(bb["x"] + 120, bb["y"] + 520)
+                page.mouse.down()
+                page.mouse.move(bb["x"] + 260, bb["y"] + 580, steps=6)
+                page.mouse.up()
+                page.wait_for_timeout(250)
+                page.mouse.move(bb["x"] + 400, bb["y"] + 300)
+                page.mouse.wheel(0, -240)
+                page.wait_for_timeout(250)
+                page.mouse.move(bb["x"] + 60, bb["y"] + 620)
+                page.wait_for_timeout(250)
+                pin1 = page.evaluate("() => window.__dbg.wirePin")
+                wires1 = page.evaluate(
+                    "() => window.__dbg.mapInfo().wires")
+                check("wire pin survives pan/zoom/hover (paint tier)",
+                      pin1 == pin0 and wires1 == wires0,
+                      f"{pin0} -> {pin1}, wires {wires0} -> {wires1}")
             elif wpts:
                 check("map wire click opens fn panel", False,
                       f"no fn panel from {len(wpts)} clear wire aims: " + str(wpts))
