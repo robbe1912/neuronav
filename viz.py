@@ -6445,6 +6445,13 @@ function mapRender() {
   // (the ball surface reaps unresolved pins frame-counted in updateBallPin)
   if (mapLayout && mapLayout.sig !== sig) {
     mapZ = 0;   // focus change -> refit
+    // [issue #84] skeptic #14: the rebuilt layout also invalidates the
+    // overlays keyed to it - the trunk bundle list's rows enumerate the
+    // OLD corridor (stale wire ids, stale anchor), so it cannot survive
+    // the rebuild. mapOvCloseOne dismisses the overlay family (its #82
+    // rule unpins the list-menu pin); the direct clear below catches map
+    // pins whose menu was not the list.
+    mapOvCloseOne();
     if (wirePin && wirePin.surface === "map") wirePinClear();
   }
   // tier-1 admission: file skeleton unchanged (survives section 10)

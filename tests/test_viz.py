@@ -2570,6 +2570,55 @@ def run_tests():
             )
             check("trunk click opens the rider card",
                   card.startswith("\U0001F68C bus ") and "→" in card, card[:80])
+        # [issue #84] skeptic #14: a focus rebuild must not leave the
+        # trunk bundle list open with stale corridor rows - latch a pin
+        # THROUGH the list (menu=list), refocus via a card header clear
+        # of the open list, then require both the list and the pin gone.
+        # Runs AFTER the stateful tail probe on purpose: the card
+        # refocus rotates the camera approach direction focus()
+        # inherits, and the trunk-scan grid above is sensitive to it
+        # (bisected: the latch alone is clean, the extra refocus is
+        # what the tail saw).
+        page.evaluate("() => document.getElementById('bMap').click()")
+        page.wait_for_timeout(700)
+        try:
+            pinL = latch_pin_via_list()
+        except NameError:
+            pinL = None
+        if pinL and pinL.get("menu") == "list":
+            card3 = page.evaluate("""() => {
+                const d = window.__dbg;
+                const pn = document.getElementById('mapPane');
+                const bb = pn.getBoundingClientRect();
+                const lr = document.getElementById('mapList')
+                    .getBoundingClientRect();
+                for (const rc of d.mapRects) {
+                    if (rc.i === d.focusFileIdx) continue;
+                    const sx = (rc.x + rc.w / 2 - d.mapPX) * d.mapZ + bb.left;
+                    const sy = (rc.y + 11 - d.mapPY) * d.mapZ + bb.top;
+                    if (sx > bb.left + 8 && sx < bb.right - 8 &&
+                        sy > bb.top + 8 && sy < bb.bottom - 8 &&
+                        (sx < lr.x - 8 || sx > lr.x + lr.width + 8 ||
+                         sy < lr.y - 8 || sy > lr.y + lr.height + 8))
+                        return { sx: sx, sy: sy, i: rc.i };
+                }
+                return null; }""")
+            if card3:
+                page.mouse.move(card3["sx"] - 12, card3["sy"] - 8)
+                page.mouse.move(card3["sx"], card3["sy"], steps=3)
+                page.mouse.click(card3["sx"], card3["sy"])
+                page.wait_for_timeout(700)
+                listR = page.evaluate(
+                    "() => document.getElementById('mapList').style.display")
+                pinR = page.evaluate("() => window.__dbg.wirePin")
+                check("focus rebuild closes the stale bundle list",
+                      listR != "block" and pinR is None,
+                      f"list {listR}, pin {pinL} -> {pinR} via card {card3['i']}")
+            else:
+                print("SKIP stale list close - no card clear of list")
+        else:
+            print("SKIP stale list close - no list-menu pin")
+
         # artifact: screenshot of the focused fn-layer state
         page.screenshot(path=str(SHOTS / "last_run.png"), scale="css", type="png")
         print("artifact: .tmp/shots/last_run.png")
