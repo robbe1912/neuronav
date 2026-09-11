@@ -5692,7 +5692,10 @@ document.getElementById("bGhost").onclick = e => {
 const mapPane = document.getElementById("mapPane");
 const MAP_MAX = 40;            // lit-node cap: past this the pane refuses
 const FN_PORT_MAX = 4;          // roster rows per expanded box, then "+N more"
-const NH = 22, RH = 13, GAPX = 12, TOP = 46;   // header / row / gap / first-row Y
+const NH = 22, RH = 13, GAPX = 12, TOP = 46;   // header / row / wrap gap / first-row Y
+const GAPX_MAX = 120;   // placement stretches band gaps up to this (spread)
+const CLUSTER_GAP_X = 32;    // horizontal air between cluster blocks in a band
+const MAP_HUB_T1 = 8;        // hub degree threshold (median damping, trunks)
 const MAP_FONT = sz => sz + "px ui-monospace, Menlo, Consolas, monospace";
 // type glyphs (spec section 3): stroke color / dash pattern / terminator.
 // one font constant (above) covers ALL map text.
@@ -6096,11 +6099,11 @@ function mapRender() {
   const cwView = mapPane.clientWidth || 440;
   const chView = mapPane.clientHeight || innerHeight;
   const dpr = mapPane.width / cwView || 1;
-  // world width FOLLOWS the pane (pane + 170, clamped): the fit zoom then
-  // lands near min(paneW/worldW, paneH/worldH) so every box is visible at
-  // boot while text keeps >=~8px effective (F15 rev2: fit below 1.0 allowed,
-  // floor 0.55 protects text on pathological repos)
-  const cw = MAP_WORLD_W;   // scan ceiling; the fit scan picks the real width
+  // world width follows the pane: the scan ceiling grows with it so wide
+  // panes get wide worlds, capped at 1400 so a maximized window cannot wrap
+  // a small repo into one unbounded megaband. The fit scan below picks the
+  // real width for THIS pane (floor 0.30 protects text on pathological repos)
+  const cw = Math.max(480, Math.min(1400, Math.floor(cwView * 1.6 / 20) * 20));   // scan ceiling
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = "#0b0f14";
   ctx.fillRect(0, 0, cwView, chView);
@@ -6201,8 +6204,37 @@ function mapRender() {
     (a.sf - b.sf) ||
     (a.sfn < b.sfn ? -1 : a.sfn > b.sfn ? 1 : 0) ||
     (a.line - b.line);
+  // [issue #78] pair aggregation: every admitted pair used to draw its top-1
+  // named wire, so a dense focus set fanned 50+ individual wires through the
+  // mid-band channels - the "wire wall" the audit measured at wy 720-960.
+  // Thresholds (clutter research): N=1 stays a labeled wire; 2-3 keep the
+  // top-1 wire + corridor + xN chip; N>=4 collapse to corridor + chip; any
+  // pair touching a hub (degree >= MAP_HUB_T1) is corridor + chip unless it
+  // sits in that hub's top-4 by multiplicity - hubs keep a legible budget
+  // of individual wires, everything else rides its corridor.
+  const pairN = new Map();
+  byPair.forEach((a, k) => pairN.set(k, a.length));
+  const hubTop = new Map();    // hub i -> top-4 pair keys allowed a wire
+  byPair.forEach((a, k) => {
+    for (const end of [a[0].sf, a[0].df]) {
+      if (degree[end] < MAP_HUB_T1) continue;
+      let s = hubTop.get(end);
+      if (!s) hubTop.set(end, s = []);
+      s.push(k);
+    }
+  });
+  hubTop.forEach((ks, i) => hubTop.set(i, new Set(ks.sort((p, q) =>
+    (pairN.get(q) || 0) - (pairN.get(p) || 0) || (p < q ? -1 : p > q ? 1 : 0))
+    .slice(0, 4))));
   const indiv = [];            // top-1 per pair: drawn + labeled [F14]
-  byPair.forEach(a => { a.sort(rk); indiv.push(a[0]); });
+  byPair.forEach((a, k) => {
+    a.sort(rk);
+    const hubEnd = degree[a[0].sf] >= MAP_HUB_T1 ? a[0].sf
+      : degree[a[0].df] >= MAP_HUB_T1 ? a[0].df : -1;
+    const inBudget = hubEnd >= 0 && hubTop.get(hubEnd).has(k);
+    if (!inBudget && (a.length >= 4 || hubEnd >= 0)) return;  // corridor + xN
+    indiv.push(a[0]);
+  });
   indiv.sort(rk);
   const indivSet = new Set(indiv);
   // ---- rosters (section 4) ----
@@ -6267,33 +6299,118 @@ function mapRender() {
   }
   const rows = [];
   lit.forEach(i => (rows[fd.get(i)] = rows[fd.get(i)] || []).push(i));
-  const preds = new Map();
+  // [issue #78] ordering: the plain 3-sweep barycenter is replaced by
+  // degree-damped TSE93 weighted-median sweeps + a transpose pass. Undamped
+  // means ARE the cram cause (every hub neighbour averaged toward the hub's
+  // column): hubs (deg >= MAP_HUB_T1) hold the plain median so their many
+  // wires keep spread, the rest take the fig 3-2 weighted median. Cluster
+  // blocks then regroup contiguously (block order = median position) so
+  // CLUSTER_GAP_X can separate them in placement.
+  const preds = new Map(), succs = new Map();
   edges.forEach(l => {
     if (!preds.has(l.t)) preds.set(l.t, []);
     preds.get(l.t).push(l.s);
+    if (!succs.has(l.s)) succs.set(l.s, []);
+    succs.get(l.s).push(l.t);
   });
+  const degOf = new Map();
+  edges.forEach(l => {
+    degOf.set(l.s, (degOf.get(l.s) || 0) + 1);
+    degOf.set(l.t, (degOf.get(l.t) || 0) + 1);
+  });
+  const cidOf = i => nodes[i].cluster;
+  const gRow = new Map();         // node -> row index
+  rows.forEach((row, r) => row.forEach(i => gRow.set(i, r)));
   const col = new Map();
-  for (let r = 0; r < rows.length; r++) if (rows[r]) rows[r].forEach((i, k) => col.set(i, k));
-  for (let sw = 0; sw < 3; sw++) {
+  rows.forEach(row => row.forEach((i, k) => col.set(i, k)));
+  const wmed = (i, down) => {     // TSE93 weighted median of neighbour cols
+    const src = down ? preds.get(i) : succs.get(i);
+    const ps = (src || []).map(p => col.get(p)).sort((x, y) => x - y);
+    if (!ps.length) return col.get(i);
+    if (degOf.get(i) >= MAP_HUB_T1) return ps[ps.length >> 1];   // hub: plain median
+    const m = ps.length >> 1;
+    if (ps.length === 1) return ps[0];
+    if (ps.length === 2) return (ps[0] + ps[1]) / 2;
+    const left = ps[m - 1] - ps[0], right = ps[ps.length - 1] - ps[m];
+    return left + right > 0 ? (ps[m - 1] * right + ps[m] * left) / (left + right) : ps[m];
+  };
+  for (let sw = 0; sw < 4; sw++) {
+    const down = sw % 2 === 0;
+    const seq = [];
+    for (let r = 0; r < rows.length; r++) (down ? seq.push(r) : seq.unshift(r));
+    seq.forEach(r => {
+      const row = rows[r];
+      if (!row || row.length < 2) return;   // fd rows can have holes
+      const nb = row.map(i => ({ i, b: wmed(i, down) }));
+      nb.sort((a, b) => a.b - b.b || a.i - b.i);
+      rows[r] = nb.map(x => x.i);
+      rows[r].forEach((i, k) => col.set(i, k));
+    });
+  }
+  // cluster regroup: blocks (same cluster) become contiguous, block order =
+  // the members' median swept position, so the regroup preserves the sweep
+  // optimum while giving placement a clean cluster boundary to pad
+  rows.forEach(row => {
+    if (row.length < 2) return;
+    const pos = new Map(row.map((i, k) => [i, k]));
+    const blocks = new Map();     // cid -> [{i, p}] in swept order
+    row.forEach(i => {
+      const c = cidOf(i);
+      if (!blocks.has(c)) blocks.set(c, []);
+      blocks.get(c).push({ i, p: pos.get(i) });
+    });
+    const bl = [...blocks.entries()].map(([c, ms]) => {
+      const ps = ms.map(m => m.p).sort((x, y) => x - y);
+      return { c, med: ps[ps.length >> 1], ms };
+    }).sort((a, b) => a.med - b.med || a.c - b.c);
+    const out = [];
+    bl.forEach(b => {
+      b.ms.sort((x, y) => x.p - y.p || x.i - y.i);
+      b.ms.forEach(m => out.push(m.i));
+    });
+    row.length = 0; row.push(...out);
+  });
+  rows.forEach(row => row.forEach((i, k) => col.set(i, k)));
+  // transpose: swap adjacent pairs while their incident-edge inversion count
+  // strictly drops (TSE93 transpose, bounded 2 passes, re-checks swaps)
+  const pairCross = (a, b) => {   // a-left crossings minus b-left crossings
+    let d = 0;
+    const oa = [], ob = [];
+    edges.forEach(l => {
+      if (l.s === a) oa.push(l.t); else if (l.t === a) oa.push(l.s);
+      if (l.s === b) ob.push(l.t); else if (l.t === b) ob.push(l.s);
+    });
+    oa.forEach(x => ob.forEach(y => {
+      if (x === y || gRow.get(x) !== gRow.get(y)) return;
+      d += col.get(x) > col.get(y) ? 1 : -1;
+    }));
+    return d;                     // > 0: swapping strictly reduces crossings
+  };
+  for (let pass = 0; pass < 2; pass++) {
+    let swapped = false;
     for (let r = 0; r < rows.length; r++) {
       const row = rows[r];
-      if (!row || row.length < 2) continue;
-      const bc = row.map(i => {
-        const ps = preds.get(i);
-        if (!ps || !ps.length) return { i, b: col.get(i) };
-        let s = 0; for (const p of ps) s += col.get(p);
-        return { i, b: s / ps.length };
-      });
-      bc.sort((a, b) => a.b - b.b || a.i - b.i);
-      rows[r] = bc.map(x => x.i);
-      rows[r].forEach((i, k) => col.set(i, k));
+      if (!row) continue;   // fd rows can have holes
+      for (let k = 0; k + 1 < row.length; k++) {
+        if (pairCross(row[k], row[k + 1]) > 0) {
+          const t = row[k]; row[k] = row[k + 1]; row[k + 1] = t;
+          swapped = true; k--;    // re-examine after the swap
+        }
+      }
     }
+    if (!swapped) break;
   }
+  rows.forEach(row => row.forEach((i, k) => col.set(i, k)));
+
+  rows.forEach(row => row.forEach((i, k) => col.set(i, k)));
   // rows WRAP to world width against the resolved box widths. The world
   // width is CHOSEN: a narrow world wraps into more/taller chunks, a wide
-  // one into fewer/flatter - the fit zoom z = min(paneW/W, paneH/H(W)) has
-  // an interior optimum. Wrap once per candidate width (cheap: <=40 boxes),
-  // keep the width that maximizes z (ties: narrower world). Deterministic:
+  // one into fewer/flatter - the fit zoom z(W) saturates once W stops
+  // re-wrapping (h constant). Wrap once per candidate width (cheap: <=40
+  // boxes), keep the width that maximizes z, ties -> WIDEST: the tie zone
+  // is exactly where a sub-1 zoom would stare at a narrow column through
+  // dead side margins, and growing W there costs nothing (same z, same
+  // wrap) while giving lanes and ports the spare width. Deterministic:
   // same data + pane => same scan.
   const wrapChunks = W => {
     const ch = [];
@@ -6327,9 +6444,10 @@ function mapRender() {
   };
   const wrapH = ch => {   // per-chunk rowH = max(56, tallest + band pad) [F6]
     // band pads grow with crossing demand (capacity for hot corridors) but
-    // under a HARD height budget: the fit zoom may not fall below ~0.70 or
-    // the whole pane shrinks to a thumbnail. Extras scale down to fit.
-    const Hmax = chView / 0.70;
+    // under a loose height budget: past it the fit zoom would fall below
+    // the 0.30 floor and extra band capacity buys nothing on screen.
+    // Extras scale down to fit.
+    const Hmax = chView / 0.30;
     const rowHOf = (tall, pad) => Math.max(56, tall + pad);
     const total = pads => {
       let y = TOP;
@@ -6356,10 +6474,11 @@ function mapRender() {
     });
     return { h: Math.max(chView, total(pads)), tops, pads };
   };
-  let cwBest = Math.min(640, cw), zBest = -1;
-  for (let W = 560; W <= cw; W += 20) {
-    const z = Math.min(cwView / W, chView / wrapH(wrapChunks(W)).h);
-    if (z > zBest + 1e-9) { zBest = z; cwBest = W; }
+  const fitZOf = (W, h) => Math.max(0, Math.min(1.0, (cwView - 48) / W, (chView - 48) / h));
+  let cwBest = 480, zBest = -1;
+  for (let W = 480; W <= cw; W += 20) {
+    const z = fitZOf(W, wrapH(wrapChunks(W)).h);
+    if (z > zBest + 1e-9 || (z >= zBest - 1e-9 && W > cwBest)) { zBest = z; cwBest = W; }
   }
   const cwL = cwBest;                    // resolved world width for THIS pane
   const chunks = wrapChunks(cwL);
@@ -6375,18 +6494,44 @@ function mapRender() {
     wy += Math.max(56, tall + wrapRes.pads[g]);
   });
   const worldH = Math.max(chView, wy + 20);
+  // [issue #78] slack spreading: wrapping stays tight (GAPX) so the scan
+  // sees the flattest world, but PLACEMENT stretches each band's gaps up
+  // to GAPX_MAX so a wide world reads as full-width bands instead of a
+  // centered column with dead side margins. Cluster boundaries take
+  // CLUSTER_GAP_X (block separation); leftover centers the band.
   const place = new Map();
   chunks.forEach((chunk, rr) => {
-    const tw = chunk.reduce((a, i) => a + geo.get(i).w, 0) + GAPX * (chunk.length - 1);
-    let x = Math.max(8, (cwL - tw) / 2);
+    const sw = chunk.reduce((a, i) => a + geo.get(i).w, 0);
+    const n = chunk.length;
+    const cbnd = [];               // cluster change at gap k (between k, k+1)
+    let nb = 0;
+    for (let k = 0; k + 1 < n; k++) {
+      const chg = cidOf(chunk[k]) !== cidOf(chunk[k + 1]);
+      cbnd.push(chg); if (chg) nb++;
+    }
+    // cluster gaps must never push the extent past the world; if they
+    // would, they degrade to the spread gap (band stays inside cwL - 16)
+    let cg = CLUSTER_GAP_X;
+    let gap = n > 1
+      ? Math.min(GAPX_MAX, Math.max(GAPX, (cwL - 16 - sw - cg * nb) / (n - 1))) : GAPX;
+    if (sw + cg * nb + gap * (n - 1 - nb) > cwL - 16) {
+      cg = GAPX;
+      gap = n > 1
+        ? Math.min(GAPX_MAX, Math.max(GAPX, (cwL - 16 - sw) / (n - 1))) : GAPX;
+    }
+    let ext = sw;
+    for (let k = 0; k < n - 1; k++) ext += cbnd[k] ? cg : gap;
+    let x = Math.max(8, (cwL - ext) / 2);
     const y = chunkY[rr];
-    chunk.forEach(i => {
+    chunk.forEach((i, k) => {
       place.set(i, { x, y, w: geo.get(i).w, h: geo.get(i).h, row: rr });
-      x += geo.get(i).w + GAPX;
+      if (k + 1 < n) x += geo.get(i).w + (cbnd[k] ? cg : gap);
     });
   });
   if (!mapZ) {   // focus change / first draw: fit BOTH dims [F15 rev2]
-    mapZ = Math.max(0.55, Math.min(1.0, Math.min(cwView / cwL, chView / worldH)));
+    // [issue #78] 24px fit margin + 0.30 floor: matches fitZOf above, so
+    // the scan's optimum materializes exactly; boxes never touch pane edges
+    mapZ = Math.max(0.30, Math.min(1.0, Math.min((cwView - 48) / cwL, (chView - 48) / worldH)));
     mapPX = (cwL - cwView / mapZ) / 2;    // negative when world < pane: centers
     mapPY = (worldH - chView / mapZ) / 2; // the shrunken content (D2)
     // fit-relative ink tier: fine ink ON at the overview (wire clicks work
@@ -6478,22 +6623,137 @@ function mapRender() {
     g.roster.rows.forEach((r, k) => rowOf.set(i + "\x00" + r.nm, k));
   });
   // port spreads: box-level for spines/underlays/row-less wires, row-level
-  // for wires that own a roster row
-  const outN = new Map(), inN = new Map(), outIx = new Map(), inIx = new Map();
-  edges.forEach(l => {
-    outN.set(l.s, (outN.get(l.s) || 0) + 1);
-    inN.set(l.t, (inN.get(l.t) || 0) + 1);
-  });
-  const rowTotOut = new Map(), rowTotIn = new Map(),
-        rowIxOut = new Map(), rowIxIn = new Map();
+  // ---- individual named wires (tier-2 top-1/pair): terminate ON their fn rows
+  // Blueprint-reroute buses (2D twin of the 3D bus law): named wires of the
+  // same type converging on ONE fn row (>=2) merge at a junction dot parked
+  // in open air beside the destination box; members route to the junction
+  // (arrowless), ONE shared stub delivers the whole bus into the fn row with
+  // a single arrowhead. Shared-destination only (McGee & Dingliana 2012).
+  // [issue #78] moved ahead of the port ledger: the ledger's pre-pass needs
+  // bus membership to skip destination asks for bus members (their terminus
+  // is the junction, not the box edge).
+  const busGroups = new Map();
   indiv.forEach(w => {
-    const sr = rowOf.get(w.sf + "\x00" + w.sfn);
-    if (sr === undefined) outN.set(w.sf, (outN.get(w.sf) || 0) + 1);
-    else rowTotOut.set(w.sf + "_" + sr, (rowTotOut.get(w.sf + "_" + sr) || 0) + 1);
-    const dr = rowOf.get(w.df + "\x00" + w.dfn);
-    if (dr === undefined) inN.set(w.df, (inN.get(w.df) || 0) + 1);
-    else rowTotIn.set(w.df + "_" + dr, (rowTotIn.get(w.df + "_" + dr) || 0) + 1);
+    if (w.ty === "var") return;         // var wires keep their own dot terminus
+    const k = w.df + "\x00" + w.dfn + "\x00" + w.ty;
+    let a = busGroups.get(k);
+    if (!a) busGroups.set(k, a = []);
+    a.push(w);
   });
+  const busOf = new Map();               // wire record -> its bus
+  const buses = [];                      // junction records for paint + audit
+  busGroups.forEach(a => {
+    if (a.length < 2) return;
+    const B = place.get(a[0].df);
+    if (!B) return;
+    const dRow = rowOf.get(a[0].df + "\x00" + a[0].dfn);
+    if (dRow === undefined) return;      // row-less dests keep individual routes
+    // approach side: count source boxes left vs right of the destination
+    let Lc = 0, Rc = 0;
+    a.forEach(w => {
+      const A0 = place.get(w.sf);
+      if (!A0) return;
+      if (A0.x + A0.w <= B.x) Lc++;
+      else if (A0.x >= B.x + B.w) Rc++;
+    });
+    const side = Lc >= Rc ? -1 : 1;
+    const jy = B.y + NH + dRow * RH + RH / 2;      // destination row centre
+    // junction must sit in open air: nudge outward twice, else scan the
+    // inter-box gaps at 2px pads - depth-varied chunk-row neighbours sit
+    // 10-15px apart, and the old 4px pads rejected the whole gap, leaving
+    // 9-wire arrival fans where a bus belonged (P3 root cause)
+    const jHit = (x, pad) => rects.some(r =>
+      x > r.x0 - pad && x < r.x1 + pad && jy > r.y0 - 3 && jy < r.y1 + 3);
+    let jx = side < 0 ? B.x - 14 : B.x + B.w + 14;
+    if (jHit(jx, 4)) jx = side < 0 ? jx - 10 : jx + 10;
+    if (jHit(jx, 4)) {
+      let ok = false;
+      for (let s = 4; s <= 44 && !ok; s += 2) {
+        for (const dx of (side < 0 ? [-s, s] : [s, -s])) {
+          const c = B.x + B.w * (side < 0 ? 0 : 1) + (side < 0 ? -14 : 14) + dx;
+          if (!jHit(c, 2)) { jx = c; ok = true; break; }
+        }
+      }
+      if (!ok) return;
+    }
+    const bus = { df: a[0].df, dfn: a[0].dfn, ty: a[0].ty,
+                  x: jx, y: jy, n: a.length, wires: a };
+    buses.push(bus);
+    a.forEach(w => busOf.set(w, bus));
+  });
+  // [issue #78] port ledger: every box-edge termination registers (box, edge
+  // line, caller id, target centre x); ONE packing pass then assigns evenly
+  // spaced, target-ORDERED ports per line. The old per-category (k+1)/(n+1)
+  // spreads had independent denominators per counter family, so a box-level
+  // port and a last-row port could land on the SAME edge line at the SAME
+  // fraction (audit: coincident ports, minGap 0) and port order ignored
+  // where targets sat. Lookups key on the caller's stable id (pass + array
+  // index), not an ordinal: per-box ordinal counters interleave asks across
+  // several edge lines of one box, so any drift between this pre-pass and
+  // the routing passes landed an ask on a foreign ordinal and the fraction
+  // fallback then put two termini on the same pixel. Same filters + same
+  // array order => same id in both passes; the hash-spread fallback (a miss
+  // is a replica bug) cannot coincide with a packed slot by construction.
+  const portLedger = new Map();          // "i|y" -> [{id, tx}]
+  const portXY = new Map();              // "i|y|id" -> x offset from box left
+  const portAsk = (i, y, id, tx) => {
+    const k = i + "|" + (y | 0);
+    let a = portLedger.get(k);
+    if (!a) portLedger.set(k, a = []);
+    a.push({ id, tx });
+  };
+  const portX = (i, y, id, A) => {
+    const x = portXY.get(i + "|" + (y | 0) + "|" + id);
+    if (x !== undefined) return A.x + x;
+    let h = 0;
+    for (let c = 0; c < id.length; c++) h = (h * 31 + id.charCodeAt(c)) % 9973;
+    return A.x + 4 + (h / 9973) * Math.max(8, A.w - 8);
+  };
+  {
+    edges.forEach((l, ix) => {            // underlay pass (attach/inst only)
+      if (l.ty !== "attach" && l.ty !== "inst") return;
+      const A = place.get(l.s), B = place.get(l.t);
+      if (!A || !B) return;
+      const sy = A.y + A.h;
+      const sameRow = A.row === B.row;
+      const ty = (sameRow || B.y + B.h <= sy) ? B.y + B.h : B.y;
+      portAsk(l.s, sy, "u" + ix + "s", B.x + B.w / 2);
+      portAsk(l.t, ty, "u" + ix + "d", A.x + A.w / 2);
+    });
+    edges.forEach((l, ix) => {            // spine pass (call/signal only)
+      if (l.ty === "attach" || l.ty === "inst") return;
+      const A = place.get(l.s), B = place.get(l.t);
+      if (!A || !B) return;
+      const sy = A.y + A.h;
+      const sameRow = A.row === B.row;
+      const ty = (sameRow || B.y + B.h <= sy) ? B.y + B.h : B.y;
+      portAsk(l.s, sy, "s" + ix + "s", B.x + B.w / 2);
+      portAsk(l.t, ty, "s" + ix + "d", A.x + A.w / 2);
+    });
+    indiv.forEach((w, ix) => {            // named wires: box/row terminations
+      const A = place.get(w.sf), B = place.get(w.df);
+      if (!A || !B) return;
+      const sRow = rowOf.get(w.sf + "\x00" + w.sfn);
+      const dRow = rowOf.get(w.df + "\x00" + w.dfn);
+      const sameRow = A.row === B.row;
+      const sy = sRow === undefined ? A.y + A.h : A.y + NH + (sRow + 1) * RH;
+      portAsk(w.sf, sy, "w" + ix + "s", B.x + B.w / 2);
+      if (busOf.get(w)) return;           // bus member: junction is terminus
+      const upW = !sameRow && B.y + B.h <= sy;
+      portAsk(w.df, dRow === undefined
+        ? (sameRow || upW ? B.y + B.h : B.y)
+        : (sameRow || upW ? B.y + NH + (dRow + 1) * RH : B.y + NH + dRow * RH),
+        "w" + ix + "d", A.x + A.w / 2);
+    });
+    portLedger.forEach((a, k) => {        // pack: target order, even pitch
+      const i = +k.split("|")[0];
+      const A2 = geo.get(i);
+      const inset = 4, len = Math.max(8, A2.w - 2 * inset);
+      a.sort((p, q) => p.tx - q.tx || (p.id < q.id ? -1 : p.id > q.id ? 1 : 0));
+      const pitch = Math.max(1.2, Math.min(24, len / a.length));
+      a.forEach((rec, ix2) => portXY.set(k + "|" + rec.id, inset + pitch * (ix2 + 0.5)));
+    });
+  }
   const underlays = [], spines = [], wires = [];
   const routeOrtho = (A, B, sy, ty, sameRow, sx0, tx0, bus, lanePad, yPad) => {
     // long hauls cross every chunk between the two rows — hand the router
@@ -6618,7 +6878,7 @@ function mapRender() {
   };
   // 1) attach/inst underlays: anonymous + demoted (section 1) - 1px, alpha
   //    0.40, T-junction entry, routed FIRST so named wires claim lanes first
-  edges.forEach(l => {
+  edges.forEach((l, ix) => {
     if (l.ty !== "attach" && l.ty !== "inst") return;
     const A = place.get(l.s), B = place.get(l.t);
     if (!A || !B) return;
@@ -6629,10 +6889,8 @@ function mapRender() {
     const sameRow = A.row === B.row;
     // up-hauls enter the target's bottom edge (the source sits below it)
     const ty = (sameRow || B.y + B.h <= sy) ? B.y + B.h : B.y;
-    const sIx = outIx.get(l.s) || 0; outIx.set(l.s, sIx + 1);
-    const tIx = inIx.get(l.t) || 0; inIx.set(l.t, tIx + 1);
-    const sx0 = A.x + A.w * (sIx + 1) / ((outN.get(l.s) || 1) + 1);
-    const tx0 = B.x + B.w * (tIx + 1) / ((inN.get(l.t) || 1) + 1);
+    const sx0 = portX(l.s, sy, "u" + ix + "s", A);
+    const tx0 = portX(l.t, ty, "u" + ix + "d", B);
     const ur = routeOrtho(A, B, sy, ty, sameRow, sx0, tx0, true);
     ur.flow = sameRow ? "same" : (ty > sy ? "down" : "up");
     underlays.push(Object.assign({ s: l.s, t: l.t, ty0: l.ty }, ur));
@@ -6643,7 +6901,7 @@ function mapRender() {
   //    corridor [F13]. wty = wire TYPE (sp.ty stays the y-coordinate that
   //    routeOrtho returns; the old build let the y overwrite l.ty, so every
   //    spine painted call-gray - the "near-identical gray wires" complaint).
-  edges.forEach(l => {
+  edges.forEach((l, ix) => {
     if (l.ty === "attach" || l.ty === "inst") return;
     const A = place.get(l.s), B = place.get(l.t);
     if (!A || !B) return;
@@ -6653,10 +6911,8 @@ function mapRender() {
     const sameRow = A.row === B.row;
     // up-hauls enter the target's bottom edge (the source sits below it)
     const ty = (sameRow || B.y + B.h <= sy) ? B.y + B.h : B.y;
-    const sIx = outIx.get(l.s) || 0; outIx.set(l.s, sIx + 1);
-    const tIx = inIx.get(l.t) || 0; inIx.set(l.t, tIx + 1);
-    const sx0 = A.x + A.w * (sIx + 1) / ((outN.get(l.s) || 1) + 1);
-    const tx0 = B.x + B.w * (tIx + 1) / ((inN.get(l.t) || 1) + 1);
+    const sx0 = portX(l.s, sy, "s" + ix + "s", A);
+    const tx0 = portX(l.t, ty, "s" + ix + "d", B);
     spines.push({ s: l.s, t: l.t, wty: l.ty, pair: l.s + "_" + l.t,
       amber: l.ty === "signal" && !(byPair.get(l.s + "_" + l.t) || []).length,
       sRow: A.row, tRow: B.row, sx0, tx0, sy, ty, sameRow,
@@ -6794,11 +7050,19 @@ function mapRender() {
       railSeed = Math.max(g.y0 + 3, Math.min(g.y1 - 3, railSeed));
       const rail = nextY(Math.min(P.x, Math.min(...ports)),
         Math.max(P.x, Math.max(...ports)), railSeed, g.y1, 5);
-      members.forEach(sp => {
+      members.forEach((sp, mk) => {
+        // [issue #78] the far rider's own terminus IS the trunk terminus
+        // (trunk routes to far.tx0/far.ty) - the trunk already delivers
+        // that port; a tap there would re-terminate on the same pixel
+        if (sp === far) { served.add(sp); return; }
+        // [issue #78] taps sharing one peel stagger their exit x (member
+        // order) so no two taps start on the same pixel at the peel dot
+        const ox = (mk - (members.length - 1) / 2) *
+          Math.max(2, Math.min(3, 12 / members.length));
         spines.push({ s: sp.s, t: sp.t, wty: sp.wty, pair: sp.pair,
           hub: "tap", tapBus: busRec, bez: false, tx: sp.tx0, ty: sp.ty,
           back: false, flow: dir === "same" ? "up" : dir,
-          pts: [[P.x, P.y], [P.x, rail.y], [sp.tx0, rail.y], [sp.tx0, sp.ty]] });
+          pts: [[P.x + ox, P.y], [P.x + ox, rail.y], [sp.tx0, rail.y], [sp.tx0, sp.ty]] });
         busRec.taps.push(spines[spines.length - 1]);
         served.add(sp);
         hubTaps++;
@@ -6870,77 +7134,27 @@ function mapRender() {
   // in open air beside the destination box; members route to the junction
   // (arrowless), ONE shared stub delivers the whole bus into the fn row with
   // a single arrowhead. Shared-destination only (McGee & Dingliana 2012).
-  const busGroups = new Map();
-  indiv.forEach(w => {
-    if (w.ty === "var") return;         // var wires keep their own dot terminus
-    const k = w.df + "\x00" + w.dfn + "\x00" + w.ty;
-    let a = busGroups.get(k);
-    if (!a) busGroups.set(k, a = []);
-    a.push(w);
-  });
-  const busOf = new Map();               // wire record -> its bus
-  const buses = [];                      // junction records for paint + audit
-  busGroups.forEach(a => {
-    if (a.length < 2) return;
-    const B = place.get(a[0].df);
-    if (!B) return;
-    const dRow = rowOf.get(a[0].df + "\x00" + a[0].dfn);
-    if (dRow === undefined) return;      // row-less dests keep individual routes
-    // approach side: count source boxes left vs right of the destination
-    let Lc = 0, Rc = 0;
-    a.forEach(w => {
-      const A0 = place.get(w.sf);
-      if (!A0) return;
-      if (A0.x + A0.w <= B.x) Lc++;
-      else if (A0.x >= B.x + B.w) Rc++;
-    });
-    const side = Lc >= Rc ? -1 : 1;
-    const jy = B.y + NH + dRow * RH + RH / 2;      // destination row centre
-    // junction must sit in open air: nudge outward twice, else scan the
-    // inter-box gaps at 2px pads - depth-varied chunk-row neighbours sit
-    // 10-15px apart, and the old 4px pads rejected the whole gap, leaving
-    // 9-wire arrival fans where a bus belonged (P3 root cause)
-    const jHit = (x, pad) => rects.some(r =>
-      x > r.x0 - pad && x < r.x1 + pad && jy > r.y0 - 3 && jy < r.y1 + 3);
-    let jx = side < 0 ? B.x - 14 : B.x + B.w + 14;
-    if (jHit(jx, 4)) jx = side < 0 ? jx - 10 : jx + 10;
-    if (jHit(jx, 4)) {
-      let ok = false;
-      for (let s = 4; s <= 44 && !ok; s += 2) {
-        for (const dx of (side < 0 ? [-s, s] : [s, -s])) {
-          const c = B.x + B.w * (side < 0 ? 0 : 1) + (side < 0 ? -14 : 14) + dx;
-          if (!jHit(c, 2)) { jx = c; ok = true; break; }
-        }
-      }
-      if (!ok) return;
-    }
-    const bus = { df: a[0].df, dfn: a[0].dfn, ty: a[0].ty,
-                  x: jx, y: jy, n: a.length, wires: a };
-    buses.push(bus);
-    a.forEach(w => busOf.set(w, bus));
-  });
-  indiv.forEach(w => {
+  indiv.forEach((w, ix) => {
     const A = place.get(w.sf), B = place.get(w.df);
     if (!A || !B) return;
     const sRow = rowOf.get(w.sf + "\x00" + w.sfn);
     const dRow = rowOf.get(w.df + "\x00" + w.dfn);
     const sameRow = A.row === B.row;   // chunk-row truth: fd wraps (see spines)
-    let sx0;
-    if (sRow === undefined) {
-      const sIx = outIx.get(w.sf) || 0; outIx.set(w.sf, sIx + 1);
-      sx0 = A.x + A.w * (sIx + 1) / ((outN.get(w.sf) || 1) + 1);
-    } else {
-      const kk = w.sf + "_" + sRow;
-      const sIx = rowIxOut.get(kk) || 0; rowIxOut.set(kk, sIx + 1);
-      sx0 = A.x + A.w * (sIx + 1) / ((rowTotOut.get(kk) || 1) + 1);
-    }
     const sy = sRow === undefined ? A.y + A.h : A.y + NH + (sRow + 1) * RH;
+    const sx0 = portX(w.sf, sy, "w" + ix + "s", A);
     const bus = busOf.get(w);
     if (bus) {
       // reroute member: source port -> junction dot. A 2px virtual box at
       // the junction keeps routeOrtho's lane/claim machinery authoritative.
-      const JB = { x: bus.x - 1, w: 2, y: bus.y - 1, h: 2 };
-      const wr = routeOrtho(A, JB, sy, bus.y, false, sx0, bus.x);
+      // [issue #78] members fan into the junction (per-member x offset,
+      // bus order) instead of every terminus stacking on the exact junction
+      // pixel - a tight fan reads as convergence, identical endpoints read
+      // as one wire.
+      const mi = bus.wires.indexOf(w);
+      const mOff = (mi - (bus.wires.length - 1) / 2) *
+        Math.min(4, 24 / bus.wires.length);
+      const JB = { x: bus.x - 1 + mOff, w: 2, y: bus.y - 1, h: 2 };
+      const wr = routeOrtho(A, JB, sy, bus.y, false, sx0, bus.x + mOff);
       wr.flow = bus.y > sy ? "down" : "up";
       wr.noArr = true;                   // the junction dot is the terminus
       wires.push(Object.assign({
@@ -6949,20 +7163,12 @@ function mapRender() {
       }, wr));
       return;
     }
-    let tx0;
-    if (dRow === undefined) {
-      const tIx = inIx.get(w.df) || 0; inIx.set(w.df, tIx + 1);
-      tx0 = B.x + B.w * (tIx + 1) / ((inN.get(w.df) || 1) + 1);
-    } else {
-      const kk = w.df + "_" + dRow;
-      const tIx = rowIxIn.get(kk) || 0; rowIxIn.set(kk, tIx + 1);
-      tx0 = B.x + B.w * (tIx + 1) / ((rowTotIn.get(kk) || 1) + 1);
-    }
     const upW = !sameRow && B.y + B.h <= sy;
     const ty = dRow === undefined
       ? (sameRow || upW ? B.y + B.h : B.y)
       : (sameRow || upW ? B.y + NH + (dRow + 1) * RH
                         : B.y + NH + dRow * RH);
+    const tx0 = portX(w.df, ty, "w" + ix + "d", B);
     // cardinal routing: two boxes side by side on the SAME row with a clear
     // corridor connect STRAIGHT ACROSS — exit one side edge, enter the other
     // (Unreal/Mermaid law: no dip-down-up detour for a horizontal neighbor).
@@ -7003,13 +7209,21 @@ function mapRender() {
     const dRow = rowOf.get(bus.df + "\x00" + bus.dfn);
     if (dRow === undefined) return;
     const ty = B.y + NH + dRow * RH;            // fn-row top = delivery port
-    const tx0 = B.x + B.w / 2;
+    // stubs sharing a destination fn row spread off centre deterministically
+    // (bus order) instead of stacking every arrival on the box centre
+    const lineMates = buses.filter(u =>
+      place.get(u.df) === B && u.dfn === bus.dfn);
+    const c = lineMates.indexOf(bus);
+    const spread = Math.min(14, B.w / (lineMates.length + 1));
+    const tx0 = B.x + B.w / 2 + (c - (lineMates.length - 1) / 2) * spread;
     wires.push({
       sf: bus.df, sfn: bus.dfn, df: bus.df, dfn: bus.dfn, ty: bus.ty,
       line: -1, up: false, pair: bus.df + "_bus", stub: true, busN: bus.n,
       mates: bus.wires.map(m =>
         nodes[m.sf].label + "::" + m.sfn + " \u2192 @" + m.line),
-      pts: [[bus.x, bus.y], [bus.x, ty], [tx0, ty]],
+      // [issue #78] stub departs just below the junction dot so it never
+      // shares a pixel with the centered member's arrival
+      pts: [[bus.x, bus.y + 2.5], [bus.x, ty], [tx0, ty]],
       bez: false, tx: tx0, ty, back: false, flow: "down",
     });
   });
@@ -7212,15 +7426,15 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   };
   // render order (section 9): underlays -> spines (taps, singles, trunks) ->
   // hub junction dots -> wires -> boxes/rosters -> labels/chips/terminators.
-  // Underlay alpha 0.18 (declutter lever 5). Zoom-gated ink tiers: the fine
+  // Underlay alpha 0.12 (ink budget, declutter lever 5). Zoom-gated ink tiers: the fine
   // layers (underlays, named wires, port dots/arrowheads) hide when zoomed
   // out - PAINT-ONLY, the layout never changes (mapInkEval hysteresis).
   // Structure (spines, buses, junction dots, boxes, chips) stays on always.
   if (mapInkOn) L.underlays.forEach(u => {
     seg(u, MGLYPH[u.ty0] ? MGLYPH[u.ty0].c : MGLYPH.attach.c, 1,
-        MGLYPH.attach.dash, 0.18 * dim(u.s, u.t));
+        MGLYPH.attach.dash, 0.12 * dim(u.s, u.t));   // [issue #78] ink budget
     // T-junction terminator: short tick across the entry, no arrow
-    ctx.globalAlpha = 0.18 * dim(u.s, u.t);
+    ctx.globalAlpha = 0.12 * dim(u.s, u.t);   // [issue #78] ink budget
     ctx.setLineDash([]);
     ctx.beginPath();
     ctx.moveTo(u.tx - 4, u.ty); ctx.lineTo(u.tx + 4, u.ty);
@@ -7366,7 +7580,20 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
       }
     }
   }
+  // [issue #78] fit-zoom badge LOD (paint tier): below z 0.85 the fit view
+  // keeps only the top peel badges and top origin badges by rider count -
+  // the badge flood lived at fit zoom, spread over many small trunks (a
+  // per-hub budget cannot cut it: most hubs own one peel). Layout keeps
+  // every chip (mapInfo contract); zoom-in restores the full set.
+  const chipLOD = new Set();
+  if (mapZ < 0.85) {
+    const top = (a, k) => a.sort((p, q) => q.n - p.n || p.row - q.row ||
+      p.s - q.s).slice(0, k).forEach(ch => chipLOD.add(ch));
+    top(L.chips.filter(ch => ch.peel), 6);
+    top(L.chips.filter(ch => ch.origin), 6);
+  }
   L.chips.forEach(ch => {
+    if ((ch.peel || ch.origin) && !chipLOD.has(ch)) return;
     const g = MGLYPH[ch.ty] || MGLYPH.call;
     const sw = ch.w * mapZ, sh = ch.h * mapZ;
     const a = m2s(ch.x + ch.w / 2, ch.y + ch.h / 2);
