@@ -5919,6 +5919,8 @@ const mapInkEval = () => {
   else if (mapInkOn && mapZ < mapInkLo) mapInkOn = false;
 };
 let mapDrag = null, mapDragged = false;
+let mapDownPt = null;    // [issue #84] press origin: jitter-click resolution
+let mapJitterHit = null; // [issue #84] press-on-ink + <10px drift = a pick
 let mapRects = [];             // last drawn node rects (click hit-testing)
 // map-center-on-selection: a 3D node click asks the 2D pane to pan the
 // node's box to pane center (exactly once) and pulse it. Pane closed =
@@ -6142,8 +6144,12 @@ const mapDistSeg = (px, py, ax, ay, bx, by) => {
   return Math.hypot(px - ax - t * dx, py - ay - t * dy);
 };
 function mapWireAt(wx, wy) {
+  // [issue #84] named wires are 1.5px strokes in dense walls - 6px screen
+  // tolerance missed real aims; 10px is the pick band now. The ink gate
+  // stays: named-wire ink paints ink-gated, so picks are gated identically
+  // (parity; trunk/tap spines paint un-gated and their hit-test is too).
   if (!mapLayout || !mapInkOn) return -1;   // ink tier off: no invisible-wire hits
-  const tol = 6 / mapZ;
+  const tol = 10 / mapZ;
   let best = -1, bd = tol;
   mapLayout.wires.forEach((w, ix) => {
     if (w.bez) {   // S-curve: sample the cubic pin-to-pin
@@ -6168,8 +6174,10 @@ function mapWireAt(wx, wy) {
       if (d < bd) { bd = d; best = ix; }
     }
   });
+  mapWireLastD = best >= 0 ? bd : Infinity;   // [issue #84] caller-side carve-outs
   return best;
 }
+let mapWireLastD = Infinity;
 function mapChipAt(wx, wy) {
   if (!mapLayout) return -1;
   for (let c = 0; c < mapLayout.chips.length; c++) {
@@ -6355,7 +6363,15 @@ function mapRender() {
   // or the typed admission. pan/zoom never touch it (section 5).
   const sig = lit.join(",") + "|" + mapVarsOn + "|" +
     typeVisible("call") + typeVisible("signal") + typeVisible("inst");
-  if (mapLayout && mapLayout.sig !== sig) mapZ = 0;   // focus change -> refit
+  // [issue #84] skeptic #5: a REBUILT layout (sig change = focus/pivot
+  // change) invalidates every map-pin id - clear instead of keeping an
+  // invisible stale selection. Guarded by the rebuild itself: mapRender
+  // repaints every frame, and pinning must survive repaints (paint tier).
+  // (the ball surface reaps unresolved pins frame-counted in updateBallPin)
+  if (mapLayout && mapLayout.sig !== sig) {
+    mapZ = 0;   // focus change -> refit
+    if (wirePin && wirePin.surface === "map") wirePinClear();
+  }
   // tier-1 admission: file skeleton unchanged (survives section 10)
   const litSet = new Set(lit);
   const cand = [];
@@ -7906,6 +7922,25 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   // endpoint dots. The key re-resolves on every paint, so pan/zoom/
   // rebuild all keep the highlight alive; nothing here touches the layout.
   if (wirePin && wirePin.surface === "map") pinCover = 0;
+  if (wirePin && wirePin.surface === "map" && wirePin.kind === "wire" &&
+      wirePin.id.charCodeAt(0) === 83 /* "S" */) {
+    // [issue #84] spine single/leader pair stroke: stroke the spine itself
+    const ps = L.spines.find(x2 => !x2.hub && x2.s === wirePin.s &&
+                                   x2.t === wirePin.t && x2.wty === wirePin.wty);
+    if (ps && ps.pts && ps.pts.length > 1) {
+      const g = MGLYPH[ps.wty] || MGLYPH.call;
+      ctx.setLineDash([]);
+      seg(ps, g.c, 3, null, Math.max(dim(ps.s, ps.t), 0.95));
+      pinCover = 1;
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 1.4; ctx.strokeStyle = "#fff"; ctx.fillStyle = g.c;
+      const pe = ps.pts[ps.pts.length - 1];
+      for (const [ex, ey] of [ps.pts[0], pe]) {
+        ctx.beginPath(); ctx.arc(ex, ey, 3.4, 0, Math.PI * 2);
+        ctx.fill(); ctx.stroke();
+      }
+    }
+  }
   if (wirePin && wirePin.surface === "map" && wirePin.kind === "wire") {
     const pw = L.wires.find(x => wireKeyOf(x) === wirePin.id);
     if (pw) {
@@ -8071,13 +8106,45 @@ mapPane.addEventListener("pointerdown", e => {
   if (!mapVisible) return;
   mapClosePick();   // canvas input closes the picker [F11]
   mapDrag = { x: e.clientX, y: e.clientY, px: mapPX, py: mapPY, moved: false };
+  const db = mapPane.getBoundingClientRect();
+  mapDownPt = { sx: e.clientX, sy: e.clientY,
+                wx: (e.clientX - db.left) / mapZ + mapPX,
+                wy: (e.clientY - db.top) / mapZ + mapPY };
+  mapJitterHit = null;
   mapPane.setPointerCapture(e.pointerId);
 });
-mapPane.addEventListener("pointerup", () => {
-  if (mapDrag) { mapDragged = mapDrag.moved; mapDrag = null; }
+mapPane.addEventListener("pointerup", e => {
+  if (!mapDrag) return;
+  mapDragged = mapDrag.moved;
+  mapJitterHit = null;
+  // [issue #84] skeptic #2a: real hands drift 5-12px between down/up.
+  // A press that BEGAN on wire or spine ink and traveled <10px screen
+  // is a pick, not a pan - resolve against the press origin (world
+  // coords are stable under the sub-10px pan that already applied).
+  if (mapDragged && mapDownPt && mapLayout) {
+    if (Math.hypot(e.clientX - mapDownPt.sx, e.clientY - mapDownPt.sy) < 10) {
+      const onInk = (wx, wy) => {
+        if (mapWireAt(wx, wy) >= 0) return true;
+        const tol2 = 10 / mapZ;
+        for (const sp of mapLayout.spines) {
+          if (!sp.pts || sp.pts.length < 2) continue;
+          for (let k = 1; k < sp.pts.length; k++)
+            if (mapDistSeg(wx, wy, sp.pts[k-1][0], sp.pts[k-1][1],
+                           sp.pts[k][0], sp.pts[k][1]) < tol2) return true;
+        }
+        return false;
+      };
+      if (onInk(mapDownPt.wx, mapDownPt.wy))
+        mapJitterHit = { x: mapDownPt.wx, y: mapDownPt.wy };
+    }
+  }
+  mapDrag = null;
 });
 mapPane.addEventListener("click", e => {
-  if (mapDragged) { mapDragged = false; return; }   // it was a pan, not a pick
+  if (mapDragged) {
+    mapDragged = false;
+    if (!mapJitterHit) return;   // it was a pan, not a pick
+  }
   clearTimeout(mapRefocusTimer);
   // 0. screen-space furniture first: vars chip [F10]
   const mb = mapPane.getBoundingClientRect();
@@ -8088,7 +8155,8 @@ mapPane.addEventListener("click", e => {
     drawMapPane();
     return;
   }
-  const w = mapToWorld(e);
+  const w = mapJitterHit || mapToWorld(e);
+  mapJitterHit = null;
   // 1. bundle chip -> pinned enumeration list (section 7)
   const ci = mapChipAt(w.x, w.y);
   if (ci >= 0) { mapOpenList(ci); return; }
@@ -8107,7 +8175,10 @@ mapPane.addEventListener("click", e => {
       inHeader = w.y < rc.y + ((rc.rows.length || rc.more) ? NH : rc.h);
       break;
     }
-    if (!inHeader) {
+    // [issue #84] skeptic #2b: a stroke riding the header band is still
+    // the user's aim - the header only wins when the press is >4px screen
+    // CLEAR of the stroke (mapWireLastD set by the mapWireAt call above)
+    if (!inHeader || mapWireLastD < 4 / mapZ) {
       const wr = mapLayout.wires[wi];
       if (wr.ty === "var") showInfo(wr.df);   // member target is not a fn
       else mapShowFn(wr.df, wr.dfn);
@@ -8122,10 +8193,14 @@ mapPane.addEventListener("click", e => {
   // the enumerated set (trunk + its taps) and opens the bus card, the
   // map-side twin of the 3D trunk click parity
   if (mapLayout) {
-    const tol = 6 / mapZ;
+    // [issue #84] 10px band to match mapWireAt; singles/leaders (no .hub)
+    // are pickable too - they are visible pair strokes, and #84 wants a
+    // hit target on every visible segment. Ungated by design: spines
+    // paint un-gated at every zoom (parity, see mapWireAt).
+    const tol = 10 / mapZ;
     let th = -1, td = tol;
     mapLayout.spines.forEach((sp, six) => {
-      if (!sp.hub || !sp.pts || sp.pts.length < 2) return;
+      if (!sp.pts || sp.pts.length < 2) return;
       for (let k = 1; k < sp.pts.length; k++) {
         const d = mapDistSeg(w.x, w.y, sp.pts[k-1][0], sp.pts[k-1][1],
                              sp.pts[k][0], sp.pts[k][1]);
@@ -8134,6 +8209,24 @@ mapPane.addEventListener("click", e => {
     });
     if (th >= 0) {
       const sp = mapLayout.spines[th];
+      if (!sp.hub) {
+        // [issue #84] single/leader pair stroke: pin it like a wire; the
+        // fn panel stays closed (spines carry pair identity, not fn rows)
+        wirePinSet({ surface: "map", kind: "wire",
+          id: "S|" + sp.s + "|" + sp.t + "|" + sp.wty,
+          s: sp.s, t: sp.t, wty: sp.wty, menu: "tip" });
+        wireTipEl.textContent = "wire pair " + nodes[sp.s].label +
+          " \u2192 " + nodes[sp.t].label + "  \u00d7" + (sp.flowSum || 1);
+        wireTipEl.style.display = "block";
+        const padS = 14;
+        let txS = e.clientX + padS, tyS = e.clientY + padS;
+        const rS = wireTipEl.getBoundingClientRect();
+        if (txS + rS.width > innerWidth - 8) txS = e.clientX - rS.width - padS;
+        if (tyS + rS.height > innerHeight - 8) tyS = e.clientY - rS.height - padS;
+        wireTipEl.style.left = txS + "px"; wireTipEl.style.top = tyS + "px";
+        wireTipAnchor = null;
+        return;
+      }
       wirePinSet({ surface: "map", kind: "trunk",
         id: "T|" + sp.s + "|" + sp.t + "|" + sp.wty,
         s: sp.s, t: sp.t, wty: sp.wty, menu: "tip" });
@@ -8182,6 +8275,9 @@ mapPane.addEventListener("click", e => {
   }
   // void: unpin the list, close the picker, drop the freeze
   if (mapListEl.style.display === "block" || mapFrozenIx >= 0) mapOvCloseOne();
+  // [issue #84] skeptic #6: uniform dismissal - a void click clears any
+  // remaining pin (info/tip pins used to survive it while list pins died)
+  if (wirePin) wirePinClear();
 });
 mapPane.addEventListener("dblclick", e => {
   if (!mapVisible) return;
@@ -8338,7 +8434,16 @@ addEventListener("keydown", e => {
   // sticky pin (consumed); the NEXT press walks the existing ladder —
   // wire tip -> map overlays (picker/list/freeze) -> clear focus. A pinned
   // highlight never silently swallows the older bindings; it queues ahead.
-  if (e.key === "Escape" && wirePin) { wirePinClear(); return; }
+  if (e.key === "Escape" && wirePin) {
+    // [issue #84] skeptic #4: one press = one intent, dismiss the sticky
+    // selection WHOLE - the pin AND the overlay it owns - instead of
+    // leaving an orphaned list/picker behind. The NEXT press walks the
+    // existing ladder (tip -> map overlays -> clear focus) as pinned.
+    const pinMenu = wirePin.menu;
+    wirePinClear();
+    if (pinMenu === "list") mapOvCloseOne();
+    return;
+  }
   if (e.key === "Escape" && wireTipEl.style.display !== "none") { hideWireTip(); return; }
   if (e.key === "Escape" && mapOvCloseOne()) return;   // map overlays own ESC first
   if (e.key === "Escape" && (focusSeeds.size || query)) clearFocus();
@@ -9202,7 +9307,8 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnStalk() { return fnStalk; },
   syncFileMesh,
   mapPane: { canvas: mapPane, draw: drawMapPane },
-  mwires, mapInfo, get mapVars() { return mapVarsOn; }, mapExpandUser,
+  mwires, mapInfo, mapWireAt,   // [issue #84] probe surface: hit-test named wires
+  get mapVars() { return mapVarsOn; }, mapExpandUser,
   get mapZ() { return mapZ; }, get mapPX() { return mapPX; },
   get mapPY() { return mapPY; }, mapClampView,
   get mapInkOn() { return mapInkOn; },
