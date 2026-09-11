@@ -124,6 +124,8 @@ def _apply_config(path: Path | None) -> None:
         STATE_DIR = STATE_DIR.resolve()
     DB_DIR = STATE_DIR / "chroma"
     BASE_DIR = STATE_DIR / "base"
+    # the cluster cache belongs to the store this config resolves to
+    _clusters_memo.clear()
 
 
 def _neuroignore(path: Path | None) -> frozenset[str]:
@@ -156,6 +158,9 @@ WATCH_INTERVAL_S: float
 STATE_DIR: Path
 DB_DIR: Path
 BASE_DIR: Path
+# clusters() result cache (K2/#86): same engine args + unchanged store
+# -> the same list object, so 10 call-sites stop re-running Louvain.
+_clusters_memo: dict[tuple, list] = {}
 _apply_config(_discover_config())
 
 MAX_EMBED_CHARS = 30_000  # keep under Ollama context; head of .tscn has script links
@@ -407,6 +412,7 @@ def rescan() -> dict[str, int]:
     """Incremental index: add/update changed files, purge deleted ones.
     Warm passes skip read+hash via the stat fingerprint (issue #42); the
     sha stays the content identity."""
+    _clusters_memo.clear()  # embeddings changed — recompute on demand
     with _db_lock():
         return _rescan_locked()
 
@@ -549,7 +555,14 @@ def clusters(
     need cross_sim). Either way mega-blobs are then split + every cluster
     labeled (see clusters.finalize).
     Returns [{id, size, paths: [(path, class_name)], label, confidence,
-    method}]."""
+    method}]. Memoized (K2/#86): callers share ONE list per argument
+    tuple while the store is unchanged — invalidated by rescan(),
+    import_base(), `drop` and _apply_config (profile switch). Treat the
+    returned list as read-only."""
+    memo_key = (k, min_sim, split_sim, blob_min, cross_sim, resolution)
+    hit = _clusters_memo.get(memo_key)
+    if hit is not None:
+        return hit
     import numpy as np
 
     col = _collection()
@@ -637,9 +650,11 @@ def clusters(
     for idx, c in enumerate(out):
         c["id"] = idx
 
-    return _clusters.finalize(
+    result = _clusters.finalize(
         out, ids, mat, split_sim=split_sim, blob_min=blob_min, adj=adj, units=units
     )
+    _clusters_memo[memo_key] = result
+    return result
 
 
 # ---- base index (tracked shards) -------------------------------------------
@@ -712,6 +727,7 @@ def export_base() -> dict[str, object]:
 def import_base() -> dict[str, int | str]:
     """Seed local chroma from tracked shards. Skips ids whose files no
     longer exist (deleted/renamed since export) — rescan heals the rest."""
+    _clusters_memo.clear()  # store repopulated — recompute on demand
     with _db_lock():
         col = _collection()
         if col.count():
@@ -807,6 +823,7 @@ if __name__ == "__main__":
                 tops = ", ".join(f"{t['pair']} x{t['w']}" for t in wp["top_files"])
                 print(f"  {wp['a']} <-> {wp['b']} : {wp['edges']} edges (top: {tops})")
     elif cmd == "drop":
+        _clusters_memo.clear()  # the store is going away
         import chromadb as _c
         client = _c.PersistentClient(path=str(DB_DIR))
         for name in (COLLECTION, f"{COLLECTION}-fns"):
