@@ -2127,27 +2127,7 @@ def run_tests():
                     disp3a = page.evaluate(
                         "() => document.getElementById('wireTip')"
                         ".style.display")
-                    # DIAG r2: discriminate last-frame-hidden vs idle-rAF
-                    raf = page.evaluate(
-                        "() => new Promise(res => requestAnimationFrame("
-                        "() => requestAnimationFrame(() => res("
-                        "{ end: document.getElementById('wireTip')"
-                        ".style.display,"
-                        "  anchor: !!window.__dbg.wirePin }))) )")
-                    idle = page.evaluate(
-                        "() => document.getElementById('wireTip')"
-                        ".style.display")
-                    raf2 = page.evaluate(
-                        "() => new Promise(res => requestAnimationFrame("
-                        "() => requestAnimationFrame(() => res("
-                        "document.getElementById('wireTip')"
-                        ".style.display))) )")
-                    tk = page.evaluate(
-                        "() => { const a = window.__dbg.pinTicks;"
-                        " return new Promise(res => setTimeout(() => "
-                        "res({ a, b: window.__dbg.pinTicks }), 400)); }")
-                    print("DIAG r2:", {"raf": raf, "idle": idle,
-                                       "raf2": raf2, "ticks": tk})
+
                     check("3d pin tip persists with from->to",
                           disp3a == "block" and
                           ("\u2192" in txt3a or "\u2193" in txt3a) and
@@ -2828,6 +2808,7 @@ def run_tests():
                       and tintLg["t"][1] > 0.35,
                       f"piece {tintLg['q']} rgb "
                       f"{[round(v, 2) for v in tintLg['t']]}")
+
             # press on the leg again: the transient tip hides on
             # pointerdown and the pin re-asserts it next frame
             page.mouse.move(leg_used["x"], leg_used["y"])
@@ -3040,6 +3021,158 @@ def run_tests():
         else:
             print(f"SKIP stale reap - no ball pin latched "
                   f"(cands {len(cands or [])})")
+
+        # [skeptic #19] replacing a trunk pin (tint ON) with a link
+        # pin must restore the corridor tint - the replace path never
+        # dies, so the updateBallPin head guard is the only trigger
+        pinTk = None
+        for _t in range(3):
+            tc = page.evaluate("""() => { const d = window.__dbg;
+                const el = d.renderer.domElement,
+                      r = el.getBoundingClientRect();
+                const xmax = document.getElementById('mapPane')
+                    .getBoundingClientRect().left - 14;
+                const out = [];
+                for (let x = 24; x < xmax && x < r.width - 24 &&
+                     out.length < 12; x += 40)
+                    for (let y = 70; y < r.height - 24 &&
+                         out.length < 12; y += 40) {
+                        const m = d.pickWireMeta({
+                            clientX: r.left + x, clientY: r.top + y });
+                        if (m && (m.kind === "trunk" || m.kind === "jleg")
+                            && document.elementFromPoint(
+                                r.left + x, r.top + y) === el)
+                            out.push([Math.round(r.left + x),
+                                      Math.round(r.top + y)]);
+                    }
+                return out; }""")
+            for c in (tc or []):
+                page.mouse.move(c[0], c[1])
+                page.wait_for_timeout(120)
+                hov = page.evaluate("() => ({ hf: window.__dbg.hoveredFn,"
+                                    " hv: window.__dbg.hovered })")
+                if (hov["hf"] is not None and hov["hf"] >= 0) or \
+                   (hov["hv"] is not None and hov["hv"] >= 0):
+                    continue
+                page.mouse.click(c[0], c[1])
+                page.wait_for_timeout(400)
+                pk = page.evaluate("() => window.__dbg.wirePin")
+                if pk and pk.get("kind") == "trunk":
+                    pinTk = pk
+                    break
+            if pinTk:
+                break
+        if pinTk:
+            tkq = page.evaluate("""() => {
+                const d = window.__dbg, pin = d.wirePin;
+                if (!pin || !pin.k || !d.fnBus || !d.fnBus.instanceColor)
+                    return null;
+                const prefs = [];
+                for (const S of (d.fnStations || []))
+                    if (S.tks.indexOf(pin.k) >= 0)
+                        prefs.push("L|" + S.fi + "|" + S.id + "|");
+                const mm = d.fnBus.instanceMatrix.array;
+                let q = -1, sib = -1;
+                for (let i = 0; i < d.busPtsMeta.length; i++) {
+                    const mt = d.busPtsMeta[i]; if (!mt) continue;
+                    const k = String(mt.k || "");
+                    const hit = (mt.kind === "trunk" && k === pin.k) ||
+                        (k.charCodeAt(0) === 76 &&
+                         prefs.some(p => k.startsWith(p)));
+                    if (hit && q < 0 &&
+                        Math.hypot(mm[i*16], mm[i*16+1], mm[i*16+2]) > 0.001)
+                        q = i;
+                    else if (!hit && k.charCodeAt(0) === 76 && sib < 0)
+                        sib = i;
+                }
+                if (q < 0) return null;
+                const ca = d.fnBus.instanceColor.array;
+                // bus pieces carry per-piece stock colors - the
+                // baseline is THIS piece's captured original, not a
+                // sibling's (siblings differ)
+                const pt = d.pinTint;
+                // pinTintOrig: per-piece [r,g,b] triplets, position-
+                // indexed against pinTinted
+                const ix = pt.tinted.indexOf(q);
+                const q0 = ix >= 0 ? pt.orig[ix] : null;
+                if (!q0) return null;
+                return { q, q0,
+                         on: [ca[q*3], ca[q*3+1], ca[q*3+2]] }; }""")
+            if tkq:
+                pinRpl = None
+                for _t in range(3):
+                    lc = page.evaluate("""() => { const d = window.__dbg;
+                        const el = d.renderer.domElement,
+                              r = el.getBoundingClientRect();
+                        const xmax = document.getElementById('mapPane')
+                            .getBoundingClientRect().left - 14;
+                        const out = [];
+                        for (let x = 24; x < xmax && x < r.width - 24 &&
+                             out.length < 12; x += 40)
+                            for (let y = 70; y < r.height - 24 &&
+                                 out.length < 12; y += 40) {
+                                const m = d.pickWireMeta({
+                                    clientX: r.left + x,
+                                    clientY: r.top + y });
+                                if (m && (m.kind === "link" ||
+                                          m.kind === "wire") &&
+                                    document.elementFromPoint(
+                                        r.left + x, r.top + y) === el)
+                                    out.push([Math.round(r.left + x),
+                                              Math.round(r.top + y)]);
+                            }
+                        return out; }""")
+                    # the persistent pin tip is a DOM overlay - a
+                    # click that lands on it never reaches the canvas
+                    tipR = page.evaluate(
+                        "() => { const t = document.getElementById"
+                        "('wireTip'); if (!t || t.style.display === "
+                        "'none') return null; const r = t."
+                        "getBoundingClientRect(); return [r.left, r.top,"
+                        " r.right, r.bottom]; }")
+                    for c in (lc or []):
+                        if tipR and tipR[0] - 24 < c[0] < tipR[2] + 24 \
+                           and tipR[1] - 24 < c[1] < tipR[3] + 24:
+                            continue
+                        page.mouse.move(c[0], c[1])
+                        page.wait_for_timeout(120)
+                        hov = page.evaluate(
+                            "() => ({ hf: window.__dbg.hoveredFn,"
+                            " hv: window.__dbg.hovered })")
+                        if (hov["hf"] is not None and hov["hf"] >= 0) or \
+                           (hov["hv"] is not None and hov["hv"] >= 0):
+                            continue
+                        page.mouse.click(c[0], c[1])
+                        page.wait_for_timeout(400)
+                        pr = page.evaluate("() => window.__dbg.wirePin")
+                        if pr and pr.get("kind") in ("link", "wire") and \
+                           pr.get("id") != pinTk.get("id"):
+                            pinRpl = pr
+                            break
+                    if pinRpl:
+                        break
+                if pinRpl:
+                    tkOff = page.evaluate("""(q) => {
+                        const d = window.__dbg;
+                        const ca = d.fnBus.instanceColor.array;
+                        return [ca[q*3], ca[q*3+1], ca[q*3+2]]; }""",
+                        tkq["q"])
+                    check("replaced pin restores the corridor tint",
+                          all(abs(a - b) < 0.02 for a, b in
+                              zip(tkOff, tkq["q0"])),
+                          f"trunk {pinTk['id']} tint on "
+                          f"{[round(v, 2) for v in tkq['on']]} -> "
+                          f"{pinRpl['kind']} pin, piece {tkq['q']} rgb "
+                          f"{[round(v, 2) for v in tkOff]} vs stock "
+                          f"{[round(v, 2) for v in tkq['q0']]}")
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(250)
+                else:
+                    print("SKIP replace-restore - no link/wire pin")
+            else:
+                print("SKIP replace-restore - no covered piece")
+        else:
+            print("SKIP replace-restore - no trunk pin")
 
         # artifact: screenshot of the focused fn-layer state
         page.screenshot(path=str(SHOTS / "last_run.png"), scale="css", type="png")

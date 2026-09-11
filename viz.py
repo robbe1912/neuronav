@@ -2083,7 +2083,12 @@ function updateBallPin() {
   let chainPts = null, chainA = -1, chainB = -1;
   let chainPieces = null, chainTintIdx = null;
   let boxA = null, boxB = null;
-  if (!wirePin || wirePin.surface !== "ball") pinTintRestore();
+  // [skeptic #19] restore on ANY tint-key mismatch: a replaced pin
+  // (trunk -> wire/link) never dies, so the only path that can put the
+  // corridor back is this head guard - the tint block only ever runs
+  // for corridor pins (chainTintIdx is empty otherwise)
+  if (!wirePin || wirePin.surface !== "ball" ||
+      pinTintKey !== wirePin.id) pinTintRestore();
   if (wirePin && wirePin.surface === "ball" &&
       fnBus && fnBus.visible && busPts && busPtsMeta) {
     let A = -1, B = -1, tk = null;
@@ -9324,7 +9329,9 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get jDotArrays() { return { of: fnJDotOf, st: fnJDotSt, legs: fnJDotLegs, key: fnJDotKey }; },
   get stubExits() { return stubExits; },  // EXPLAINED EXIT dissolve points
   get anchorBoostArr() { return anchorBoost; },  // corridor-boost px per fi (probe hook)
-  get pinPath() { return pinPathPts; },  // [issue #85 owner r4] probe hook
+  get pinPath() { return pinPathPts; },
+  get pinTint() { return { tinted: pinTinted ? pinTinted.slice() : [],
+    orig: pinTintOrig ? pinTintOrig.slice() : [], key: pinTintKey }; },  // [issue #85 owner r4] probe hook
   get pinChain() { return { a: pinChA, b: pinChB, boxA: pinBoxA, boxB: pinBoxB, ep0: pinEp0, ep1: pinEp1 }; },  // [issue #84] fn-box endpoint law probe hook
   get degFloorArr() { return degFloor; },  // zoomed-out min diameter px per fi (probe hook)
   get hlArr() { return hlArr; },  // search-highlight flags per fi (probe hook)
