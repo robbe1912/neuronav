@@ -82,7 +82,9 @@ def _flow(g, path: str, fn_name: str) -> str:
     callers: set = g.reverse.get(key) or set()
     callees: set = g.edges.get(key) or set()
     fmt = lambda keys: ", ".join(
-        k.split("::", 1)[0].rsplit("/", 1)[-1] + "::" + k.split("::", 1)[1].lstrip("_")[:24]
+        # name shown verbatim: _build_data stays _build_data
+        # (lstrip("_") used to mangle it to build_data)
+        k.split("::", 1)[0].rsplit("/", 1)[-1] + "::" + k.split("::", 1)[1][:24]
         for k in sorted(keys)[:3]
     ) + (f" +{len(keys) - 3} more" if len(keys) > 3 else "")
     return f"callers: {len(callers)} ({fmt(callers) if callers else 'none - entry or dead'}) | callees: {len(callees)}"
