@@ -540,26 +540,22 @@ def clusters(
     min_sim: float = 0.6,
     split_sim: float = 0.65,
     blob_min: int = 60,
-    cross_sim: float = 0.75,
-    resolution: float = 1.0,
 ) -> list[dict[str, object]]:
-    """Subsystem clusters. Default engine (resolution not None): Louvain
-    community detection over a hybrid weighted graph — mutual-kNN
-    embedding sims (weight = sim * 0.7) + structural edges from graph.py
-    (call/signal capped 5 per file pair, attach/inst 1.5); tests/ files
-    get their own community, loose files join the community dominating
-    their dir seed (see clusters.communities_graph). Resolution 1.5
-    chosen by sweep ({1.0: 49 clusters/largest 131, 1.2: 35/74, 1.5:
-    29/69, 1.8: 30/70}). Legacy engine (resolution=None): dir-seeded
-    mutual-kNN union-find (full-dir-chain seeds, blob-scale seed groups
-    need cross_sim). Either way mega-blobs are then split + every cluster
-    labeled (see clusters.finalize).
+    """Subsystem clusters: Louvain community detection over a hybrid
+    weighted graph — mutual-kNN embedding sims (weight = sim * 0.7) +
+    structural edges from graph.py (call/signal capped 5 per file pair,
+    attach/inst 1.5); tests/ files get their own community, loose files
+    join the community dominating their dir seed (see
+    clusters.communities_graph). Resolution swept {1.0: 49 clusters/
+    largest 131, 1.2: 35/74, 1.5: 29/69, 1.8: 30/70} — the knob lives
+    in clusters.communities_graph (default 1.0). Mega-blobs are then
+    split + every cluster labeled (see clusters.finalize).
     Returns [{id, size, paths: [(path, class_name)], label, confidence,
     method}]. Memoized (K2/#86): callers share ONE list per argument
     tuple while the store is unchanged — invalidated by rescan(),
     import_base(), `drop` and _apply_config (profile switch). Treat the
     returned list as read-only."""
-    memo_key = (k, min_sim, split_sim, blob_min, cross_sim, resolution)
+    memo_key = (k, min_sim, split_sim, blob_min)
     hit = _clusters_memo.get(memo_key)
     if hit is not None:
         return hit
@@ -582,70 +578,12 @@ def clusters(
 
     knn = _clusters.topk_desc(sim, k)
 
-    out: list[dict[str, object]] = []
-    adj = None  # structural adjacency from the louvain engine (hub gating)
-    units = None  # welded scene+script units (survive finalize splits)
-    if resolution is None:
-        # legacy engine: dir-seeded mutual-kNN union-find
-        parent = list(range(len(ids)))
-
-        def find(x: int) -> int:
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        def union(a: int, b: int) -> None:
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[max(ra, rb)] = min(ra, rb)
-
-        from collections import Counter
-
-        seed = [_clusters.dir_seed(p) for p in ids]
-        seed_n = Counter(s for s in seed if s)
-
-        # cluster scripts and scenes separately: tscn headers dominate
-        # embeddings, mixing them chains unrelated files
-        gd_idx = [i for i, m in enumerate(metas) if (m or {}).get("ext") == ".gd"]
-        tscn_idx = [i for i, m in enumerate(metas) if (m or {}).get("ext") == ".tscn"]
-        for subset in (gd_idx, tscn_idx):
-            sset = set(subset)
-            for i in subset:
-                for j in knn[i]:
-                    j = int(j)
-                    if j in sset and i in knn[j] and sim[i, j] >= min_sim:
-                        si, sj = seed[i], seed[j]
-                        # same-seed unions at min_sim only while the seed
-                        # group is small; blob-scale flat folders need the
-                        # high bar (Qwen3-0.6B over-merge chaining)
-                        if si is None or sj is None:
-                            union(i, j)
-                        elif si == sj:
-                            if sim[i, j] >= cross_sim or seed_n[si] < _clusters.BIG_SEED_MAX:
-                                union(i, j)
-                        elif sim[i, j] >= cross_sim:
-                            union(i, j)
-
-        groups: dict[int, list[int]] = {}
-        for i in range(len(ids)):
-            groups.setdefault(find(i), []).append(i)
-        for members in groups.values():
-            items = sorted(
-                (
-                    ids[m],
-                    str((metas[m] or {}).get("class_name", "")),
-                )
-                for m in members
-            )
-            out.append({"id": len(out), "size": len(items), "paths": items})
-    else:
-        # louvain hybrid: structural edges + embedding sims; adj feeds the
-        # labeler's autoload hub gating, units keep scene+script welds
-        # intact through finalize's embedding split passes
-        out, adj, units = _clusters.communities_graph(
-            ids, metas, mat, sim, knn, min_sim=min_sim, resolution=resolution
-        )
+    # louvain hybrid: structural edges + embedding sims; adj feeds the
+    # labeler's autoload hub gating, units keep scene+script welds
+    # intact through finalize's embedding split passes
+    out, adj, units = _clusters.communities_graph(
+        ids, metas, mat, sim, knn, min_sim=min_sim
+    )
     out.sort(key=lambda c: -int(c["size"]))
     for idx, c in enumerate(out):
         c["id"] = idx

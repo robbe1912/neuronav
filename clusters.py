@@ -54,9 +54,6 @@ STOPWORDS = {
 BLOB_MIN = 60          # clusters larger than this get split
 PACK_SPLIT_SHARE = 0.25  # each of the top-2 stem packs must cover >= this
                          # for the surgical asset-pack split to fire
-BIG_SEED_MAX = 60      # seed groups at/above this size need cross_sim even
-                       # for same-seed unions (blob-scale flat folders of asset
-                       # packs chain unrelated packs at min_sim)
 SMALL_MIN = 3          # subclusters smaller than this merge / go Misc
 MERGE_SIM = 0.55       # centroid cosine needed to merge a small subcluster
 SPLIT_SIM = 0.65       # default agglomerative similarity floor (dist 0.35)
@@ -99,10 +96,11 @@ def seed_chain(path: str) -> list[str]:
 
 
 def dir_seed(path: str) -> str | None:
-    """Full dir chain (top-generic stripped) — the union-permission key for
-    dir-seeded clustering (nav.clusters). Files at different depths under
-    the same tree only share a seed when they share the WHOLE dir chain;
-    None means no dir at all (repo root): unconstrained, plain kNN."""
+    """Full dir chain (top-generic stripped) — the dir key for the
+    dir-seeded fallbacks (loose-file unit seeding below). Files at
+    different depths under the same tree only share a seed when they
+    share the WHOLE dir chain; None means no dir at all (repo root):
+    unconstrained, plain kNN."""
     chain = seed_chain(path)
     return "/".join(chain) if chain else None
 
