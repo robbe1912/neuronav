@@ -144,6 +144,40 @@ def main() -> None:
             json.dumps(ann),
         )
 
+        # issue #68: search_text joins the surface — this suite deliberately
+        # pins every advertised tool's contract, so it pins the new one too
+        # (advertisement + readOnlyHint + one config-agnostic call: "." hits
+        # any non-empty line in any config, stays capped by construction)
+        check(
+            "tools/list advertises search_text",
+            "search_text" in names,
+            f"tools={names}",
+        )
+        st_ann = next(
+            (t.get("annotations") for t in tools if t["name"] == "search_text"), None
+        )
+        check(
+            "search_text: readOnlyHint set",
+            bool(st_ann and st_ann.get("readOnlyHint") is True),
+            json.dumps(st_ann),
+        )
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "tools/call",
+                "params": {"name": "search_text", "arguments": {"pattern": "def "}},
+            }
+        )
+        st = text_of(recv(9)["result"])
+        st_rows = [ln for ln in st.splitlines() if re.match(r"^\S+:\d+:", ln)]
+        check(
+            "search_text: capped file:line rows or graceful empty",
+            (len(st_rows) > 0 and " matches in " in st)
+            or st.startswith("no matches for "),
+            st.splitlines()[:2],
+        )
+
         send(
             {
                 "jsonrpc": "2.0",

@@ -9,13 +9,14 @@ point it at any project via config; nothing is vendored into target projects.
 See [docs/comparison.md](docs/comparison.md) for how neuronav differs from
 other code-graph tools (CodeGraph, aider repo map, SCIP).
 
-## Tools (stdio MCP, 12)
+## Tools (stdio MCP, 13)
 
 | tool | use |
 |---|---|
 | `repo_map(budget_tokens)` | token-budget repo map, PageRank-ranked — the cheap orientation preamble |
 | `semantic_search(query, n)` | find files by meaning ("rescan and index the repo" -> nav.py), RRF-fused with BM25F |
 | `find_functions(query, n)` | same, per function with line numbers |
+| `search_text(pattern, glob, files_only)` | regex text search — grep-class exact-string/literal queries; capped `file:line:text` rows (20 files / 3 lines) with truncation markers + totals |
 | `symbol_graph(symbol, depth)` | callers/callees - refactoring safety |
 | `explore(query, n, anchor)` | one-call orientation: Read-equivalent source slices + callers/callees flow; slices cap at a 100-line window ending in `pass anchor="path:start-end" to continue` — pass that anchor back to page the next window with zero re-orientation |
 | `context(path, depth)` | per-file dossier: cluster, structural+semantic neighbors, hub rank, edge types |
