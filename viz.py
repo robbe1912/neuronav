@@ -442,8 +442,11 @@ def _build_data() -> dict:
     # a failed offline pass aborts the build loudly.
     pos_baked = None
     depths, cyc_ids = _strata_analysis(len(nodes), links)
-    # churn boost is part of the rendered radius - the overlap relax MUST
-    # use the same radii the browser draws or hot files overlap neighbors
+    # git-churn channel — ONE read of git state per bake (D2/#86): it
+    # feeds both the layout radii and DATA.hot below, so a mid-bake
+    # commit can never bake layout ≠ legend. The overlap relax MUST
+    # use the same radii the browser draws or hot files overlap
+    # neighbors; None when git/history is unavailable.
     hot = _churn_hot([nd["path"] for nd in nodes])
     try:
         pos_baked = _layout(
@@ -535,9 +538,6 @@ def _build_data() -> dict:
         hw_dropped = len(hw) - len(kept_hw)
         hw = [hw[i] for i in sorted(kept_hw)]
 
-    # git-churn channel: optional (None when git/history unavailable → DATA.hot
-    # absent → renderer leaves sizes untouched, no legend note)
-    hot = _churn_hot([nd["path"] for nd in nodes])
 
     # per-function IO surface (params / ret / member writes / mutated params),
     # keyed "path::func". consumed by the fn click panel (signature line +
