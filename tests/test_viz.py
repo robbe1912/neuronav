@@ -1746,6 +1746,137 @@ def run_tests():
                 check("wire pin survives pan/zoom/hover (paint tier)",
                       pin1 == pin0 and wires1 == wires0,
                       f"{pin0} -> {pin1}, wires {wires0} -> {wires1}")
+
+                # ---- [issue #82] dismissal paths ----
+                def latch_pin_via_list():
+                    hits = page.evaluate("""() => {
+                        const L = window.__dbg.mapLayout;
+                        const d = window.__dbg;
+                        const pn = document.getElementById("mapPane");
+                        const out = [];
+                        for (const ch of L.chips) {
+                            if (!ch.wires || ch.wires.length < 2) continue;
+                            if (ch.wires.filter(w => w.ty !== 'var').length < 2) continue;
+                            const sx = (ch.x + ch.w / 2 - d.mapPX) * d.mapZ;
+                            const sy = (ch.y + ch.h / 2 - d.mapPY) * d.mapZ;
+                            if (sx > 20 && sy > 20 &&
+                                sx < pn.clientWidth - 20 &&
+                                sy < pn.clientHeight - 20)
+                                out.push({ sx: +sx.toFixed(1), sy: +sy.toFixed(1) });
+                            if (out.length >= 6) break;
+                        }
+                        return out; }""")
+                    for cand in (hits or []):
+                        page.mouse.click(bb["x"] + cand["sx"], bb["y"] + cand["sy"])
+                        page.wait_for_timeout(300)
+                        # stale rows from a closed list stay in the DOM:
+                        # require the list itself to be open before clicking
+                        disp = page.evaluate(
+                            "() => document.getElementById('mapList').style.display")
+                        rows = page.locator("#mapList .row")
+                        if disp == "block" and rows.count() >= 2:
+                            rows.nth(0).click()
+                            page.wait_for_timeout(200)
+                            return page.evaluate("() => window.__dbg.wirePin")
+                    return None
+
+                # (a) Esc: the pin owns the FIRST press; the existing binding
+                # (map overlay close) fires on the NEXT one
+                if pin1 and pin1["menu"] == "list":
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(250)
+                    pinE = page.evaluate("() => window.__dbg.wirePin")
+                    coverE = page.evaluate("() => window.__dbg.pinCover")
+                    listE = page.evaluate(
+                        "() => document.getElementById('mapList').style.display")
+                    check("esc dismisses the pin before existing bindings",
+                          pinE is None and coverE == 0 and listE == "block",
+                          f"{pin1} -> {pinE}, cover {coverE}, list {listE}")
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(250)
+                    list2 = page.evaluate(
+                        "() => document.getElementById('mapList').style.display")
+                    check("next esc fires the existing binding",
+                          list2 != "block", f"list still {list2}")
+                else:
+                    print("SKIP esc chain - live pin is not a list pin")
+                # (b) right-click: dismisses the pin and ONLY the pin (the
+                # 3D clear-focus contextmenu must not fire on this press)
+                pinR = latch_pin_via_list()
+                if pinR:
+                    page.mouse.click(bb["x"] + 300, bb["y"] + 200, button="right")
+                    page.wait_for_timeout(250)
+                    pinR2 = page.evaluate("() => window.__dbg.wirePin")
+                    infoR = page.evaluate(
+                        "() => document.getElementById('info').style.display")
+                    check("right-click dismisses the pin (and only the pin)",
+                          pinR2 is None and infoR == "block",
+                          f"{pinR} -> {pinR2}, info {infoR}")
+                else:
+                    print("SKIP right-click dismiss - no chip list")
+                # (c) closing the wire menu (bundle list) unpins its selection
+                pinM = latch_pin_via_list()
+                if pinM:
+                    void_pt = page.evaluate("""() => {
+                        const d = window.__dbg;
+                        const pn = document.getElementById("mapPane");
+                        const pw = pn.clientWidth, ph = pn.clientHeight;
+                        const nearWire = (wx, wy) => {
+                            for (const w of d.mapLayout.wires) {
+                                for (let k = 1; k < w.pts.length; k++) {
+                                    const ax = w.pts[k-1][0], ay = w.pts[k-1][1];
+                                    const bx2 = w.pts[k][0], by2 = w.pts[k][1];
+                                    const dx = bx2 - ax, dy = by2 - ay;
+                                    const t = Math.max(0, Math.min(1,
+                                        ((wx-ax)*dx + (wy-ay)*dy) / (dx*dx + dy*dy || 1)));
+                                    if (Math.hypot(ax + t*dx - wx, ay + t*dy - wy) < 12 / d.mapZ)
+                                        return true;
+                                }
+                            }
+                            return false; };
+                        for (let sy = ph - 30; sy > 40; sy -= 24) {
+                            for (let sx = 70; sx < pw - 14; sx += 24) {
+                                const wx = sx / d.mapZ + d.mapPX;
+                                const wy = sy / d.mapZ + d.mapPY;
+                                const onRect = d.mapRects.some(r =>
+                                    wx >= r.x - 3 && wx <= r.x + r.w + 3 &&
+                                    wy >= r.y - 3 && wy <= r.y + r.h + 3);
+                                const onChip = d.mapLayout.chips.some(c =>
+                                    wx >= c.x - 4 && wx <= c.x + c.w + 4 &&
+                                    wy >= c.y - 4 && wy <= c.y + c.h + 4);
+                                if (onRect || onChip || nearWire(wx, wy)) continue;
+                                return { sx, sy };
+                            }
+                        }
+                        return null; }""")
+                    if void_pt:
+                        # keep the click clear of HTML overlays (the open list
+                        # sits on top of the canvas and swallows canvas clicks)
+                        ov_ok = page.evaluate(
+                            "() => { const r = document"
+                            ".getElementById('mapList').getBoundingClientRect();"
+                            " return r; }")
+                        sx = void_pt["sx"] + bb["x"]
+                        sy = void_pt["sy"] + bb["y"]
+                        if (ov_ok and sx > ov_ok["x"] - 8 and
+                                sx < ov_ok["x"] + ov_ok["width"] + 8 and
+                                sy > ov_ok["y"] - 8 and
+                                sy < ov_ok["y"] + ov_ok["height"] + 8):
+                            print("SKIP menu close - void under open list")
+                        else:
+                            page.mouse.click(sx, sy)
+                            page.wait_for_timeout(300)
+                            pinM2 = page.evaluate("() => window.__dbg.wirePin")
+                            listM = page.evaluate(
+                                "() => document.getElementById('mapList')"
+                                ".style.display")
+                            check("closing the wire menu unpins its selection",
+                                  pinM2 is None and listM != "block",
+                                  f"{pinM} -> {pinM2}, list {listM}")
+                    else:
+                        print("SKIP menu close - no void point")
+                else:
+                    print("SKIP menu close - no chip list")
             elif wpts:
                 check("map wire click opens fn panel", False,
                       f"no fn panel from {len(wpts)} clear wire aims: " + str(wpts))

@@ -5791,7 +5791,13 @@ function wirePinClear() { if (!wirePin) return; wirePin = null; pinCover = 0; dr
 // canvas; describes the picked fn wire or bus trunk)
 const wireTipEl = document.createElement("div");
 wireTipEl.id = "wireTip";
-function hideWireTip() { wireTipEl.style.display = "none"; wireTipAnchor = null; }
+function hideWireTip() {
+  wireTipEl.style.display = "none"; wireTipAnchor = null;
+  // [issue #82] the tip IS the 3D wire menu: closing it unpins the wire it
+  // introduced (a wire click re-pins right after via showWireTip, so a
+  // click-through reads as replace, not dismiss)
+  if (wirePin && wirePin.menu === "tip") wirePinClear();
+}
 document.body.appendChild(wireTipEl);
 // 3D vocabulary legend (user r5): collapsed '?' chip bottom-left; one line
 // when open. legendOpen is harness-pinned via __dbg.
@@ -5920,6 +5926,9 @@ function mapOvCloseOne() {
   if (mapPickEl.style.display === "block") { mapClosePick(); closed = true; }
   if (mapListEl.style.display === "block") { mapListEl.style.display = "none"; closed = true; }
   if (mapFrozenIx >= 0) { mapFrozenIx = -1; closed = true; drawMapPane(); }
+  // [issue #82] closing the bundle list unpins the wire its row selected
+  // (menu-close dismissal; the list was that pin's menu)
+  if (wirePin && wirePin.menu === "list" && mapListEl.style.display === "none") wirePinClear();
   return closed;
 }
 // L2: click a named wire -> fn panel. showFnInfo reads fnMeta[k] only, so a
@@ -8054,6 +8063,9 @@ function clearFocus() {
   focusStack = [];
   document.getElementById("search").value = "";
   info.style.display = "none";
+  // [issue #82] hiding the fn panel closes the 2D wire's menu: a pin that
+  // menu introduced goes with it
+  if (wirePin && wirePin.menu === "info") wirePinClear();
   depth = 1; depthEl.value = 1;
   document.getElementById("depthVal").textContent = "1";
   fnMode = cbFnEl.checked = true;   // boot default: checked (tier shows only in focus)
@@ -8066,6 +8078,11 @@ function clearFocus() {
   frameGraph();   // the camera followed the focus in; it follows the reset out
 }
 addEventListener("keydown", e => {
+  // [issue #82] Esc chain, one intent per press: 1st press dismisses the
+  // sticky pin (consumed); the NEXT press walks the existing ladder —
+  // wire tip -> map overlays (picker/list/freeze) -> clear focus. A pinned
+  // highlight never silently swallows the older bindings; it queues ahead.
+  if (e.key === "Escape" && wirePin) { wirePinClear(); return; }
   if (e.key === "Escape" && wireTipEl.style.display !== "none") { hideWireTip(); return; }
   if (e.key === "Escape" && mapOvCloseOne()) return;   // map overlays own ESC first
   if (e.key === "Escape" && (focusSeeds.size || query)) clearFocus();
@@ -8081,6 +8098,16 @@ renderer.domElement.addEventListener("contextmenu", e => {
   if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
   if (focusSeeds.size || query || info.style.display !== "none") clearFocus();
 });
+// [issue #82] right-click dismisses the pin FIRST and consumes the press:
+// capture phase, ahead of every existing contextmenu handler (the 3D
+// clear-focus above included, so dismissal never fights them — the next
+// right-click, with no pin, fires the old behavior unchanged.
+document.addEventListener("contextmenu", e => {
+  if (!wirePin) return;
+  e.preventDefault();
+  e.stopPropagation();
+  wirePinClear();
+}, true);
 // reset owns EVERY piece of UI state — one click must return the app to
 // its boot state with nothing half-reset (vars and classes in lockstep)
 function resetAll() {
@@ -8522,6 +8549,11 @@ document.addEventListener("pointerdown", e => {
 }, true);          // a wire click re-shows it right after
 document.addEventListener("click", e => {
   if (!focusActive || !fnLines) return;
+  // [issue #82] click routing is by surface: the 2D map pane overlays the
+  // 3D canvas, so a wire projecting BEHIND the pane must not steal map
+  // clicks (stopPropagation here left map overlays unclosable).
+  if (e.target && (e.target.id === "mapPane" ||
+      (e.target.closest && e.target.closest("#mapOv")))) return;
   if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
   const wHit = pickWireMeta(e);
   if (!wHit) return;
