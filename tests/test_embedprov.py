@@ -209,6 +209,21 @@ except RuntimeError as e:
     check("model swap raises naming both providers",
           "provider 'openai'" in str(e) and "provider 'ollama'" in str(e), str(e))
 
+
+def rec_eq(a, b, atol=1e-6):
+    """Records by id: documents/metadata exact; embeddings tolerate
+    chroma's one-time f32 quantization settle on copy (<= 1 ulp, then
+    bit-stable — chroma's get() returns off-grid f64s)."""
+    if a.keys() != b.keys():
+        return False
+    for k, (e1, d1, m1) in a.items():
+        e2, d2, m2 = b[k]
+        if d1 != d2 or m1 != m2 or len(e1) != len(e2):
+            return False
+        if any(abs(x - y) > atol for x, y in zip(e1, e2)):
+            return False
+    return True
+
 # --- #103: the metadata stamp must keep hnsw:space -----------------------
 MODE["protocol"] = "ollama"
 write_cfg(embed_url=f"http://127.0.0.1:{PORT}/api/embed", embed_model="m-era3", embed_provider="ollama")
@@ -221,6 +236,9 @@ pre = cl.create_collection(name=nav.COLLECTION, metadata={"hnsw:space": "cosine"
 # q=[1,0]: cosine ranks v2,v1; l2 ranks v1,v2 (magnitudes differ)
 pre.add(ids=["v1", "v2"], embeddings=[[1.0, 0.9], [5.0, 3.0]],
         documents=["doc one", "doc two"], metadatas=[{"sha": "a"}, {"sha": "b"}])
+snap = pre.get(include=["embeddings", "documents", "metadatas"])
+records_before = {i: (list(map(float, e)), d, m) for i, e, d, m in
+                  zip(snap["ids"], snap["embeddings"], snap["documents"], snap["metadatas"])}
 err = io.StringIO()
 with redirect_stderr(err):
     col = nav._collection()
@@ -229,6 +247,12 @@ check("stamp preserves hnsw:space (#103)", meta.get("hnsw:space") == "cosine", s
 check("stamp records embed keys (#103)",
       meta.get("embed_model") == "m-era3" and meta.get("embed_provider") == "ollama", str(meta))
 check("stamp keeps vectors (#103)", col.count() == 2, str(col.count()))
+got = col.get(include=["embeddings", "documents", "metadatas"])
+check("records identical by id across the re-stamp (#103)",
+      rec_eq({i: (list(map(float, e)), d, m) for i, e, d, m in
+              zip(got["ids"], got["embeddings"], got["documents"], got["metadatas"])},
+             records_before),
+      f"{len(records_before)} records before vs {col.count()} after")
 check("cosine ranking survives the stamp (#103)",
       col.query(query_embeddings=[[1.0, 0.0]], n_results=2)["ids"][0] == ["v2", "v1"],
       str(col.query(query_embeddings=[[1.0, 0.0]], n_results=2)["ids"]))
@@ -254,6 +278,107 @@ check("repaired collection ranks cosine (#103)",
       str(col.query(query_embeddings=[[1.0, 0.0]], n_results=2)["ids"]))
 check("repair keeps vectors (#103)", col.count() == 2, str(col.count()))
 check("repair is loud (#103)", "re-stamp" in err.getvalue(), err.getvalue().strip())
+
+# --- #103 hardening: CodeRabbit post-merge review of #151 ----------------
+MODE["protocol"] = "ollama"
+# (1) provider is part of the fingerprint: same model, flipped provider
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/api/embed", embed_model="m-era3", embed_provider="openai")
+try:
+    nav._collection()
+    check("provider flip with same model demands re-embed", False, "no exception")
+except RuntimeError as e:
+    check("provider flip with same model demands re-embed",
+          "provider 'ollama'" in str(e) and "provider 'openai'" in str(e), str(e))
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/api/embed", embed_model="m-era3", embed_provider="ollama")
+
+# (2) the race fallback must validate the winner, not return foreign metadata
+try:
+    cl.delete_collection(nav.COLLECTION)
+except Exception:
+    pass
+cl.create_collection(name=nav.COLLECTION,
+                     metadata={"hnsw:space": "ip", "embed_model": "foreign-model"})
+
+
+class DeadCol:  # healthy space, no model key -> repair path; get() explodes
+    name = nav.COLLECTION
+    metadata = {"hnsw:space": "cosine"}
+
+    def get(self, **kw):
+        raise RuntimeError("simulated read failure")
+
+
+try:
+    nav._check_model(DeadCol())
+    check("race fallback refuses foreign metadata", False, "no exception")
+except RuntimeError as e:
+    check("race fallback refuses foreign metadata", "foreign" in str(e) or "re-stamp race" in str(e), str(e))
+
+# (3) durability: a mid-copy failure keeps the source; the retry heals fully
+try:
+    cl.delete_collection(nav.COLLECTION)
+except Exception:
+    pass
+src = cl.create_collection(name=nav.COLLECTION, metadata={"hnsw:space": "cosine"})
+ids70 = [f"f{i:03d}" for i in range(70)]  # spans two UPSERT_BATCH=64 batches
+src.add(ids=ids70, embeddings=[[1.0 + i / 100.0, 0.9] for i in range(70)],
+        documents=[f"doc {i}" for i in range(70)],
+        metadatas=[{"sha": f"s{i}"} for i in range(70)])
+snap = src.get(include=["embeddings", "documents", "metadatas"])
+records = {i: (list(map(float, e)), d, m) for i, e, d, m in
+           zip(snap["ids"], snap["embeddings"], snap["documents"], snap["metadatas"])}
+real_client = nav.client
+
+
+class FailingAdd:
+    def __init__(self, inner):
+        self._inner = inner
+        self.calls = 0
+
+    def __getattr__(self, k):
+        return getattr(self._inner, k)
+
+    def add(self, *a, **k):
+        self.calls += 1
+        if self.calls >= 2:
+            raise RuntimeError("simulated disk full mid-copy")
+        return self._inner.add(*a, **k)
+
+
+class FailingClient:
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, k):
+        return getattr(self._inner, k)
+
+    def create_collection(self, name=None, **kw):
+        col = self._inner.create_collection(name=name, **kw)
+        return FailingAdd(col) if name in (nav.COLLECTION, f"{nav.COLLECTION}-restamp") else col
+
+
+nav.client = lambda: FailingClient(real_client())
+try:
+    nav._collection()
+    check("mid-copy failure raises loudly", False, "no exception")
+except RuntimeError as e:
+    check("mid-copy failure raises loudly", "disk full" in str(e), str(e))
+nav.client = real_client
+healed = nav._collection()
+check("source survives a mid-copy failure (70 vectors)", healed.count() == 70, str(healed.count()))
+h = healed.get(include=["embeddings", "documents", "metadatas"])
+check("retry heals records identical by id",
+      rec_eq({i: (list(map(float, e)), d, m) for i, e, d, m in
+              zip(h["ids"], h["embeddings"], h["documents"], h["metadatas"])}, records), "")
+check("healed metadata carries the full stamp",
+      (healed.metadata or {}).get("hnsw:space") == "cosine"
+      and (healed.metadata or {}).get("embed_model") == "m-era3"
+      and (healed.metadata or {}).get("embed_provider") == "ollama", str(healed.metadata))
+try:
+    cl.get_collection(f"{nav.COLLECTION}-restamp")
+    check("no re-stamp temp left behind", False, "temp collection still present")
+except Exception:
+    check("no re-stamp temp left behind", True)
 
 print()
 print(f"{len(FAILS)} failure(s)" + (": " + ", ".join(FAILS) if FAILS else ""))
