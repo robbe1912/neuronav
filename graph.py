@@ -381,6 +381,22 @@ class Graph:
             if fs.ext == ".gd" and DYNAMIC_HINT_RE.search(joined):
                 self._dyn_files.add(rel)
 
+        # package re-export rebinding (#153): `from extractors import X`
+        # binds X to the package __init__ file, but X is DEFINED in a
+        # submodule the __init__ re-exports — liveness must land on the
+        # definer, or every re-exported helper reads as dead in its home
+        # file. Walk the re-export chain (the target's own from-import
+        # facts and consts) and rebind import edge + receiver const.
+        for rel, fs in self.files.items():
+            if fs.ext != ".py":
+                continue
+            rebound = set()
+            for target, nm in sorted(fs.from_imports):
+                definer = self._resolve_definer(target, nm)
+                rebound.add((definer or target, nm))
+                if definer and definer != target and fs.consts.get(nm) == target:
+                    fs.consts[nm] = definer
+            fs.from_imports = rebound
         # python import liveness: a PLAIN `import x` binds the namespace -
         # the module may be reached dynamically, so its funcs stay alive
         # as a unit. A `from x import y` selects exactly one name: only
@@ -613,6 +629,7 @@ class Graph:
         # receiver types: self-members from the extractor + typed params
         # + constructor locals in this body
         var_types = dict(fs.members)
+        var_types.update(fs.module_vars)
         for pm in PY_PARAM_TYPED_RE.finditer(scan_text):
             var_types[pm.group(1)] = pm.group(2)
         for m in PY_ANNOT_ASSIGN_RE.finditer(scan_text):
@@ -707,6 +724,25 @@ class Graph:
             if reexport in self.files and reexport != mod_rel:
                 cands.append(reexport)
         return sorted({c for c in cands if meth in self.files[c].funcs})
+
+    def _resolve_definer(self, target: str, nm: str, seen: frozenset[str] = frozenset()) -> str:
+        """Rel path of the file that DEFINES `nm` imported from `target`:
+        the target itself, or the submodule it re-exports the name from
+        (a package __init__ surface). '' when unresolvable. Cycle-safe
+        and deterministic (candidates sorted)."""
+        if target not in self.files or target in seen:
+            return ""
+        if nm in self.files[target].funcs:
+            return target
+        tfs = self.files[target]
+        seen = seen | {target}
+        cands = sorted({m for m, n in tfs.from_imports if n == nm}
+                       | ({tfs.consts[nm]} if nm in tfs.consts else set()))
+        for cand in cands:
+            got = self._resolve_definer(cand, nm, seen)
+            if got:
+                return got
+        return ""
 
     def _ancestor_def(self, fs: FileSym, name: str) -> str:
         """Rel path of the nearest ancestor class declaring `name`, or ''."""
@@ -1080,6 +1116,13 @@ class Graph:
                         or (fs.ext == ".py" and (name in PY_HOOKS or name.startswith("do_")))
                     )
                 ):
+                    tier = "review"
+                # python classes referenced at module scope (stand-ins
+                # injected into foreign callers — duck-typed test stubs,
+                # framework singletons) have their methods invoked through
+                # an opaque consumer: the honest tier is review, mirroring
+                # PY_HOOKS (#153 family)
+                if tier == "likely" and fs.ext == ".py" and name in fs.dispatch_names:
                     tier = "review"
                 # mention-count corroboration (issue #20): a cpp name that
                 # keeps appearing across the corpus — unresolved same-name

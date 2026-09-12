@@ -21,7 +21,7 @@ virtuals, test prefixes, tool bases) lives only in the per-language module.
 | suffixes | module | exports |
 |----------|--------|---------|
 | `.gd`, `.tscn` | `gdscript.py` | `parse_gd`, `parse_tscn`, `parse`, `ENTRY_RULES` |
-| `.py` | `python.py` | `parse`, `ENTRY_RULES` (dunder virtuals, `test_*`, module-level/`__main__`/fixture entry hints, `@property`/`@name.setter` accessors; consts = repo-module imports; graph side: `_scan_body_py` + import refs) |
+| `.py` | `python.py` | `parse`, `ENTRY_RULES` (dunder virtuals, `test_*`, module-level/`__main__`/fixture entry hints, `@property`/`@name.setter` accessors; consts = repo-module imports — AST pass harvests imports anywhere incl. parenthesized/commented/multi-line shapes; graph side: `_scan_body_py` + import refs, re-export rebinding to defining modules) |
 | `.h`, `.hpp`, `.cpp`, `.cc`, `.cxx` | `cpp.py` | `parse`, `ENTRY_RULES` (tree-sitter-cpp front-end + stdlib macro-surface pass: `ClassDB::`/`GDVIRTUAL` registration binds, `ADD_SIGNAL`/`ADD_PROPERTY`, `emit_signal`, `memnew`; `CPP_VIRTUALS` + registration roots; mention-count floor `CPP_MENTION_FLOOR` feeds the dead tier) |
 
 ## Interface contract
@@ -45,7 +45,9 @@ An extractor module must expose:
    | `init_calls: set[name]` | bare calls inside class-level var initializer expressions (run at instantiation) |
    | `entry_hints: set[name]` | parse-declared entry funcs (`@rpc` decorators, inline `set(v):`/`get():` property-accessor blocks) — yielded as roots by an entry rule |
    | `imported_modules: set[str]` | python `import x` — keeps the module's funcs alive as a unit (conservative) |
-   | `from_imports: set[(mod, name)]` | python `from x import y` — binds only y (plus the receiver const) |
+   | `from_imports: set[(mod, name)]` | python `from x import y` — binds only y (plus the receiver const); graph rebinds package re-exports to the defining module |
+   | `module_vars: dict[name -> "module:<rel>"\|class]` | python module-level receivers (`LOG = CheckLog()`) — visible to every body scan |
+   | `dispatch_names: set[name]` | python methods of module-scope-referenced classes (injected stand-ins) — review tier, never likely-dead |
    | `globals: dict[name -> type]` | C++ file-scope variables — unused statics are honest dead-code material |
    | `aliases: dict[name -> type text]` | C++ `typedef`/`using` declarations |
    | `private_members: set[name]` | C++ members declared under a private access region (stronger dead candidates) |

@@ -81,6 +81,14 @@ class FileSym:
     # c++ members declared under a private access region (stronger dead
     # candidates than public-unused once a tier pass consumes this)
     private_members: set[str] = field(default_factory=set)
+    # python module-level receiver vars (name -> "module:<rel path>" or
+    # class name): `LOG = CheckLog()` — body scans resolve LOG.finish(
+    # through them (module vars are visible in every body)
+    module_vars: dict[str, str] = field(default_factory=dict)
+    # python method names on classes referenced at module scope
+    # (injected stand-ins handed to opaque consumers): runtime-dispatch
+    # candidates — the dead scan tiers them review, never likely
+    dispatch_names: set[str] = field(default_factory=set)
 
 
 # -- cAST-style doc chunking helpers (issue #76) -----------------------------

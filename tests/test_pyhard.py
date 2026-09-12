@@ -175,5 +175,34 @@ alive("colzero: gd setter chain alive", "colzero_string.gd",
 stays_dead("colzero: gd control stays dead", "colzero_string.gd",
            "unused_gd_helper")
 
+# --- fixture: reexport_pkg + consumer_imports.py (#107/#153/#142) -------
+# the package __init__ re-exports provider helpers through the exact
+# import shapes #107 broke (parenthesized multi-line, trailing comment);
+# consumers bind through the __init__, liveness must land on the DEFINER
+alive("imports: parenthesized multi-line from-import binds",
+      "reexport_pkg/provider.py", ["alpha", "beta"])
+alive("imports: trailing-comment from-import binds its name",
+      "reexport_pkg/provider.py", ["gamma"])
+alive("imports: function-local from-import binds",
+      "reexport_pkg/provider.py", ["delta"])
+stays_dead("imports: non-imported sibling stays dead",
+            "reexport_pkg/provider.py", "orphan")
+alive("consumer: indented module-scope calls are entries",
+      "consumer_imports.py",
+      ["use_package_surface", "reads_book", "lazy_import_caller"])
+alive("consumer: value-ref assign keeps the func alive",
+      "consumer_imports.py", ["_bump"])
+alive("consumer: module-level instance receiver reaches the method",
+      "consumer_imports.py", ["tally"])
+_tiers = {
+    d["func"]: d["tier"]
+    for d in dead["candidates"]
+    if d["path"] == "consumer_imports.py"
+}
+check("consumer: injected stand-in methods demote to review",
+      _tiers.get("probe_method") == "review", f"tiers={_tiers}")
+stays_dead("consumer: unreferenced class method stays dead",
+            "consumer_imports.py", "unused_tally")
+
 print(f"{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)
