@@ -264,8 +264,35 @@ def parse_gd(path: Path, rel: str) -> FileSym:
     lines = text.splitlines()
     i = 0
     rpc_pending = False
+    # file-top triple-quoted strings (license headers, help text, dialogue/
+    # template constants) are DATA: their content must never parse as
+    # declarations. Same odd-count sentinel the body scans and python.py's
+    # module loop already track — the top-level loop was the missed one (#106).
+    in_tq = ""
     while i < len(lines):
         line = lines[i]
+        if in_tq:
+            if line.count(in_tq) % 2 == 1:
+                in_tq = ""  # closer seen (odd count may also reopen — rare, accept)
+            i += 1
+            continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            i += 1
+            continue
+        # triple quotes ANYWHERE on the line: everything after the first
+        # delimiter is string content; only the prefix stays parseable.
+        # Complete (even-count) strings vanish entirely.
+        for q in ('"""', "'''"):
+            cnt = line.count(q)
+            if cnt:
+                if cnt % 2 == 1:
+                    in_tq = q
+                line = line.split(q)[0]
+                break
+        if not line.strip():
+            i += 1
+            continue
         m = CLASSNAME_RE.match(line)
         if m:
             fs.class_name = m.group(1)
