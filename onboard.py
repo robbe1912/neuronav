@@ -35,8 +35,11 @@ from pathlib import Path
 TOOL_DIR = Path(__file__).resolve().parent
 
 
-def init(project: Path | None = None, index: bool = False) -> Path:
-    """Write the project-local config scaffold. Returns its path."""
+def scaffold(project: Path | None = None) -> Path:
+    """Write the project-local config scaffold — no env/config switch.
+    Returns the config path. Shared by init() and the universal mount's
+    fresh-dir first contact (server.py, issue #131): one literal, so a
+    scaffold written mid-call is byte-identical to `onboard.py init`'s."""
     import nav
     from extractors import EXTENSIONS
 
@@ -68,6 +71,15 @@ def init(project: Path | None = None, index: bool = False) -> Path:
         if ".neuronav/" not in lines:
             with open(gi, "a", encoding="utf-8", newline="\n") as f:
                 f.write(".neuronav/\n" if lines and lines[-1] == "" else "\n.neuronav/\n")
+    return cfg_path
+
+
+def init(project: Path | None = None, index: bool = False) -> Path:
+    """scaffold + switch this process (and children, via env) onto the
+    new config. Returns the config path."""
+    import nav
+
+    cfg_path = scaffold(project)
     nav.use_config(cfg_path)
     if index:
         _index()
