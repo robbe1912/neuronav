@@ -140,5 +140,79 @@ check("nav.search delegates to recall.search",
       == [h["file"] for h in recall.search("graph signal wiring edges", k=6)],
       str([h["file"] for h in via_nav]))
 
+# 8. graph-neighbor rank boost (issue #73): deterministic post-fusion
+# promotion of 1-hop neighbors. The adjacency here is recomputed
+# straight from g.edges, independent of recall._file_adjacency.
+adj2: dict[str, set[str]] = {}
+for _sk, _dsts in g.edges.items():
+    _sf = _sk.split("::", 1)[0]
+    for _dk in _dsts:
+        _df = _dk.split("::", 1)[0]
+        if _df != _sf:
+            adj2.setdefault(_sf, set()).add(_df)
+            adj2.setdefault(_df, set()).add(_sf)
+
+# 8a. explicit λ=0 (and the module default) are byte-identical no-ops —
+# the plumbing lands default-off.
+z = recall.search("graph signal wiring edges", k=12)
+check("graph_boost=0 is a no-op",
+      json.dumps(recall.search("graph signal wiring edges", k=12, graph_boost=0.0))
+      == json.dumps(z))
+
+# 8b. λ>0 reranks deterministically: byte-identical double run.
+b1 = recall.search("graph signal wiring edges", k=12, graph_boost=1.0)
+b2 = recall.search("graph signal wiring edges", k=12, graph_boost=1.0)
+check("boosted search byte-stable run-to-run", json.dumps(b1) == json.dumps(b2))
+
+# 8c. boost only ever adds: for every doc visible in BOTH top-12s the
+# λ=1 score is at least its λ=0 score (a doc can fall below the cut,
+# but its score is never lowered).
+base_scores = {h["file"]: h["score"] for h in z}
+boost_scores = {h["file"]: h["score"] for h in b1}
+common = set(base_scores) & set(boost_scores)
+check("boost never lowers an existing score",
+      bool(common) and all(boost_scores[f] >= base_scores[f] for f in common))
+
+# 8d. promotion is real: with a strong λ, at least one top-k hit under
+# boost is a 1-hop neighbor of the λ=0 top-1 file — pulled into the
+# rank signal from the graph, not from vec/bm25 lists (src says graph).
+strong = recall.search("graph signal wiring edges", k=12, graph_boost=16.0)
+top0 = z[0]["file"]
+nb0 = adj2.get(top0, set())
+check("strong lambda pulls a 1-hop neighbor of the top hit",
+      top0 in adj2  # non-vacuous: the corpus top hit is wired
+      and any(h["file"] in nb0 for h in strong[:12]) and strong[0]["file"] != top0,
+      f"top0={top0} nbs={sorted(nb0)[:3]} strong={[h['file'] for h in strong[:3]]}")
+
+# 8e. every graph-tagged hit is a genuine 1-hop neighbor of a λ=0
+# top-k source (boost sources are exactly the fused top-k), and λ=0
+# hits never carry the graph tag.
+srcs0 = {h["file"] for h in z[:12]}
+bad_g = [h["file"] for h in b1 if h["src"] == "graph"
+         and not any(h["file"] in adj2.get(s, set()) for s in srcs0)]
+check("graph-tagged hits are real neighbors of top-k sources", not bad_g, str(bad_g))
+check("no graph tag without boost",
+      all(h["src"] in ("vec", "bm25", "both") for h in z))
+
+# 8f. rrf_k sweep plumbing: k=30 sharpens the unit; still byte-stable
+# and still a no-op at λ=0 relative to itself.
+s30 = recall.search("graph signal wiring edges", k=12, rrf_k=30.0)
+s30b = recall.search("graph signal wiring edges", k=12, rrf_k=30.0)
+check("rrf_k override byte-stable", json.dumps(s30) == json.dumps(s30b))
+
+# 8g. degraded mode + boost stays loud: every hit marked, deterministic.
+orig = recall._vector_ranks
+recall._vector_ranks = _boom
+try:
+    with contextlib.redirect_stderr(io.StringIO()) as err:
+        dgb = recall.search("graph signal wiring edges", k=8, graph_boost=1.0)
+        dgb2 = recall.search("graph signal wiring edges", k=8, graph_boost=1.0)
+finally:
+    recall._vector_ranks = orig
+check("degraded + boost marks every hit",
+      bool(dgb) and all(h.get("degraded") is True for h in dgb)
+      and "BM25F-only" in err.getvalue())
+check("degraded + boost deterministic", json.dumps(dgb) == json.dumps(dgb2))
+
 print(f"\n{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)
