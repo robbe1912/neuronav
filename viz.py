@@ -14,342 +14,19 @@ from __future__ import annotations
 import base64
 import re
 import json
-import subprocess
 import sys
-from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 import nav
 import graph
 from layout import (_links_adj, _tarjan_scc, _strata_depths,
                     _strata_analysis, _layout)
-from bake.budget import _cap_rows
-
-
-def _git_head() -> str:
-    """Short HEAD hash of the neuronav repo for the freshness stamp."""
-    try:
-        got = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=str(Path(__file__).resolve().parent),
-            capture_output=True, text=True, timeout=5,
-        )
-        return got.stdout.strip()
-    except Exception:
-        return ""
-
-
-def _churn_hot(paths: list[str]) -> list[float] | None:
-    """Per-file git churn of the TARGET project, normalized to 0..1.
-
-    Counts how often each indexed file appears in the last 90 days of
-    commits (`git log --name-only --since=90.days`) at nav.ROOT — the
-    scanned game repo, not the neuronav tooling repo. Git prints paths
-    relative to the repo top level, which may sit above ROOT, so those
-    are rebased onto ROOT before matching node paths. Returns None
-    (channel disabled — no visual change) when git or history is
-    unavailable.
-    """
-    try:
-        root = str(nav.ROOT)
-        got = subprocess.run(
-            ["git", "log", "--name-only", "--since=90.days", "--pretty=format:"],
-            cwd=root,
-            capture_output=True, text=True, timeout=15,
-        )
-        if got.returncode != 0:
-            return None
-        pre = ""
-        top = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"], cwd=root,
-            capture_output=True, text=True, timeout=5,
-        ).stdout.strip().replace("\\", "/")
-        if top:
-            try:
-                pre = Path(root).resolve().relative_to(Path(top).resolve()).as_posix()
-                if pre in (".", ""):
-                    pre = ""
-                else:
-                    pre += "/"
-            except ValueError:
-                pre = ""
-        touches: dict[str, int] = defaultdict(int)
-        for line in got.stdout.splitlines():
-            line = line.strip().replace("\\", "/")
-            if line and line.startswith(pre):
-                touches[line[len(pre):]] += 1
-        if not touches:
-            return None
-        mx = max(touches.values())
-        return [round(touches.get(p, 0) / mx, 3) for p in paths]
-    except Exception:
-        return None
-
-
-def _attach(clusters):
-    """J1: cluster attach — file -> cluster id + cid -> human label."""
-    # file -> cluster id
-    file_cluster: dict[str, int] = {}
-    for c in clusters:
-        for path, _cls in c["paths"]:
-            file_cluster[path] = int(c["id"])
-
-    # cid -> human label (labeler cascade: autoload > dir > scene > tfidf)
-    cluster_names: dict[str, str] = {
-        str(int(c["id"])): c.get("label") or f"c{c['id']}" for c in clusters
-    }
-    return file_cluster, cluster_names
-
-
-def _dead_flags(g):
-    """J2: dead-code candidate flags; keeps the raw result for meta."""
-    # dead-code candidates per file, normalized by func count: a file with
-    # 2 dead helpers out of 65 is NOT a "dead file" — only flag when a
-    # meaningful share of its funcs is dead. likely counts 1, review 0.5,
-    # so share is "fraction of funcs with any dead candidate".
-    dead = g.dead_code(limit=10**9)
-    dead_weight: dict[str, float] = defaultdict(float)
-    dead_likely: set[str] = set()
-    func_counts: dict[str, int] = {}
-    for rel, fs in g.files.items():
-        if fs.ext == ".gd":
-            func_counts[rel] = len(fs.funcs)
-    for cand in dead["candidates"]:
-        tier = cand["tier"]
-        dead_weight[cand["path"]] += graph.DEAD_TIER_WEIGHTS.get(tier, 0.5)
-        if tier == "likely":
-            dead_likely.add(cand["path"])
-    dead_flag: dict[str, float] = {}
-    for pth, w in dead_weight.items():
-        n = func_counts.get(pth, 0)
-        if n and w / n >= graph.DEAD_SHARE_THRESHOLD:
-            dead_flag[pth] = w
-    return dead_flag, dead_likely, dead
-
-
-def _build_nodes(g, file_cluster, dead_flag, dead_likely):
-    """J3: node roster over nav's index ∪ graph files, path-sorted."""
-    # nodes: files known to nav's index (searchable corpus) ∪ graph files
-    paths = sorted(
-        set(file_cluster)
-        | {rel for rel, fs in g.files.items() if not rel.startswith("assets/")}
-    )
-    idx: dict[str, int] = {}
-    nodes: list[dict] = []
-    for p in paths:
-        fs = g.files.get(p)
-        idx[p] = len(nodes)
-        degree = 0
-        nodes.append(
-            {
-                "id": idx[p],
-                "path": p,
-                "label": p.rsplit("/", 1)[-1],
-                "dir": p.rsplit("/", 1)[0] if "/" in p else "",
-                "ext": fs.ext if fs else Path(p).suffix,
-                "cls": fs.class_name if fs else "",
-                "cluster": file_cluster.get(p, -1),
-                "dead": dead_flag.get(p, 0.0),
-                "dl": p in dead_likely and p in dead_flag,
-            }
-        )
-    return paths, idx, nodes
-
-
-def _build_links(g, idx):
-    """J4: file-level links from typed fn/scene edges, sorted."""
-    # edges: aggregate typed func-level/scene edges to file level.
-    # types: call | signal | inst (scene contains instance) | attach (scene→script)
-    def kfile(k: str) -> str:
-        if k.endswith("::tscn"):
-            return k[: -len("::tscn")]
-        return k.split("::")[0]
-
-    pair_types: dict[tuple[int, int], dict[str, int]] = defaultdict(
-        lambda: defaultdict(int)
-    )
-
-    def add_typed(src_key: str, dst_key: str, tys: set[str]) -> None:
-        if "SIGNAL:" in src_key or "SIGNAL:" in dst_key:
-            return
-        s, t = kfile(src_key), kfile(dst_key)
-        if s == t or s not in idx or t not in idx:
-            return
-        for ty in tys:
-            pair_types[(idx[s], idx[t])][ty] += 1
-
-    for (src_key, dst_key), edge_tys in g.edge_types.items():
-        add_typed(src_key, dst_key, edge_tys)
-
-    for rel, fs in g.files.items():
-        if fs.ext != ".tscn":
-            continue
-        att = fs.attached_script
-        if att:
-            t = att.removeprefix("res://")
-            if rel in idx and t in idx and rel != t:
-                pair_types[(idx[rel], idx[t])]["attach"] += 1
-        for inst in fs.instances:
-            t = inst.removeprefix("res://")
-            if rel in idx and t in idx and rel != t:
-                pair_types[(idx[rel], idx[t])]["inst"] += 1
-
-    links = [
-        {"s": s, "t": t, "w": w, "ty": ty}
-        for (s, t), tys in sorted(pair_types.items())
-        for ty, w in sorted(tys.items())
-    ]
-    return links
-
-
-def _emit_wire_rows(g, idx):
-    """J5: fedges + call/var mwires — ONE iteration emits BOTH exports
-    (map-spec-v2 §0) so the two schemas can never drift."""
-    # function-level call edges: [src_file_idx, src_fn, dst_file_idx, dst_fn, line]
-    # mwires: named-wire map rows [ty, sf, sfn, df, dfn, line, extra]
-    # (map-spec-v2 §0). call rows ride the exact fedges filters — emitted
-    # in the same iteration so the two exports cannot drift — while the
-    # ::VAR: pseudo-node dsts fedges skips are harvested as member wires.
-    fedges: list[list] = []
-    mwires: list[list] = []
-    for src_key, dsts in g.edges.items():
-        if src_key.endswith("::tscn"):  # pseudo source, fn would be "tscn"
-            continue
-        if "::" not in src_key:
-            # file-level source (cpp v1.1 header-scope refs) — no fn to
-            # attribute; its file adjacency already rides the links layer
-            continue
-        s_path, s_fn = src_key.split("::", 1)
-        if s_path not in idx:
-            continue
-        src_fs = g.files.get(s_path)
-        s_line = src_fs.funcs[s_fn].line if src_fs and s_fn in src_fs.funcs else 0
-        for dst_key in dsts:
-            if "::VAR:" in dst_key:
-                # member wire — dst file owns the member; intra-file
-                # skipped like calls (intra-file wires: spec §11 parking lot)
-                d_path, member = dst_key.split("::VAR:", 1)
-                if d_path in idx and d_path != s_path:
-                    mwires.append(
-                        ["var", idx[s_path], s_fn, idx[d_path], member, s_line, None]
-                    )
-                continue
-            if (
-                dst_key.endswith("::tscn")
-                or "::SIGNAL:" in dst_key
-            ):
-                continue
-            if "::" not in dst_key:
-                # fn -> whole-file edge (cpp v1.1 template/instantiation
-                # refs resolve to the target's file, not a fn): file-level
-                # ink comes from the links layer; the fn layer skips it
-                continue
-            d_path, d_fn = dst_key.split("::", 1)
-            if d_path not in idx or d_path == s_path:
-                continue
-            fedges.append([idx[s_path], s_fn, idx[d_path], d_fn, s_line])
-            mwires.append(
-                ["call", idx[s_path], s_fn, idx[d_path], d_fn, s_line, None]
-            )
-
-    # canonical row order: g.edges values are sets (PYTHONHASHSEED varies
-    # their iteration order across processes) — export paths must never
-    # leak set order; mirrors the deterministic named-wire sort below
-    fedges.sort(key=lambda e: (e[0], e[1], e[2], e[3], e[4]))
-    return fedges, mwires
-
-
-def _signal_wires(g, idx):
-    """J6: signal mwires rows + resolution counters (rows join the single
-    post-concat sort in _build_data)."""
-    # signal wires: scene connections resolved against the scene's script
-    # ext_resources via graph.script_rels — the same cascade _wire_tscn
-    # wires edges from, so the corridor channel can never drift from the
-    # graph. A connection resolving in N scripts yields N rows; one
-    # resolving in none counts into meta.sig_unresolved — the anonymous
-    # amber corridor channel (map-spec-v2 §1/F13).
-    rows: list[list] = []
-    sig_resolved = 0
-    sig_unresolved = 0
-    for rel, fs in g.files.items():
-        if fs.ext != ".tscn" or rel not in idx:
-            continue
-        script_rels = g.script_rels(fs)
-        for sig_name, handler in fs.connections:
-            hit = [
-                s_rel
-                for s_rel in script_rels
-                if handler in g.files[s_rel].funcs and s_rel in idx
-            ]
-            if hit:
-                sig_resolved += 1
-                for s_rel in hit:
-                    rows.append(
-                        ["signal", idx[rel], sig_name, idx[s_rel], handler, 0, None]
-                    )
-            else:
-                sig_unresolved += 1
-    return rows, sig_resolved, sig_unresolved
-
-
-def _wire_budget(fedges, mwires, paths, rank_of):
-    """J7: engine-scale wire byte budget — whole FILE PAIRS kept by
-    pagerank priority (rank_of), re-emitted in ascending original order."""
-    # engine-scale export budget (spec §4 row 10): named-wire rows grow
-    # ~12/file and would push the engine bake past the bootable-html size.
-    # Below the byte cap nothing changes (self-index/game-target bake identical);
-    # above it, whole FILE PAIRS are kept by pagerank priority — call rows
-    # and their fedges mirrors share a pair, so the two exports stay
-    # consistent — until the budget is spent. Deterministic: fixed sort
-    # keys, whole-pair keeps, original emission order preserved.
-    wire_dropped = 0
-    _WIRE_BYTE_CAP = 2_600_000
-    if (len(json.dumps(fedges, separators=(",", ":")))
-            + len(json.dumps(mwires, separators=(",", ":"))) > _WIRE_BYTE_CAP):
-        groups: dict[tuple, list] = {}
-        for i, r in enumerate(fedges):
-            groups.setdefault((r[0], r[2]), [[], []])[0].append(i)
-        for i, r in enumerate(mwires):
-            groups.setdefault((r[1], r[3]), [[], []])[1].append(i)
-
-        def _pair_cost(pair) -> int:
-            fe, mw = groups[pair]
-            # +1 per row: the joining comma each kept row adds to the
-            # serialized list (caps are enforced on the real bake bytes)
-            return (sum(len(json.dumps(fedges[i], separators=(",", ":"))) + 1 for i in fe)
-                    + sum(len(json.dumps(mwires[i], separators=(",", ":"))) + 1 for i in mw))
-
-        kept_pairs, _pairs_dropped = _cap_rows(
-            list(groups),
-            prio_key=lambda p: (
-                -rank_of(paths[p[0]]) - rank_of(paths[p[1]]),
-                paths[p[0]], paths[p[1]],
-            ),
-            cost_of=_pair_cost,
-            cap=_WIRE_BYTE_CAP,
-        )
-        keep_fe: list[int] = []
-        keep_mw: list[int] = []
-        for pair in kept_pairs:
-            keep_fe.extend(groups[pair][0])
-            keep_mw.extend(groups[pair][1])
-        wire_dropped = (len(fedges) - len(keep_fe)) + (len(mwires) - len(keep_mw))
-        fedges = [fedges[i] for i in sorted(keep_fe)]
-        mwires = [mwires[i] for i in sorted(keep_mw)]
-    return fedges, mwires, wire_dropped
-
-
-def _fn_roster(g, paths):
-    """J8: complete per-file fn roster [name, line], line order (spec §0)."""
-    fns: dict[str, list[list]] = {}
-    for p in paths:
-        fs = g.files.get(p)
-        if fs and fs.funcs:
-            fns[p] = [
-                [fn.name, fn.line]
-                for fn in sorted(fs.funcs.values(), key=lambda fn: (fn.line, fn.name))
-            ]
-    return fns
+from bake.files_model import _attach, _dead_flags, _build_nodes, _build_links
+from bake.wires import _emit_wire_rows, _signal_wires, _wire_budget, _fn_roster
+from bake.semantics import _cluster_matrix
+from bake.overlays import _highways, _cap_highways, _crosstalk_top
+from bake.fnio import _fn_io, _cap_fnio
+from bake.gitinfo import head, churn
 
 
 def _fetch_embeddings(paths):
@@ -444,44 +121,6 @@ def _supergroups(clusters, paths, emb):
     return cid_gid, groups2
 
 
-def _cluster_matrix(paths, nodes, emb):
-    """J11: cluster-centroid cosine matrix from the bake's one embedding
-    fetch — independent try, so a kNN-stage failure never degrades cmat
-    (the monolith's second fetch was equally independent)."""
-    # cluster-level semantic sims for the layout: cosine between cluster
-    # embedding centroids (mean of member embeddings). Drives cluster
-    # springs + repulsion caps so semantically related clusters (VFX
-    # family) sit as neighbors in the galaxy. Degrades to None.
-    ckeys: list = []
-    cmat = None
-    if emb is None:
-        return ckeys, cmat
-    emb_idx, embs = emb
-    try:
-        import numpy as cnp
-
-        p2c = {nd["path"]: nd["cluster"] for nd in nodes}
-        groups: dict = {}
-        for r_i, p in enumerate([p for p in paths if p in emb_idx]):
-            ci = p2c.get(p, -1)
-            if ci >= 0:
-                groups.setdefault(ci, []).append(embs[r_i])
-        ckeys = sorted(groups)
-        cent = cnp.stack([
-            cnp.mean(cnp.stack(groups[c]), axis=0) for c in ckeys
-        ])
-        cn = cnp.linalg.norm(cent, axis=1, keepdims=True)
-        cn[cn == 0] = 1.0
-        cent /= cn
-        cmat = (cent @ cent.T).astype(cnp.float32)
-        cnp.fill_diagonal(cmat, 0.0)
-        cmat = cmat.tolist()
-    except Exception:
-        ckeys = []
-        cmat = None
-    return ckeys, cmat
-
-
 def _layout_stage(nodes, links, sims, ckeys, cmat):
     """J12: strata depths + churn channel + frozen offline layout.
     Aborts the bake loudly when the layout pass fails."""
@@ -496,7 +135,7 @@ def _layout_stage(nodes, links, sims, ckeys, cmat):
     # commit can never bake layout ≠ legend. The overlap relax MUST
     # use the same radii the browser draws or hot files overlap
     # neighbors; None when git/history is unavailable.
-    hot = _churn_hot([nd["path"] for nd in nodes])
+    hot = churn([nd["path"] for nd in nodes], str(nav.ROOT))
     try:
         pos_baked = _layout(
             len(nodes), links, sims, [nd["cluster"] for nd in nodes],
@@ -505,155 +144,6 @@ def _layout_stage(nodes, links, sims, ckeys, cmat):
     except Exception as e:
         raise RuntimeError(f"offline layout failed: {e}") from e
     return pos_baked, depths, cyc_ids, hot
-
-
-def _highways(pos_baked, nodes, links):
-    """J13: long inter-cluster links as bundled bezier arc polylines."""
-    # highways: long inter-cluster links render as bundled quadratic bezier
-    # arcs (16 segments) instead of straight chords — straight ring-diameter
-    # edges visually re-fused the galaxy core. Control point sits on the
-    # endpoint midpoint pulled 0.45 toward the cluster-centroid midpoint so
-    # same-corridor edges share an arc. Layout-only sibling of links[]: the
-    # browser renders these curved, hover/BFS/degree keep using links[].
-    hw = []
-    if pos_baked is not None:
-        try:
-            import numpy as _np
-            P = _np.asarray(pos_baked, dtype=_np.float32)
-            cl = [nd["cluster"] for nd in nodes]
-            cen = {}
-            for ci in set(cl):
-                if ci >= 0:
-                    m = P[[k for k, c in enumerate(cl) if c == ci]]
-                    cen[ci] = m.mean(axis=0)
-            for li, l in enumerate(links):
-                a, b = cl[l["s"]], cl[l["t"]]
-                if a < 0 or b < 0 or a == b:
-                    continue
-                if _np.linalg.norm(P[l["t"]] - P[l["s"]]) <= 140.0:
-                    continue
-                mid = (P[l["s"]] + P[l["t"]]) * 0.5
-                ctrl = mid + (cen[a] + cen[b]) * 0.5 * 0.45 - mid * 0.45
-                # ring-distributed clusters put both the edge midpoint and
-                # the centroid-corridor midpoint near the galaxy center, so
-                # the pull alone leaves long arcs nearly straight — add a
-                # deterministic perpendicular bow so every highway reads as
-                # a curve; capped so long chords don't sweep far past their
-                # chord offscreen at close zoom (bow apex = half this value)
-                ch = P[l["t"]] - P[l["s"]]
-                chl = float(_np.linalg.norm(ch))
-                # radial-out bias: corridors that cut through the galaxy
-                # core (centroid-midpoint pull aims them there) pass over
-                # the hub pile and re-create the hairball under additive
-                # blending. Bow them outward around the core instead; a
-                # corridor whose midpoint sits AT the core gets no radial
-                # direction, so fall back to the chord perpendicular.
-                out = mid - P.mean(axis=0)
-                out[1] = 0.0
-                ol = float(_np.linalg.norm(out))
-                if ol > 40.0:
-                    ctrl = ctrl + (out / ol) * min(40.0 + 0.30 * ol, 260.0)
-                perp = _np.cross(ch, [0.0, 0.0, 1.0])
-                pl = float(_np.linalg.norm(perp))
-                if pl < 0.001:
-                    perp = _np.array([1.0, 0.0, 0.0])
-                else:
-                    perp = perp / pl
-                ctrl = ctrl + perp * min(chl * 0.2, 80.0)
-                if ol <= 40.0:
-                    ctrl = ctrl + perp * min(chl * 0.25, 120.0)
-                pts = []
-                for k in range(17):
-                    u = k / 16.0
-                    p = (1-u)*(1-u)*P[l["s"]] + 2*(1-u)*u*ctrl + u*u*P[l["t"]]
-                    pts.append([round(float(x), 1) for x in p])
-                hw.append([li, pts])
-        except Exception:
-            hw = []
-    return hw
-
-
-def _cap_highways(hw, links):
-    """J14: hw arc byte budget — heaviest links first, ties by index."""
-    # hw arc budget (spec §4 row 10): bezier control polylines are ~400 B
-    # each and scale with long inter-cluster links. Below the cap nothing
-    # changes; above it arcs of the heaviest links survive first (ties by
-    # link index), re-emitted in ascending link order like the uncapped
-    # path.
-    hw_dropped = 0
-    _HW_BYTE_CAP = 1_500_000
-    if len(json.dumps(hw, separators=(",", ":"))) > _HW_BYTE_CAP:
-        kept_hw, _ = _cap_rows(
-            range(len(hw)),
-            prio_key=lambda i: (-links[hw[i][0]]["w"], hw[i][0]),
-            cost_of=lambda i: len(json.dumps(hw[i], separators=(",", ":"))) + 1,
-            cap=_HW_BYTE_CAP,
-        )
-        hw_dropped = len(hw) - len(kept_hw)
-        hw = [hw[i] for i in sorted(kept_hw)]
-    return hw, hw_dropped
-
-
-def _fn_io(g):
-    """J15: per-function IO surface keyed "path::func"."""
-    # per-function IO surface (params / ret / member writes / mutated params),
-    # keyed "path::func". consumed by the fn click panel (signature line +
-    # write chips), the focus-label writes-state badge and the mutators
-    # filter. skipped entirely when a function has nothing to say.
-    fio: dict[str, dict] = {}
-    for rel, fs in g.files.items():
-        for fn in fs.funcs.values():
-            if not (fn.params or fn.ret or fn.writes or fn.mut_params):
-                continue
-            sig = ", ".join(f"{p}: {t}" if t else p for p, t in fn.params)
-            fio[f"{rel}::{fn.name}"] = {
-                "sig": f"{fn.name}({sig})",
-                "ret": fn.ret,
-                "w": sorted(fn.writes),
-                "mp": sorted(fn.mut_params),
-            }
-    return fio
-
-
-def _cap_fnio(fio, rank_of):
-    """J16: fio byte budget — survives by file pagerank, ties by key."""
-    # fio byte budget (spec §4 row 10): per-fn IO signatures carry C++
-    # type strings (200-300 B/row at engine scale). Below the cap nothing
-    # changes; above it entries survive by pagerank of their file (ties by
-    # key), so hover IO stays richest on the files that matter.
-    fio_dropped = 0
-    _FIO_BYTE_CAP = 3_000_000
-    if len(json.dumps(fio, separators=(",", ":"))) > _FIO_BYTE_CAP:
-        kept_units, _ = _cap_rows(
-            list(fio.items()),
-            prio_key=lambda kv: (
-                -rank_of(kv[0].split("::", 1)[0]), kv[0],
-            ),
-            cost_of=lambda kv: len(json.dumps([kv[0], kv[1]], separators=(",", ":"))) + 1,
-            cap=_FIO_BYTE_CAP,
-        )
-        fio_dropped = len(fio) - len(kept_units)
-        fio = dict(kept_units)
-    return fio, fio_dropped
-
-
-def _crosstalk_top(links, nodes):
-    """J17: top inter-cluster corridors (count desc, then cid asc)."""
-    # crosstalk corridors: top inter-cluster file pairs by edge count, baked
-    # for the overview labels. Deterministic order: count desc, then cid asc.
-    cl_of = [nd["cluster"] for nd in nodes]
-    pair_n: dict = {}
-    for l in links:
-        ca, cb = cl_of[l["s"]], cl_of[l["t"]]
-        if ca < 0 or cb < 0 or ca == cb:
-            continue
-        key = (ca, cb) if ca < cb else (cb, ca)
-        pair_n[key] = pair_n.get(key, 0) + 1
-    crosstalk = [
-        {"a": a, "b": b, "n": k}
-        for (a, b), k in sorted(pair_n.items(), key=lambda kv: (-kv[1], kv[0][0], kv[0][1]))[:5]
-    ]
-    return crosstalk
 
 
 def _assemble(nodes, links, fedges, mwires, fns, hw, fio, pos, hot,
@@ -682,7 +172,7 @@ def _assemble(nodes, links, fedges, mwires, fns, hw, fio, pos, hot,
             # freshness stamp: when this DATA was generated and from which
             # neuronav commit (rendered in #stats so stale pages are obvious)
             "generated_at": datetime.now().isoformat(timespec="seconds"),
-            "git": _git_head(),
+            "git": head(Path(__file__).resolve().parent),
             # strata channel: height = call depth from entry files
             "strata": True,
             "depth": depths,
@@ -718,7 +208,8 @@ def _build_data() -> dict:
     clusters = nav.clusters()
 
     file_cluster, cluster_names = _attach(clusters)
-    dead_flag, dead_likely, dead = _dead_flags(g)
+    dead_flag, dead_likely, dead = _dead_flags(
+        g, graph.DEAD_TIER_WEIGHTS, graph.DEAD_SHARE_THRESHOLD)
     paths, idx, nodes = _build_nodes(g, file_cluster, dead_flag, dead_likely)
     links = _build_links(g, idx)
 
