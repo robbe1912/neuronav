@@ -11,8 +11,12 @@ time; config travels with the project):
   4. no config: pure defaults — root = cwd, include ``.``, extensions =
      every registered extractor suffix, state = ``<root>/.neuronav``.
 Per-project state (issue #15): everything a config generates lives under
-``state_dir`` (default ``<root>/.neuronav``) - chroma store at ``chroma/``,
-base shards at ``base/``, viz bake at ``graph.html``. No auto-migration.
+``state_dir`` - chroma store at ``chroma/``, base shards at ``base/``,
+viz bake at ``graph.html``. No auto-migration. A config file MUST carry
+the key (issue #91): the silent ``<root>/.neuronav`` default reads and
+writes a store inside the scanned root, so a state_dir-less config aborts
+at load — ``"default"`` is the explicit opt-in (onboard.py init writes
+it); only the no-config pure-defaults leg keeps the implicit default.
 """
 
 from __future__ import annotations
@@ -114,10 +118,27 @@ def _apply_config(path: Path | None) -> None:
     # auto-rescans without waiting for a tool call (issue #19)
     WATCH_INTERVAL_S = float(cfg.get("watch_interval_s") or 0.0)
     # per-project state: chroma store, base shards and the viz bake all
-    # derive from one dir — explicit "state_dir" honored, default
-    # <root>/.neuronav. Relative values resolve against the config file's
-    # own dir (same law as "root"), so shipped profiles stay portable.
-    STATE_DIR = Path(cfg.get("state_dir") or ROOT / ".neuronav")
+    # derive from one dir — explicit "state_dir" honored; "default" is
+    # the opt-in for <root>/.neuronav. Relative values resolve against
+    # the config file's own dir (same law as "root"), so shipped
+    # profiles stay portable. Issue #91: a config WITHOUT the key used
+    # to silently default to <root>/.neuronav — a store inside the
+    # scanned root, so any rescan read and wrote it directly (the door
+    # that wiped a live store). Such configs abort at load with the
+    # exact fix; only the no-config pure-defaults leg keeps the
+    # implicit default — there is no config to fix there.
+    _sd = cfg.get("state_dir")
+    if path is not None and not _sd:
+        raise SystemExit(
+            f"config '{path}' sets no \"state_dir\" — its default "
+            f"{ROOT / '.neuronav'} sits inside the scanned root, so any "
+            "rescan would read and write that store directly (issue #91: "
+            "this silent default is how a live store got wiped). Fix the "
+            "config json: \"state_dir\": \"<scratch path>\" for a store "
+            "of your own, or \"state_dir\": \"default\" to opt into "
+            "<root>/.neuronav (onboard.py init writes the opt-in)"
+        )
+    STATE_DIR = ROOT / ".neuronav" if _sd is None or _sd == "default" else Path(_sd)
     if not STATE_DIR.is_absolute() and path is not None:
         STATE_DIR = (path.parent / STATE_DIR).resolve()
     else:

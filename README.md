@@ -73,7 +73,8 @@ python /path/to/neuronav/onboard.py wire --index
 ```
 
 That's the whole setup: it writes `<project>/.neuronav/config.json`
-(walk-everything defaults, extensions = every registered extractor suffix)
+(walk-everything defaults, extensions = every registered extractor suffix,
+and a `"state_dir": "default"` opt-in — see below)
 plus a `.neuroignore` beside it (one dir-name-per-line excludes, pre-seeded
 with the `.tmp`/`.team_scratch` scratch conventions — edit freely, no json
 surgery), appends `.neuronav/` to the project's `.gitignore`, indexes the
@@ -89,13 +90,16 @@ Config discovery when you run `nav.py`/`server.py` yourself:
 one `onboard.py init` writes) → `config.json` next to `nav.py` *only when
 cwd is the checkout* (machine-local default) → pure defaults (root = cwd,
 walk everything). An explicit `NEURONAV_CONFIG` that points at a missing
-file aborts at load, and a rescan that matches zero files aborts too — no
-silent fallback that quietly re-points the walk and purges the previous
-profile's entries. Read tools auto-rescan on worktree drift, so an explicit
+file aborts at load, a rescan that matches zero files aborts too, and a
+config without `state_dir` aborts the same way (issue #91: the silent
+`<root>/.neuronav` default is a store inside the scanned root;
+`"default"` is the opt-in, `onboard.py init` writes it) — no silent
+fallback that quietly re-points the walk or the store, or purges the
+previous profile's entries. Read tools auto-rescan on worktree drift, so an explicit
 `rescan()` is only needed after big refactors. Upgrading from an install
 whose state sat machine-local? Nothing moves automatically: the next rescan
 builds a fresh `.neuronav/` store (one-time re-embed), or set `state_dir`
-explicitly to keep the old location.
+explicitly (`"default"` = `<root>/.neuronav`) to keep the old location.
 
 Agent-facing guidance for consuming repos: `templates/agents-snippet.md`.
 
@@ -161,6 +165,10 @@ gate, extractor rules. Every change lands via pull request.
 - `NEURONAV_CONFIG points at '<path>', which does not exist` — deliberate
   abort, not a fallback: the explicit var is a contract. Unset it or point
   it at a real config json (`onboard.py init` writes one).
+- `config '<path>' sets no "state_dir"` — deliberate abort (issue #91):
+  the default would be `<root>/.neuronav`, a store inside the scanned
+  root. Set `state_dir` to a path of your own, or `"default"` to opt
+  into `<root>/.neuronav` (`onboard.py init` writes the opt-in).
 - `rescan found 0 files under root=...` — the config matches nothing
   (typo'd `include_dirs`/`extensions`); fix the config instead of
   accepting an empty index.

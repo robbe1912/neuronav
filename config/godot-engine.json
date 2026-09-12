@@ -1,6 +1,7 @@
 {
   "root": "E:/GitRepos/godot-engine",
   "collection": "engine-stable",
+  "state_dir": "default",
   "include_dirs": ["core", "scene", "servers", "editor", "modules", "drivers"],
   "extensions": [".h", ".cpp"],
   "exclude_dirs": ["thirdparty", "platform", "demos", "misc", ".git"]
