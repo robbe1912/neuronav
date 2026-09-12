@@ -13,11 +13,11 @@ python -m venv .venv
 ollama pull qwen3-embedding:0.6b          # default embedding backend; any OpenAI-compatible /embeddings endpoint also works (config/AGENTS.md)
 ```
 
-Windows is the primary dev platform. CI is the gate: the six hermetic
+Windows is the primary dev platform. CI is the gate: the seven hermetic
 suites (`test_strata`, `test_crosslang`, `test_pyhard`, `test_cpphard`,
-`test_autorescan`, `test_project_mode`) run on ubuntu with
-`NEURONAV_EMBED_FAKE=1`; the rest (real embeds, Playwright, the external
-target repo) are local gates.
+`test_autorescan`, `test_searchtext`, `test_project_mode`) run on ubuntu
+with `NEURONAV_EMBED_FAKE=1`; the rest (real embeds, Playwright, the
+external target repo) are local gates.
 
 ## Layout
 
