@@ -1,60 +1,61 @@
 {
  "set": "sweep",
  "config": "gb2-k120",
- "commit": "6c54708",
- "dirty": true,
+ "commit": "2b9cbbe",
+ "dirty": false,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
- "files": 34,
+ "files": 44,
  "k": 12,
+ "golden": "84b58c13512fb282",
  "gb_lambda": 2.0,
  "gb_rrf_k": 120.0,
- "hit@1": 0.16,
- "hit@5": 0.64,
- "hit@10": 0.92,
- "mrr": 0.396,
- "reach@5": 0.64,
- "reach@10": 0.92,
+ "hit@1": 0.2,
+ "hit@5": 0.6,
+ "hit@10": 0.84,
+ "mrr": 0.384,
+ "reach@5": 0.6,
+ "reach@10": 0.84,
  "by_kind": {
   "exact": {
    "n": 10,
-   "hit@1": 0.1,
-   "hit@5": 0.7,
-   "hit@10": 1.0,
-   "mrr": 0.4
+   "hit@1": 0.2,
+   "hit@5": 0.8,
+   "hit@10": 0.8,
+   "mrr": 0.445
   },
   "symbol": {
    "n": 4,
    "hit@1": 0.0,
    "hit@5": 0.25,
    "hit@10": 0.75,
-   "mrr": 0.125
+   "mrr": 0.129
   },
   "prose": {
    "n": 9,
    "hit@1": 0.333,
-   "hit@5": 0.778,
+   "hit@5": 0.556,
    "hit@10": 0.889,
-   "mrr": 0.531
+   "mrr": 0.446
   },
   "cross": {
    "n": 2,
    "hit@1": 0.0,
    "hit@5": 0.5,
    "hit@10": 1.0,
-   "mrr": 0.306
+   "mrr": 0.312
   }
  },
  "per_query": [
   {
    "q": "parse_tscn",
-   "rank": 2,
-   "ctx5": true,
-   "ctx10": true
+   "rank": 5,
+   "ctx5": false,
+   "ctx10": false
   },
   {
    "q": "sha256_of",
-   "rank": 3,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
@@ -66,7 +67,7 @@
   },
   {
    "q": "registry_for",
-   "rank": 6,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
@@ -78,20 +79,20 @@
   },
   {
    "q": "_fold_continuations",
-   "rank": 6,
-   "ctx5": false,
+   "rank": 2,
+   "ctx5": true,
    "ctx10": true
   },
   {
    "q": "_has_exact",
-   "rank": 6,
+   "rank": 12,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "_lexical_fallback",
    "rank": 3,
-   "ctx5": false,
+   "ctx5": true,
    "ctx10": true
   },
   {
@@ -108,7 +109,7 @@
   },
   {
    "q": "NoCacheHandler",
-   "rank": 8,
+   "rank": 7,
    "ctx5": false,
    "ctx10": false
   },
@@ -132,13 +133,13 @@
   },
   {
    "q": "where do godot scene resources get read",
-   "rank": 2,
+   "rank": 8,
    "ctx5": false,
-   "ctx10": true
+   "ctx10": false
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": 2,
+   "rank": 10,
    "ctx5": false,
    "ctx10": false
   },
@@ -156,13 +157,13 @@
   },
   {
    "q": "how are subsystem names chosen from member vocabulary",
-   "rank": 5,
+   "rank": 4,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "which module hosts the agent protocol on stdin and stdout",
-   "rank": 12,
+   "rank": 9,
    "ctx5": false,
    "ctx10": false
   },
@@ -180,7 +181,7 @@
   },
   {
    "q": "how is visual clutter of the rendered page measured",
-   "rank": 6,
+   "rank": 11,
    "ctx5": false,
    "ctx10": false
   },
@@ -192,7 +193,7 @@
   },
   {
    "q": "how are node positions computed reproducibly before baking",
-   "rank": 9,
+   "rank": 8,
    "ctx5": false,
    "ctx10": false
   }

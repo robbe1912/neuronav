@@ -17,16 +17,19 @@ live shared index.
 
 Runs are recorded as bench/runs/<set>-<config>.json (rank-level evidence,
 not raw scores); RESULTS.md is re-rendered from all records, so reruns with
-identical metrics produce byte-identical output.
+identical metrics produce byte-identical output. Every record stamps the
+golden-set fingerprint it was measured against; render() refuses records
+from a different (or unfingerprinted) golden set instead of silently
+drawing '?' cells (issue #104).
 
 Usage:
-  .venv/Scripts/python.exe -X utf8 bench/run_bench.py --set before --configs vec
+  .venv/Scripts/python.exe -X utf8 bench/run_bench.py --set after --configs vec
   .venv/Scripts/python.exe -X utf8 bench/run_bench.py --set fake --fake
   .venv/Scripts/python.exe -X utf8 bench/run_bench.py --verify-only
 
 --repo PATH  checkout to measure (default: this script's repo). Point it at
-             a detached worktree for before/after attribution by commit.
---set NAME   record set: before | after | fake (fake implies CI plumbing mode).
+             a detached worktree for per-commit attribution.
+--set NAME   record set: after | fake | sweep (fake implies CI plumbing mode).
 --fake       NEURONAV_EMBED_FAKE=1 (deterministic hash embeddings; coherent
              only against a collection built in the same mode — use a fresh
              checkout/.neuronav per mode).
@@ -35,6 +38,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -74,6 +78,15 @@ def _load_golden() -> list[dict]:
     queries = data["queries"]
     assert len(queries) == 25, f"golden set must stay at 25 queries, got {len(queries)}"
     return queries
+
+def _golden_fp(queries: list[dict] | None = None) -> str:
+    """Stable fingerprint of the golden query set — full rows (q, kind,
+    targets, anchor: all of them move metrics), order-insensitive. Stamped
+    into every record at write time; render() refuses records whose stamp
+    doesn't match the current golden (issue #104)."""
+    rows = _load_golden() if queries is None else queries
+    canon = "\n".join(sorted(json.dumps(r, sort_keys=True, ensure_ascii=False) for r in rows))
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
@@ -263,6 +276,7 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool) -> int:
 
     commit = _git(repo, "rev-parse", "--short", "HEAD") or "unknown"
     dirty = bool(_git(repo, "status", "--porcelain"))
+    fp = _golden_fp()
 
     runs_dir = BENCH_DIR / "runs"
     runs_dir.mkdir(exist_ok=True)
@@ -278,6 +292,7 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool) -> int:
             "model": "hash-embed" if fake else nav.EMBED_MODEL,
             "files": nav.count(),
             "k": K,
+            "golden": fp,
             **{kk: v for kk, v in result.items() if kk != "per_query"},
             "per_query": result["per_query"],
         }
@@ -320,6 +335,8 @@ def sweep(repo: Path) -> int:
     queries = _load_golden()
     commit = _git(repo, "rev-parse", "--short", "HEAD") or "unknown"
     dirty = bool(_git(repo, "status", "--porcelain"))
+    fp = _golden_fp()
+
     runs_dir = BENCH_DIR / "runs"
     runs_dir.mkdir(exist_ok=True)
     for lam in GB_LAMBDAS:
@@ -339,6 +356,7 @@ def sweep(repo: Path) -> int:
                 "model": nav.EMBED_MODEL,
                 "files": nav.count(),
                 "k": K,
+                "golden": fp,
                 "gb_lambda": lam,
                 "gb_rrf_k": kk,
                 **{key: v for key, v in result.items() if key != "per_query"},
@@ -429,8 +447,8 @@ def _per_query_table(prefix: str, recs: dict[str, dict]) -> list[str]:
     for row in golden:
         cells = []
         for c in present:
-            r = by_q[c].get(row["q"])  # records can predate a golden query
-            cells.append("?" if r is None else ("·" if r["rank"] is None else str(r["rank"])))
+            r = by_q[c][row["q"]]  # exact: _assert_records_current gates coverage (issue #104)
+            cells.append("·" if r["rank"] is None else str(r["rank"]))
         lines.append(f"| `{row['q']}` | {row['kind']} | " + " | ".join(cells) + " |")
     lines += ["", "</details>", ""]
     return lines
@@ -455,13 +473,16 @@ def _sweep_table(recs: dict[str, dict]) -> list[str]:
         "double-run — wins inside the documented Ollama ±jitter are treated as",
         "ties.",
         "",
-        "Verdict: λ 0.25 @ rrf_k 30 is the only cell beating λ 0 (hit@1 0.520 vs",
-        "0.440, MRR 0.651 vs 0.624, back-to-back on one store); every λ ≥ 0.5",
-        "loses monotonically (hub files crowd out precise matches). The win is a",
-        "single cell on one corpus, so `recall.GRAPH_BOOST` stays 0.0 — plumbing",
-        "landed default-off — and the `gb` config pins the winner for opted-in",
-        "evaluation. Cross-store deltas (before vs after tables) carry ±jitter;",
-        "the same-store `gb` vs `both` rows are the boost's attribution.",
+        "Verdict (re-swept at 2b9cbbe on the 44-file index, issue #104): λ 0.25 @",
+        "rrf_k 30 again tops hit@1 — 0.400 vs 0.320–0.360 across every λ=0 cell,",
+        "and the after-table `gb` row pins it — while its MRR 0.567 sits in",
+        "near-tie range of gb0-k30 (0.576); the retired 34-file sweep crowned the",
+        "same cell cleanly (hit@1 0.520 vs 0.440, MRR 0.651 vs 0.624). Every",
+        "λ ≥ 0.5 loses monotonically in both sweeps (hub files crowd out precise",
+        "matches). The win is a single cell on one corpus, so `recall.GRAPH_BOOST`",
+        "stays 0.0 — plumbing landed default-off — and the `gb` config pins the",
+        "winner for opted-in evaluation. Cross-store deltas (across commits)",
+        "carry ±jitter; the same-store `gb` vs `both` rows are the attribution.",
         "",
         "| config | hit@1 | hit@5 | hit@10 | MRR | reach@5 | reach@10 |",
         "|---|---|---|---|---|---|---|",
@@ -472,9 +493,25 @@ def _sweep_table(recs: dict[str, dict]) -> list[str]:
     lines += [_metrics_row(r) for r in rows]
     return lines + [""]
 
+def _assert_records_current(recs: dict[str, dict]) -> None:
+    """Loud coherence gate (issue #104): a golden swap without re-running
+    left records whose per_query rows no longer matched the golden set —
+    render KeyErrored on them, then silently drew '?' cells. Refuse to
+    render mixed evidence; name every stale record."""
+    fp = _golden_fp()
+    stale = [f"{key}.json" for key in sorted(recs) if recs[key].get("golden") != fp]
+    if stale:
+        raise RuntimeError(
+            f"stale bench records vs the current golden set (issue #104): {', '.join(stale)}\n"
+            "these were measured against a different (or unfingerprinted) golden set.\n"
+            "Re-run each stale set on the current golden — see the Rerun section of\n"
+            "bench/RESULTS.md — then render; refusing to mix evidence."
+        )
+
 
 def render() -> None:
     recs = _records()
+    _assert_records_current(recs)
     lines = [
         "# Recall benchmark — neuronav self-index",
         "",
@@ -487,7 +524,9 @@ def render() -> None:
         "each time: Ollama fp non-determinism can flip a near-tie — observed once",
         "on the baseline (hit@5 0.72 vs 0.76, MRR ±0.005, one query); docs embed",
         "once (sha-incremental store), so document-side ranks stay fixed. Documented",
-        "±jitter is the ceiling; all committed records below were double-run.",
+        "±jitter is the ceiling; all committed records below were double-run. Every",
+        "record stamps the golden-set fingerprint it was measured against; render",
+        "refuses to mix in records from a different golden set (issue #104).",
         "",
         "Configs: `vec` = cosine only · `bm25` = +BM25F reciprocal-rank fusion ·",
         "`expand` = +bidirectional 1-hop ctx · `both` = the shipped default ·",
@@ -500,36 +539,48 @@ def render() -> None:
         "",
     ]
     sets = [
-        ("before", "Before — merge-base 63b6f1f (pre-boost, pre-two-pass, `recall.search` defaults)"),
-        ("after", "After — recall branch (graph-boost winner in `gb`, two-pass in `twopass`)"),
+        ("after", "After — current main (graph-boost winner in `gb`, two-pass in `twopass`)"),
         ("fake", "FAKE mode — `NEURONAV_EMBED_FAKE=1` plumbing battery"),
-        ("tp", "Two-pass A/B — `feat/two-pass-recall` head 62ef727 (pre-boost baselines + `twopass`)"),
+    ]
+    retired = [
+        "## Retired evidence (issue #104)",
+        "",
+        "The pre-boost `before` set (merge-base 63b6f1f) and the two-pass `tp` set",
+        "(`feat/two-pass-recall` head 62ef727) were measured against a golden set",
+        "whose seeded-rng query targeted `viz.py`. Issue #86 moved that code to",
+        "`layout.py`, so `--verify-only` fails at those commits and the sets cannot",
+        "be re-run coherently — their records were dropped rather than kept stale.",
+        "The verdicts they justified (boost default-off, two-pass plumbed behind a",
+        "flag) are merged; the historical tables live in git history, and the",
+        "ablation rows (vec/bm25/expand/both) are re-measured at the current",
+        "commit inside the After table below.",
+        "",
     ]
     for prefix, note in sets:
         chunk = _set_table(prefix, recs, note)
         if chunk:
             lines += chunk + [""]
         lines += _kind_table(prefix, recs)
+    lines += retired
     lines += _sweep_table(recs)
     lines += _per_query_table("after", recs)
-    lines += _per_query_table("before", recs)
     lines += [
         "## Rerun",
         "",
         "```",
-        "git worktree add --detach ../bench-before 63b6f1f",
-        ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set before --configs vec,bm25,expand,both,wfused --repo ../bench-before",
-        "git worktree add --detach ../bench-after <after-commit>",
-        ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set after --repo ../bench-after",
-        ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set sweep --repo ../bench-after",
-        ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set fake --fake --repo ../bench-after",
+        "git worktree add --detach ../bench-measure <commit>",
+        ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set after --repo ../bench-measure",
+        ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set sweep --repo ../bench-measure",
+        ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set fake --fake --repo ../bench-measure",
         "```",
         "",
-        "Before/after are measured in detached worktrees (`git worktree add --detach",
-        "<dir> <commit>`), each with its own `.neuronav/` state store, so the live shared index is",
-        "never touched and attribution is by commit. Ordering: run real sets first,",
-        "fake last — fake mode wipes the worktree store for embed-mode coherence,",
-        "and a real run after it would embed queries against sha-equal fake docs.",
+        "All sets are measured in a detached worktree (`git worktree add --detach",
+        "<dir> <commit>`), with its own `.neuronav/` state store, so the live shared",
+        "index is never touched and attribution is by commit. Ordering: run real sets",
+        "first, fake last — fake mode wipes the worktree store for embed-mode",
+        "coherence, and a real run after it would embed queries against sha-equal",
+        "fake docs. Records carry a golden fingerprint; a golden edit without a",
+        "re-run makes `--render-only` fail loudly naming the stale records.",
     ]
     (BENCH_DIR / "RESULTS.md").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     scratch = DEFAULT_REPO / ".team_scratch" / "bench"
@@ -541,7 +592,7 @@ def render() -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description="recall benchmark over the self-index")
     ap.add_argument("--repo", default=str(DEFAULT_REPO))
-    ap.add_argument("--set", choices=["before", "after", "fake", "sweep"], default="after")
+    ap.add_argument("--set", choices=["after", "fake", "sweep"], default="after")
     ap.add_argument("--configs", default=",".join(CONFIGS))
     ap.add_argument("--fake", action="store_true")
     ap.add_argument("--verify-only", action="store_true")

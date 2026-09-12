@@ -22,8 +22,10 @@ neuronav are backed by artifacts in this repo (`bench/RESULTS.md`,
    field-weighted) fused with vector similarity via RRF. Zero-model operation
    is available (`src=bm25`) when no embedding backend is reachable — the
    semantic layer is additive, not a hard dependency. Measured on the
-   25-query golden set (`bench/RESULTS.md`): hit@1 .24→.40, exact-name
-   hit@5 .50→.80, MRR .470→.595 over vector-only. Concept/prose queries
+   25-query golden set (`bench/RESULTS.md`): hit@5 .56→.80, exact-name
+   hit@5 .40→.70, MRR .44→.55 over vector-only (hit@1 at parity within the
+   documented embed jitter); the deterministic two-pass retrieve tops the
+   table at hit@5 .88 / MRR .66. Concept/prose queries
    ("where is X applied") are the query class pure-symbol tools answer only
    if the agent guesses the right noun.
 2. **Engine-native semantics.** GDScript/`.tscn` scene instancing edges,

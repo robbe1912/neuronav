@@ -1,46 +1,47 @@
 {
  "set": "fake",
  "config": "vec",
- "commit": "9157e86",
+ "commit": "2b9cbbe",
  "dirty": false,
  "mode": "fake",
  "model": "hash-embed",
- "files": 34,
+ "files": 44,
  "k": 12,
- "hit@1": 0.04,
+ "golden": "84b58c13512fb282",
+ "hit@1": 0.08,
  "hit@5": 0.12,
- "hit@10": 0.4,
- "mrr": 0.104,
+ "hit@10": 0.32,
+ "mrr": 0.116,
  "reach@5": 0.12,
- "reach@10": 0.4,
+ "reach@10": 0.32,
  "by_kind": {
   "exact": {
    "n": 10,
    "hit@1": 0.0,
    "hit@5": 0.0,
    "hit@10": 0.2,
-   "mrr": 0.042
+   "mrr": 0.027
   },
   "symbol": {
    "n": 4,
    "hit@1": 0.0,
    "hit@5": 0.25,
    "hit@10": 0.5,
-   "mrr": 0.098
+   "mrr": 0.078
   },
   "prose": {
    "n": 9,
-   "hit@1": 0.111,
-   "hit@5": 0.111,
-   "hit@10": 0.556,
-   "mrr": 0.176
+   "hit@1": 0.222,
+   "hit@5": 0.222,
+   "hit@10": 0.333,
+   "mrr": 0.245
   },
   "cross": {
    "n": 2,
    "hit@1": 0.0,
-   "hit@5": 0.5,
+   "hit@5": 0.0,
    "hit@10": 0.5,
-   "mrr": 0.1
+   "mrr": 0.062
   }
  },
  "per_query": [
@@ -58,7 +59,7 @@
   },
   {
    "q": "titleize",
-   "rank": 9,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
@@ -82,7 +83,7 @@
   },
   {
    "q": "_has_exact",
-   "rank": 8,
+   "rank": 10,
    "ctx5": false,
    "ctx10": false
   },
@@ -94,13 +95,13 @@
   },
   {
    "q": "import_base",
-   "rank": 11,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "find_functions",
-   "rank": 11,
+   "rank": 6,
    "ctx5": false,
    "ctx10": false
   },
@@ -118,25 +119,25 @@
   },
   {
    "q": "FileSym",
-   "rank": 4,
+   "rank": 5,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "Func",
-   "rank": 7,
+   "rank": 9,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "where do godot scene resources get read",
-   "rank": 12,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": 8,
+   "rank": 12,
    "ctx5": false,
    "ctx10": false
   },
@@ -160,13 +161,13 @@
   },
   {
    "q": "which module hosts the agent protocol on stdin and stdout",
-   "rank": 7,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "single call that shows a newcomer how the codebase is organized",
-   "rank": 9,
+   "rank": 1,
    "ctx5": false,
    "ctx10": false
   },
@@ -190,7 +191,7 @@
   },
   {
    "q": "how are node positions computed reproducibly before baking",
-   "rank": 5,
+   "rank": 8,
    "ctx5": false,
    "ctx10": false
   }
