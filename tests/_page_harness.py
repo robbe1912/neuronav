@@ -12,20 +12,57 @@
 #               settled; optional console/pageerror capture (#98 class:
 #               uncaught JS errors ride the pageerror channel even when no
 #               console.error call is made).
-#   probe_dbg() window.__dbg boot probe — False means a broken bake.
+#   boot_banner() line-1 provenance stamp: which config won, which state
+#               dir, and the graph.html size/mtime about to be served —
+#               a wrong-bake run is visible before the first check (#89
+#               class; CodeRabbit on #145).
 #   CheckLog    the check(name, cond, detail) accumulator with the suite's
 #               summary/exit contract: every failed check named at the end,
 #               exit 1 on any.
 # Import: test_viz gets this via sys.path[0] (tests/); qa_readability via
 # the repo root on sys.path (`tests._page_harness`).
 import http.server
+import os
 import socketserver
 import sys
 import threading
+import time
 from functools import partial
+from pathlib import Path
 
 VIEWPORT = {"width": 1600, "height": 900}
 SETTLE_MS = 4000  # frozen layout — settle only, no animation dependence
+
+
+def _active_config_label() -> str:
+    """Best-effort mirror of nav's documented config resolution order:
+    $NEURONAV_CONFIG wins; else <cwd>/.neuronav/config.json; else the
+    checkout config.json (only when cwd IS the checkout); else defaults.
+    The STATE_DIR the banner prints beside it is nav's actual resolution —
+    ground truth; this label is context."""
+    env = os.environ.get("NEURONAV_CONFIG")
+    if env:
+        return f"NEURONAV_CONFIG={env}"
+    local = Path.cwd() / ".neuronav" / "config.json"
+    if local.exists():
+        return f"auto: {local}"
+    checkout = Path(__file__).resolve().parents[1] / "config.json"
+    if Path.cwd() == checkout.parent and checkout.exists():
+        return f"auto: {checkout}"
+    return "auto: nav defaults (no env, no config file)"
+
+
+def boot_banner(directory) -> None:
+    """Line-1 provenance for every gate log: config + state dir + bake
+    stat. An exported override or a stale/missing bake must be visible
+    BEFORE any check runs."""
+    bake = Path(directory) / "graph.html"
+    try:
+        st = bake.stat()
+        bake_s = f"graph.html {st.st_size} B, mtime {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(st.st_mtime))}"
+    except OSError:
+        bake_s = "graph.html MISSING — regenerate the bake before gating (stale-bake trap)"
+    print(f"[page-harness] config={_active_config_label()} state_dir={Path(directory).resolve()} · {bake_s}", flush=True)
 
 
 class _ReuseTCPServer(socketserver.TCPServer):
@@ -39,6 +76,7 @@ def serve(directory, reuse: bool = False):
     qa_readability bound with allow_reuse_address, test_viz without.
     Teardown is the caller's: httpd.shutdown() then httpd.server_close().
     """
+    boot_banner(directory)
     handler = partial(http.server.SimpleHTTPRequestHandler, directory=str(directory))
     cls = _ReuseTCPServer if reuse else socketserver.TCPServer
     httpd = cls(("127.0.0.1", 0), handler)

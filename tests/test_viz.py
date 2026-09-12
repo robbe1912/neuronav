@@ -1,6 +1,7 @@
 # neuronav viz QA harness — drives the real page in headless Chrome.
 # Run: .venv/Scripts/python.exe -X utf8 tests/test_viz.py  (exit 0 = all pass)
 # Uses system Chrome via channel="chrome" (no browser download needed).
+import os
 import sys
 import re
 from pathlib import Path
@@ -13,6 +14,12 @@ ROOT = Path(__file__).resolve().parents[1]
 SHOTS = ROOT / ".tmp" / "shots"
 SHOTS.mkdir(parents=True, exist_ok=True)
 sys.path.insert(0, str(ROOT))
+# CI guard (opt-in, #89 class): an exported NEURONAV_CONFIG silently
+# redirects this gate at a foreign store. Strict runs refuse it instead —
+# locally the override stays the sanctioned scratch-store mechanism.
+if os.environ.get("NEURONAV_STRICT_DEFAULT") == "1" and os.environ.get("NEURONAV_CONFIG"):
+    sys.exit("test_viz: NEURONAV_STRICT_DEFAULT=1 refuses an exported NEURONAV_CONFIG "
+             f"({os.environ['NEURONAV_CONFIG']!r}) — unset one of the two")
 import nav  # noqa: E402  (the bake lives in the active config's state dir)
 
 LOG = CheckLog()
