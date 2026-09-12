@@ -60,7 +60,7 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `config/` | named config profiles; `config.json` (root, gitignored) is the default |
 | `vendor/three-0.160.0/` | vendored three.js core + 4 addons, embedded at build (see below) |
 | `bench/` | recall benchmark: golden set, `run_bench.py`, committed results (`RESULTS.md`) — the numbers `docs/comparison.md` cites |
-| `tests/` | 17 self-contained suites + committed fixtures (see `tests/AGENTS.md`) |
+| `tests/` | 18 self-contained suites + committed fixtures (see `tests/AGENTS.md`) |
 | `docs/map-spec-v2.md` | spec the named-wire map layer implements |
 
 ## viz.py template laws
@@ -136,6 +136,7 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_project_mode` | onboarding + config discovery precedence + viz-as-add-on (issue #27) | stdlib + chromadb import (hermetic temp trees) |
 | `test_viz` | 103-check Playwright harness (real Chrome) | playwright + chrome + a fresh bake |
 | `test_verifier` | Kythe-style verifier fixtures (issue #66): `//-`-shaped goal comments in fixture sources, asserted against extractor output | stdlib + tree-sitter/tree-sitter-cpp (extractor-level only: no config, no index, no chroma) |
+| `test_bench` | bench record/golden coherence (issue #104): golden fingerprint determinism, render fails loud naming stale records, coherent sandbox render e2e | stdlib (bench/run_bench.py render path only; no config, no index, no embeds) |
 
 Playwright harness gotchas: launch `channel="chrome"`; it serves `graph.html`
 on an ephemeral loopback port (issue #132) — viz gates may run concurrently,
