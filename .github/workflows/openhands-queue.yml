@@ -1,11 +1,12 @@
 name: openhands-queue
 
-# 24/7 external-agent queue: hourly, if no @openhands claim is open, invoke
-# @openhands on the lowest-numbered issue labeled `agent-queue` (explicit
-# per-issue opt-in). The claim workflow then scaffolds the linked draft PR.
+# 24/7 external-agent queue: every 3h (fits the OpenHands Cloud free tier's
+# 10 conversations/day), if no @openhands claim is open, invoke @openhands on
+# the lowest-numbered issue labeled `agent-queue` (explicit per-issue opt-in).
+# The claim workflow then scaffolds the linked draft PR.
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "0 */3 * * *"
   workflow_dispatch: {}
 
 concurrency:
