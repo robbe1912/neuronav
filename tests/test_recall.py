@@ -200,6 +200,14 @@ s30 = recall.search("graph signal wiring edges", k=12, rrf_k=30.0)
 s30b = recall.search("graph signal wiring edges", k=12, rrf_k=30.0)
 check("rrf_k override byte-stable", json.dumps(s30) == json.dumps(s30b))
 
+# 8f'. negative boost is rejected loudly, not silently clamped.
+try:
+    recall.search("graph signal wiring edges", k=12, graph_boost=-0.5)
+    neg_raised = False
+except ValueError as e:
+    neg_raised = "graph_boost" in str(e)
+check("negative graph_boost raises ValueError", neg_raised)
+
 # 8g. degraded mode + boost stays loud: every hit marked, deterministic.
 orig = recall._vector_ranks
 recall._vector_ranks = _boom

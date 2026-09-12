@@ -311,7 +311,9 @@ def search(
     sweeps."""
     k = max(1, min(k, 50))
     w_vec, w_lex = weights if weights is not None else (1.0, 1.0)
-    lam = GRAPH_BOOST if graph_boost is None else max(0.0, graph_boost)
+    if graph_boost is not None and graph_boost < 0.0:
+        raise ValueError(f"graph_boost must be >= 0, got {graph_boost}")
+    lam = GRAPH_BOOST if graph_boost is None else graph_boost
     krrf = RRF_K if rrf_k is None else rrf_k
     depth = max(16, 4 * k)
 
