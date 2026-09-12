@@ -354,42 +354,16 @@ def _fn_roster(g, paths):
     return fns
 
 
-def _build_data() -> dict:
-    g = graph.get_graph()
-    clusters = nav.clusters()
-
-    file_cluster, cluster_names = _attach(clusters)
-    dead_flag, dead_likely, dead = _dead_flags(g)
-    paths, idx, nodes = _build_nodes(g, file_cluster, dead_flag, dead_likely)
-    links = _build_links(g, idx)
-
-    # lazy pagerank shared by the wire + fio budgets (J7/J16 over-cap
-    # branches only — small-repo bakes never compute it)
-    _rank = None
-
-    def rank_of(path: str) -> float:
-        nonlocal _rank
-        if _rank is None:
-            _rank = g.pagerank()
-        return _rank.get(path, 0.0)
-
-    fedges, mwires = _emit_wire_rows(g, idx)
-    sig_rows, sig_resolved, sig_unresolved = _signal_wires(g, idx)
-    mwires.extend(sig_rows)
-    # deterministic named-wire order: ty, sf, df, dfn, sfn, line (spec §0)
-    mwires.sort(key=lambda w: (w[0], w[1], w[3], w[4], w[2], w[5]))
-    fedges, mwires, wire_dropped = _wire_budget(fedges, mwires, paths, rank_of)
-    fns = _fn_roster(g, paths)
-
-    n_clusters = len(clusters)
-
+def _knn_sims(paths):
+    """J9: semantic kNN pairs; owns chroma fetch #1 and hands the
+    normalized embeddings to _supergroups so the pair share one fetch
+    exactly as the monolith did. Returns (sims, emb-or-None)."""
     # semantic kNN pairs from nav's embedding store — layout-only forces,
     # never rendered as edges: mutual top-6 neighbours with cosine >= 0.45
     # (mutual links resist transitive chaining, mirroring nav.clusters()).
     # Degrades to [] if the chroma store is missing/empty.
     sims: list[list] = []
-    cid_gid: dict[int, int] = {}   # fine cluster id -> supergroup id
-    groups2: list[dict] = []
+    emb = None
     try:
         import numpy as np
 
@@ -414,35 +388,49 @@ def _build_data() -> dict:
                     b = int(b)
                     if a < b and a in knn[b] and sim[a, b] >= 0.45:
                         sims.append([a, b, round(float(sim[a, b]), 4)])
-            # two-level navigation: coarse supergroups over the fine
-            # clusters (scipy average-linkage over embedding centroids,
-            # clusters.coarse_groups). Optional UI level — degrades to []
-            # when scipy/embeddings are unavailable.
-            try:
-                from clusters import coarse_groups
-
-                emb_paths = [p for p in paths if p in emb_idx]
-                for grp in coarse_groups(clusters, emb_paths, embs):
-                    cids = [
-                        int(clusters[ci]["id"])
-                        for ci in grp["cluster_ids"]
-                        if 0 <= ci < len(clusters)
-                    ]
-                    for cid in cids:
-                        cid_gid[cid] = grp["id"]
-                    groups2.append(
-                        {"id": grp["id"], "label": grp["label"], "cids": cids}
-                    )
-            except Exception:
-                cid_gid = {}
-                groups2 = []
+            emb = (emb_idx, embs)
     except Exception:
         sims = []
+    return sims, emb
 
-    # supergroup id per node (gid; -1 = unclustered / groups unavailable)
-    for nd in nodes:
-        nd["gid"] = cid_gid.get(nd["cluster"], -1)
 
+def _supergroups(clusters, paths, emb):
+    """J10: coarse supergroups over the fine clusters, from the kNN
+    stage's embeddings. Empty when emb is None (kNN stage failed) or
+    scipy/coarse_groups is unavailable."""
+    cid_gid: dict[int, int] = {}   # fine cluster id -> supergroup id
+    groups2: list[dict] = []
+    if emb is None:
+        return cid_gid, groups2
+    emb_idx, embs = emb
+    # two-level navigation: coarse supergroups over the fine
+    # clusters (scipy average-linkage over embedding centroids,
+    # clusters.coarse_groups). Optional UI level — degrades to []
+    # when scipy/embeddings are unavailable.
+    try:
+        from clusters import coarse_groups
+
+        emb_paths = [p for p in paths if p in emb_idx]
+        for grp in coarse_groups(clusters, emb_paths, embs):
+            cids = [
+                int(clusters[ci]["id"])
+                for ci in grp["cluster_ids"]
+                if 0 <= ci < len(clusters)
+            ]
+            for cid in cids:
+                cid_gid[cid] = grp["id"]
+            groups2.append(
+                {"id": grp["id"], "label": grp["label"], "cids": cids}
+            )
+    except Exception:
+        cid_gid = {}
+        groups2 = []
+    return cid_gid, groups2
+
+
+def _cluster_matrix(paths, nodes):
+    """J11: cluster-centroid cosine matrix for layout springs; owns
+    chroma fetch #2 (byte-identical call to fetch #1 — V7 dedupes)."""
     # cluster-level semantic sims for the layout: cosine between cluster
     # embedding centroids (mean of member embeddings). Drives cluster
     # springs + repulsion caps so semantically related clusters (VFX
@@ -482,7 +470,12 @@ def _build_data() -> dict:
     except Exception:
         ckeys = []
         cmat = None
+    return ckeys, cmat
 
+
+def _layout_stage(nodes, links, sims, ckeys, cmat):
+    """J12: strata depths + churn channel + frozen offline layout.
+    Aborts the bake loudly when the layout pass fails."""
     # frozen layout: deterministic offline sim bakes positions into DATA so
     # the browser loads a settled picture (no live global sim, no 900-tick
     # settle, identical output across regenerations). No in-browser fallback:
@@ -502,6 +495,49 @@ def _build_data() -> dict:
         )
     except Exception as e:
         raise RuntimeError(f"offline layout failed: {e}") from e
+    return pos_baked, depths, cyc_ids, hot
+
+
+def _build_data() -> dict:
+    g = graph.get_graph()
+    clusters = nav.clusters()
+
+    file_cluster, cluster_names = _attach(clusters)
+    dead_flag, dead_likely, dead = _dead_flags(g)
+    paths, idx, nodes = _build_nodes(g, file_cluster, dead_flag, dead_likely)
+    links = _build_links(g, idx)
+
+    # lazy pagerank shared by the wire + fio budgets (J7/J16 over-cap
+    # branches only — small-repo bakes never compute it)
+    _rank = None
+
+    def rank_of(path: str) -> float:
+        nonlocal _rank
+        if _rank is None:
+            _rank = g.pagerank()
+        return _rank.get(path, 0.0)
+
+    fedges, mwires = _emit_wire_rows(g, idx)
+    sig_rows, sig_resolved, sig_unresolved = _signal_wires(g, idx)
+    mwires.extend(sig_rows)
+    # deterministic named-wire order: ty, sf, df, dfn, sfn, line (spec §0)
+    mwires.sort(key=lambda w: (w[0], w[1], w[3], w[4], w[2], w[5]))
+    fedges, mwires, wire_dropped = _wire_budget(fedges, mwires, paths, rank_of)
+    fns = _fn_roster(g, paths)
+
+    n_clusters = len(clusters)
+
+    sims, emb = _knn_sims(paths)
+    cid_gid, groups2 = _supergroups(clusters, paths, emb)
+
+    # supergroup id per node (gid; -1 = unclustered / groups unavailable)
+    for nd in nodes:
+        nd["gid"] = cid_gid.get(nd["cluster"], -1)
+
+    ckeys, cmat = _cluster_matrix(paths, nodes)
+    pos_baked, depths, cyc_ids, hot = _layout_stage(
+        nodes, links, sims, ckeys, cmat
+    )
 
     # highways: long inter-cluster links render as bundled quadratic bezier
     # arcs (16 segments) instead of straight chords — straight ring-diameter
