@@ -45,9 +45,19 @@ from pathlib import Path
 BENCH_DIR = Path(__file__).resolve().parent
 DEFAULT_REPO = BENCH_DIR.parent
 K = 12  # contract: nav.search(q, k=12)
-CONFIGS = ("vec", "bm25", "expand", "both", "wfused")
-NEEDS = {"vec": (), "bm25": ("bm25",), "expand": ("expand",), "both": ("bm25", "expand"), "wfused": ("bm25", "expand", "weights")}
+CONFIGS = ("vec", "bm25", "expand", "both", "wfused", "gb")
+NEEDS = {"vec": (), "bm25": ("bm25",), "expand": ("expand",), "both": ("bm25", "expand"), "wfused": ("bm25", "expand", "weights"), "gb": ("bm25", "expand", "gboost")}
 WFUSED_WEIGHTS = (1.0, 0.7)  # (vec, bm25) — Main-pinned weighted fusion vs unweighted RRF k=60
+# graph-neighbor boost (issue #73): gb = both + boost at the pinned
+# winner below. λ multiplies the RRF unit 1/(rrf_k+1); each fused top-k
+# source adds λ·unit/(source rank) to every distinct 1-hop file
+# neighbor. Winner picked from the deterministic GB_LAMBDAS × GB_RRF_KS
+# sweep (--set sweep) on the golden set, real embeds, double-run —
+# numbers in bench/RESULTS.md.
+GB_LAMBDA = 0.25  # swept winner: λ 0.25 @ rrf_k 30 (h1 +0.08 vs λ=0, double-run stable)
+GB_RRF_K = 30.0  # every λ ≥ 0.5 lost to plain fusion; GRAPH_BOOST default stays 0.0
+GB_LAMBDAS = (0.0, 0.25, 0.5, 1.0, 2.0)
+GB_RRF_KS = (30.0, 60.0, 120.0)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -127,7 +137,6 @@ def _normalize(hits: list) -> list[dict]:
 
 
 def _run_config(repo: Path, search_fn, config: str, queries: list[dict]) -> dict:
-    flags = NEEDS[config]
     per_query = []
     for row in queries:
         hits = _normalize(search_fn(row["q"]))
@@ -241,6 +250,9 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool) -> int:
                 kw = {"k": K, "bm25": "bm25" in flags, "expand": "expand" in flags}
                 if "weights" in flags:
                     kw["weights"] = WFUSED_WEIGHTS
+                if "gboost" in flags:
+                    kw["graph_boost"] = GB_LAMBDA
+                    kw["rrf_k"] = GB_RRF_K
                 return recall.search(query, **kw)
             return nav.search(query, n=K)
 
@@ -274,6 +286,69 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool) -> int:
             f"hit@10={result['hit@10']} mrr={result['mrr']} "
             f"reach@5={result['reach@5']} reach@10={result['reach@10']}"
         )
+    render()
+    return 0
+
+
+def sweep(repo: Path) -> int:
+    """λ × RRF-k grid over the golden set (issue #73): `both` + the
+    graph-neighbor boost at every (λ, k) cell, one rescan up front,
+    deterministic grid order (λ outer, k inner). Real embeds only —
+    the sweep arbitrates quality; fake mode is a plumbing battery, not
+    a signal. Records land in bench/runs/sweep-*.json."""
+    os.environ["NEURONAV_CONFIG"] = str(repo / "config" / "neuronav.json")
+    sys.path.insert(0, str(repo))
+
+    import nav  # noqa: E402  (binds the self-index profile via NEURONAV_CONFIG)
+    import recall  # noqa: E402
+
+    import httpx
+
+    try:
+        httpx.get("http://127.0.0.1:11434/api/tags", timeout=10)
+    except Exception as e:
+        raise RuntimeError(f"sweep needs Ollama on 11434: {e}") from e
+
+    if verify_golden(repo):
+        return 3
+
+    stats = nav.rescan()  # sha-incremental: docs embed once, cells only re-embed queries
+    print(f"index: {nav.count()} files (rescan {stats['added']}+/{stats['updated']}~/{stats['deleted']}-)")
+
+    queries = _load_golden()
+    commit = _git(repo, "rev-parse", "--short", "HEAD") or "unknown"
+    dirty = bool(_git(repo, "status", "--porcelain"))
+    runs_dir = BENCH_DIR / "runs"
+    runs_dir.mkdir(exist_ok=True)
+    for lam in GB_LAMBDAS:
+        for kk in GB_RRF_KS:
+            name = f"gb{lam:g}-k{kk:g}"
+
+            def search(query: str, _lam=lam, _kk=kk):
+                return recall.search(query, k=K, graph_boost=_lam, rrf_k=_kk)
+
+            result = _run_config(repo, search, name, queries)
+            record = {
+                "set": "sweep",
+                "config": name,
+                "commit": commit,
+                "dirty": dirty,
+                "mode": "real",
+                "model": nav.EMBED_MODEL,
+                "files": nav.count(),
+                "k": K,
+                "gb_lambda": lam,
+                "gb_rrf_k": kk,
+                **{key: v for key, v in result.items() if key != "per_query"},
+                "per_query": result["per_query"],
+            }
+            out = runs_dir / f"sweep-{name}.json"
+            out.write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8", newline="\n")
+            print(
+                f"sweep/{name}: hit@1={result['hit@1']} hit@5={result['hit@5']} "
+                f"hit@10={result['hit@10']} mrr={result['mrr']} "
+                f"reach@5={result['reach@5']} reach@10={result['reach@10']}"
+            )
     render()
     return 0
 
@@ -359,6 +434,43 @@ def _per_query_table(prefix: str, recs: dict[str, dict]) -> list[str]:
     return lines
 
 
+def _sweep_table(recs: dict[str, dict]) -> list[str]:
+    rows = [r for r in recs.values() if r.get("set") == "sweep"]
+    if not rows:
+        return []
+    rows.sort(key=lambda r: (r["gb_lambda"], r["gb_rrf_k"]))
+    head = rows[0]
+    lines = [
+        "### λ × RRF-k sweep — graph-neighbor rank boost (issue #73)",
+        "",
+        f"commit `{head['commit']}`{' (dirty tree)' if head['dirty'] else ''} · "
+        f"mode **{head['mode']}** · model `{head['model']}` · {head['files']} indexed files · k={head['k']}",
+        "",
+        "Boost: each fused top-k source adds λ/(rrf_k+1)/(source rank) to every",
+        "distinct 1-hop file neighbor (accumulated across sources; docs outside",
+        "both rank lists enter with src=graph). Baseline row = `both` (λ 0) at the",
+        "same commit and store as the winner. Deterministic grid, every cell",
+        "double-run — wins inside the documented Ollama ±jitter are treated as",
+        "ties.",
+        "",
+        "Verdict: λ 0.25 @ rrf_k 30 is the only cell beating λ 0 (hit@1 0.520 vs",
+        "0.440, MRR 0.651 vs 0.624, back-to-back on one store); every λ ≥ 0.5",
+        "loses monotonically (hub files crowd out precise matches). The win is a",
+        "single cell on one corpus, so `recall.GRAPH_BOOST` stays 0.0 — plumbing",
+        "landed default-off — and the `gb` config pins the winner for opted-in",
+        "evaluation. Cross-store deltas (before vs after tables) carry ±jitter;",
+        "the same-store `gb` vs `both` rows are the boost's attribution.",
+        "",
+        "| config | hit@1 | hit@5 | hit@10 | MRR | reach@5 | reach@10 |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    base = recs.get("after-both")
+    if base:
+        lines.append(_metrics_row(dict(base, config="both (λ=0)")))
+    lines += [_metrics_row(r) for r in rows]
+    return lines + [""]
+
+
 def render() -> None:
     recs = _records()
     lines = [
@@ -379,11 +491,13 @@ def render() -> None:
         "`expand` = +bidirectional 1-hop ctx · `both` = the shipped default ·",
         "`wfused` = `both` with weighted RRF (vec 1.0 / bm25 0.7) instead of the",
         "pinned unweighted k=60.",
+        "`gb` = `both` + the swept graph-neighbor boost (λ winner, see the",
+        "λ × RRF-k sweep section).",
         "",
     ]
     sets = [
-        ("before", "Before — pre-fusion baseline (27c437b era, `nav.search`)"),
-        ("after", "After — recall-hybrid (`recall.search`)"),
+        ("before", "Before — merge-base 63b6f1f (pre-boost, `recall.search` defaults)"),
+        ("after", "After — graph-boost branch (winner pinned in the `gb` config)"),
         ("fake", "FAKE mode — `NEURONAV_EMBED_FAKE=1` plumbing battery"),
     ]
     for prefix, note in sets:
@@ -391,16 +505,18 @@ def render() -> None:
         if chunk:
             lines += chunk + [""]
         lines += _kind_table(prefix, recs)
+    lines += _sweep_table(recs)
     lines += _per_query_table("after", recs)
     lines += _per_query_table("before", recs)
     lines += [
         "## Rerun",
         "",
         "```",
-        "git worktree add --detach ../bench-before 27c437b",
-        ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set before --configs vec --repo ../bench-before",
+        "git worktree add --detach ../bench-before 63b6f1f",
+        ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set before --configs vec,bm25,expand,both,wfused --repo ../bench-before",
         "git worktree add --detach ../bench-after <after-commit>",
         ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set after --repo ../bench-after",
+        ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set sweep --repo ../bench-after",
         ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set fake --fake --repo ../bench-after",
         "```",
         "",
@@ -420,7 +536,7 @@ def render() -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description="recall benchmark over the self-index")
     ap.add_argument("--repo", default=str(DEFAULT_REPO))
-    ap.add_argument("--set", choices=["before", "after", "fake"], default="after")
+    ap.add_argument("--set", choices=["before", "after", "fake", "sweep"], default="after")
     ap.add_argument("--configs", default=",".join(CONFIGS))
     ap.add_argument("--fake", action="store_true")
     ap.add_argument("--verify-only", action="store_true")
@@ -447,6 +563,8 @@ def main() -> int:
             "leave them (sha-unchanged) -> fake query vectors vs real docs."
         )
         return 2
+    if args.set == "sweep":
+        return sweep(repo)
     return run(repo, args.set, configs, fake)
 
 

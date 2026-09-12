@@ -8,6 +8,10 @@ Pure stdlib on the lexical side, no embedding backend dependency:
   length — no embed truncation; module-level code and scene XML are
   covered by the structured fields instead).
 - reciprocal-rank fusion (k=60) of chroma vector ranks + BM25 ranks.
+- optional post-fusion graph-neighbor boost (issue #73, default off,
+  ``GRAPH_BOOST``): the fused top-k each promote their 1-hop wire
+  neighbors by a rank-decayed λ·RRF-unit bump — the λ × RRF-k sweep
+  that chose the default lives in bench/RESULTS.md.
 - bidirectional 1-hop expansion: each hit carries up to 3 context
   labels — its strongest-wired graph neighbors, never itself.
 
@@ -33,6 +37,11 @@ RRF_K = 60.0
 BM25_K1 = 1.2
 BM25_B = 0.75
 CTX_CAP = 3
+# 1-hop graph-neighbor rank boost, default OFF (issue #73). λ is a
+# multiplier of the RRF unit 1/(rrf_k+1): each fused top-k source adds
+# λ·unit/(source rank) to every distinct 1-hop file neighbor. The swept
+# winner lives in bench/RESULTS.md; 0.0 keeps the pinned hybrid intact.
+GRAPH_BOOST = 0.0
 
 # (field, weight) — order aligned with BM25F._field_texts
 FIELDS: tuple[tuple[str, float], ...] = (
@@ -191,15 +200,19 @@ def _vector_ranks(query: str, depth: int) -> tuple[list[str], dict[str, dict]]:
 
 
 def _fuse(
-    vec: list[str], lex: list[str], w_vec: float = 1.0, w_lex: float = 1.0
+    vec: list[str],
+    lex: list[str],
+    w_vec: float = 1.0,
+    w_lex: float = 1.0,
+    rrf_k: float = RRF_K,
 ) -> list[tuple[str, float, str]]:
-    """Reciprocal-rank fusion (k=60) with src tagging and optional
-    per-list weights (unweighted = the literal contract form). Sorted
-    by (-score, path) — byte-stable for identical rank lists."""
+    """Reciprocal-rank fusion (default k=60) with src tagging and
+    optional per-list weights (unweighted = the literal contract form).
+    Sorted by (-score, path) — byte-stable for identical rank lists."""
     score: dict[str, float] = {}
     for ranks, w in ((vec, w_vec), (lex, w_lex)):
         for i, doc in enumerate(ranks):
-            score[doc] = score.get(doc, 0.0) + w / (RRF_K + 1.0 + i)
+            score[doc] = score.get(doc, 0.0) + w / (rrf_k + 1.0 + i)
     in_vec = frozenset(vec)
     in_lex = frozenset(lex)
     fused = [
@@ -213,6 +226,39 @@ def _fuse(
     ]
     fused.sort(key=lambda t: (-t[1], t[0]))
     return fused
+
+
+def _graph_boost(
+    fused: list[tuple[str, float, str]],
+    g,
+    k: int,
+    lam: float,
+    rrf_k: float,
+) -> list[tuple[str, float, str]]:
+    """Post-fusion 1-hop neighbor promotion (issue #73): each of the
+    fused top-k sources, in fused order, adds one rank-decayed bump
+    lam/(rrf_k+1)/(source rank) to every distinct 1-hop file neighbor —
+    a file wired to several top hits accumulates their consensus.
+    Neighbors absent from the fused lists enter with src "graph".
+    Iteration is fused order, then (-wires, path) per source, so float
+    accumulation order is fixed; the re-sort by (-score, path) makes
+    the output byte-stable run-to-run."""
+    adj = _file_adjacency(g)
+    scores = {doc: s for doc, s, _src in fused}
+    srcs = {doc: src for doc, _s, src in fused}
+    for pos, (doc, _s, _src) in enumerate(fused[:k]):
+        row = adj.get(doc)
+        if not row:
+            continue
+        bump = lam / (rrf_k + 1.0) / (pos + 1.0)
+        for nb, _w in sorted(row.items(), key=lambda kv: (-kv[1], kv[0])):
+            if nb == doc:
+                continue
+            scores[nb] = scores.get(nb, 0.0) + bump
+            srcs.setdefault(nb, "graph")
+    out = [(d, round(s, 6), srcs[d]) for d, s in scores.items()]
+    out.sort(key=lambda t: (-t[1], t[0]))
+    return out
 
 
 def _file_adjacency(g) -> dict[str, dict[str, int]]:
@@ -244,21 +290,31 @@ def hop_context(files: list[str], g, cap: int = CTX_CAP) -> dict[str, list[str]]
         ]
     return out
 
-
 def search(
     query: str,
     k: int = 12,
     bm25: bool = True,
     expand: bool = True,
     weights: tuple[float, float] | None = None,
+    graph_boost: float | None = None,
+    rrf_k: float | None = None,
 ) -> list[dict[str, object]]:
     """Hybrid recall: chroma vector ranks fused with BM25F lexical
     ranks, each hit carrying 1-hop graph context labels. ``bm25`` /
     ``expand`` are the bench switches (False, False = the pure-vector
     baseline behavior). ``weights`` = (vec, bm25) list weights for
-    fusion arbitration; None keeps the pinned unweighted RRF k=60."""
+    fusion arbitration; None keeps the pinned unweighted RRF k=60.
+    ``graph_boost`` = λ multiplier of the RRF unit 1/(rrf_k+1) — each
+    fused top-k source promotes its 1-hop wire neighbors by
+    λ·unit/(source rank); None keeps the module default GRAPH_BOOST
+    (0.0 = off). ``rrf_k`` overrides the fusion constant for bench
+    sweeps."""
     k = max(1, min(k, 50))
     w_vec, w_lex = weights if weights is not None else (1.0, 1.0)
+    if graph_boost is not None and graph_boost < 0.0:
+        raise ValueError(f"graph_boost must be >= 0, got {graph_boost}")
+    lam = GRAPH_BOOST if graph_boost is None else graph_boost
+    krrf = RRF_K if rrf_k is None else rrf_k
     depth = max(16, 4 * k)
 
     vec: list[str] = []
@@ -278,15 +334,19 @@ def search(
 
     g = None
     lex: list[str] = []
-    if bm25 or expand:
+    if bm25 or expand or lam > 0.0:
         import graph  # lazy: binding only, attrs read at call time
 
         g = graph.get_graph()
         if bm25:
             lex = [p for p, _s in _cached_index(g.files).scores(query)[:depth]]
 
+    fused = _fuse(vec, lex, w_vec, w_lex, krrf)
+    if lam > 0.0 and g is not None:
+        fused = _graph_boost(fused, g, k, lam, krrf)
+
     hits: list[dict[str, object]] = []
-    for f, s, src in _fuse(vec, lex, w_vec, w_lex)[:k]:
+    for f, s, src in fused[:k]:
         meta = metas.get(f, {})
         fs = g.files.get(f) if g is not None else None
         hit: dict[str, object] = {
