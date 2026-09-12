@@ -400,7 +400,6 @@ class Graph:
         return self
 
     def _scan_body(self, fs: FileSym, fn: Func) -> None:
-        src_key = fn.key
         # multi-line call arguments defeat line-based regex passes: fold
         # continuation lines (unbalanced parens/brackets) into single
         # logical lines before scanning; fn.body stays raw for display
@@ -409,6 +408,14 @@ class Graph:
         var_types = dict(fs.members)
         for pm in PARAM_TYPED_RE.finditer(scan_text):
             var_types[pm.group(1)] = pm.group(2)
+        self._scan_calls(fs, fn, scan_text, var_types)
+        self._scan_liveness(fs, fn, scan_text)
+        self._scan_chains(fs, fn, scan_text, var_types)
+        self._scan_signals(fs, fn, scan_text)
+
+    def _scan_calls(self, fs: FileSym, fn: Func, scan_text: str, var_types: dict) -> None:
+        """Typed-receiver call edges and member-var cross-references."""
+        src_key = fn.key
         for m in QUALIFIED_CALL_RE.finditer(scan_text):
             head, fname = m.group(1), m.group(2)
             cls = head if head in self.class_map else var_types.get(head)
@@ -449,6 +456,12 @@ class Graph:
                 # property-assignment form: obj.method = x targets the
                 # func (setter-style) without a call paren
                 self._emit_call(src_key, dst, member)
+
+    def _scan_liveness(self, fs: FileSym, fn: Func, scan_text: str) -> None:
+        """Name-keeping harvest: dynamically loaded scripts, dynamic-
+        dispatch string refs, callback-convention identifiers. No edges —
+        these only keep funcs out of dead-code tiers."""
+        src_key = fn.key
         # dynamically loaded scripts: any "res://....gd" string literal in
         # the body keeps every func of that file alive
         for m in RES_LOAD_RE.finditer(scan_text):
@@ -489,6 +502,10 @@ class Graph:
             nm = m.group(1)
             if nm not in ASSIGN_RHS_SKIP:
                 self.referenced_names.add(nm)
+
+    def _scan_chains(self, fs: FileSym, fn: Func, scan_text: str, var_types: dict) -> None:
+        """Two-level typed chains, casts, and bare/inherited calls."""
+        src_key = fn.key
         # two-level typed chains: ctx.teams.team_ids(...) — resolve head to
         # its class, hop through a declared member, then emit
         for m in CHAIN_CALL_RE.finditer(scan_text):
@@ -533,7 +550,11 @@ class Graph:
                 if fs.class_name and fs.class_name in self._subclasses:
                     for sub in self._subclasses[fs.class_name]:
                         if name in self.files[sub].funcs:
-                            self._edge(src_key, f"{sub}::{name}")
+                            self._edge(src_key, fn_key(sub, name))
+
+    def _scan_signals(self, fs: FileSym, fn: Func, scan_text: str) -> None:
+        """Signal emits -> signal nodes; connect/Callable string refs -> handlers."""
+        src_key = fn.key
         # signal emits -> signal nodes; connect/Callable string refs -> handlers
         for m in EMIT_RE.finditer(scan_text):
             sig = m.group(1) or m.group(2)
@@ -543,9 +564,9 @@ class Graph:
             for m in STRING_NAME_RE.finditer(scan_text):
                 ref = m.group(1)
                 if ref in fs.funcs:
-                    self._edge(src_key, f"{fs.path}::{ref}", ty="signal")
+                    self._edge(src_key, fn_key(fs.path, ref), ty="signal")
                     # handlers fire on signal emit — entry points, traverse
-                    self.roots.add(f"{fs.path}::{ref}")
+                    self.roots.add(fn_key(fs.path, ref))
                 # cross-file: _on_* handlers commonly target other scripts
                 elif ref.startswith("_on_"):
                     self.referenced.add(f"*::{ref}")
@@ -554,13 +575,13 @@ class Graph:
             for m in CONNECT_METHOD_RE.finditer(scan_text):
                 ref = m.group(1)
                 if ref in fs.funcs:
-                    self._edge(src_key, f"{fs.path}::{ref}", ty="signal")
-                    self.roots.add(f"{fs.path}::{ref}")
+                    self._edge(src_key, fn_key(fs.path, ref), ty="signal")
+                    self.roots.add(fn_key(fs.path, ref))
                 else:
                     # inherited handler: resolve up the extends chain
                     anc = self._ancestor_def(fs, ref)
                     if anc and ref in self.files[anc].funcs:
-                        key = f"{anc}::{ref}"
+                        key = fn_key(anc, ref)
                         self._edge(src_key, key, ty="signal")
                         self.roots.add(key)
 
