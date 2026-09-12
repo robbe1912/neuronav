@@ -156,15 +156,19 @@ Visualizer work also gates through `tools/qa_readability.py` (see
 
 - Default `config.json` (gitignored, machine-local) - the primary target repo.
 - Per-project state (issue #15): everything a profile generates (chroma
-  store, base shards, `graph.html` bake) lives in `<root>/.neuronav/`;
-  explicit `state_dir` overrides. No auto-migration — a root without
+  store, base shards, `graph.html` bake) lives in `state_dir` — an
+  explicit path, or `"default"` for `<root>/.neuronav/` (`onboard.py
+  init` writes the opt-in). No auto-migration — a root without
   `.neuronav` builds a fresh store on the next rescan (one-time re-embed).
 - `config/<name>.json` — alternate profiles, selected via `NEURONAV_CONFIG`
   (absolute path). Relative `"root"` values resolve against the config file's
   directory.
-- An explicit `NEURONAV_CONFIG` pointing at a missing file aborts at load, and
-  a rescan matching zero files aborts too (issue #41) — an explicit config is
-  a contract, not a hint; no silent fallback that re-points the walk.
+- An explicit `NEURONAV_CONFIG` pointing at a missing file aborts at load,
+  a rescan matching zero files aborts too (issue #41), and so does a config
+  without `state_dir` (issue #91: the silent `<root>/.neuronav` default
+  reads and writes a store inside the scanned root — the live-store wipe
+  door) — an explicit config is a contract, not a hint; no silent fallback
+  that re-points the walk or the store.
 - `.neuroignore` beside the active config (one dir name per line, `#`
   comments) extends `exclude_dirs` without touching the json (issue #36);
   `onboard.py init` scaffolds one pre-seeded with `.tmp`/`.team_scratch`.

@@ -30,6 +30,7 @@ CFG.write_text(
         {
             "root": FIX.as_posix(),
             "collection": "cpphard",
+            "state_dir": "default",
             "include_dirs": ["."],
             "extensions": [".h", ".cpp"],
             "exclude_dirs": [],

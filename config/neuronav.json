@@ -1,6 +1,7 @@
 {
   "root": "..",
   "collection": "neuronav",
+  "state_dir": "default",
   "include_dirs": [
     "."
   ],

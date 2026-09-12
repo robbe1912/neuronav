@@ -31,6 +31,7 @@ cfg.write_text(
         {
             "root": str(FIX),
             "collection": "pyhard",
+            "state_dir": "default",
             "include_dirs": ["."],
             "extensions": [".py", ".gd"],
             "exclude_dirs": ["__pycache__"],

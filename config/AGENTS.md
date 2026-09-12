@@ -24,6 +24,15 @@ the primary form; named profiles here are the tuned-override form.
 A rescan that matches ZERO files aborts the same way (issue #41) — a
 config that walks nothing is a typo, not an empty index.
 
+A config that omits ``state_dir`` aborts at load too (issue #91): the
+silent ``<root>/.neuronav`` default is a store INSIDE the scanned root,
+so a config whose ``root`` points at a foreign checkout would read and
+write that checkout's live store directly — the door that wiped one.
+The fix is one key: an explicit ``state_dir`` path, or ``"default"`` to
+opt into ``<root>/.neuronav`` (``onboard.py init`` writes the opt-in;
+the shipped profiles carry it). Only the no-config pure-defaults leg
+(step 4 above) keeps the implicit default — no config, nothing to fix.
+
 ``nav._apply_config`` runs once at import (and again on
 ``nav.py --config <path>``, which also exports the var so sibling
 modules and subprocesses agree). A relative ``"root"`` resolves against
@@ -44,7 +53,7 @@ without touching the config json.
 | field | default | meaning |
 |---|---|---|
 | `root` | parent of the install | target repo root (relative -> resolve against the profile's dir) |
-| `state_dir` | `<root>/.neuronav` | ALL generated state for the profile: `chroma/` vectordb, `base/` shards, `graph.html` bake (relative -> resolve against the profile's dir) |
+| `state_dir` | required — aborts without it (issue #91) | ALL generated state for the profile: `chroma/` vectordb, `base/` shards, `graph.html` bake (relative -> resolve against the profile's dir); `"default"` = explicit opt-in to `<root>/.neuronav` (`onboard.py init` writes it) — the silent in-root default once wiped a live store |
 | `collection` | `"main"` | chroma collection name; fn-level index lives at `<collection>-fns` |
 | `include_dirs` | `scripts, scenes, VFX, ai, tests, tools` | walked under root |
 | `extensions` | `.gd, .tscn` | suffixes kept (must be registered in `extractors/` to parse) |

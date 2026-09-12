@@ -167,6 +167,7 @@ _cfg = Path(tempfile.gettempdir()) / "neuronav_crosslang_config.json"
 _cfg.write_text(json.dumps({
     "root": _toy.as_posix(),
     "collection": "crosslang",
+    "state_dir": "default",
     "include_dirs": ["."],
     "extensions": [".py", ".h", ".cpp"],
     "exclude_dirs": [],

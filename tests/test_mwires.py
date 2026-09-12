@@ -32,6 +32,7 @@ cfg.write_text(
         {
             "root": str(FIX),
             "collection": "mwires_fix",
+            "state_dir": "default",
             "include_dirs": ["."],
             "extensions": [".gd", ".tscn"],
             "exclude_dirs": [],

@@ -92,6 +92,8 @@ def main() -> None:
         cfg_path = proj / ".neuronav" / "config.json"
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         check("init: project-local config with walk defaults", cfg["root"] == str(proj) and cfg["include_dirs"] == ["."])
+        check("init: scaffold opts into the project store (issue #91)",
+              cfg.get("state_dir") == "default", str(cfg.get("state_dir")))
         out3 = run_nav(proj, "import nav; print([str(p) for p in nav.iter_files() if '.tmp' in str(p) or '.team_scratch' in str(p)])")
         check("init: scaffolded .neuroignore prunes .tmp and .team_scratch", out3.strip() == "[]", out3)
         ig = (proj / ".neuronav" / ".neuroignore").read_text(encoding="utf-8")
@@ -180,11 +182,61 @@ def main() -> None:
         cfg_empty = p4 / ".neuronav" / "no-match.json"
         p4.joinpath(".neuronav").mkdir()
         cfg_empty.write_text(
-            json.dumps({"root": str(p4), "include_dirs": ["nope-dir"]}), encoding="utf-8"
+            json.dumps({"root": str(p4), "include_dirs": ["nope-dir"], "state_dir": "default"}), encoding="utf-8"
         )
         r = run_nav_raw(p4, "import nav; nav.rescan()", str(cfg_empty))
         err = (r.stderr or "") + (r.stdout or "")
         check("empty effective file set: rescan fails loudly", r.returncode != 0 and "0 files" in err and "nope-dir" in err, err[:120])
+
+        # 7b. state_dir loud-abort (issue #91): a config file with no
+        # explicit state_dir used to silently default to <root>/.neuronav —
+        # a store INSIDE the scanned root, the exact door that wiped a live
+        # one. The law is provenance-agnostic (env, project-local, or the
+        # legacy checkout-local config all abort the same); "default" is the
+        # explicit opt-in (onboard writes it); an explicit path just works;
+        # the no-config pure-defaults leg (section 1) stays silent.
+        p6 = make_project(tmp / "sixth")
+        p6.joinpath(".neuronav").mkdir()
+        cfg_bare = p6 / ".neuronav" / "stateless.json"
+        cfg_bare.write_text(
+            json.dumps({"root": str(p6), "include_dirs": ["."]}), encoding="utf-8"
+        )
+        r = run_nav_raw(p6, "import nav", str(cfg_bare))
+        err = (r.stderr or "") + (r.stdout or "")
+        check("state_dir-less config: import aborts nonzero", r.returncode != 0, f"rc={r.returncode}")
+        check("state_dir-less config: names the config, the key and both fixes",
+              "stateless.json" in err and "\"state_dir\"" in err and "\"default\"" in err, err[:160])
+        check("state_dir-less config: aborts before creating the default store",
+              not (p6 / ".neuronav" / "chroma").exists())
+        # the same law fires for the legacy checkout-local config leg
+        # (discovered only when cwd IS the checkout) — restored after
+        legacy_cfg = ROOT / "config.json"
+        try:
+            legacy_cfg.write_text(
+                json.dumps({"root": str(p6), "include_dirs": ["."]}), encoding="utf-8"
+            )
+            r = run_nav_raw(ROOT, "import nav")
+            err = (r.stderr or "") + (r.stdout or "")
+            check("state_dir-less checkout-local config: aborts too",
+                  r.returncode != 0 and "\"state_dir\"" in err, err[:100])
+        finally:
+            legacy_cfg.unlink(missing_ok=True)
+        # the opt-in resolves to the same <root>/.neuronav as ever
+        cfg_def = p6 / ".neuronav" / "opted-in.json"
+        cfg_def.write_text(
+            json.dumps({"root": str(p6), "include_dirs": ["."], "state_dir": "default"}), encoding="utf-8"
+        )
+        out = run_nav(p6, "import nav; print(nav.STATE_DIR)", {"NEURONAV_CONFIG": str(cfg_def)})
+        check("opt-in \"default\": resolves to <root>/.neuronav",
+              out.strip() == str(p6 / ".neuronav"), out.strip())
+        # an explicit scratch state_dir is honored — no abort
+        cfg_scr = p6 / ".neuronav" / "scratch.json"
+        cfg_scr.write_text(
+            json.dumps({"root": str(p6), "include_dirs": ["."], "state_dir": str(tmp / "sixth-state")}), encoding="utf-8"
+        )
+        out = run_nav(p6, "import nav; print(nav.STATE_DIR)", {"NEURONAV_CONFIG": str(cfg_scr)})
+        check("explicit scratch state_dir: honored, no abort",
+              out.strip() == str(tmp / "sixth-state"), out.strip())
 
         # 8. nav: warm-rescan stat gate (issue #42) — unchanged files
         # skip the read+hash; the sha stays the identity
@@ -194,7 +246,7 @@ def main() -> None:
         (p5 / "src" / "other.py").write_text("def aux():\n    return 2\n", encoding="utf-8")
         (p5 / ".neuronav").mkdir()
         (p5 / ".neuronav" / "config.json").write_text(
-            json.dumps({"root": str(p5), "include_dirs": ["."]}), encoding="utf-8"
+            json.dumps({"root": str(p5), "include_dirs": ["."], "state_dir": "default"}), encoding="utf-8"
         )
         code8 = (
             "import json, os\n"

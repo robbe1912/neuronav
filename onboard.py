@@ -8,9 +8,11 @@ path. Same pattern as explore.py (focused, self-contained).
   python onboard.py wire  [--project PATH] [--index]
 
 - init: write ``<project>/.neuronav/config.json`` (walk-everything
-  defaults, extensions = every registered extractor suffix) + idempotent
-  ``.neuronav/`` line in the project's .gitignore. Never touches the
-  neuronav install.
+  defaults, extensions = every registered extractor suffix,
+  ``"state_dir": "default"`` opting into the project store — issue #91:
+  a state_dir-less config aborts at load, the silent live-store default
+  is gone) + idempotent ``.neuronav/`` line in the project's
+  .gitignore. Never touches the neuronav install.
 - wire: init if needed, then write/merge the project's ``.mcp.json``
   (and ``opencode.json`` when present) with NEURONAV_CONFIG pinned to
   the project-local config. Cross-platform pure stdlib (replaces
@@ -45,6 +47,7 @@ def init(project: Path | None = None, index: bool = False) -> Path:
     cfg = {
         "root": str(proj),
         "collection": "main",
+        "state_dir": "default",
         "include_dirs": list(nav.WALK_DEFAULTS["include_dirs"]),
         "extensions": sorted(EXTENSIONS),
         "exclude_dirs": list(nav.WALK_DEFAULTS["exclude_dirs"]),
