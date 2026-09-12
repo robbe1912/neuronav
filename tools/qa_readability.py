@@ -17,13 +17,9 @@
 #   decodes the CDP quarter-scale capture in pure stdlib)
 import argparse
 import base64
-import http.server
 import json
 import re
-import socketserver
 import sys
-import threading
-from functools import partial
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -31,9 +27,9 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import nav  # noqa: E402  (the bake lives in the active config's state dir)
+from tests._page_harness import launch, open_page, probe_dbg, serve  # noqa: E402
 
 STATE = nav.STATE_DIR
-PORT = 8951
 QA = ROOT / ".tmp" / "qa"
 
 # --- focus token: highest-degree node's path stem (tests/test_viz.py:140-150)
@@ -1005,17 +1001,6 @@ def expand_affordance(spec, base_doc):
     return frozenset(names)
 
 
-class ReuseTCPServer(socketserver.TCPServer):
-    allow_reuse_address = True
-
-
-def _serve():
-    handler = partial(http.server.SimpleHTTPRequestHandler, directory=str(STATE))
-    httpd = ReuseTCPServer(("127.0.0.1", PORT), handler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    return httpd
-
-
 def _git_sha():
     import subprocess
     try:
@@ -1026,16 +1011,12 @@ def _git_sha():
         return ""
 
 
-def run_declut_battery(prefix: str):
-    """Shared battery body for --declutter and --after."""
+def run_declut_battery(prefix: str, port: int):
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(channel="chrome", headless=True)
+        browser = launch(pw)
         try:
-            page = browser.new_page(viewport={"width": 1600, "height": 900})
-            page.route("**/favicon.ico", lambda r: r.fulfill(status=200, body=""))
-            page.goto(f"http://127.0.0.1:{PORT}/graph.html", wait_until="load")
-            page.wait_for_timeout(4000)
-            if not page.evaluate("() => !!window.__dbg"):
+            page = open_page(browser, port)
+            if not probe_dbg(page):
                 print("BROKEN BUILD: window.__dbg missing/null at boot")
                 sys.exit(2)
             return run_declut(page, QA, prefix)
@@ -1059,10 +1040,10 @@ def main():
                          "all .tscn hub subjects, 'hubs' to all hub subjects")
     args = ap.parse_args()
     QA.mkdir(parents=True, exist_ok=True)
-    httpd = _serve()
+    httpd, port = serve(STATE, reuse=True)
     try:
         if args.declutter:
-            doc = run_declut_battery("base")
+            doc = run_declut_battery("base", port)
             out = QA / "declutter_base.json"
             out.write_text(json.dumps(doc, indent=1), encoding="utf-8")
             sha = _git_sha()
@@ -1081,26 +1062,22 @@ def main():
             afford = expand_affordance(args.affordance, base_doc)
             if afford:
                 print(f"affordance-exempt subjects: {', '.join(sorted(afford))}")
-            doc = run_declut_battery("after")
+            doc = run_declut_battery("after", port)
             (QA / "declutter_after.json").write_text(
                 json.dumps(doc, indent=1), encoding="utf-8")
             sys.exit(gate_declut(base_doc, doc, afford))
-        run(QA)
+        run(QA, port)
     finally:
         httpd.shutdown()
         httpd.server_close()
 
 
-def run(qa: Path):
+def run(qa: Path, port: int):
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(channel="chrome", headless=True)
+        browser = launch(pw)
         try:
-            page = browser.new_page(viewport={"width": 1600, "height": 900})
-            page.route("**/favicon.ico", lambda r: r.fulfill(status=200, body=""))
             errors = []
-            page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
-            page.goto(f"http://127.0.0.1:{PORT}/graph.html", wait_until="load")
-            page.wait_for_timeout(4000)  # settle (no animation dependence)
+            page = open_page(browser, port, errors)
             page.evaluate("""() => { const sb = document.getElementById('cbSpin');
                                       if (sb && sb.checked) sb.click(); }""")
             page.wait_for_timeout(150)

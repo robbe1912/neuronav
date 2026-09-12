@@ -135,10 +135,11 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_viz` | 103-check Playwright harness (real Chrome) | playwright + chrome + a fresh bake |
 
 Playwright harness gotchas: launch `channel="chrome"`; it serves `graph.html`
-on port 8931 — orphaned python/chrome processes from killed runs hold the
-port (`Get-NetTCPConnection -LocalPort 8931` -> kill PID). The harness is
-config-agnostic: assertions data-gate on index content (dead files, cycles,
-clusters) so self-index AND the target repo both run clean.
+on an ephemeral loopback port (issue #132) — viz gates may run concurrently,
+and orphaned-process port holds / TIME_WAIT rerun failures are structurally
+gone. `tools/serve.py` keeps its explicit port by design (user-facing). The
+harness is config-agnostic: assertions data-gate on index content (dead
+files, cycles, clusters) so self-index AND the target repo both run clean.
 
 `test_strata` extracts functions from `viz.py`'s AST into a synthetic module —
 if you add a module-level dependency to `_layout`/`_strata_*`, whitelist it in
