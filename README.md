@@ -199,7 +199,8 @@ The **core** is the index (chroma) + hybrid recall (BM25F + vector + RRF)
 + graph + MCP server. The visualizer is an add-on that ships enabled:
 `viz.py` bakes a frozen deterministic layout + full graph data into a single
 self-contained `graph.html` (`tools/serve.py` serves it, `tools/qa_readability.py`
-gates it). Removing `viz.py` + `vendor/` strips it cleanly — `onboard.py --index`
+gates it). Removing `viz.py` (+ its `layout.py`/`bake/` leaves) + `vendor/`
+strips it cleanly — `onboard.py --index`
 skips the bake with a note, the MCP `visualize()` tool answers with a
 pointer instead of a bake, and every other tool keeps working.
 Hover = 1-hop greyout, focus mode with animated call direction, live

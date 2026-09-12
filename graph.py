@@ -89,6 +89,12 @@ def split_key(key: str) -> str:
     everything before the first separator. Bare file keys (cpp v1.1
     header-scope sources carry none) pass through whole."""
     return key.split(FN_KEY_SEP, 1)[0]
+# dead-tier weights (viz J2 consumes): per-tier weight for dead-code
+# candidates — "likely" 1.0, "review" 0.5 — and the dead-file share
+# threshold: a file only flags dead when its dead weight reaches this
+# share of its .gd func count.
+DEAD_TIER_WEIGHTS = {"likely": 1.0, "review": 0.5}
+DEAD_SHARE_THRESHOLD = 0.4
 
 # ---- python scanning (companion to extractors/python.py) ----------------------
 PY_ATTR_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\(")

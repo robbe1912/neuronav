@@ -764,7 +764,7 @@ def visualize(dir: str = "") -> str:
                     "tools/serve.py; core tools (search/repo_map/context/...) work without it. "
                     "Restore viz.py to re-enable the bake.")
 
-        out = viz.generate()
+        out = viz.ensure_bake()
         return f"3D graph written to {out} — open it in a browser (double-click or `start {out}`)"
 
 

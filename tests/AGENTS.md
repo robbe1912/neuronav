@@ -37,6 +37,16 @@ the rest are local gates.
 | `test_viz` | 103-check Playwright harness over the real baked page | playwright + chrome + a fresh `graph.html` bake |
 | `test_verifier` | Kythe-style verifier fixtures (issue #66): `//-`-shaped goal comments inlined in fixture sources, asserted against extractor output (FileSym + cpp scan_calls); `@fn dead` is corpus-local liveness | stdlib + tree-sitter/tree-sitter-cpp for the C++ goals — extractor-level only: no config, no index, no chroma |
 
+`_page_harness.py` (issue #86 strand R9) is the shared Playwright harness
+the two browser suites ride: `serve()` (no-cache loopback server, ephemeral
+port per issue #132; `reuse=` preserves the suites' historic bind
+difference), `launch()` (real Chrome), `open_page()` (settled 1600x900 page
+with optional console/pageerror capture), `probe_dbg()` (broken-bake probe),
+and the `CheckLog` accumulator with the suites' summary/exit contract.
+Consumed by `tests/test_viz.py` (sys.path) and `tools/qa_readability.py`
+(`tests._page_harness`) — the suites keep their own assertions; harness
+changes may never weaken or drop a check.
+
 `probe_scene_placement.py` is a manual probe script, not a suite.
 
 ## Config self-selection (the leakage trap)
@@ -73,17 +83,20 @@ Suites pick their own config; the shell must not pre-export one:
 ## Playwright harness gotchas (`test_viz`)
 
 - Launches real Chrome via `channel="chrome"` (no browser download).
-- Serves the repo root on port **8931**. Orphaned python/chrome processes
-  from killed runs hold the port: `Get-NetTCPConnection -LocalPort 8931`
-  -> kill the PID, then rerun.
+- Serves the repo root on an **ephemeral loopback port** (issue #132): viz
+  gates may run concurrently — no fixed-port claims, no orphaned-process
+  holds, no TIME_WAIT rerun failures. (`tools/serve.py` keeps its explicit
+  port; `test_project_mode` still pins 9081-9090 to exercise serve.py's
+  port-refusal contract.)
 - Regenerate `graph.html` first — the harness tests the bake, not the
   template.
 - Config-agnostic: assertions data-gate on index content, so the self-index
   profile and the default target profile both run clean.
-- `test_strata` extracts `_links_adj`/`_tarjan_scc`/`_strata_depths`/
-  `_strata_analysis`/`_layout` from `viz.py`'s AST into a synthetic module
-  with a whitelisted global scope — new module-level dependencies of those
-  functions must be whitelisted in `load_viz_funcs`.
+- `test_strata` imports `layout.py` directly — the five pure fns
+  (`_links_adj`/`_tarjan_scc`/`_strata_depths`/`_strata_analysis`/
+  `_layout`, moved out of `viz.py` in issue #86 phase 2). Keep
+  `layout.py` importable with stdlib + numpy only (no nav/graph/chroma
+  edges).
 
 ## fixtures/
 
