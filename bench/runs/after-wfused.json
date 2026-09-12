@@ -1,58 +1,59 @@
 {
  "set": "after",
  "config": "wfused",
- "commit": "9157e86",
- "dirty": true,
+ "commit": "2b9cbbe",
+ "dirty": false,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
- "files": 34,
+ "files": 44,
  "k": 12,
- "hit@1": 0.36,
- "hit@5": 0.84,
+ "golden": "84b58c13512fb282",
+ "hit@1": 0.32,
+ "hit@5": 0.76,
  "hit@10": 0.92,
- "mrr": 0.569,
- "reach@5": 0.88,
+ "mrr": 0.518,
+ "reach@5": 0.84,
  "reach@10": 0.92,
  "by_kind": {
   "exact": {
    "n": 10,
-   "hit@1": 0.4,
-   "hit@5": 0.7,
+   "hit@1": 0.3,
+   "hit@5": 0.6,
    "hit@10": 0.9,
-   "mrr": 0.539
+   "mrr": 0.453
   },
   "symbol": {
    "n": 4,
    "hit@1": 0.25,
-   "hit@5": 0.75,
+   "hit@5": 0.5,
    "hit@10": 0.75,
-   "mrr": 0.458
+   "mrr": 0.417
   },
   "prose": {
    "n": 9,
    "hit@1": 0.333,
    "hit@5": 1.0,
    "hit@10": 1.0,
-   "mrr": 0.611
+   "mrr": 0.602
   },
   "cross": {
    "n": 2,
    "hit@1": 0.5,
    "hit@5": 1.0,
    "hit@10": 1.0,
-   "mrr": 0.75
+   "mrr": 0.667
   }
  },
  "per_query": [
   {
    "q": "parse_tscn",
    "rank": 2,
-   "ctx5": true,
-   "ctx10": true
+   "ctx5": false,
+   "ctx10": false
   },
   {
    "q": "sha256_of",
-   "rank": 1,
+   "rank": 3,
    "ctx5": true,
    "ctx10": true
   },
@@ -70,14 +71,14 @@
   },
   {
    "q": "sync_functions",
-   "rank": 8,
+   "rank": 10,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "_fold_continuations",
    "rank": 1,
-   "ctx5": true,
+   "ctx5": false,
    "ctx10": true
   },
   {
@@ -94,7 +95,7 @@
   },
   {
    "q": "import_base",
-   "rank": 3,
+   "rank": 6,
    "ctx5": true,
    "ctx10": true
   },
@@ -124,15 +125,15 @@
   },
   {
    "q": "Func",
-   "rank": 3,
+   "rank": 6,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "where do godot scene resources get read",
    "rank": 2,
-   "ctx5": true,
-   "ctx10": true
+   "ctx5": false,
+   "ctx10": false
   },
   {
    "q": "how do cross-module references become caller edges",
@@ -142,20 +143,20 @@
   },
   {
    "q": "what stops two simultaneous rescans from corrupting the store",
-   "rank": 2,
+   "rank": 4,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "how do hermetic suites embed without a live model backend",
-   "rank": 3,
+   "rank": 2,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "how are subsystem names chosen from member vocabulary",
    "rank": 2,
-   "ctx5": false,
+   "ctx5": true,
    "ctx10": true
   },
   {
@@ -184,7 +185,7 @@
   },
   {
    "q": "unreachable deletion candidates and their confidence tiers",
-   "rank": 2,
+   "rank": 3,
    "ctx5": true,
    "ctx10": true
   },

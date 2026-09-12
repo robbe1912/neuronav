@@ -1,46 +1,47 @@
 {
  "set": "after",
  "config": "vec",
- "commit": "9157e86",
- "dirty": true,
+ "commit": "2b9cbbe",
+ "dirty": false,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
- "files": 34,
+ "files": 44,
  "k": 12,
- "hit@1": 0.28,
- "hit@5": 0.6,
- "hit@10": 0.88,
- "mrr": 0.427,
- "reach@5": 0.6,
- "reach@10": 0.88,
+ "golden": "84b58c13512fb282",
+ "hit@1": 0.36,
+ "hit@5": 0.56,
+ "hit@10": 0.76,
+ "mrr": 0.444,
+ "reach@5": 0.56,
+ "reach@10": 0.76,
  "by_kind": {
   "exact": {
    "n": 10,
-   "hit@1": 0.1,
+   "hit@1": 0.2,
    "hit@5": 0.4,
-   "hit@10": 0.7,
-   "mrr": 0.257
+   "hit@10": 0.5,
+   "mrr": 0.282
   },
   "symbol": {
    "n": 4,
    "hit@1": 0.25,
-   "hit@5": 0.75,
-   "hit@10": 1.0,
-   "mrr": 0.425
+   "hit@5": 0.5,
+   "hit@10": 0.75,
+   "mrr": 0.369
   },
   "prose": {
    "n": 9,
-   "hit@1": 0.444,
+   "hit@1": 0.556,
    "hit@5": 0.778,
    "hit@10": 1.0,
-   "mrr": 0.582
+   "mrr": 0.631
   },
   "cross": {
    "n": 2,
    "hit@1": 0.5,
    "hit@5": 0.5,
    "hit@10": 1.0,
-   "mrr": 0.583
+   "mrr": 0.562
   }
  },
  "per_query": [
@@ -52,13 +53,13 @@
   },
   {
    "q": "sha256_of",
-   "rank": 5,
+   "rank": 11,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "titleize",
-   "rank": 2,
+   "rank": 1,
    "ctx5": false,
    "ctx10": false
   },
@@ -70,13 +71,13 @@
   },
   {
    "q": "sync_functions",
-   "rank": 12,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "_fold_continuations",
-   "rank": 7,
+   "rank": 10,
    "ctx5": false,
    "ctx10": false
   },
@@ -88,13 +89,13 @@
   },
   {
    "q": "_lexical_fallback",
-   "rank": 6,
+   "rank": 5,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "import_base",
-   "rank": 7,
+   "rank": 11,
    "ctx5": false,
    "ctx10": false
   },
@@ -112,19 +113,19 @@
   },
   {
    "q": "LabelContext",
-   "rank": 3,
+   "rank": 4,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "FileSym",
-   "rank": 5,
+   "rank": 7,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "Func",
-   "rank": 6,
+   "rank": 12,
    "ctx5": false,
    "ctx10": false
   },
@@ -136,31 +137,31 @@
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": 9,
+   "rank": 10,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "what stops two simultaneous rescans from corrupting the store",
-   "rank": 4,
-   "ctx5": false,
-   "ctx10": false
-  },
-  {
-   "q": "how do hermetic suites embed without a live model backend",
    "rank": 8,
    "ctx5": false,
    "ctx10": false
   },
   {
+   "q": "how do hermetic suites embed without a live model backend",
+   "rank": 4,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
    "q": "how are subsystem names chosen from member vocabulary",
-   "rank": 2,
+   "rank": 1,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "which module hosts the agent protocol on stdin and stdout",
-   "rank": 4,
+   "rank": 5,
    "ctx5": false,
    "ctx10": false
   },
@@ -184,7 +185,7 @@
   },
   {
    "q": "unreachable deletion candidates and their confidence tiers",
-   "rank": 6,
+   "rank": 8,
    "ctx5": false,
    "ctx10": false
   },

@@ -1,39 +1,40 @@
 {
  "set": "after",
  "config": "gb",
- "commit": "9157e86",
- "dirty": true,
+ "commit": "2b9cbbe",
+ "dirty": false,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
- "files": 34,
+ "files": 44,
  "k": 12,
- "hit@1": 0.52,
- "hit@5": 0.88,
- "hit@10": 0.96,
- "mrr": 0.651,
- "reach@5": 0.88,
- "reach@10": 0.96,
+ "golden": "84b58c13512fb282",
+ "hit@1": 0.4,
+ "hit@5": 0.84,
+ "hit@10": 0.92,
+ "mrr": 0.567,
+ "reach@5": 0.84,
+ "reach@10": 0.92,
  "by_kind": {
   "exact": {
    "n": 10,
-   "hit@1": 0.6,
+   "hit@1": 0.3,
    "hit@5": 0.8,
-   "hit@10": 1.0,
-   "mrr": 0.724
+   "hit@10": 0.9,
+   "mrr": 0.537
   },
   "symbol": {
    "n": 4,
    "hit@1": 0.25,
-   "hit@5": 0.75,
+   "hit@5": 0.5,
    "hit@10": 0.75,
-   "mrr": 0.375
+   "mrr": 0.354
   },
   "prose": {
    "n": 9,
    "hit@1": 0.444,
    "hit@5": 1.0,
    "hit@10": 1.0,
-   "mrr": 0.615
+   "mrr": 0.6
   },
   "cross": {
    "n": 2,
@@ -46,13 +47,13 @@
  "per_query": [
   {
    "q": "parse_tscn",
-   "rank": 1,
-   "ctx5": true,
-   "ctx10": true
+   "rank": 2,
+   "ctx5": false,
+   "ctx10": false
   },
   {
    "q": "sha256_of",
-   "rank": 1,
+   "rank": 2,
    "ctx5": true,
    "ctx10": true
   },
@@ -64,31 +65,31 @@
   },
   {
    "q": "registry_for",
-   "rank": 9,
+   "rank": 11,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "sync_functions",
-   "rank": 2,
+   "rank": 3,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "_fold_continuations",
    "rank": 1,
-   "ctx5": true,
+   "ctx5": false,
    "ctx10": true
   },
   {
    "q": "_has_exact",
-   "rank": 8,
+   "rank": 9,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "_lexical_fallback",
-   "rank": 1,
+   "rank": 3,
    "ctx5": true,
    "ctx10": true
   },
@@ -124,19 +125,19 @@
   },
   {
    "q": "Func",
-   "rank": 4,
+   "rank": 6,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "where do godot scene resources get read",
-   "rank": 2,
-   "ctx5": true,
-   "ctx10": true
+   "rank": 3,
+   "ctx5": false,
+   "ctx10": false
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": 4,
+   "rank": 5,
    "ctx5": false,
    "ctx10": false
   },
@@ -160,7 +161,7 @@
   },
   {
    "q": "which module hosts the agent protocol on stdin and stdout",
-   "rank": 4,
+   "rank": 3,
    "ctx5": false,
    "ctx10": false
   },

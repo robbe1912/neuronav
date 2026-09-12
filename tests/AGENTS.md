@@ -37,6 +37,7 @@ the rest are local gates.
 | `test_project_mode` | onboarding (issue #27): discovery precedence env > project-local > checkout, `onboard.init`/`wire` scaffolds incl. `.neuroignore` (issue #36), viz add-on degrade | stdlib + chromadb import (fresh subprocesses, fake embeds) |
 | `test_viz` | 103-check Playwright harness over the real baked page | playwright + chrome + a fresh `graph.html` bake |
 | `test_verifier` | Kythe-style verifier fixtures (issue #66): `//-`-shaped goal comments inlined in fixture sources, asserted against extractor output (FileSym + cpp scan_calls); `@fn dead` is corpus-local liveness | stdlib + tree-sitter/tree-sitter-cpp for the C++ goals — extractor-level only: no config, no index, no chroma |
+| `test_bench` | bench record/golden coherence (issue #104): fingerprint determinism + order-insensitivity, render() refuses mismatched/missing fingerprints naming every stale record, coherent sandbox render e2e | stdlib only — imports bench/run_bench.py's render path against a temp bench dir; no config, no index, no embeds |
 
 `_page_harness.py` (issue #86 strand R9) is the shared Playwright harness
 the two browser suites ride: `serve()` (no-cache loopback server, ephemeral
@@ -65,6 +66,9 @@ Suites pick their own config; the shell must not pre-export one:
 - `test_verifier` never touches config at all — it calls extractor
   `parse()` directly, so an exported `NEURONAV_CONFIG` is simply unseen
   (the one suite an exported var cannot leak into).
+- `test_bench` is in the same boat: it renders in a scratch bench dir
+  (patched `BENCH_DIR`/`DEFAULT_REPO`) and never imports nav — config is
+  unseen.
 - `test_autorescan` generates its own temp TARGET TREE + config under the
   system temp dir (separate state dirs for the in-process and e2e-server
   sections) and self-sets `NEURONAV_EMBED_FAKE=1` — never run it against a

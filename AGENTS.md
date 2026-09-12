@@ -137,6 +137,7 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_project_mode` | onboarding + config discovery precedence + viz-as-add-on (issue #27) | stdlib + chromadb import (hermetic temp trees) |
 | `test_viz` | 103-check Playwright harness (real Chrome) | playwright + chrome + a fresh bake |
 | `test_verifier` | Kythe-style verifier fixtures (issue #66): `//-`-shaped goal comments in fixture sources, asserted against extractor output | stdlib + tree-sitter/tree-sitter-cpp (extractor-level only: no config, no index, no chroma) |
+| `test_bench` | bench record/golden coherence (issue #104): golden fingerprint determinism, render fails loud naming stale records, coherent sandbox render e2e | stdlib (bench/run_bench.py render path only; no config, no index, no embeds) |
 
 Playwright harness gotchas: launch `channel="chrome"`; it serves `graph.html`
 on an ephemeral loopback port (issue #132) — viz gates may run concurrently,

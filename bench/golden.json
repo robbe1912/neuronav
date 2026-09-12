@@ -37,6 +37,6 @@
     {"q": "how is the embedding index archived inside the repository", "kind": "prose", "targets": ["nav.py"], "anchor": "def export_base"},
     {"q": "how is visual clutter of the rendered page measured", "kind": "prose", "targets": ["tools/qa_readability.py"], "anchor": "def run_declut_battery"},
     {"q": "unreachable deletion candidates and their confidence tiers", "kind": "cross", "targets": ["graph.py"], "anchor": "def dead_code"},
-    {"q": "how are node positions computed reproducibly before baking", "kind": "cross", "targets": ["viz.py"], "anchor": "default_rng(1234)"}
+    {"q": "how are node positions computed reproducibly before baking", "kind": "cross", "targets": ["layout.py"], "anchor": "default_rng(1234)"}
   ]
 }
