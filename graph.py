@@ -383,10 +383,17 @@ class Graph:
 
         # package re-export rebinding (#153): `from extractors import X`
         # binds X to the package __init__ file, but X is DEFINED in a
-        # submodule the __init__ re-exports — liveness must land on the
-        # definer, or every re-exported helper reads as dead in its home
-        # file. Walk the re-export chain (the target's own from-import
-        # facts and consts) and rebind import edge + receiver const.
+        # submodule the __init__ re-exports — rebind import edge and
+        # receiver const to the definer. PROSPECTIVE / defense-in-depth
+        # (GK #164 review, teeth-verified): on the current corpus the
+        # liveness outcome is already carried by the __init__'s OWN
+        # from-imports (the pass below runs over every file, and the
+        # fixed parenthesized harvest binds them straight to definers);
+        # what this adds is consumer consts that point at definers —
+        # bare-call edges land on the real implementation, keeping
+        # caller/reverse-edge data honest — plus coverage for alias and
+        # chained re-export shapes a consumer may use without the
+        # __init__ importing the name itself.
         for rel, fs in self.files.items():
             if fs.ext != ".py":
                 continue
@@ -397,6 +404,7 @@ class Graph:
                 if definer and definer != target and fs.consts.get(nm) == target:
                     fs.consts[nm] = definer
             fs.from_imports = rebound
+
         # python import liveness: a PLAIN `import x` binds the namespace -
         # the module may be reached dynamically, so its funcs stay alive
         # as a unit. A `from x import y` selects exactly one name: only
