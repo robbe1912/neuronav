@@ -82,7 +82,10 @@ zero and server.py's MCP handlers stay in `review`.
    (follow `python.py` for a stdlib-AST parser, `cpp.py` for a
    tree-sitter front-end + regex macro pass; `gdscript.py` for the
    scene-format variant).
-2. Register suffixes in `EXTENSIONS` (`__init__.py`).
+2. Register suffixes in `EXTENSIONS` (`__init__.py`) — and re-export any
+   language facts `graph.py` consumes (VIRTUALS-style sets, scan helpers)
+   from the package too: `graph.py` imports the registry only, never an
+   extractor submodule (extractors stay free of graph imports; acyclic).
 3. Add the suffixes to the config `extensions` list (`nav.EXTS` gates the
    walk).
 4. If the call syntax differs, extend `graph._scan_body` behind a per-format
