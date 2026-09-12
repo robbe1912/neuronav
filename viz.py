@@ -262,7 +262,8 @@ def _build_data() -> dict:
     )
 
 
-_TEMPLATE = r"""<!DOCTYPE html>
+# phase-3 sections (split_plan_js.md rung 1) - ordered join, one script tag, __DATA__/__IMPORTMAP__ replace contract unchanged
+_HTML_HEAD = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -544,7 +545,9 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <script type="importmap">
 __IMPORTMAP__
 </script>
-<script type="module">
+"""
+
+_JS_MID = r"""<script type="module">
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
@@ -8486,7 +8489,9 @@ renderer.domElement.style.cursor = "grab";
 // the map pane ships open — apply the split (canvas size, overlay clamp,
 // info shift) once everything it touches exists
 setMapVisible(true);
-// debug handle last: everything it captures is initialized by here
+"""
+
+_JS_DBG = r"""// debug handle last: everything it captures is initialized by here
 window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE, sizes, degree,
   meta: DATA.meta, controls, get spinEnabled() { return spinEnabled; }, get hubCap() { return hubCapNow; },
   fns: DATA.fns || {},
@@ -8808,6 +8813,8 @@ tick();
 </body>
 </html>
 """
+
+_TEMPLATE = (_HTML_HEAD + _JS_MID + _JS_DBG)
 
 
 
