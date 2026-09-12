@@ -138,6 +138,180 @@ def topk_desc(sim, k: int):
     return out
 
 
+def _weld_units(
+    ids: list[str], tests: set[int], id_of: dict[str, int], g
+) -> tuple[callable, dict[int, list[int]]]:
+    """Atomic scene+script pre-merge: a .tscn and each script it attaches
+    form ONE louvain unit (hard union). Returns (ufind, members_of):
+    ufind is the union-find root resolver callers reuse for unit identity,
+    members_of maps root -> member indices."""
+    n = len(ids)
+    upar = list(range(n))
+
+    def ufind(x: int) -> int:
+        while upar[x] != x:
+            upar[x] = upar[upar[x]]
+            x = upar[x]
+        return x
+
+    mcnt = [1] * n
+
+    def _union(i: int, j: int, cap: int | None) -> None:
+        a, b = ufind(i), ufind(j)
+        if a == b:
+            return
+        if cap is not None and mcnt[a] + mcnt[b] > cap:
+            return
+        lo, hi = min(a, b), max(a, b)
+        upar[hi] = lo
+        mcnt[lo] += mcnt[hi]
+        mcnt[hi] = 0
+
+    def _scripts(rel: str) -> list[str]:
+        out: list[str] = []
+        for s in getattr(g.files[rel], "scripts", ()) or ():
+            srel = s[len("res://"):] if s.startswith("res://") else s
+            j = id_of.get(srel)
+            if j is not None and j not in tests:
+                out.append(srel)
+        return out
+
+    # pass 1: each scene welds to its PRIMARY attached script unconditionally
+    for rel, i in sorted(id_of.items()):
+        if not rel.endswith(".tscn") or i in tests or rel not in g.files:
+            continue
+        att = getattr(g.files[rel], "attached_script", None) or ""
+        if not att:
+            continue
+        aj = att[len("res://"):] if att.startswith("res://") else att
+        j = id_of.get(aj)
+        if j is not None and j not in tests:
+            _union(i, j, None)
+    # pass 2: remaining script welds capped — a heavily-shared script
+    # (a hub component can sit on half the UI scenes) must not transitively
+    # glue dozens of scenes into one mega-unit
+    for rel, i in sorted(id_of.items()):
+        if not rel.endswith(".tscn") or i in tests or rel not in g.files:
+            continue
+        for srel in _scripts(rel):
+            _union(i, id_of[srel], 12)
+    members_of: dict[int, list[int]] = defaultdict(list)
+    for i in range(n):
+        if i not in tests:
+            members_of[ufind(i)].append(i)
+    return ufind, members_of
+
+
+def _unit_paths(ids: list[str], members_of: dict[int, list[int]], r: int) -> list[str]:
+    return sorted(ids[m] for m in members_of[r])
+
+
+def _unit_seed(ids: list[str], members_of: dict[int, list[int]], r: int) -> str | None:
+    for p in _unit_paths(ids, members_of, r):
+        if p.endswith(".gd"):
+            return dir_seed(p)
+    ps = _unit_paths(ids, members_of, r)
+    return dir_seed(ps[0]) if ps else None
+
+
+def _is_pure_gd(ids: list[str], members_of: dict[int, list[int]], r: int) -> bool:
+    mem = members_of[r]
+    return bool(mem) and all(ids[m].endswith(".gd") for m in mem)
+
+
+def _sim_graph(
+    ids: list[str], tests: set[int], members_of: dict[int, list[int]], knn, sim,
+    min_sim: float, call_pairs: Counter, scene_pairs: Counter,
+    id_of: dict[str, int], ufind: callable,
+):
+    """Contracted louvain graph over welded units: semantic mutual-kNN
+    edges (sim * 0.7) plus structural call/scene-pair edges. Returns
+    (G, max_sim). Determinism: node order sorted, edge accumulation in
+    the caller's fixed loop order."""
+    import networkx as nx
+
+    n = len(ids)
+    G = nx.Graph()
+    G.add_nodes_from(sorted(members_of))
+
+    def add(i: int, j: int, w: float) -> None:
+        ri, rj = ufind(i), ufind(j)
+        if ri == rj:
+            return  # intra-unit edge: the unit IS the hard union
+        if G.has_edge(ri, rj):
+            G[ri][rj]["weight"] += w
+        else:
+            G.add_edge(ri, rj, weight=w)
+
+    max_sim = {r: 0.0 for r in G.nodes}
+    for i in range(n):
+        if i in tests:
+            continue
+        for j in knn[i]:
+            j = int(j)
+            if j in tests:
+                continue
+            s = float(sim[i, j])
+            if s < min_sim or i not in knn[j]:
+                continue
+            add(i, j, s * 0.7)
+            for r in (ufind(i), ufind(j)):
+                if s > max_sim[r]:
+                    max_sim[r] = s
+
+    for (sf, df), c in call_pairs.items():
+        add(id_of[sf], id_of[df], min(c, 5))
+    for (sf, df), w in scene_pairs.items():
+        add(id_of[sf], id_of[df], w)
+    return G, max_sim
+
+
+def _route_infra(
+    comms: list[set], ids: list[str], members_of: dict[int, list[int]],
+    adj: dict[str, dict[str, float]], idset: set[str],
+    pack_home: dict[str, int], rev_adj: dict[str, set[str]],
+) -> None:
+    """Infra routing (in place over comms): generic scripts referenced by
+    >=2 pack scenes join the community holding the plurality of those
+    scenes' packs (audit: three generic fx scripts used only by two
+    element packs ended up parked in a third pack's community)."""
+    pack_of_scene: dict[str, str] = {}
+    for p in idset:
+        if p.endswith(".tscn"):
+            k = _pack_key(_stem(p))
+            if k:
+                pack_of_scene[p] = k
+
+    def comm_size(ci: int) -> int:
+        return sum(len(members_of[r]) for r in comms[ci])
+
+    infra_moves = []
+    for ci, comm in enumerate(comms):
+        for r in comm:
+            if not _is_pure_gd(ids, members_of, r):
+                continue
+            p = ids[members_of[r][0]]
+            votes: Counter = Counter()
+            for nb in list(adj.get(p, {})) + list(rev_adj.get(p, ())):
+                k = pack_of_scene.get(nb)
+                if k and k in pack_home:
+                    votes[pack_home[k]] += 1
+            tot = sum(votes.values())
+            if tot < 2:
+                continue
+            ranked = sorted(votes.items(), key=lambda kv: (-kv[1], kv[0]))
+            (t, tv) = ranked[0]
+            if len(ranked) > 1 and ranked[1][1] == tv:
+                t2 = ranked[1][0]
+                t = t2 if comm_size(t2) > comm_size(t) else t
+            if tv * 2 < tot or t == ci:
+                continue
+            infra_moves.append((r, ci, t))
+    for r, ci, t in infra_moves:
+        comms[ci].discard(r)
+        comms[t].add(r)
+
+
 def communities_graph(
     ids: list[str],
     metas: list[dict],
@@ -200,106 +374,12 @@ def communities_graph(
 
     # atomic scene+script pre-merge: a .tscn and each script it attaches
     # form ONE louvain unit
-    upar = list(range(n))
+    ufind, members_of = _weld_units(ids, tests, id_of, g)
 
-    def ufind(x: int) -> int:
-        while upar[x] != x:
-            upar[x] = upar[upar[x]]
-            x = upar[x]
-        return x
-
-    mcnt = [1] * n
-
-    def _union(i: int, j: int, cap: int | None) -> None:
-        a, b = ufind(i), ufind(j)
-        if a == b:
-            return
-        if cap is not None and mcnt[a] + mcnt[b] > cap:
-            return
-        lo, hi = min(a, b), max(a, b)
-        upar[hi] = lo
-        mcnt[lo] += mcnt[hi]
-        mcnt[hi] = 0
-
-    def _scripts(rel: str) -> list[str]:
-        out: list[str] = []
-        for s in getattr(g.files[rel], "scripts", ()) or ():
-            srel = s[len("res://"):] if s.startswith("res://") else s
-            j = id_of.get(srel)
-            if j is not None and j not in tests:
-                out.append(srel)
-        return out
-
-    # pass 1: each scene welds to its PRIMARY attached script unconditionally
-    for rel, i in sorted(id_of.items()):
-        if not rel.endswith(".tscn") or i in tests or rel not in g.files:
-            continue
-        att = getattr(g.files[rel], "attached_script", None) or ""
-        if not att:
-            continue
-        aj = att[len("res://"):] if att.startswith("res://") else att
-        j = id_of.get(aj)
-        if j is not None and j not in tests:
-            _union(i, j, None)
-    # pass 2: remaining script welds capped — a heavily-shared script
-    # (a hub component can sit on half the UI scenes) must not transitively
-    # glue dozens of scenes into one mega-unit
-    for rel, i in sorted(id_of.items()):
-        if not rel.endswith(".tscn") or i in tests or rel not in g.files:
-            continue
-        for srel in _scripts(rel):
-            _union(i, id_of[srel], 12)
-    members_of: dict[int, list[int]] = defaultdict(list)
-    for i in range(n):
-        if i not in tests:
-            members_of[ufind(i)].append(i)
-
-    def unit_paths(r: int) -> list[str]:
-        return sorted(ids[m] for m in members_of[r])
-
-    def unit_seed(r: int) -> str | None:
-        for p in unit_paths(r):
-            if p.endswith(".gd"):
-                return dir_seed(p)
-        ps = unit_paths(r)
-        return dir_seed(ps[0]) if ps else None
-
-    def is_pure_gd(r: int) -> bool:
-        mem = members_of[r]
-        return bool(mem) and all(ids[m].endswith(".gd") for m in mem)
-
-    G = nx.Graph()
-    G.add_nodes_from(sorted(members_of))
-
-    def add(i: int, j: int, w: float) -> None:
-        ri, rj = ufind(i), ufind(j)
-        if ri == rj:
-            return  # intra-unit edge: the unit IS the hard union
-        if G.has_edge(ri, rj):
-            G[ri][rj]["weight"] += w
-        else:
-            G.add_edge(ri, rj, weight=w)
-
-    max_sim = {r: 0.0 for r in G.nodes}
-    for i in range(n):
-        if i in tests:
-            continue
-        for j in knn[i]:
-            j = int(j)
-            if j in tests:
-                continue
-            s = float(sim[i, j])
-            if s < min_sim or i not in knn[j]:
-                continue
-            add(i, j, s * 0.7)
-            for r in (ufind(i), ufind(j)):
-                if s > max_sim[r]:
-                    max_sim[r] = s
-
-    for (sf, df), c in call_pairs.items():
-        add(id_of[sf], id_of[df], min(c, 5))
-    for (sf, df), w in scene_pairs.items():
-        add(id_of[sf], id_of[df], w)
+    G, max_sim = _sim_graph(
+        ids, tests, members_of, knn, sim, min_sim,
+        call_pairs, scene_pairs, id_of, ufind,
+    )
 
     comms = list(
         nx.community.louvain_communities(
@@ -326,11 +406,11 @@ def communities_graph(
         seed_counts: dict[str, Counter] = {}
         for ci, comm in enumerate(comms):
             for r in comm:
-                sd = unit_seed(r)
+                sd = _unit_seed(ids, members_of, r)
                 if sd:
                     seed_counts.setdefault(sd, Counter())[ci] += 1
         for r in loose:
-            sd = unit_seed(r)
+            sd = _unit_seed(ids, members_of, r)
             if sd and sd in seed_counts:
                 ci, _cnt = sorted(
                     seed_counts[sd].items(), key=lambda kv: (-kv[1], kv[0])
@@ -347,14 +427,14 @@ def communities_graph(
         seed_comm: dict[tuple, Counter] = {}
         for ci, comm in enumerate(comms):
             for r in comm:
-                if is_pure_gd(r):
+                if _is_pure_gd(ids, members_of, r):
                     chain = tuple(seed_chain(ids[members_of[r][0]]))
                     if chain:
                         seed_comm.setdefault(chain, Counter())[ci] += 1
         moves = []
         for ci, comm in enumerate(comms):
             for r in comm:
-                if not is_pure_gd(r):
+                if not _is_pure_gd(ids, members_of, r):
                     continue
                 chain = tuple(seed_chain(ids[members_of[r][0]]))
                 for key in (chain, chain[:-1]):
@@ -385,7 +465,7 @@ def communities_graph(
     pack_comm: dict[str, Counter] = {}
     for ci, comm in enumerate(comms):
         for r in comm:
-            for p in unit_paths(r):
+            for p in _unit_paths(ids, members_of, r):
                 if p.endswith(".tscn"):
                     k = _pack_key(_stem(p))
                     if k:
@@ -400,7 +480,7 @@ def communities_graph(
         for r in comm:
             ks = {
                 k
-                for p in unit_paths(r)
+                for p in _unit_paths(ids, members_of, r)
                 if p.endswith(".tscn") and (k := _pack_key(_stem(p)))
             }
             if not ks:
@@ -423,45 +503,11 @@ def communities_graph(
     # the community holding the plurality of those scenes' packs (audit:
     # three generic fx scripts used only by two element packs ended
     # up parked in a third pack's community)
-    pack_of_scene: dict[str, str] = {}
-    for p in idset:
-        if p.endswith(".tscn"):
-            k = _pack_key(_stem(p))
-            if k:
-                pack_of_scene[p] = k
     rev_adj: dict[str, set[str]] = defaultdict(set)
     for s, d in adj.items():
         for t in d:
             rev_adj[t].add(s)
-
-    def comm_size(ci: int) -> int:
-        return sum(len(members_of[r]) for r in comms[ci])
-
-    infra_moves = []
-    for ci, comm in enumerate(comms):
-        for r in comm:
-            if not is_pure_gd(r):
-                continue
-            p = ids[members_of[r][0]]
-            votes: Counter = Counter()
-            for nb in list(adj.get(p, {})) + list(rev_adj.get(p, ())):
-                k = pack_of_scene.get(nb)
-                if k and k in pack_home:
-                    votes[pack_home[k]] += 1
-            tot = sum(votes.values())
-            if tot < 2:
-                continue
-            ranked = sorted(votes.items(), key=lambda kv: (-kv[1], kv[0]))
-            (t, tv) = ranked[0]
-            if len(ranked) > 1 and ranked[1][1] == tv:
-                t2 = ranked[1][0]
-                t = t2 if comm_size(t2) > comm_size(t) else t
-            if tv * 2 < tot or t == ci:
-                continue
-            infra_moves.append((r, ci, t))
-    for r, ci, t in infra_moves:
-        comms[ci].discard(r)
-        comms[t].add(r)
+    _route_infra(comms, ids, members_of, adj, idset, pack_home, rev_adj)
 
     # usage routing: a pure-script unit whose structural neighbours
     # (either direction) vote overwhelmingly for ONE other community
@@ -476,9 +522,9 @@ def communities_graph(
     usage_moves = []
     for ci, comm in enumerate(comms):
         for r in comm:
-            if not is_pure_gd(r):
+            if not _is_pure_gd(ids, members_of, r):
                 continue
-            if any(dir_segments(q) for q in unit_paths(r)):
+            if any(dir_segments(q) for q in _unit_paths(ids, members_of, r)):
                 continue  # real dir identity: dir-majority overlay owns it
             p = ids[members_of[r][0]]
             votes: Counter = Counter()
