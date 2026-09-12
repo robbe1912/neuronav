@@ -5,11 +5,13 @@
 # Hermetic: loopback stub server (stdlib http.server, ephemeral port)
 # speaking both the Ollama /api/embed and OpenAI /v1/embeddings wire
 # shapes; temp config + state dir — never the real index or .neuronav.
+import io
 import json
 import os
 import sys
 import tempfile
 import threading
+from contextlib import redirect_stderr
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -206,6 +208,52 @@ try:
 except RuntimeError as e:
     check("model swap raises naming both providers",
           "provider 'openai'" in str(e) and "provider 'ollama'" in str(e), str(e))
+
+# --- #103: the metadata stamp must keep hnsw:space -----------------------
+MODE["protocol"] = "ollama"
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/api/embed", embed_model="m-era3", embed_provider="ollama")
+cl = nav.client()
+try:
+    cl.delete_collection(nav.COLLECTION)
+except Exception:
+    pass  # absent on a fresh state dir
+pre = cl.create_collection(name=nav.COLLECTION, metadata={"hnsw:space": "cosine"})  # pre-upgrade shape
+# q=[1,0]: cosine ranks v2,v1; l2 ranks v1,v2 (magnitudes differ)
+pre.add(ids=["v1", "v2"], embeddings=[[1.0, 0.9], [5.0, 3.0]],
+        documents=["doc one", "doc two"], metadatas=[{"sha": "a"}, {"sha": "b"}])
+err = io.StringIO()
+with redirect_stderr(err):
+    col = nav._collection()
+meta = col.metadata or {}
+check("stamp preserves hnsw:space (#103)", meta.get("hnsw:space") == "cosine", str(meta))
+check("stamp records embed keys (#103)",
+      meta.get("embed_model") == "m-era3" and meta.get("embed_provider") == "ollama", str(meta))
+check("stamp keeps vectors (#103)", col.count() == 2, str(col.count()))
+check("cosine ranking survives the stamp (#103)",
+      col.query(query_embeddings=[[1.0, 0.0]], n_results=2)["ids"][0] == ["v2", "v1"],
+      str(col.query(query_embeddings=[[1.0, 0.0]], n_results=2)["ids"]))
+check("re-stamp announces itself on stderr (#103)", "re-stamp" in err.getvalue(), err.getvalue().strip())
+again = nav._collection()
+check("re-stamp is idempotent (#103)",
+      (again.metadata or {}).get("hnsw:space") == "cosine" and again.count() == 2, str(again.metadata))
+# mismatched space: a wiped or foreign stamp gets healed, loudly
+try:
+    cl.delete_collection(nav.COLLECTION)
+except Exception:
+    pass
+bad = cl.create_collection(name=nav.COLLECTION, metadata={"hnsw:space": "l2"})
+bad.add(ids=["v1", "v2"], embeddings=[[1.0, 0.9], [5.0, 3.0]],
+        documents=["doc one", "doc two"], metadatas=[{"sha": "a"}, {"sha": "b"}])
+err = io.StringIO()
+with redirect_stderr(err):
+    col = nav._collection()
+check("mismatched hnsw:space repaired to cosine (#103)",
+      (col.metadata or {}).get("hnsw:space") == "cosine", str(col.metadata))
+check("repaired collection ranks cosine (#103)",
+      col.query(query_embeddings=[[1.0, 0.0]], n_results=2)["ids"][0] == ["v2", "v1"],
+      str(col.query(query_embeddings=[[1.0, 0.0]], n_results=2)["ids"]))
+check("repair keeps vectors (#103)", col.count() == 2, str(col.count()))
+check("repair is loud (#103)", "re-stamp" in err.getvalue(), err.getvalue().strip())
 
 print()
 print(f"{len(FAILS)} failure(s)" + (": " + ", ".join(FAILS) if FAILS else ""))

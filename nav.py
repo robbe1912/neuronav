@@ -508,27 +508,72 @@ def _db_lock() -> "FileLock":
 _LOCKS: dict[str, "FileLock"] = {}
 
 
-def _check_model(col: chromadb.Collection) -> None:
+def _check_model(col: chromadb.Collection) -> chromadb.Collection:
     """Embedding-model fingerprint on the live collection: a same-dim
     different-model swap silently mixes vector spaces otherwise. The
     provider rides along in metadata for the error text (issue #17) —
     the model defines the vector space, the provider is transport, so a
     provider-only change never blocks reuse (old collections predate
-    the provider key and default to 'ollama' in messages)."""
+    the provider key and default to 'ollama' in messages).
+
+    The stamp must also keep hnsw:space=cosine (issue #103): chroma's
+    modify() REPLACES the metadata dict and refuses hnsw:* keys outright
+    ("changing the distance function ... is not supported", verified on
+    the pinned 1.5.9), so a bare stamp both wipes the space key and
+    cannot restore it — any later rebuild-from-metadata silently falls
+    back to l2. A collection missing any expected key is re-created
+    with the full metadata, vectors copied verbatim, announced on
+    stderr."""
     meta = col.metadata or {}
     stored = meta.get("embed_model")
-    if stored is None:
-        try:
-            col.modify(metadata={"embed_model": EMBED_MODEL, "embed_provider": EMBED_PROVIDER})
-        except Exception:
-            pass  # chroma refusing metadata modify is non-fatal
-    elif stored != EMBED_MODEL:
+    if stored is not None and stored != EMBED_MODEL:
         raise RuntimeError(
             f"index was built with embed model '{stored}' (provider "
             f"'{meta.get('embed_provider', 'ollama')}') but config says "
             f"'{EMBED_MODEL}' (provider '{EMBED_PROVIDER}') — run "
             "`python nav.py drop` then rescan"
         )
+    if stored == EMBED_MODEL and meta.get("hnsw:space") == "cosine":
+        return col  # correct stamp already in place
+    return _restamp(col)
+
+
+def _restamp(col: chromadb.Collection) -> chromadb.Collection:
+    """Re-create `col` with the full metadata (issue #103) — the only
+    write that keeps hnsw:space, since modify() replaces the dict and
+    rejects hnsw:* keys. Vectors are provider output (model-gated by
+    _check_model) and copy verbatim, documents included. Under the
+    write lock (reentrant from the export/import callers); a crash
+    mid-repair leaves an empty collection the next rescan re-embeds."""
+    name = col.name
+    with _db_lock():
+        try:
+            data = col.get(include=["embeddings", "documents", "metadatas"])
+        except Exception as e:
+            print(f"neuronav: collection '{name}' needs a metadata re-stamp but "
+                  f"reading its vectors failed ({e}); metadata left as-is",
+                  file=sys.stderr)
+            try:  # a concurrent process may have finished the re-stamp
+                return client().get_collection(name)
+            except Exception:
+                raise RuntimeError(
+                    f"collection '{name}' vanished during metadata re-stamp"
+                ) from e
+        client().delete_collection(name)
+        fresh = client().create_collection(
+            name=name,
+            metadata={"hnsw:space": "cosine", "embed_model": EMBED_MODEL,
+                      "embed_provider": EMBED_PROVIDER},
+        )
+        for i in range(0, len(data["ids"]), UPSERT_BATCH):
+            fresh.add(ids=data["ids"][i : i + UPSERT_BATCH],
+                      embeddings=data["embeddings"][i : i + UPSERT_BATCH],
+                      documents=data["documents"][i : i + UPSERT_BATCH],
+                      metadatas=data["metadatas"][i : i + UPSERT_BATCH])
+    print(f"neuronav: re-stamped collection '{name}' with full metadata "
+          f"(hnsw:space=cosine, #103): {len(data['ids'])} vectors copied",
+          file=sys.stderr)
+    return fresh
 
 
 def client() -> "chromadb.PersistentClient":
@@ -549,12 +594,15 @@ def fns_name() -> str:
 
 
 def _named_collection(name: str) -> chromadb.Collection:
+    """Born-correct metadata — fresh stores never need a re-stamp; an
+    existing collection keeps its stored metadata and _check_model
+    heals stale or wiped stamps (#103)."""
     col = client().get_or_create_collection(
         name=name,
-        metadata={"hnsw:space": "cosine"},
+        metadata={"hnsw:space": "cosine", "embed_model": EMBED_MODEL,
+                  "embed_provider": EMBED_PROVIDER},
     )
-    _check_model(col)
-    return col
+    return _check_model(col)
 
 
 def _collection() -> chromadb.Collection:
