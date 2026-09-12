@@ -52,7 +52,7 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `clusters.py` | Louvain + labeler + crosstalk (imported lazily) |
 | `explore.py` | one-call orientation tool (codegraph-discipline: windowed 100-line slices + continuation anchors, issue #69; one `clusters()` pass feeds both stages, issue #44) |
 | `server.py` | FastMCP stdio server; read-only tools carry `readOnlyHint`, `rescan` is the write tool; read tools auto-rescan on worktree drift (stat gate, issue #19) |
-| `viz.py` | Python `_build_data` orchestrator + ONE embedded JS template string -> `graph.html`; owns every nav/graph/chroma edge (J9/J10/J12/J18) and threads the rest through pure leaves; `ensure_bake()` (issue #86 R8) is the single rescan->bake entry — `server.visualize` and `onboard._index` delegate to it |
+| `viz.py` | Python `_build_data` orchestrator + the JS template as ONE ordered join of section constants (single script tag) -> `graph.html`; owns every nav/graph/chroma edge (J9/J10/J12/J18) and threads the rest through pure leaves; `ensure_bake()` (issue #86 R8) is the single rescan->bake entry — `server.visualize` and `onboard._index` delegate to it |
 | `layout.py` | pure strata/layout math for the bake: adjacency, iterative Tarjan SCC, strata depths, seeded force layout (moved verbatim from `viz.py`, issue #86; stdlib + numpy only, no nav/graph/chroma imports) |
 | `bake/` | pure per-job transforms for the viz DATA pipeline (issue #86 phase 2): `gitinfo` head/churn stamps, `files_model` J1-J4, `wires` J5-J8, `semantics` J11, `overlays` J13/J14/J17, `fnio` J15-J16, `budget` row-cap keeper — take g/clusters as args, no chroma/nav imports |
 | `onboard.py` | one-command project onboarding (issue #27): `init`/`wire` write `<project>/.neuronav/config.json` + MCP entries — the install stays read-only, OS-agnostic pure stdlib |
@@ -65,8 +65,11 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 
 ## viz.py template laws
 
-The template is a plain Python string with `__DATA__` and `__IMPORTMAP__`
-replaces — edit JS directly, but `graph.html` bakes the template at
+The template is an ordered join of section constants — `_HTML_HEAD` then
+the `_JS_*` sections; join order is the original text order, byte-identical
+to the former single string, one script tag; the `__DATA__` and
+`__IMPORTMAP__` replaces are unchanged.
+Edit JS directly, but `graph.html` bakes the template at
 `generate()` time: **regen after every template edit** or you test stale JS
 (this has bitten us). Serve the bake via `python tools/serve.py`
 (no-cache, 127.0.0.1:8791).
@@ -74,9 +77,9 @@ replaces — edit JS directly, but `graph.html` bakes the template at
 - `window.__dbg` is the harness contract: tests read `alphaTgt`, `bucketPosIB`,
   `hubCap`, `fns`, `meta`, `fnLod`, `busPts`, `corridorCensus`, ... — extend it,
   never remove entries tests use.
-- Module-scope ordering matters: the template executes top-to-bottom at boot
-  (TDZ). Functions called at module scope must only reference symbols declared
-  earlier.
+- Module-scope ordering matters: the joined template executes top-to-bottom
+  at boot (TDZ) — join order IS execution order. Functions called at module
+  scope must only reference symbols declared earlier.
 - JSON writes from any helper script: UTF-8 WITHOUT BOM
   (`[IO.File]::WriteAllText`), PowerShell 5 `Set-Content -Encoding utf8`
   writes a BOM that kills `json.loads`.

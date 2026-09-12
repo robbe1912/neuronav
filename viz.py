@@ -262,7 +262,15 @@ def _build_data() -> dict:
     )
 
 
-_TEMPLATE = r"""<!DOCTYPE html>
+# phase-3 sections (split_plan_js.md rung 1) - ordered join, one script tag, __DATA__/__IMPORTMAP__ replace contract unchanged
+# rung 2: _JS_MAP_RENDER + _JS_MAP_PAINT carved from _JS_MID (split_plan_js.md); file lines re-anchored by content post-rung-1
+# rung 3: _JS_MAP_INPUT + _JS_LEGEND carved (split_plan_js.md); residuals _JS_MID/_JS_MID_B/_JS_MID_C collapse at rung 8
+# rung 4: _JS_MINS_C renamed _JS_PINS (whole span is the pins block per plan 6172-6576)
+# rung 5: _JS_FN_LAYER state block (plan 4361-4802, fnMesh..rebuildFnLayer-1) carved from _JS_MID
+# rung 6: rebuildFnLayer block (plan 4803-5929) = whole _JS_MID_D residual, renamed _JS_FN_LAYER_B
+# rung 7: _JS_LABELS3D + _JS_FOCUS_VIS + _JS_LABELS3D_TAIL carved from _JS_MID (documented resolution: two L3D constants around FOCUS_VIS, join order == original text order)
+# rung 8 FINAL: _JS_EDGES/_JS_TICK carved from MID (renamed _JS_CORE), _JS_PANEL/_JS_EVENTS carved from MID_B; 17-constant join complete
+_HTML_HEAD = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -544,7 +552,9 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <script type="importmap">
 __IMPORTMAP__
 </script>
-<script type="module">
+"""
+
+_JS_CORE = r"""<script type="module">
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
@@ -554,6 +564,49 @@ import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 const DATA = __DATA__;
 const nodes = DATA.nodes, links = DATA.links, fedges = DATA.fedges || [], hw = DATA.hw || [];
 const N = nodes.length;
+// shared 2D point-to-segment distance (screen space). Also records the hit
+// param in segT so callers can interpolate depth at the hit point.
+let segT = 0;
+function segDist(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const L2 = dx * dx + dy * dy;
+  let t = L2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / L2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  segT = t;
+  return Math.hypot(ax + t * dx - px, ay + t * dy - py);
+}
+// AABB separation predicate for the 3D label placers: true when a and b
+// clear each other by gap on every axis (one geometry, per-site gaps).
+function separate(a, b, gap) {
+  return a.right < b.left - gap || b.right < a.left - gap ||
+         a.bottom < b.top - gap || b.bottom < a.top - gap;
+}
+// D12: one candidate-ladder engine for the screen-space label placers.
+// Each site keeps its own candidate order (load-bearing: the nearest-first
+// reading differs per surface), obstacle families and gap; the engine owns
+// the transform write + box measure + first-clear-wins walk. Returns the
+// last try: hit=true when a candidate cleared (r = its rect, o = its offset).
+function placeLabels(el, x, y, offs, anchor, pad, ok) {
+  let r = null, o = null;
+  for (const c of offs) {
+    o = c;
+    el.style.transform = "translate(" + (x + c[0]).toFixed(1) + "px," + (y + c[1]).toFixed(1) +
+      "px) translate(" + anchor + ")";
+    r = labBox(el, x + c[0], y + c[1], pad);
+    if (ok(r)) return { hit: true, r, o };
+  }
+  return { hit: false, r, o };
+}
+// Emphasis alphas (D13): the dim levels that must stay in lockstep across
+// surfaces — 3D greyout (node alpha clamp, ghost endpoints, wire color), 2D
+// map freeze/hover disclosure, the focused-tier 3D material opacity, the DOM
+// label layers' greyout opacity. The map underlay's 0.12 ink-budget alpha is
+// deliberately NOT here: same number, different lever.
+const EMPHASIS = { DIM_ALPHA: 0.12, MAP_FREEZE_ALPHA: 0.06, FOCUS_TIER_OPACITY: 0.75, LABEL_DIM_OPACITY: 0.25 };
+// fn-identity keys mirror graph.fn_key/split_key (graph.py: FN_KEY_SEP "::",
+// first separator wins; the ::tscn/::SIGNAL:/::VAR: pseudo-forms are bake-side
+// only). The fio/hw maps the bake emits are keyed path::name.
+const fnKey = (fi, name) => nodes[fi].path + "::" + name;
 // cycle lens (madge cyclicNodeColor steal): files inside call cycles
 // (SCC size > 1), baked by _strata_analysis
 const cycSet = new Set(DATA.meta.cycIds || []);
@@ -1068,7 +1121,9 @@ function refreshCollapse() {
 // edges: LineMaterial renders true pixel-width lines (WebGL caps
 // LineBasicMaterial linewidth at 1px); one linewidth per material, so links
 // are split into three weight buckets, each its own LineSegments2 over an
-// instanced geometry whose buffers mutate in place (no per-frame rebuild)
+"""
+
+_JS_EDGES = r"""// instanced geometry whose buffers mutate in place (no per-frame rebuild)
 const MAXL = links.length;
 // full-saturation per-type hue: calls neutral-white, signals amber,
 // contains (inst/attach) cyan, anything else green
@@ -1142,17 +1197,6 @@ const bucketPosIB = [], bucketColIB = [], bucketMat = [], bucketMesh = [];
 // at all — filtered/budget-under-arc/fn-wire-replaced; 0.012 dead-end dim
 // reads as nothing; GHOST_K 0.08 ghosts stay pickable)
 const edgeK = new Float32Array(MAXL);
-// shared 2D point-to-segment distance (screen space). Also records the hit
-// param in segT so callers can interpolate depth at the hit point.
-let segT = 0;
-function segHit(px, py, ax, ay, bx, by) {
-  const dx = bx - ax, dy = by - ay;
-  const L2 = dx * dx + dy * dy;
-  let t = L2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / L2 : 0;
-  t = Math.max(0, Math.min(1, t));
-  segT = t;
-  return Math.hypot(ax + t * dx - px, ay + t * dy - py);
-}
 let pickWireZ = 1;   // NDC depth of the last hit — node-front comparisons
 // ONE picker for hover AND click: the meta of the wire under the pointer
 // across every layer that actually RENDERS INK —
@@ -1520,7 +1564,7 @@ function pickWireMeta(e) {
       if (v.z > 1) continue;
       w.set(a[o+3], a[o+4], a[o+5]).project(camera);
       if (w.z > 1) continue;
-      const d = segHit(px, py,
+      const d = segDist(px, py,
         (v.x + 1) / 2 * rect.width, (1 - v.y) / 2 * rect.height,
         (w.x + 1) / 2 * rect.width, (1 - w.y) / 2 * rect.height);
       const m = meta[Math.floor(i / per)];
@@ -1544,7 +1588,7 @@ function pickWireMeta(e) {
       if (v.z > 1) break;
       w.set(arr[o+3], arr[o+4], arr[o+5]).project(camera);
       if (w.z > 1) break;
-      const d = segHit(px, py,
+      const d = segDist(px, py,
         (v.x + 1) / 2 * rect.width, (1 - v.y) / 2 * rect.height,
         (w.x + 1) / 2 * rect.width, (1 - w.y) / 2 * rect.height);
       const dd = d - 1;
@@ -1565,7 +1609,7 @@ function pickWireMeta(e) {
         if (v.z > 1) continue;
         w.set(s.b[0], s.b[1], s.b[2]).project(camera);
         if (w.z > 1) continue;
-        const d = segHit(px, py,
+        const d = segDist(px, py,
           (v.x + 1) / 2 * rect.width, (1 - v.y) / 2 * rect.height,
           (w.x + 1) / 2 * rect.width, (1 - w.y) / 2 * rect.height);
         const dd = d - 3;   // thick target: generous forgiveness
@@ -1844,7 +1888,9 @@ function popFocus() {
 // round-5 LOD gate (user-acceptance): a bus element is visible only when
 // the boxes it serves RESOLVE on screen — at far zoom whole trunks read
 // as "nowhere to nowhere" and sub-junction dots as droplets on wires.
-// Pure function of camera pose + build data; no layout change.
+"""
+
+_JS_TICK = r"""// Pure function of camera pose + build data; no layout change.
 function busLodInit() {
   const hpx = renderer.domElement.clientHeight || 900;
   const wuPerPx = 2 * Math.tan(camera.fov * Math.PI / 360) / hpx;
@@ -1980,7 +2026,7 @@ function tick() {
     // focus camera (0.60/0.40) made a geometrically-served state read
     // as spheres-only (skeptic r5-final objection)
     if (_lodServe) lod = 1;
-    fnLines.material.opacity = 0.75 * lod;
+    fnLines.material.opacity = EMPHASIS.FOCUS_TIER_OPACITY * lod;
     if (fnQuiet) fnQuiet.material.opacity = 0.16 * lod;
     if (fnBus) fnBus.material.opacity = 0.35 + 0.65 * lod;
     if (fnJDot) fnJDot.material.opacity = 0.35 + 0.55 * lod;
@@ -2367,7 +2413,9 @@ function frameVisible() {
   tweenCamTo(c, c.clone().addScaledVector(dir, Math.max(320, r * 1.8)));
 }
 
-// ---- UI ---------------------------------------------------------------------
+"""
+
+_JS_LABELS3D = r"""// ---- UI ---------------------------------------------------------------------
 const stats = document.getElementById("stats");
 const m = DATA.meta;
 // dead counts are function-level candidates; the map flags a file only when
@@ -2495,9 +2543,6 @@ function updateClusterLabs() {
   // centroid. Their boxes come from updateHubs (ran first this tick) —
   // no DOM reads here.
   const hubRects = hubBoxes;
-  const sep = (a, b) =>
-    a.right < b.left - 4 || b.right < a.left - 4 ||
-    a.bottom < b.top - 4 || b.bottom < a.top - 4;
   // project every centroid once; the mean of the on-screen projections is
   // the galaxy center of mass the radial candidates point away from
   const proj = [];
@@ -2524,24 +2569,19 @@ function updateClusterLabs() {
     const dx = px - gx, dy2 = py - gy;
     const dl = Math.hypot(dx, dy2) || 1;
     const rx = px + dx / dl * 40, ry = py + dy2 / dl * 40;
-    const tryAt = (x, y) => {
-      c.el.style.transform = "translate(" + x.toFixed(1) + "px," + y.toFixed(1) + "px) translate(-50%,-50%)";
-      const r = labBox(c.el, x, y, 0.5);
-      return (hubRects.every(hr => sep(r, hr)) && taken.every(t => sep(r, t)) &&
-              clabObst.every(q => q[0] < r.left - 6 || q[0] > r.right + 6 ||
-                                  q[1] < r.top - 6 || q[1] > r.bottom + 6)) ? r : null;
-    };
+    const ok = r => hubRects.every(hr => separate(r, hr, 4)) && taken.every(t => separate(r, t, 4)) &&
+      clabObst.every(q => q[0] < r.left - 6 || q[0] > r.right + 6 ||
+                          q[1] < r.top - 6 || q[1] > r.bottom + 6);
     const prev = clabOff.get(key);
     if (prev !== undefined) {
-      const r = prev.rad ? tryAt(rx, ry) : tryAt(px, py + prev.dy);
-      if (r) { taken.push(r); return; }
+      const res = prev.rad ? placeLabels(c.el, rx, ry, [[0, 0]], "-50%,-50%", 0.5, ok)
+                           : placeLabels(c.el, px, py, [[0, prev.dy]], "-50%,-50%", 0.5, ok);
+      if (res.hit) { taken.push(res.r); return; }
     }
-    const rRad = tryAt(rx, ry);
-    if (rRad) { clabOff.set(key, { rad: true }); taken.push(rRad); return; }
-    for (const dy of [0, -34, 34, -64, 64]) {
-      const r = tryAt(px, py + dy);
-      if (r) { clabOff.set(key, { rad: false, dy }); taken.push(r); return; }
-    }
+    const resRad = placeLabels(c.el, rx, ry, [[0, 0]], "-50%,-50%", 0.5, ok);
+    if (resRad.hit) { clabOff.set(key, { rad: true }); taken.push(resRad.r); return; }
+    const res = placeLabels(c.el, px, py, [0, -34, 34, -64, 64].map(dy => [0, dy]), "-50%,-50%", 0.5, ok);
+    if (res.hit) { clabOff.set(key, { rad: false, dy: res.o[1] }); taken.push(res.r); return; }
     c.el.style.display = "none"; clabOff.delete(key);
   });
 }
@@ -2587,7 +2627,9 @@ const level = new Int16Array(N).fill(-1);
 // fn interconnection renders; HUB_FN_BUDGET is retired).
 const HUB_EDGE_BUDGET = 12;
 const GHOST_K = 0.08;
+"""
 
+_JS_FOCUS_VIS = r"""
 // BFS from clicked seeds up to `depth` (issue #33: focus starts ONLY from
 // a node click — search typing highlights in place, it never seeds); the
 // direction mode picks which adjacency half the walk follows
@@ -2835,7 +2877,7 @@ function rebuildFocusWires() {
     const vis = Math.min(alphaTgt[l.s], alphaTgt[l.t]);
     col.setHex(TYPE_C3D[l.ty] || 0xd9e2eb);
     if (revealed.has(li)) col.multiplyScalar(0.42);   // C2.2 dim-but-traceable
-    else if (vis < 0.5) col.multiplyScalar(0.12);   // dead-end / ghost endpoint
+    else if (vis < 0.5) col.multiplyScalar(EMPHASIS.DIM_ALPHA);   // dead-end / ghost endpoint
     const phase = ((li * 2654435761) % 997) / 997 * 13;   // per-link dash phase
     let px = 0, py = 0, pz = 0, pd = 0;
     for (let s = 0; s <= ARC_SEG; s++) {
@@ -2915,7 +2957,7 @@ function applyVisibility() {
   edgeFlowOn = focusing;   // tick's dash-flow pass reads this
   // edges are a quiet layer at overview (per-bucket caps) and open up when
   // a focus set is lit
-  bucketMat.forEach((mat, bi) => { mat.opacity = focusing ? 0.75 : BUCKETS[bi].op; });
+  bucketMat.forEach((mat, bi) => { mat.opacity = focusing ? EMPHASIS.FOCUS_TIER_OPACITY : BUCKETS[bi].op; });
   updateEdgeLegend(focusing);
   // fn layer only makes sense inside a focus — say so instead of ignoring clicks
   cbFnEl.disabled = !focusing;
@@ -3159,7 +3201,9 @@ function applyVisibility() {
 // when the focus set is small, label each in-set link's midpoint with its
 // type and weight; large sets skip labels entirely to avoid clutter
 // threshold is relative to graph size so depth-1 neighborhoods stay labeled
-// across data drift while depth 2-3 sets stay clean
+"""
+
+_JS_LABELS3D_TAIL = r"""// across data drift while depth 2-3 sets stay clean
 const DETAIL_MAX = Math.max(120, nodes.length * 0.35);
 const elabsEl = document.getElementById("elabs");
 let eLabs = [], detailMode = false;
@@ -3218,25 +3262,12 @@ function updateEdgeLabels() {
   // losing labels try a small nudge before hiding (hub boxes from
   // updateHubs — no DOM reads)
   const hubRects = hubBoxes;
-  const free = (a, b) => a.right < b.left - 2 || b.right < a.left - 2 ||
-    a.bottom < b.top - 2 || b.bottom < a.top - 2;
   const taken = [];
   for (const p of placed) {
     if (taken.length >= 24) { p.el.style.display = "none"; continue; }
-    let r = p.r;
-    if (hubRects.some(hr => !free(r, hr)) ||
-        taken.some(t => !free(r, t))) {
-      let ok = false;
-      for (const dy of [-13, 11, -26]) {
-        p.el.style.transform = "translate(" + p.x.toFixed(1) + "px," +
-          (p.y + dy).toFixed(1) + "px) translate(-50%,-50%)";
-        const r2 = labBox(p.el, p.x, p.y + dy, 0.5);
-        if (hubRects.every(hr => free(r2, hr)) &&
-            taken.every(t => free(r2, t))) { r = r2; ok = true; break; }
-      }
-      if (!ok) { p.el.style.display = "none"; continue; }
-    }
-    taken.push(r);
+    const res = placeLabels(p.el, p.x, p.y, [[0, 0], ...[-13, 11, -26].map(dy => [0, dy])],
+      "-50%,-50%", 0.5, r => hubRects.every(hr => separate(r, hr, 2)) && taken.every(t => separate(r, t, 2)));
+    if (res.hit) taken.push(res.r); else p.el.style.display = "none";
   }
 }
 
@@ -3282,19 +3313,16 @@ function updateXtLabels() {
   // region read as garbage; the later one yields (first come = highest
   // crosstalk count, since meta.crosstalk is baked count-desc)
   const taken = [];
-  const free = (a, b) => a.right < b.left - 4 || b.right < a.left - 4 ||
-    a.bottom < b.top - 4 || b.bottom < a.top - 4;
   for (const k of xtLabs) {
     hubV.set(k.mid[0], k.mid[1], k.mid[2]).project(camera);
     if (hubV.z > 1 || Math.abs(hubV.x) > 1.05 || Math.abs(hubV.y) > 1.05) {
       k.el.style.display = "none"; continue;
     }
     k.el.style.display = "block";
-    k.el.style.transform = "translate(" + ((hubV.x*0.5+0.5)*w).toFixed(1) + "px," +
-      ((-hubV.y*0.5+0.5)*h).toFixed(1) + "px) translate(-50%,-50%)";
-    const r = labBox(k.el, (hubV.x*0.5+0.5)*w, (-hubV.y*0.5+0.5)*h, 0.5);
-    if (taken.every(t => free(r, t))) taken.push(r);
-    else k.el.style.display = "none";
+    const x = (hubV.x * 0.5 + 0.5) * w, y = (-hubV.y * 0.5 + 0.5) * h;
+    const res = placeLabels(k.el, x, y, [[0, 0]], "-50%,-50%", 0.5,
+      r => taken.every(t => separate(r, t, 4)));
+    if (res.hit) taken.push(res.r); else k.el.style.display = "none";
   }
 }
 
@@ -3410,8 +3438,6 @@ function updateHubs() {
   hubBoxes.length = 0;   // this frame's placed boxes — the module-level
                          // array the other placers collide against
   const fixed = hubBoxes;
-  const free = (a, b) => a.right < b.left - 4 || b.right < a.left - 4 ||
-    a.bottom < b.top - 4 || b.bottom < a.top - 4;
   for (let hi = 0; hi < hubs.length; hi++) {
     const { i, el } = hubs[hi];
     if (hi >= cap || alphaTgt[i] < 0.5) { el.style.display = "none"; hubOff.delete(i); continue; }
@@ -3426,24 +3452,18 @@ function updateHubs() {
     // clamp inside the viewport but clear of the left info panel
     const x = Math.max(310, Math.min(w - 30, rawX)), y = Math.max(16, Math.min(h - 26, (-hubV.y * 0.5 + 0.5) * h));
     el.style.display = "block";
-    let r = null;
+    const ok = r => fixed.every(f => separate(r, f, 4)) && clearOfDots(r);
     const prev = hubOff.get(i);
     if (prev) {
-      el.style.transform = "translate(" + (x + prev.dx).toFixed(1) + "px," +
-        (y + prev.dy).toFixed(1) + "px) translate(-50%,0)";
-      r = labBox(el, x + prev.dx, y + prev.dy, 0);
-      if (fixed.every(f => free(r, f)) && clearOfDots(r)) { fixed.push(r); continue; }
+      const res = placeLabels(el, x, y, [[prev.dx, prev.dy]], "-50%,0", 0, ok);
+      if (res.hit) { fixed.push(res.r); continue; }
     }
-    outer:
-    for (const dy of [-19, 17, -42, 41, -65, 65, -88, 88]) {
-      for (const dx of [0, 100, -100]) {
-        el.style.transform = "translate(" + (x + dx).toFixed(1) + "px," +
-          (y + dy).toFixed(1) + "px) translate(-50%,0)";
-        r = labBox(el, x + dx, y + dy, 0);
-        if (fixed.every(f => free(r, f)) && clearOfDots(r)) { hubOff.set(i, { dx, dy }); break outer; }
-      }
-    }
-    fixed.push(r);
+    const offs = [];
+    for (const dy of [-19, 17, -42, 41, -65, 65, -88, 88])
+      for (const dx of [0, 100, -100]) offs.push([dx, dy]);
+    const res = placeLabels(el, x, y, offs, "-50%,0", 0, ok);
+    if (res.hit) hubOff.set(i, { dx: res.o[0], dy: res.o[1] });
+    fixed.push(res.r);
   }
 }
 let stubExits = [];     // EXPLAINED EXIT dissolve points this frame (focus-file
@@ -3492,7 +3512,9 @@ function updateStubLabs() {
 // first render
 
 // ---- function-level layer (files inside the current focus) -------------------
-let fnMesh = null, fnLines = null, fnStalks = null, fnMeta = [], fnArrows = null, fnQuiet = null;
+"""
+
+_JS_FN_LAYER = r"""let fnMesh = null, fnLines = null, fnStalks = null, fnMeta = [], fnArrows = null, fnQuiet = null;
   let fnTrunkN = 0;   // file-pair bus trunks in the current fn layer (via __dbg)
   // conduit lane law: ALWAYS +Y — a -Y lift drops the conduit down INTO
   // the fn-box swarm it is supposed to overfly. Consecutive shared-
@@ -3830,8 +3852,8 @@ function rebuildFocusLabels(focusing) {
     // the neighborhood is busy the pure functions yield their labels first
     const cands = own.concat(near);
     const writerFirst = (a, b) => {
-      const ioa = DATA.fio && DATA.fio[nodes[fnMeta[a].file].path + "::" + fnMeta[a].name];
-      const iob = DATA.fio && DATA.fio[nodes[fnMeta[b].file].path + "::" + fnMeta[b].name];
+      const ioa = DATA.fio && DATA.fio[fnKey(fnMeta[a].file, fnMeta[a].name)];
+      const iob = DATA.fio && DATA.fio[fnKey(fnMeta[b].file, fnMeta[b].name)];
       return ((iob && iob.w.length) ? 1 : 0) - ((ioa && ioa.w.length) ? 1 : 0);
     };
     cands.sort(writerFirst).slice(0, 32).forEach(ix => {
@@ -3850,7 +3872,7 @@ function rebuildFocusLabels(focusing) {
         fLabs.push({ kind: 1, i: m.file, ix, el });
         return;
       }
-      const io = DATA.fio && DATA.fio[nodes[m.file].path + "::" + m.name];
+      const io = DATA.fio && DATA.fio[fnKey(m.file, m.name)];
       // writes-state badge (tier-2 metadata per the LOD ladder; single
       // glyph channel — color stays cluster-owned)
       el.textContent = "ƒ " + m.name + (io && io.w.length ? " ✎" + io.w.length : "");
@@ -3868,8 +3890,6 @@ const _flabV = new THREE.Vector3();
 function updateFocusLabels() {
   if (!fLabs.length) return;
   const w = renderer.domElement.clientWidth, h = renderer.domElement.clientHeight;
-  const clearOf = (a, b) => a.right < b.left - 2 || b.right < a.left - 2 ||
-    a.bottom < b.top - 2 || b.bottom < a.top - 2;
   const hubRects = hubBoxes;   // placed by updateHubs earlier this tick
   const taken = [];
   // station dots are label obstacles (skeptic R8): project them once per
@@ -3920,21 +3940,15 @@ function updateFocusLabels() {
       taken.push(r1);
       continue;
     }
-    let r = labBox(f.el, x, y, 1);
-    if (hubRects.some(hr => !clearOf(r, hr)) || taken.some(t => !clearOf(r, t)) || !clearDots(r)) {
-      let ok = false;
-      for (const dy of [16, -14, 32, -30]) {
-        f.el.style.transform = "translate(" + x.toFixed(1) + "px," + (y + dy).toFixed(1) + "px) translate(-50%,-100%)";
-        r = labBox(f.el, x, y + dy, 1);
-        if (hubRects.every(hr => clearOf(r, hr)) && taken.every(t => clearOf(r, t)) && clearDots(r)) { ok = true; break; }
-      }
-      if (!ok) { f.el.style.display = "none"; continue; }
-    }
-    taken.push(r);
+    const res = placeLabels(f.el, x, y, [[0, 0], ...[16, -14, 32, -30].map(dy => [0, dy])],
+      "-50%,-100%", 1, r => hubRects.every(hr => separate(r, hr, 2)) && taken.every(t => separate(r, t, 2)) && clearDots(r));
+    if (res.hit) taken.push(res.r); else { f.el.style.display = "none"; continue; }
   }
 }
 // boot rebuildFocusLabels(false) deleted - boot applyVisibility() re-runs it
-function rebuildFnLayer(focusing) {
+"""
+
+_JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
   if (fnMesh) { scene.remove(fnMesh); fnMesh.geometry.dispose(); fnMesh.dispose(); fnMesh = null; }
   if (fnLines) { scene.remove(fnLines); fnLines.geometry.dispose(); fnLines = null; }
   if (fnQuiet) { scene.remove(fnQuiet); fnQuiet.geometry.dispose(); fnQuiet = null; }
@@ -3978,7 +3992,7 @@ function rebuildFnLayer(focusing) {
   const fIdx = new Map(), fpos = [], fcol = [], eidx = [], wireRows = [];
   // mutators-only filter: when on, fn satellites for functions with no
   // member writes are not created at all (their wires collapse with them)
-  const ioOf = (fi, name) => (DATA.fio || {})[nodes[fi].path + "::" + name];
+  const ioOf = (fi, name) => (DATA.fio || {})[fnKey(fi, name)];
   const isMutator = (fi, name) => {
     const io = ioOf(fi, name);
     return !!(io && io.w.length);
@@ -5061,7 +5075,9 @@ function rebuildFnLayer(focusing) {
   }
 }
 
-const legend = document.getElementById("legend");
+"""
+
+_JS_LEGEND = r"""const legend = document.getElementById("legend");
 // chips double as the empty-state undo handles, so keep a cid -> element map
 const legendChips = new Map();
 function buildLegend() {
@@ -5302,7 +5318,9 @@ function mapClosePick() { mapPickEl.style.display = "none"; mapPickRc = null; }
 // set invariant). The emphasis re-resolves from an identity KEY on every
 // paint, so the pin survives pan / zoom / hover-out / repaints until it
 // is explicitly dismissed. Indices are NOT identity: layout rebuilds
-// re-create the records; keys re-resolve against the fresh arrays.
+"""
+
+_JS_PINS = r"""// re-create the records; keys re-resolve against the fresh arrays.
 let wirePin = null;    // {surface:'map'|'ball', kind:'wire'|'trunk'|'link', id, menu} | null
 let pinCover = 0;      // polylines the last paint emphasized (mapInfo probe)
 const wireKeyOf = w => "w|" + w.sf + "|" + w.sfn + "|" + w.df + "|" + w.dfn + "|" + w.ty;
@@ -5526,11 +5544,6 @@ function mapShowFn(fi, name) {
   if (temp) fnMeta.splice(k, 1);
 }
 // 6px SCREEN-space wire hit test (section 8): world tolerance = 6 / mapZ
-const mapDistSeg = (px, py, ax, ay, bx, by) => {
-  const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy || 1;
-  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / L2));
-  return Math.hypot(px - ax - t * dx, py - ay - t * dy);
-};
 function mapWireAt(wx, wy) {
   // [issue #84] named wires are 1.5px strokes in dense walls - 6px screen
   // tolerance missed real aims; 10px is the pick band now. The ink gate
@@ -5550,14 +5563,14 @@ function mapWireAt(wx, wy) {
                    3 * mt * t * t * w.c2[0] + t * t * t * x1;
         const by = mt * mt * mt * y0 + 3 * mt * mt * t * w.c1[1] +
                    3 * mt * t * t * w.c2[1] + t * t * t * y1;
-        const d = mapDistSeg(wx, wy, qx, qy, bx, by);
+        const d = segDist(wx, wy, qx, qy, bx, by);
         if (d < bd) { bd = d; best = ix; }
         qx = bx; qy = by;
       }
       return;
     }
     for (let s = 0; s < w.pts.length - 1; s++) {
-      const d = mapDistSeg(wx, wy, w.pts[s][0], w.pts[s][1],
+      const d = segDist(wx, wy, w.pts[s][0], w.pts[s][1],
                            w.pts[s + 1][0], w.pts[s + 1][1]);
       if (d < bd) { bd = d; best = ix; }
     }
@@ -5588,7 +5601,7 @@ function mapTipText(w) {
     return A.label + " > " + w.sfn + " > " + B.label + "::" + w.dfn;
   let t = A.label + "::" + w.sfn + "() \u2192 " + B.label + "::" + w.dfn + "()";
   if (w.line) t += "\nline " + w.line;
-  const io = (DATA.fio || {})[B.path + "::" + w.dfn];
+  const io = (DATA.fio || {})[fnKey(w.df, w.dfn)];
   if (io) {
     if (io.sig) t += "\n" + io.sig + (io.ret ? " -> " + io.ret : "");
     if (io.w.length) t += "\n\u270e " + io.w.join(", ");
@@ -5708,7 +5721,9 @@ function openFnPicker(fi, x, y) {
 fnPickIn.addEventListener("input", () => fnPickFill(fnPickIn.value));
 fnPickIn.addEventListener("keydown", e => {
   if (e.key === "Escape") { e.stopPropagation(); fnClosePick(); }
-});
+"""
+
+_JS_MAP_RENDER = r"""});
 const MAP_WORLD_W = 1100;   // world width CAP - the pane is a window onto it
 function mapRender() {
   if (!mapVisible) return;
@@ -5889,7 +5904,7 @@ function mapRender() {
       (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0) || (a[1] - b[1]));
     const shown = all.slice(0, FN_PORT_MAX);
     return {
-      rows: shown.map(r => ({ nm: r[0], ln: r[1], io: fioMap[nodes[i].path + "::" + r[0]] })),
+      rows: shown.map(r => ({ nm: r[0], ln: r[1], io: fioMap[fnKey(i, r[0])] })),
       more: all.slice(FN_PORT_MAX),
     };
   };
@@ -7005,7 +7020,9 @@ function mapRender() {
 // Pan only — mapZ untouched (refit owns zoom). Consumed exactly once, so
 // it never fights later manual pans; the pulse fires even when the pan is
 // skipped (box already centered).
-function mapConsumeCenterReq() {
+"""
+
+_JS_MAP_PAINT = r"""function mapConsumeCenterReq() {
   if (mapCenterReq < 0) return;
   const rc = mapRects.find(r => r.i === mapCenterReq);
   mapCenterReq = -1;
@@ -7037,8 +7054,8 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   // disclosure dimming: L1 hover dims non-incident to 0.12; L3 freeze to 0.06
   const hov = mapHover >= 0 && L.wires[mapHover] ? L.wires[mapHover] : null;
   const dim = (a, b) => {
-    if (mapFrozenIx >= 0) return (a === mapFrozenIx || b === mapFrozenIx) ? 1 : 0.06;
-    if (hov) return (a === hov.sf || a === hov.df || b === hov.sf || b === hov.df) ? 1 : 0.12;
+    if (mapFrozenIx >= 0) return (a === mapFrozenIx || b === mapFrozenIx) ? 1 : EMPHASIS.MAP_FREEZE_ALPHA;
+    if (hov) return (a === hov.sf || a === hov.df || b === hov.sf || b === hov.df) ? 1 : EMPHASIS.DIM_ALPHA;
     return 1;
   };
   const seg = (rec, color, width, dash, alpha) => {
@@ -7459,7 +7476,9 @@ function setMapVisible(v) {
 // ---- divider drag: resize the split (rAF-throttled), never orbits the 3D ---
 // the divider is its own element — OrbitControls listens on the canvas only,
 // so a drag here cannot start a camera move by construction
-const divider = document.getElementById("divider");
+"""
+
+_JS_MAP_INPUT = r"""const divider = document.getElementById("divider");
 let divRaf = 0;
 divider.addEventListener("pointerdown", e => {
   if (!mapVisible) return;
@@ -7530,7 +7549,7 @@ mapPane.addEventListener("pointerup", e => {
         for (const sp of mapLayout.spines) {
           if (!sp.pts || sp.pts.length < 2) continue;
           for (let k = 1; k < sp.pts.length; k++)
-            if (mapDistSeg(wx, wy, sp.pts[k-1][0], sp.pts[k-1][1],
+            if (segDist(wx, wy, sp.pts[k-1][0], sp.pts[k-1][1],
                            sp.pts[k][0], sp.pts[k][1]) < tol2) return true;
         }
         return false;
@@ -7617,7 +7636,7 @@ mapPane.addEventListener("click", e => {
     mapLayout.spines.forEach((sp, six) => {
       if (!sp.pts || sp.pts.length < 2) return;
       for (let k = 1; k < sp.pts.length; k++) {
-        const d = mapDistSeg(w.x, w.y, sp.pts[k-1][0], sp.pts[k-1][1],
+        const d = segDist(w.x, w.y, sp.pts[k-1][0], sp.pts[k-1][1],
                              sp.pts[k][0], sp.pts[k][1]);
         if (d < td) { td = d; th = six; }
       }
@@ -7788,7 +7807,9 @@ document.getElementById("bGround").onclick = e => {
   groundGrid.visible = showGround;
   e.target.classList.toggle("on", showGround);
 };
-const searchEl = document.getElementById("search");
+"""
+
+_JS_PANEL = r"""const searchEl = document.getElementById("search");
 const depthEl = document.getElementById("depth");
 const cbFnEl = document.getElementById("cbFn");
 fnMode = cbFnEl.checked;   // checkbox is the truth; sync the flag at boot
@@ -8046,11 +8067,11 @@ function showFnInfo(k) {
   info.style.display = "block";
   document.getElementById("iTitle").textContent = fm.name + "()";
   document.getElementById("iSub").textContent = nodes[fm.file].path;
-  panelCopyText = "res://" + nodes[fm.file].path + "::" + fm.name;
+  panelCopyText = "res://" + fnKey(fm.file, fm.name);
   const tags = document.getElementById("iTags");
   tags.innerHTML = "";
   // IO surface: signature line + writes/mutates chips (fn-IO feature)
-  const io = (DATA.fio || {})[nodes[fm.file].path + "::" + fm.name];
+  const io = (DATA.fio || {})[fnKey(fm.file, fm.name)];
   if (io) {
     if (io.sig) {
       const sig = document.createElement("div");
@@ -8130,9 +8151,11 @@ function fnStalkHide() { if (fnStalk) fnStalk.visible = false; }
 // greyout also dims the DOM label layers (hub pills, cluster names, focus
 // labels): labels at full ink floating over a greyed scene read as
 // un-greyed content
-const greyLabelEls = ["hubs", "clabs", "flabs"].map(id => document.getElementById(id));
+"""
+
+_JS_EVENTS = r"""const greyLabelEls = ["hubs", "clabs", "flabs"].map(id => document.getElementById(id));
 function greyLabelsDim(on) {
-  greyLabelEls.forEach(el => { el.style.opacity = on ? 0.25 : ""; });
+  greyLabelEls.forEach(el => { el.style.opacity = on ? EMPHASIS.LABEL_DIM_OPACITY : ""; });
 }
 function hoverGrey(i) {
   if (i === hoverGreyIdx) return;
@@ -8153,7 +8176,7 @@ function hoverGrey(i) {
   const lit = new Set([i]);
   (adj[i] || []).forEach(j => lit.add(j));
   for (let j = 0; j < N; j++)
-    if (!lit.has(j) && alphaTgt[j] > 0.12) alphaTgt[j] = 0.12;
+    if (!lit.has(j) && alphaTgt[j] > EMPHASIS.DIM_ALPHA) alphaTgt[j] = EMPHASIS.DIM_ALPHA;
   links.forEach((l, k) => {
     if (alphaTgt[l.s] > 0.5 && alphaTgt[l.t] > 0.5) return;
     const b = bucketOf[k], tgt = bucketColIB[b].array;
@@ -8162,13 +8185,13 @@ function hoverGrey(i) {
     // indexing by link index k*6 dimmed whatever edge owned that slot.
     if (hwSlot[k] >= 0) {
       for (let o6 = hwSlot[k]; o6 < hwSlot[k] + 96; o6 += 6) {
-        tgt[o6] *= 0.12; tgt[o6+1] *= 0.12; tgt[o6+2] *= 0.12;
-        tgt[o6+3] *= 0.12; tgt[o6+4] *= 0.12; tgt[o6+5] *= 0.12;
+        tgt[o6] *= EMPHASIS.DIM_ALPHA; tgt[o6+1] *= EMPHASIS.DIM_ALPHA; tgt[o6+2] *= EMPHASIS.DIM_ALPHA;
+        tgt[o6+3] *= EMPHASIS.DIM_ALPHA; tgt[o6+4] *= EMPHASIS.DIM_ALPHA; tgt[o6+5] *= EMPHASIS.DIM_ALPHA;
       }
     } else {
       const o6 = slotOf[k] * 6;
-      tgt[o6] *= 0.12; tgt[o6+1] *= 0.12; tgt[o6+2] *= 0.12;
-      tgt[o6+3] *= 0.12; tgt[o6+4] *= 0.12; tgt[o6+5] *= 0.12;
+      tgt[o6] *= EMPHASIS.DIM_ALPHA; tgt[o6+1] *= EMPHASIS.DIM_ALPHA; tgt[o6+2] *= EMPHASIS.DIM_ALPHA;
+      tgt[o6+3] *= EMPHASIS.DIM_ALPHA; tgt[o6+4] *= EMPHASIS.DIM_ALPHA; tgt[o6+5] *= EMPHASIS.DIM_ALPHA;
     }
     bucketColIB[b].needsUpdate = true;
   });
@@ -8486,7 +8509,9 @@ renderer.domElement.style.cursor = "grab";
 // the map pane ships open — apply the split (canvas size, overlay clamp,
 // info shift) once everything it touches exists
 setMapVisible(true);
-// debug handle last: everything it captures is initialized by here
+"""
+
+_JS_DBG = r"""// debug handle last: everything it captures is initialized by here
 window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE, sizes, degree,
   meta: DATA.meta, controls, get spinEnabled() { return spinEnabled; }, get hubCap() { return hubCapNow; },
   fns: DATA.fns || {},
@@ -8808,6 +8833,8 @@ tick();
 </body>
 </html>
 """
+
+_TEMPLATE = (_HTML_HEAD + _JS_CORE + _JS_EDGES + _JS_TICK + _JS_LABELS3D + _JS_FOCUS_VIS + _JS_LABELS3D_TAIL + _JS_FN_LAYER + _JS_FN_LAYER_B + _JS_LEGEND + _JS_PINS + _JS_MAP_RENDER + _JS_MAP_PAINT + _JS_MAP_INPUT + _JS_PANEL + _JS_EVENTS + _JS_DBG)
 
 
 
