@@ -92,10 +92,11 @@ Suites pick their own config; the shell must not pre-export one:
   template.
 - Config-agnostic: assertions data-gate on index content, so the self-index
   profile and the default target profile both run clean.
-- `test_strata` extracts `_links_adj`/`_tarjan_scc`/`_strata_depths`/
-  `_strata_analysis`/`_layout` from `viz.py`'s AST into a synthetic module
-  with a whitelisted global scope — new module-level dependencies of those
-  functions must be whitelisted in `load_viz_funcs`.
+- `test_strata` imports `layout.py` directly — the five pure fns
+  (`_links_adj`/`_tarjan_scc`/`_strata_depths`/`_strata_analysis`/
+  `_layout`, moved out of `viz.py` in issue #86 phase 2). Keep
+  `layout.py` importable with stdlib + numpy only (no nav/graph/chroma
+  edges).
 
 ## fixtures/
 

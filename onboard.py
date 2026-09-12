@@ -132,7 +132,7 @@ def _index() -> None:
     except ImportError:
         print("viz add-on not installed — skipped the graph.html bake")
         return
-    print(viz.generate())
+    print(viz.ensure_bake())
 if __name__ == "__main__":
     argv = list(sys.argv[1:])
     cmd = argv[0] if argv else "init"

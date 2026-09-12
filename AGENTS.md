@@ -52,7 +52,9 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `clusters.py` | Louvain + labeler + crosstalk (imported lazily) |
 | `explore.py` | one-call orientation tool (codegraph-discipline: windowed 100-line slices + continuation anchors, issue #69; one `clusters()` pass feeds both stages, issue #44) |
 | `server.py` | FastMCP stdio server; read-only tools carry `readOnlyHint`, `rescan` is the write tool; read tools auto-rescan on worktree drift (stat gate, issue #19) |
-| `viz.py` | Python `_build_data` + ONE embedded JS template string -> `graph.html` |
+| `viz.py` | Python `_build_data` orchestrator + ONE embedded JS template string -> `graph.html`; owns every nav/graph/chroma edge (J9/J10/J12/J18) and threads the rest through pure leaves |
+| `layout.py` | pure strata/layout math for the bake: adjacency, iterative Tarjan SCC, strata depths, seeded force layout (moved verbatim from `viz.py`, issue #86; stdlib + numpy only, no nav/graph/chroma imports) |
+| `bake/` | pure per-job transforms for the viz DATA pipeline (issue #86 phase 2): `gitinfo` head/churn stamps, `files_model` J1-J4, `wires` J5-J8, `semantics` J11, `overlays` J13/J14/J17, `fnio` J15-J16, `budget` row-cap keeper — take g/clusters as args, no chroma/nav imports |
 | `onboard.py` | one-command project onboarding (issue #27): `init`/`wire` write `<project>/.neuronav/config.json` + MCP entries — the install stays read-only, OS-agnostic pure stdlib |
 | `tools/` | dev gate + viewer: `qa_readability.py` (readability/declutter gate), `serve.py` (no-cache viewer, exclusive bind + per-OS port-owner hint) |
 | `config/` | named config profiles; `config.json` (root, gitignored) is the default |
@@ -117,7 +119,7 @@ network dependencies — keep it that way; never add a CDN reference.
 
 | suite | covers | needs |
 |---|---|---|
-| `test_strata` | depth layering, cycles, determinism (AST-extracts real functions) | stdlib + numpy |
+| `test_strata` | depth layering, cycles, determinism (imports the real `layout.py`) | stdlib + numpy |
 | `test_crosslang` | self-index integration: parse + embed + fn search | chroma + Ollama (or `NEURONAV_EMBED_FAKE=1` for plumbing-only runs — what CI uses) |
 | `test_pyhard` | python extractor edge cases | numpy + chromadb import only (hermetic fixture config) |
 | `test_mwires` | named-wire map exports (`mwires`/`fns`/`meta` contract, map-spec-v2 §0) | chromadb import only (suite self-sets `NEURONAV_EMBED_FAKE=1`, hermetic fixture config) |
@@ -141,9 +143,11 @@ gone. `tools/serve.py` keeps its explicit port by design (user-facing). The
 harness is config-agnostic: assertions data-gate on index content (dead
 files, cycles, clusters) so self-index AND the target repo both run clean.
 
-`test_strata` extracts functions from `viz.py`'s AST into a synthetic module —
-if you add a module-level dependency to `_layout`/`_strata_*`, whitelist it in
-the test's `load_viz_funcs`.
+`layout.py` owns the five pure strata/layout functions (`_links_adj`,
+`_tarjan_scc`, `_strata_depths`, `_strata_analysis`, `_layout`) moved
+verbatim out of `viz.py` (issue #86); `tests/test_strata.py` imports it
+directly. Keep the module free of nav/graph/chroma imports — it must stay
+importable with stdlib + numpy only.
 
 Pin-update policy: the regression floors exist to catch extractor/graph
 changes. Re-pin ONLY on user-side target drift, saying so explicitly; never

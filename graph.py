@@ -53,6 +53,13 @@ BARE_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\s*\(")
 # string literals included — never a rescan per dead candidate
 MENTION_TOKEN_RE = re.compile(r"[A-Za-z_]\w*")
 
+# dead-tier weights (viz J2 consumes): per-tier weight for dead-code
+# candidates — "likely" 1.0, "review" 0.5 — and the dead-file share
+# threshold: a file only flags dead when its dead weight reaches this
+# share of its .gd func count.
+DEAD_TIER_WEIGHTS = {"likely": 1.0, "review": 0.5}
+DEAD_SHARE_THRESHOLD = 0.4
+
 # ---- python scanning (companion to extractors/python.py) ----------------------
 PY_ATTR_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\(")
 PY_CHAIN_CALL_RE = re.compile(
