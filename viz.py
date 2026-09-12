@@ -8315,7 +8315,11 @@ function setMapVisible(v) {
   // keep the node info panel clear of the pane instead of underneath it
   info.classList.toggle("mapShift", v);
   resize3D();
-  if (v) { sizeMapPane(); drawMapPane(); }
+  // [issue #58] opening the pane is a surface switch: it covers the canvas
+  // region the pointer was hovering and no canvas pointermove will fire
+  // under it, so the 3D hover tip must die here. The pin-owned wireTip is
+  // exempt (persists to dismissal, issue #85).
+  if (v) { tip.style.display = "none"; sizeMapPane(); drawMapPane(); }
   else { mapTipHide(); mapOvCloseOne(); mapCenterReq = -1; mapPulse = null; }
 }
 // ---- divider drag: resize the split (rAF-throttled), never orbits the 3D ---
@@ -8578,6 +8582,9 @@ mapPane.addEventListener("pointermove", e => {
     mapPY = mapDrag.py - dy / mapZ;
     mapClampView();
     drawMapPane();
+    // [issue #58] a press ends the hover context: the pane pans under the
+    // pointer, so a parked L1 tip describes a wire that already slid away
+    mapTipHide();
     return;
   }
   const w = mapToWorld(e);
@@ -8596,6 +8603,15 @@ mapPane.addEventListener("pointermove", e => {
     mapTipEl.style.top = Math.max(4, Math.min(e.clientY - b.top + 10,
       (b.height || innerHeight) - 100)) + "px";
   } else mapTipHide();
+});
+// [issue #58] pointer context ends -> the L1 hover tip dies with it:
+// leaving the pane (pointer onto the 3D canvas or the chrome) stops
+// mapPane pointermove, and window blur takes the pointer away entirely —
+// neither may leave a hover tip behind. Pin-owned cards are untouched.
+mapPane.addEventListener("pointerleave", () => { if (mapVisible) mapTipHide(); });
+addEventListener("blur", () => {
+  tip.style.display = "none";   // 3D hover tip dies with the surface
+  mapTipHide();
 });
 addEventListener("resize", () => { if (mapVisible) { sizeMapPane(); drawMapPane(); } });
 // test/debug surface: named-wire map introspection (harness contract)
@@ -9159,7 +9175,12 @@ renderer.domElement.addEventListener("pointerup", () => {
   renderer.domElement.style.cursor = "grab";   // pointermove corrects to pointer over a node
 });
 renderer.domElement.addEventListener("pointerenter", () => { overCanvas = true; });
-renderer.domElement.addEventListener("pointerleave", () => { overCanvas = false; pointerDown = false; });
+renderer.domElement.addEventListener("pointerleave", () => { overCanvas = false; pointerDown = false;
+  // [issue #58] the hover tip dies with its pointer context: the pointer
+  // left the canvas (onto the pane, the chrome, or out the window) and no
+  // further canvas pointermove arrives to clear it. The pin-owned wireTip
+  // is not hover state — it lives to dismissal (issue #85).
+  tip.style.display = "none"; });
 // multi-root camera: frame the centroid of all focus seeds at a distance
 // set by their spread (single seed falls back to the tight focus)
 function focusSeedsCamera() {

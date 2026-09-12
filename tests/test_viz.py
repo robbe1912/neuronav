@@ -637,10 +637,62 @@ def run_tests():
                    const tip = document.getElementById('tip');
                    res({ shown: tip.style.display === 'block',
                          text: tip.textContent,
-                         want: d.nodes[fm.file].path + ' :: ' + fm.name }); }, 300)); }"""
+                         want: d.nodes[fm.file].path + ' :: ' + fm.name,
+                         sx: +sx.toFixed(1), sy: +sy.toFixed(1) }); }, 300)); }"""
         )
         check("hover tooltip on fn box", bool(hover) and hover["shown"]
               and hover["text"] == hover["want"], str(hover))
+
+        # [issue #58] hover tips die with pointer context (3D surface):
+        # canvas pointerleave, window blur, and the map pane opening over
+        # the pointer's region each dismiss the tip; re-entering hover
+        # re-shows it (no zombie hide state). Pin-owned wireTip cards are
+        # guarded separately in the pin blocks.
+        if hover and hover["shown"]:
+            cyc = page.evaluate(
+                """(h) => { const el = window.__dbg.renderer.domElement;
+                     const t = () => document.getElementById('tip').style.display;
+                     el.dispatchEvent(new PointerEvent('pointerleave'));
+                     const leave = t();
+                     el.dispatchEvent(new PointerEvent('pointermove',
+                       { clientX: h.sx, clientY: h.sy, bubbles: true }));
+                     const reshow = t();
+                     window.dispatchEvent(new Event('blur'));
+                     const blur = t();
+                     return { leave, reshow, blur }; }""",
+                hover)
+            check("3d hover tip dies on canvas leave, re-shows, dies on blur",
+                  cyc["leave"] == "none" and cyc["reshow"] == "block"
+                  and cyc["blur"] == "none", str(cyc))
+            # surface switch: the pane expanding over the hovered canvas
+            # region ends the context with no pointermove at all. The fn
+            # point is re-projected after the collapse (the canvas rect
+            # changes with the split, stale coords would miss the box).
+            page.evaluate("() => document.getElementById('bMap').click()")
+            page.wait_for_timeout(250)
+            sw = page.evaluate(
+                """() => { const d = window.__dbg;
+                     const ok = m => { if (m.agg && !m.count) return false;
+                       const v = new d.THREE.Vector3(m.p[0], m.p[1], m.p[2]).project(d.camera);
+                       return v.z < 1 && Math.abs(v.x) < 0.95 && Math.abs(v.y) < 0.95; };
+                     const fm = d.fnMeta.find(ok) || d.fnMeta[0]; if (!fm) return { skip: true };
+                     const v = new d.THREE.Vector3(fm.p[0], fm.p[1], fm.p[2]).project(d.camera);
+                     const r = d.renderer.domElement.getBoundingClientRect();
+                     const sx = (v.x*0.5+0.5)*r.width + r.left, sy = (-v.y*0.5+0.5)*r.height + r.top;
+                     d.renderer.domElement.dispatchEvent(new PointerEvent('pointermove',
+                       { clientX: sx, clientY: sy, bubbles: true }));
+                     const shown = document.getElementById('tip').style.display;
+                     document.getElementById('bMap').click();
+                     return new Promise(res => setTimeout(() => res({ shown,
+                       hidden: document.getElementById('tip').style.display }), 250)); }""")
+            check("3d hover tip dies when the map surface opens",
+                  sw.get("skip") or (sw["shown"] == "block" and sw["hidden"] == "none"),
+                  str(sw))
+            # park off-target so later sections start from a clean hover
+            page.evaluate(
+                "() => window.__dbg.renderer.domElement.dispatchEvent("
+                "new PointerEvent('pointermove', { clientX: 2, clientY: 2,"
+                " bubbles: true }))")
 
         # 5a. fn hover makes OWNERSHIP visible: white stalk box→owner file
         # plus the owner's instance color lifting above its base cluster hue
@@ -1622,6 +1674,100 @@ def run_tests():
                   page.evaluate("() => window.__dbg.mapVars"))
             page.mouse.click(bb["x"] + 31, bb["y"] + 34)
             page.wait_for_timeout(300)
+
+            # [issue #58] hover tips die with pointer context (2D L1 map
+            # tip): appears on its wire, then dismisses on void move-off,
+            # pane leave (pointer onto the 3D canvas), surface switch
+            # (bMap collapse), window blur, and drag-pan (a press ends the
+            # hover — the pane pans under a frozen tip). Drag runs last:
+            # it pans the pose for the candidate scans below.
+            h58 = page.evaluate("""() => {
+                const d = window.__dbg, L = d.mapLayout; if (!L) return null;
+                const pane = document.getElementById('mapPane');
+                const pw = pane.clientWidth, ph = pane.clientHeight;
+                const px = d.mapPX, py = d.mapPY, z = d.mapZ;
+                // chip coverage computed locally: mapChipAt is not a
+                // __dbg probe (same world-rect semantics as mapChipAt)
+                const chipAt = (wx, wy) => (L.chips || []).some(c =>
+                    wx >= c.x && wx <= c.x + c.w && wy >= c.y && wy <= c.y + c.h);
+                // hover point: ON a wire by the product's own hit-test,
+                // clear of chips (they outrank wires in the handler)
+                let hp = null;
+                for (const w of L.wires) {
+                    if (hp) break;
+                    if (w.bez) continue;
+                    for (let k = 1; k < w.pts.length && !hp; k++) {
+                        for (const t of [0.5, 0.25, 0.75]) {
+                            const wx = w.pts[k-1][0] + (w.pts[k][0] - w.pts[k-1][0]) * t;
+                            const wy = w.pts[k-1][1] + (w.pts[k][1] - w.pts[k-1][1]) * t;
+                            const sx = (wx - px) * z, sy = (wy - py) * z;
+                            if (sx <= 14 || sy <= 14 || sx >= pw - 14 || sy >= ph - 14) continue;
+                            if (d.mapWireAt(wx, wy) < 0 || chipAt(wx, wy)) continue;
+                            hp = { sx: +sx.toFixed(1), sy: +sy.toFixed(1) };
+                            break;
+                        }
+                    }
+                }
+                if (!hp) return null;
+                // void point: no wire in the pick band, no chip over it
+                for (let gx = 14; gx < pw - 14; gx += 16)
+                    for (let gy = 14; gy < ph - 14; gy += 16) {
+                        const wx = gx / z + px, wy = gy / z + py;
+                        if (d.mapWireAt(wx, wy) < 0 && !chipAt(wx, wy))
+                            return { vx: gx, vy: gy, ...hp };
+                    }
+                return null; }""")
+            if h58:
+                def tip2d():
+                    return page.evaluate(
+                        "() => document.getElementById('mapTip').style.display")
+                hx, hy = bb["x"] + h58["sx"], bb["y"] + h58["sy"]
+                page.mouse.move(hx, hy)
+                page.wait_for_timeout(150)
+                on = tip2d()
+                txt = page.evaluate(
+                    "() => document.getElementById('mapTip').textContent")
+                check("2d hover tip appears on the wire",
+                      on == "block" and len(txt) > 4, f"{on} {txt[:40]!r}")
+                page.mouse.move(bb["x"] + h58["vx"], bb["y"] + h58["vy"])
+                page.wait_for_timeout(150)
+                check("2d hover tip dismisses on move-off (void)",
+                      tip2d() == "none", tip2d())
+                page.mouse.move(hx, hy)
+                page.wait_for_timeout(150)
+                pre = tip2d()
+                page.mouse.move(bb["x"] - 60, bb["y"] + bb["height"] / 2)
+                page.wait_for_timeout(150)
+                check("2d hover tip dismisses on pane leave",
+                      pre == "block" and tip2d() == "none", f"{pre} -> {tip2d()}")
+                page.mouse.move(hx, hy)
+                page.wait_for_timeout(150)
+                pre = tip2d()
+                page.evaluate("() => document.getElementById('bMap').click()")
+                page.wait_for_timeout(250)
+                off = tip2d()
+                page.evaluate("() => document.getElementById('bMap').click()")
+                page.wait_for_timeout(250)
+                check("2d hover tip dismisses on surface switch (bMap)",
+                      pre == "block" and off == "none", f"{pre} -> {off}")
+                page.mouse.move(hx, hy)
+                page.wait_for_timeout(150)
+                pre = tip2d()
+                page.evaluate("() => window.dispatchEvent(new Event('blur'))")
+                check("2d hover tip dismisses on window blur",
+                      pre == "block" and tip2d() == "none", f"{pre} -> {tip2d()}")
+                page.mouse.move(hx, hy)
+                page.wait_for_timeout(150)
+                page.mouse.down()
+                page.mouse.move(hx + 40, hy + 30, steps=4)
+                page.wait_for_timeout(150)
+                drg = tip2d()
+                page.mouse.up()
+                page.wait_for_timeout(150)
+                check("2d hover tip dismisses on drag-pan",
+                      drg == "none", drg)
+            else:
+                print("SKIP 2d hover-tip lifecycle - no clear wire point")
             # L2: click the first named wire -> showFnInfo panel (CALLED BY
             # section), full caller list, no "+N more hidden" 24-cap.
             # ONE layout is dense: wire midpoints can sit under a box or
@@ -1953,6 +2099,17 @@ def run_tests():
                           cardT["disp"] == "block" and
                           cardT["txt"].startswith("\U0001f68c"),
                           f"{cardT}")
+
+                    # [issue #58] regression guard: blur is a hover-context
+                    # end, not a pin dismissal — the bus card and its pin
+                    # survive it (#85 contract)
+                    pgM = page.evaluate("""() => {
+                        window.dispatchEvent(new Event('blur'));
+                        return { disp: document.getElementById('wireTip').style.display,
+                                 pin: window.__dbg.wirePin }; }""")
+                    check("map pin card unaffected by blur (#85 contract)",
+                          pgM["disp"] == "block" and pgM["pin"] == pinT,
+                          f"{pgM} vs {pinT}")
                     # zoom survival (paint tier, no layout rebuild)
                     page.mouse.move(bb["x"] + 400, bb["y"] + 400)
                     page.mouse.wheel(0, -600)
@@ -2186,6 +2343,19 @@ def run_tests():
                         ".style.display")
                     check("pin tip survives the orbit press",
                           tip3b2 == "block", f"tip {tip3b2}")
+
+                    # [issue #58] regression guard: hover-context ends must
+                    # not touch pin-owned cards — blur + canvas leave leave
+                    # the pinned tip and pin intact (#85 contract)
+                    pgB = page.evaluate("""() => {
+                        window.dispatchEvent(new Event('blur'));
+                        window.__dbg.renderer.domElement.dispatchEvent(
+                            new PointerEvent('pointerleave'));
+                        return { disp: document.getElementById('wireTip').style.display,
+                                 pin: window.__dbg.wirePin }; }""")
+                    check("ball pin tip unaffected by blur/leave (#85 contract)",
+                          pgB["disp"] == "block" and pgB["pin"] == pin3b,
+                          f"{pgB} vs {pin3b}")
                     # esc: the pin owns the first press; the tip (transient
                     # overlay) closes on the NEXT press per the existing chain
                     page.keyboard.press("Escape")
