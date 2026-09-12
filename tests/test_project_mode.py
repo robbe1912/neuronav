@@ -282,7 +282,7 @@ def main() -> None:
         serve_py = str(ROOT / "tools" / "serve.py")
         scrub = {k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}
         port, first = None, None
-        for cand in range(9081, 9091):  # team ports only; 8791/8792/8931 are owner/harness
+        for cand in range(9081, 9091):  # team ports only; 8791/8792 are owner tooling
             first = subprocess.Popen(
                 [PY, "-X", "utf8", serve_py, "--port", str(cand)],
                 cwd=proj, env=scrub, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

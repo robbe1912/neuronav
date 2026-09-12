@@ -61,6 +61,20 @@ def build_fixture():
 
 def main():
     V = load_viz_funcs()
+
+    # 0. layout.py stays stdlib(+numpy)-only: no nav/graph/chroma import
+    #    may creep back into the pure module (phase-2 V1 law, issue #86)
+    import ast as _ast
+
+    mods = set()
+    for _n in _ast.parse((ROOT / "layout.py").read_text(encoding="utf-8")).body:
+        if isinstance(_n, _ast.Import):
+            mods.update(a.name.split(".")[0] for a in _n.names)
+        elif isinstance(_n, _ast.ImportFrom) and _n.module:
+            mods.add(_n.module.split(".")[0])
+    check("layout imports stdlib+numpy only", mods <= {"os", "sys", "numpy"},
+          str(sorted(mods)))
+
     depths_fn, layout_fn = V["_strata_depths"], V["_layout"]
     N = 32
     links = build_fixture()
