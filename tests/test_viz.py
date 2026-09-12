@@ -326,10 +326,19 @@ def run_tests():
                  const txt = (x.textContent || '').slice(0, 60);
                  chip.click();
                  const closed = x.style.display === 'none' && d.legendOpen === false;
-                 return { open, closed, txt }; }"""
+                 // [issue #81] a synthetic chip.click() carries 0,0 coords;
+                 // a capture-phase wire picker that claims chrome clicks
+                 // both kills the chip's own handler (toggle dead) and
+                 // pops a stray wire tip at the corner. Chrome-owned
+                 // clicks must never surface ink.
+                 const tip = document.getElementById('wireTip');
+                 return { open, closed, txt,
+                          tip: tip ? getComputedStyle(tip).display : 'gone' }; }"""
         )
         check("legend chip toggles (trunk vocabulary self-explains)",
               lg and lg["open"] and lg["closed"], str(lg))
+        check("chrome clicks never surface a wire tip (#81 steal class)",
+              lg and lg["tip"] in ("none", "gone"), str(lg))
         vic = page.evaluate(
             """() => { const d = window.__dbg; const nm = d.fnMesh, meta = d.fnMeta;
                  if (!nm || !meta || !meta.length) return { fail: 'no fn layer' };
@@ -1984,11 +1993,18 @@ def run_tests():
                     const xmax = (pn ? pn.getBoundingClientRect().x
                                     : innerWidth) - 14;
                     const out = [];
+                    // [#81 surface law] a real click lands on whatever
+                    // element owns the point - ink under the results
+                    // overlay is chrome-owned and the picker must
+                    // refuse it, so only canvas-owned points are aims
+                    const el = d.renderer.domElement;
                     for (let y = 70; y < innerHeight - 40 && out.length < 5;
                          y += 44)
                         for (let x = 24; x < xmax && out.length < 5; x += 44) {
                             const m = d.pickWireMeta({ clientX: x, clientY: y });
-                            if (m && m.kind === "trunk") out.push({ x, y });
+                            if (m && m.kind === "trunk" &&
+                                document.elementFromPoint(x, y) === el)
+                                out.push({ x, y });
                         }
                     return out; }""")
                 if not tpts:
@@ -2005,13 +2021,17 @@ def run_tests():
                         const pn = document.getElementById("mapPane");
                         const xmax = (pn ? pn.getBoundingClientRect().x
                                         : innerWidth) - 14;
-                        const out = [];
-                        for (let y = 70; y < innerHeight - 40 && out.length < 5;
-                             y += 44)
-                            for (let x = 24; x < xmax && out.length < 5; x += 44) {
-                                const m = d.pickWireMeta({ clientX: x, clientY: y });
-                                if (m && m.kind === "trunk") out.push({ x, y });
-                            }
+                    const out = [];
+                    // [#81 surface law] canvas-owned aims only (see above)
+                    const el = d.renderer.domElement;
+                    for (let y = 70; y < innerHeight - 40 && out.length < 5;
+                         y += 44)
+                        for (let x = 24; x < xmax && out.length < 5; x += 44) {
+                            const m = d.pickWireMeta({ clientX: x, clientY: y });
+                            if (m && m.kind === "trunk" &&
+                                document.elementFromPoint(x, y) === el)
+                                out.push({ x, y });
+                        }
                         return out; }""")
                 for cand in tpts or []:
                     page.mouse.move(cand["x"], cand["y"])
@@ -2067,11 +2087,15 @@ def run_tests():
                     const xmax = (pn ? pn.getBoundingClientRect().x
                                     : innerWidth) - 14;
                     const out = [];
+                    // [#81 surface law] canvas-owned aims only (see the
+                    // trunk scan above)
+                    const el = d.renderer.domElement;
                     for (let y = 70; y < innerHeight - 40 && out.length < 5;
                          y += 44) {
                         for (let x = 24; x < xmax && out.length < 5; x += 44) {
                             const m = d.pickWireMeta({ clientX: x, clientY: y });
-                            if (m && (m.kind === "link" || m.kind === "wire"))
+                            if (m && (m.kind === "link" || m.kind === "wire") &&
+                                document.elementFromPoint(x, y) === el)
                                 out.push({ x, y });
                         }
                     }
@@ -2092,11 +2116,14 @@ def run_tests():
                         const xmax = (pn ? pn.getBoundingClientRect().x
                                         : innerWidth) - 14;
                         const out = [];
+                        // [#81 surface law] canvas-owned aims only
+                        const el = d.renderer.domElement;
                         for (let y = 70; y < innerHeight - 40 && out.length < 5;
                              y += 44) {
                             for (let x = 24; x < xmax && out.length < 5; x += 44) {
                                 const m = d.pickWireMeta({ clientX: x, clientY: y });
-                                if (m && m.kind === "link")
+                                if (m && m.kind === "link" &&
+                                    document.elementFromPoint(x, y) === el)
                                     out.push({ x, y });
                             }
                         }
@@ -2664,7 +2691,9 @@ def run_tests():
                    y += 30) {
                 const m = d.pickWireMeta({ clientX: r.left + x,
                                            clientY: r.top + y });
-                if (m && m.kind === "jleg")
+                // [#81 surface law] canvas-owned aims only
+                if (m && m.kind === "jleg" &&
+                    document.elementFromPoint(r.left + x, r.top + y) === el)
                     out.push({ x: r.left + x, y: r.top + y });
               }
             return out; }""")
@@ -2976,7 +3005,10 @@ def run_tests():
                         // wire/trunk directly, jleg via the corridor
                         // latch, link via its own latch
                         if (m && (m.kind === "wire" || m.kind === "trunk" ||
-                                  m.kind === "jleg" || m.kind === "link"))
+                                  m.kind === "jleg" || m.kind === "link") &&
+                            // [#81 surface law] canvas-owned aims only
+                            document.elementFromPoint(
+                                r.left + x, r.top + y) === el)
                             out.push([Math.round(r.left + x),
                                       Math.round(r.top + y)]);
                     }

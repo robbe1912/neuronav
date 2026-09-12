@@ -9187,11 +9187,16 @@ document.addEventListener("pointerdown", e => {
 }, true);          // a wire click re-shows it right after
 document.addEventListener("click", e => {
   if (!focusActive || !fnLines) return;
-  // [issue #82] click routing is by surface: the 2D map pane overlays the
-  // 3D canvas, so a wire projecting BEHIND the pane must not steal map
-  // clicks (stopPropagation here left map overlays unclosable).
-  if (e.target && (e.target.id === "mapPane" ||
-      (e.target.closest && e.target.closest("#mapOv")))) return;
+  // [issues #82/#81] click routing is by surface: only the 3D canvas and
+  // the fn-box labels (.flab) sit above the wires' pixels, so a wire may
+  // claim a press there — and only there. Every other surface (the 2D
+  // map pane + its overlays, chips, sliders, result rows) owns its click
+  // outright: this handler runs in the CAPTURE phase, so a stopPropagation
+  // below would kill the chrome's own handler before it ever fired — the
+  // legend chip went dead exactly that way when ink met its synthetic
+  // 0,0 click point.
+  if (e.target !== renderer.domElement &&
+      !(e.target.classList && e.target.classList.contains("flab"))) return;
   if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
   const wHit = pickWireMeta(e);
   if (!wHit) return;
