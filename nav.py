@@ -68,7 +68,7 @@ def _apply_config(path: Path | None) -> None:
     and again by ``nav.py --config <path>`` (which also sets NEURONAV_CONFIG
     so subprocesses and sibling modules like graph.py agree). ``path=None``
     means no config anywhere: pure cwd defaults (issue #27)."""
-    global ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM, EMBED_PROVIDER, EMBED_API_KEY, WATCH_INTERVAL_S, STATE_DIR, DB_DIR, BASE_DIR
+    global ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM, EMBED_PROVIDER, EMBED_API_KEY, WATCH_INTERVAL_S, RECALL_TWO_PASS, STATE_DIR, DB_DIR, BASE_DIR
     if path is not None and not path.is_file():
         # issue #41: an explicit config path is a contract, not a hint —
         # silently degrading to walk-all defaults flips the walk identity
@@ -118,6 +118,13 @@ def _apply_config(path: Path | None) -> None:
     # >0: the MCP server polls the stat gate every N seconds and
     # auto-rescans without waiting for a tool call (issue #19)
     WATCH_INTERVAL_S = float(cfg.get("watch_interval_s") or 0.0)
+    # issue #74 (RepoCoder): two-pass retrieve — recall.search re-queries
+    # with identifiers harvested from the pass-1 lexical top-k (embed
+    # budget 2/query, hits marked two_pass). Bench A/B beats single-pass
+    # on every metric (hit@1 0.40->0.56, hit@5 0.84->0.88, MRR
+    # 0.587->0.706) but doubles query-side embeds on the shared
+    # semantic_search path — default OFF, owner's flip after review.
+    RECALL_TWO_PASS = bool(cfg.get("recall_two_pass", False))
     # per-project state: chroma store, base shards and the viz bake all
     # derive from one dir — explicit "state_dir" honored; "default" is
     # the opt-in for <root>/.neuronav. Relative values resolve against
@@ -191,6 +198,7 @@ EMBED_DIM: int
 EMBED_PROVIDER: str
 EMBED_API_KEY: str
 WATCH_INTERVAL_S: float
+RECALL_TWO_PASS: bool
 STATE_DIR: Path
 DB_DIR: Path
 BASE_DIR: Path
@@ -218,7 +226,8 @@ _apply_config(_discover_config())
 _CONFIG_FIELDS = (
     "ROOT", "COLLECTION", "INCLUDE_DIRS", "EXTS", "EXCLUDE_DIRS",
     "EMBED_URL", "EMBED_MODEL", "EMBED_DIM", "EMBED_PROVIDER",
-    "EMBED_API_KEY", "WATCH_INTERVAL_S", "STATE_DIR", "DB_DIR", "BASE_DIR",
+    "EMBED_API_KEY", "WATCH_INTERVAL_S", "RECALL_TWO_PASS",
+    "STATE_DIR", "DB_DIR", "BASE_DIR",
 )
 _GRAPH_CACHE: dict[tuple, object] = {}  # store key -> graph.py singleton
 _FP_CACHE: dict[tuple, tuple] = {}  # store key -> fp slots (drift baseline)
