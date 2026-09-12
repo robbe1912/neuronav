@@ -581,6 +581,32 @@ function separate(a, b, gap) {
   return a.right < b.left - gap || b.right < a.left - gap ||
          a.bottom < b.top - gap || b.bottom < a.top - gap;
 }
+// D12: one candidate-ladder engine for the screen-space label placers.
+// Each site keeps its own candidate order (load-bearing: the nearest-first
+// reading differs per surface), obstacle families and gap; the engine owns
+// the transform write + box measure + first-clear-wins walk. Returns the
+// last try: hit=true when a candidate cleared (r = its rect, o = its offset).
+function placeLabels(el, x, y, offs, anchor, pad, ok) {
+  let r = null, o = null;
+  for (const c of offs) {
+    o = c;
+    el.style.transform = "translate(" + (x + c[0]).toFixed(1) + "px," + (y + c[1]).toFixed(1) +
+      "px) translate(" + anchor + ")";
+    r = labBox(el, x + c[0], y + c[1], pad);
+    if (ok(r)) return { hit: true, r, o };
+  }
+  return { hit: false, r, o };
+}
+// Emphasis alphas (D13): the dim levels that must stay in lockstep across
+// surfaces — 3D greyout (node alpha clamp, ghost endpoints, wire color), 2D
+// map freeze/hover disclosure, the focused-tier 3D material opacity, the DOM
+// label layers' greyout opacity. The map underlay's 0.12 ink-budget alpha is
+// deliberately NOT here: same number, different lever.
+const EMPHASIS = { DIM_ALPHA: 0.12, MAP_FREEZE_ALPHA: 0.06, FOCUS_TIER_OPACITY: 0.75, LABEL_DIM_OPACITY: 0.25 };
+// fn-identity keys mirror graph.fn_key/split_key (graph.py: FN_KEY_SEP "::",
+// first separator wins; the ::tscn/::SIGNAL:/::VAR: pseudo-forms are bake-side
+// only). The fio/hw maps the bake emits are keyed path::name.
+const fnKey = (fi, name) => nodes[fi].path + "::" + name;
 // cycle lens (madge cyclicNodeColor steal): files inside call cycles
 // (SCC size > 1), baked by _strata_analysis
 const cycSet = new Set(DATA.meta.cycIds || []);
@@ -2000,7 +2026,7 @@ function tick() {
     // focus camera (0.60/0.40) made a geometrically-served state read
     // as spheres-only (skeptic r5-final objection)
     if (_lodServe) lod = 1;
-    fnLines.material.opacity = 0.75 * lod;
+    fnLines.material.opacity = EMPHASIS.FOCUS_TIER_OPACITY * lod;
     if (fnQuiet) fnQuiet.material.opacity = 0.16 * lod;
     if (fnBus) fnBus.material.opacity = 0.35 + 0.65 * lod;
     if (fnJDot) fnJDot.material.opacity = 0.35 + 0.55 * lod;
@@ -2543,24 +2569,19 @@ function updateClusterLabs() {
     const dx = px - gx, dy2 = py - gy;
     const dl = Math.hypot(dx, dy2) || 1;
     const rx = px + dx / dl * 40, ry = py + dy2 / dl * 40;
-    const tryAt = (x, y) => {
-      c.el.style.transform = "translate(" + x.toFixed(1) + "px," + y.toFixed(1) + "px) translate(-50%,-50%)";
-      const r = labBox(c.el, x, y, 0.5);
-      return (hubRects.every(hr => separate(r, hr, 4)) && taken.every(t => separate(r, t, 4)) &&
-              clabObst.every(q => q[0] < r.left - 6 || q[0] > r.right + 6 ||
-                                  q[1] < r.top - 6 || q[1] > r.bottom + 6)) ? r : null;
-    };
+    const ok = r => hubRects.every(hr => separate(r, hr, 4)) && taken.every(t => separate(r, t, 4)) &&
+      clabObst.every(q => q[0] < r.left - 6 || q[0] > r.right + 6 ||
+                          q[1] < r.top - 6 || q[1] > r.bottom + 6);
     const prev = clabOff.get(key);
     if (prev !== undefined) {
-      const r = prev.rad ? tryAt(rx, ry) : tryAt(px, py + prev.dy);
-      if (r) { taken.push(r); return; }
+      const res = prev.rad ? placeLabels(c.el, rx, ry, [[0, 0]], "-50%,-50%", 0.5, ok)
+                           : placeLabels(c.el, px, py, [[0, prev.dy]], "-50%,-50%", 0.5, ok);
+      if (res.hit) { taken.push(res.r); return; }
     }
-    const rRad = tryAt(rx, ry);
-    if (rRad) { clabOff.set(key, { rad: true }); taken.push(rRad); return; }
-    for (const dy of [0, -34, 34, -64, 64]) {
-      const r = tryAt(px, py + dy);
-      if (r) { clabOff.set(key, { rad: false, dy }); taken.push(r); return; }
-    }
+    const resRad = placeLabels(c.el, rx, ry, [[0, 0]], "-50%,-50%", 0.5, ok);
+    if (resRad.hit) { clabOff.set(key, { rad: true }); taken.push(resRad.r); return; }
+    const res = placeLabels(c.el, px, py, [0, -34, 34, -64, 64].map(dy => [0, dy]), "-50%,-50%", 0.5, ok);
+    if (res.hit) { clabOff.set(key, { rad: false, dy: res.o[1] }); taken.push(res.r); return; }
     c.el.style.display = "none"; clabOff.delete(key);
   });
 }
@@ -2856,7 +2877,7 @@ function rebuildFocusWires() {
     const vis = Math.min(alphaTgt[l.s], alphaTgt[l.t]);
     col.setHex(TYPE_C3D[l.ty] || 0xd9e2eb);
     if (revealed.has(li)) col.multiplyScalar(0.42);   // C2.2 dim-but-traceable
-    else if (vis < 0.5) col.multiplyScalar(0.12);   // dead-end / ghost endpoint
+    else if (vis < 0.5) col.multiplyScalar(EMPHASIS.DIM_ALPHA);   // dead-end / ghost endpoint
     const phase = ((li * 2654435761) % 997) / 997 * 13;   // per-link dash phase
     let px = 0, py = 0, pz = 0, pd = 0;
     for (let s = 0; s <= ARC_SEG; s++) {
@@ -2936,7 +2957,7 @@ function applyVisibility() {
   edgeFlowOn = focusing;   // tick's dash-flow pass reads this
   // edges are a quiet layer at overview (per-bucket caps) and open up when
   // a focus set is lit
-  bucketMat.forEach((mat, bi) => { mat.opacity = focusing ? 0.75 : BUCKETS[bi].op; });
+  bucketMat.forEach((mat, bi) => { mat.opacity = focusing ? EMPHASIS.FOCUS_TIER_OPACITY : BUCKETS[bi].op; });
   updateEdgeLegend(focusing);
   // fn layer only makes sense inside a focus — say so instead of ignoring clicks
   cbFnEl.disabled = !focusing;
@@ -3244,20 +3265,9 @@ function updateEdgeLabels() {
   const taken = [];
   for (const p of placed) {
     if (taken.length >= 24) { p.el.style.display = "none"; continue; }
-    let r = p.r;
-    if (hubRects.some(hr => !separate(r, hr, 2)) ||
-        taken.some(t => !separate(r, t, 2))) {
-      let ok = false;
-      for (const dy of [-13, 11, -26]) {
-        p.el.style.transform = "translate(" + p.x.toFixed(1) + "px," +
-          (p.y + dy).toFixed(1) + "px) translate(-50%,-50%)";
-        const r2 = labBox(p.el, p.x, p.y + dy, 0.5);
-        if (hubRects.every(hr => separate(r2, hr, 2)) &&
-            taken.every(t => separate(r2, t, 2))) { r = r2; ok = true; break; }
-      }
-      if (!ok) { p.el.style.display = "none"; continue; }
-    }
-    taken.push(r);
+    const res = placeLabels(p.el, p.x, p.y, [[0, 0], ...[-13, 11, -26].map(dy => [0, dy])],
+      "-50%,-50%", 0.5, r => hubRects.every(hr => separate(r, hr, 2)) && taken.every(t => separate(r, t, 2)));
+    if (res.hit) taken.push(res.r); else p.el.style.display = "none";
   }
 }
 
@@ -3309,11 +3319,10 @@ function updateXtLabels() {
       k.el.style.display = "none"; continue;
     }
     k.el.style.display = "block";
-    k.el.style.transform = "translate(" + ((hubV.x*0.5+0.5)*w).toFixed(1) + "px," +
-      ((-hubV.y*0.5+0.5)*h).toFixed(1) + "px) translate(-50%,-50%)";
-    const r = labBox(k.el, (hubV.x*0.5+0.5)*w, (-hubV.y*0.5+0.5)*h, 0.5);
-    if (taken.every(t => separate(r, t, 4))) taken.push(r);
-    else k.el.style.display = "none";
+    const x = (hubV.x * 0.5 + 0.5) * w, y = (-hubV.y * 0.5 + 0.5) * h;
+    const res = placeLabels(k.el, x, y, [[0, 0]], "-50%,-50%", 0.5,
+      r => taken.every(t => separate(r, t, 4)));
+    if (res.hit) taken.push(res.r); else k.el.style.display = "none";
   }
 }
 
@@ -3443,24 +3452,18 @@ function updateHubs() {
     // clamp inside the viewport but clear of the left info panel
     const x = Math.max(310, Math.min(w - 30, rawX)), y = Math.max(16, Math.min(h - 26, (-hubV.y * 0.5 + 0.5) * h));
     el.style.display = "block";
-    let r = null;
+    const ok = r => fixed.every(f => separate(r, f, 4)) && clearOfDots(r);
     const prev = hubOff.get(i);
     if (prev) {
-      el.style.transform = "translate(" + (x + prev.dx).toFixed(1) + "px," +
-        (y + prev.dy).toFixed(1) + "px) translate(-50%,0)";
-      r = labBox(el, x + prev.dx, y + prev.dy, 0);
-      if (fixed.every(f => separate(r, f, 4)) && clearOfDots(r)) { fixed.push(r); continue; }
+      const res = placeLabels(el, x, y, [[prev.dx, prev.dy]], "-50%,0", 0, ok);
+      if (res.hit) { fixed.push(res.r); continue; }
     }
-    outer:
-    for (const dy of [-19, 17, -42, 41, -65, 65, -88, 88]) {
-      for (const dx of [0, 100, -100]) {
-        el.style.transform = "translate(" + (x + dx).toFixed(1) + "px," +
-          (y + dy).toFixed(1) + "px) translate(-50%,0)";
-        r = labBox(el, x + dx, y + dy, 0);
-        if (fixed.every(f => separate(r, f, 4)) && clearOfDots(r)) { hubOff.set(i, { dx, dy }); break outer; }
-      }
-    }
-    fixed.push(r);
+    const offs = [];
+    for (const dy of [-19, 17, -42, 41, -65, 65, -88, 88])
+      for (const dx of [0, 100, -100]) offs.push([dx, dy]);
+    const res = placeLabels(el, x, y, offs, "-50%,0", 0, ok);
+    if (res.hit) hubOff.set(i, { dx: res.o[0], dy: res.o[1] });
+    fixed.push(res.r);
   }
 }
 let stubExits = [];     // EXPLAINED EXIT dissolve points this frame (focus-file
@@ -3849,8 +3852,8 @@ function rebuildFocusLabels(focusing) {
     // the neighborhood is busy the pure functions yield their labels first
     const cands = own.concat(near);
     const writerFirst = (a, b) => {
-      const ioa = DATA.fio && DATA.fio[nodes[fnMeta[a].file].path + "::" + fnMeta[a].name];
-      const iob = DATA.fio && DATA.fio[nodes[fnMeta[b].file].path + "::" + fnMeta[b].name];
+      const ioa = DATA.fio && DATA.fio[fnKey(fnMeta[a].file, fnMeta[a].name)];
+      const iob = DATA.fio && DATA.fio[fnKey(fnMeta[b].file, fnMeta[b].name)];
       return ((iob && iob.w.length) ? 1 : 0) - ((ioa && ioa.w.length) ? 1 : 0);
     };
     cands.sort(writerFirst).slice(0, 32).forEach(ix => {
@@ -3869,7 +3872,7 @@ function rebuildFocusLabels(focusing) {
         fLabs.push({ kind: 1, i: m.file, ix, el });
         return;
       }
-      const io = DATA.fio && DATA.fio[nodes[m.file].path + "::" + m.name];
+      const io = DATA.fio && DATA.fio[fnKey(m.file, m.name)];
       // writes-state badge (tier-2 metadata per the LOD ladder; single
       // glyph channel — color stays cluster-owned)
       el.textContent = "ƒ " + m.name + (io && io.w.length ? " ✎" + io.w.length : "");
@@ -3937,17 +3940,9 @@ function updateFocusLabels() {
       taken.push(r1);
       continue;
     }
-    let r = labBox(f.el, x, y, 1);
-    if (hubRects.some(hr => !separate(r, hr, 2)) || taken.some(t => !separate(r, t, 2)) || !clearDots(r)) {
-      let ok = false;
-      for (const dy of [16, -14, 32, -30]) {
-        f.el.style.transform = "translate(" + x.toFixed(1) + "px," + (y + dy).toFixed(1) + "px) translate(-50%,-100%)";
-        r = labBox(f.el, x, y + dy, 1);
-        if (hubRects.every(hr => separate(r, hr, 2)) && taken.every(t => separate(r, t, 2)) && clearDots(r)) { ok = true; break; }
-      }
-      if (!ok) { f.el.style.display = "none"; continue; }
-    }
-    taken.push(r);
+    const res = placeLabels(f.el, x, y, [[0, 0], ...[16, -14, 32, -30].map(dy => [0, dy])],
+      "-50%,-100%", 1, r => hubRects.every(hr => separate(r, hr, 2)) && taken.every(t => separate(r, t, 2)) && clearDots(r));
+    if (res.hit) taken.push(res.r); else { f.el.style.display = "none"; continue; }
   }
 }
 // boot rebuildFocusLabels(false) deleted - boot applyVisibility() re-runs it
@@ -3997,7 +3992,7 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
   const fIdx = new Map(), fpos = [], fcol = [], eidx = [], wireRows = [];
   // mutators-only filter: when on, fn satellites for functions with no
   // member writes are not created at all (their wires collapse with them)
-  const ioOf = (fi, name) => (DATA.fio || {})[nodes[fi].path + "::" + name];
+  const ioOf = (fi, name) => (DATA.fio || {})[fnKey(fi, name)];
   const isMutator = (fi, name) => {
     const io = ioOf(fi, name);
     return !!(io && io.w.length);
@@ -5606,7 +5601,7 @@ function mapTipText(w) {
     return A.label + " > " + w.sfn + " > " + B.label + "::" + w.dfn;
   let t = A.label + "::" + w.sfn + "() \u2192 " + B.label + "::" + w.dfn + "()";
   if (w.line) t += "\nline " + w.line;
-  const io = (DATA.fio || {})[B.path + "::" + w.dfn];
+  const io = (DATA.fio || {})[fnKey(w.df, w.dfn)];
   if (io) {
     if (io.sig) t += "\n" + io.sig + (io.ret ? " -> " + io.ret : "");
     if (io.w.length) t += "\n\u270e " + io.w.join(", ");
@@ -5909,7 +5904,7 @@ function mapRender() {
       (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0) || (a[1] - b[1]));
     const shown = all.slice(0, FN_PORT_MAX);
     return {
-      rows: shown.map(r => ({ nm: r[0], ln: r[1], io: fioMap[nodes[i].path + "::" + r[0]] })),
+      rows: shown.map(r => ({ nm: r[0], ln: r[1], io: fioMap[fnKey(i, r[0])] })),
       more: all.slice(FN_PORT_MAX),
     };
   };
@@ -7059,8 +7054,8 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   // disclosure dimming: L1 hover dims non-incident to 0.12; L3 freeze to 0.06
   const hov = mapHover >= 0 && L.wires[mapHover] ? L.wires[mapHover] : null;
   const dim = (a, b) => {
-    if (mapFrozenIx >= 0) return (a === mapFrozenIx || b === mapFrozenIx) ? 1 : 0.06;
-    if (hov) return (a === hov.sf || a === hov.df || b === hov.sf || b === hov.df) ? 1 : 0.12;
+    if (mapFrozenIx >= 0) return (a === mapFrozenIx || b === mapFrozenIx) ? 1 : EMPHASIS.MAP_FREEZE_ALPHA;
+    if (hov) return (a === hov.sf || a === hov.df || b === hov.sf || b === hov.df) ? 1 : EMPHASIS.DIM_ALPHA;
     return 1;
   };
   const seg = (rec, color, width, dash, alpha) => {
@@ -8072,11 +8067,11 @@ function showFnInfo(k) {
   info.style.display = "block";
   document.getElementById("iTitle").textContent = fm.name + "()";
   document.getElementById("iSub").textContent = nodes[fm.file].path;
-  panelCopyText = "res://" + nodes[fm.file].path + "::" + fm.name;
+  panelCopyText = "res://" + fnKey(fm.file, fm.name);
   const tags = document.getElementById("iTags");
   tags.innerHTML = "";
   // IO surface: signature line + writes/mutates chips (fn-IO feature)
-  const io = (DATA.fio || {})[nodes[fm.file].path + "::" + fm.name];
+  const io = (DATA.fio || {})[fnKey(fm.file, fm.name)];
   if (io) {
     if (io.sig) {
       const sig = document.createElement("div");
@@ -8160,7 +8155,7 @@ function fnStalkHide() { if (fnStalk) fnStalk.visible = false; }
 
 _JS_EVENTS = r"""const greyLabelEls = ["hubs", "clabs", "flabs"].map(id => document.getElementById(id));
 function greyLabelsDim(on) {
-  greyLabelEls.forEach(el => { el.style.opacity = on ? 0.25 : ""; });
+  greyLabelEls.forEach(el => { el.style.opacity = on ? EMPHASIS.LABEL_DIM_OPACITY : ""; });
 }
 function hoverGrey(i) {
   if (i === hoverGreyIdx) return;
@@ -8181,7 +8176,7 @@ function hoverGrey(i) {
   const lit = new Set([i]);
   (adj[i] || []).forEach(j => lit.add(j));
   for (let j = 0; j < N; j++)
-    if (!lit.has(j) && alphaTgt[j] > 0.12) alphaTgt[j] = 0.12;
+    if (!lit.has(j) && alphaTgt[j] > EMPHASIS.DIM_ALPHA) alphaTgt[j] = EMPHASIS.DIM_ALPHA;
   links.forEach((l, k) => {
     if (alphaTgt[l.s] > 0.5 && alphaTgt[l.t] > 0.5) return;
     const b = bucketOf[k], tgt = bucketColIB[b].array;
@@ -8190,13 +8185,13 @@ function hoverGrey(i) {
     // indexing by link index k*6 dimmed whatever edge owned that slot.
     if (hwSlot[k] >= 0) {
       for (let o6 = hwSlot[k]; o6 < hwSlot[k] + 96; o6 += 6) {
-        tgt[o6] *= 0.12; tgt[o6+1] *= 0.12; tgt[o6+2] *= 0.12;
-        tgt[o6+3] *= 0.12; tgt[o6+4] *= 0.12; tgt[o6+5] *= 0.12;
+        tgt[o6] *= EMPHASIS.DIM_ALPHA; tgt[o6+1] *= EMPHASIS.DIM_ALPHA; tgt[o6+2] *= EMPHASIS.DIM_ALPHA;
+        tgt[o6+3] *= EMPHASIS.DIM_ALPHA; tgt[o6+4] *= EMPHASIS.DIM_ALPHA; tgt[o6+5] *= EMPHASIS.DIM_ALPHA;
       }
     } else {
       const o6 = slotOf[k] * 6;
-      tgt[o6] *= 0.12; tgt[o6+1] *= 0.12; tgt[o6+2] *= 0.12;
-      tgt[o6+3] *= 0.12; tgt[o6+4] *= 0.12; tgt[o6+5] *= 0.12;
+      tgt[o6] *= EMPHASIS.DIM_ALPHA; tgt[o6+1] *= EMPHASIS.DIM_ALPHA; tgt[o6+2] *= EMPHASIS.DIM_ALPHA;
+      tgt[o6+3] *= EMPHASIS.DIM_ALPHA; tgt[o6+4] *= EMPHASIS.DIM_ALPHA; tgt[o6+5] *= EMPHASIS.DIM_ALPHA;
     }
     bucketColIB[b].needsUpdate = true;
   });
