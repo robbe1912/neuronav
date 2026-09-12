@@ -28,8 +28,9 @@ A config that omits ``state_dir`` aborts at load too (issue #91): the
 silent ``<root>/.neuronav`` default is a store INSIDE the scanned root,
 so a config whose ``root`` points at a foreign checkout would read and
 write that checkout's live store directly — the door that wiped one.
-The fix is one key: an explicit ``state_dir`` path, or ``"default"`` to
-opt into ``<root>/.neuronav`` (``onboard.py init`` writes the opt-in;
+The fix is one key: an explicit ``state_dir`` path, or the exact string
+``"default"`` (case-sensitive — any other value is a path) to opt into
+``<root>/.neuronav`` (``onboard.py init`` writes the opt-in;
 the shipped profiles carry it). Only the no-config pure-defaults leg
 (step 4 above) keeps the implicit default — no config, nothing to fix.
 
