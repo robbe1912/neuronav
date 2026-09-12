@@ -266,6 +266,7 @@ def _build_data() -> dict:
 # rung 2: _JS_MAP_RENDER + _JS_MAP_PAINT carved from _JS_MID (split_plan_js.md); file lines re-anchored by content post-rung-1
 # rung 3: _JS_MAP_INPUT + _JS_LEGEND carved (split_plan_js.md); residuals _JS_MID/_JS_MID_B/_JS_MID_C collapse at rung 8
 # rung 4: _JS_MINS_C renamed _JS_PINS (whole span is the pins block per plan 6172-6576)
+# rung 5: _JS_FN_LAYER state block (plan 4361-4802, fnMesh..rebuildFnLayer-1) carved from _JS_MID
 _HTML_HEAD = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3498,7 +3499,9 @@ function updateStubLabs() {
 // first render
 
 // ---- function-level layer (files inside the current focus) -------------------
-let fnMesh = null, fnLines = null, fnStalks = null, fnMeta = [], fnArrows = null, fnQuiet = null;
+"""
+
+_JS_FN_LAYER = r"""let fnMesh = null, fnLines = null, fnStalks = null, fnMeta = [], fnArrows = null, fnQuiet = null;
   let fnTrunkN = 0;   // file-pair bus trunks in the current fn layer (via __dbg)
   // conduit lane law: ALWAYS +Y — a -Y lift drops the conduit down INTO
   // the fn-box swarm it is supposed to overfly. Consecutive shared-
@@ -3940,7 +3943,9 @@ function updateFocusLabels() {
   }
 }
 // boot rebuildFocusLabels(false) deleted - boot applyVisibility() re-runs it
-function rebuildFnLayer(focusing) {
+"""
+
+_JS_MID_D = r"""function rebuildFnLayer(focusing) {
   if (fnMesh) { scene.remove(fnMesh); fnMesh.geometry.dispose(); fnMesh.dispose(); fnMesh = null; }
   if (fnLines) { scene.remove(fnLines); fnLines.geometry.dispose(); fnLines = null; }
   if (fnQuiet) { scene.remove(fnQuiet); fnQuiet.geometry.dispose(); fnQuiet = null; }
@@ -8829,7 +8834,7 @@ tick();
 </html>
 """
 
-_TEMPLATE = (_HTML_HEAD + _JS_MID + _JS_LEGEND + _JS_PINS + _JS_MAP_RENDER + _JS_MAP_PAINT + _JS_MAP_INPUT + _JS_MID_B + _JS_DBG)
+_TEMPLATE = (_HTML_HEAD + _JS_MID + _JS_FN_LAYER + _JS_MID_D + _JS_LEGEND + _JS_PINS + _JS_MAP_RENDER + _JS_MAP_PAINT + _JS_MAP_INPUT + _JS_MID_B + _JS_DBG)
 
 
 
