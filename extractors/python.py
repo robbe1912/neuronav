@@ -68,6 +68,8 @@ def _module_rel(mod: str, cur: Path) -> str:
     mod = mod.strip()
     if not mod:
         return ""
+    import nav
+
     parts = mod.lstrip(".").split(".")
     dots = len(mod) - len(mod.lstrip("."))
     if dots:  # relative: sibling (./) or parent packages (../)
@@ -78,8 +80,6 @@ def _module_rel(mod: str, cur: Path) -> str:
     else:
         # root-relative package path first (nav.ROOT is imported by the
         # time graph.py drives parsing; fall back to the file's own dir)
-        import nav
-
         cand = nav.ROOT.joinpath(*parts)
         if not cand.with_suffix(".py").is_file() and not (cand / "__init__.py").is_file():
             cand = cur.parent.joinpath(*parts)
@@ -107,9 +107,14 @@ def _buffer_list_rhs(lines: list[str], i: int, rhs: str) -> tuple[str, int]:
         j += 1
     return rhs, j
 def _split_names(spec: str) -> list[str]:
+    # a `#` comment ends the name list — `from x import a  # noqa` must
+    # still bind a (#153: the trailing comment ate the last name)
+    spec = spec.split("#", 1)[0]
     out = []
     for chunk in spec.split(","):
-        chunk = chunk.strip().rstrip(")").strip()
+        # parenthesized lists leave ( or ) glued to either side of a
+        # chunk — strip both, not just the trailing paren (#107)
+        chunk = chunk.strip().strip("()").strip()
         if not chunk or chunk == "(":
             continue
         # "X as Y" binds the alias; plain "X" binds X
@@ -130,41 +135,174 @@ def _has_exact(relpath: str) -> bool:
     return p.name in {e.name for e in p.parent.iterdir()}
 
 
-def _record_import(line: str, path: Path, fs: FileSym) -> None:
+def _buffer_paren_rhs(lines: list[str], i: int, rhs: str) -> tuple[str, int]:
+    """Buffer a multi-line parenthesized from-import list from
+    ``lines[i]``; -> (joined_rhs, next_index)."""
+    j = i + 1
+    while rhs.count("(") > rhs.count(")") and j < len(lines):
+        rhs += " " + lines[j].strip()
+        j += 1
+    return rhs, j
+
+
+def _record_from(module: str, names: list[tuple[str, str]], path: Path, fs: FileSym) -> None:
+    """Bind `from module import orig as alias` facts: the receiver const
+    (alias) plus the one-name-survives import edge (original name —
+    the edge marks the func that exists, the alias may not)."""
+    relmod = _module_rel(module, path)
+    if not relmod:
+        return
+    # `from pkg import name` may import a SUBMODULE (extractors.
+    # gdscript), not just a symbol — prefer name.py when it exists
+    # (exact case) as the receiver target
+    if relmod.endswith("/__init__.py"):
+        pkg_dir = relmod[: -len("/__init__.py")]
+    else:
+        pkg_dir = relmod.rsplit("/", 1)[0] if "/" in relmod else ""
+    for nm, alias in names:
+        sub = f"{pkg_dir}/{nm}.py" if pkg_dir else f"{nm}.py"
+        target = sub if _has_exact(sub) else relmod
+        fs.consts[alias] = target
+        # from-import binds ONE name: that func survives (it is
+        # referenced by the import itself); the module's other
+        # funcs are NOT kept alive by a name-selecting import
+        fs.from_imports.add((target, nm))
+
+
+def _record_plain(mod_name: str, alias: str, path: Path, fs: FileSym) -> None:
+    relmod = _module_rel(mod_name, path)
+    if relmod and re.fullmatch(r"[A-Za-z_]\w*", alias):
+        fs.consts[alias] = relmod
+        # plain import binds the whole namespace: the module may be
+        # reached dynamically, keep its funcs alive as a unit
+        fs.imported_modules.add(relmod)
+
+
+def _record_import(line: str, path: Path, fs: FileSym, lines: list[str], i: int) -> int:
+    """Line-based import harvest (the AST path in parse() is canonical;
+    this one backs the unparseable-file fallback). Handles the
+    parenthesized/multi-line from-import shapes of #107. -> number of
+    lines consumed."""
     im = FROM_IMPORT_RE.match(line)
     if im:
-        import nav
-
-        relmod = _module_rel(im.group(1), path)
-        if relmod:
-            # `from pkg import name` may import a SUBMODULE (extractors.
-            # gdscript), not just a symbol — prefer name.py when it exists
-            # (exact case) as the receiver target
-            if relmod.endswith("/__init__.py"):
-                pkg_dir = relmod[: -len("/__init__.py")]
-            else:
-                pkg_dir = relmod.rsplit("/", 1)[0] if "/" in relmod else ""
-            for nm in _split_names(im.group(2)):
-                sub = f"{pkg_dir}/{nm}.py" if pkg_dir else f"{nm}.py"
-                target = sub if _has_exact(sub) else relmod
-                fs.consts[nm] = target
-                # from-import binds ONE name: that func survives (it is
-                # referenced by the import itself); the module's other
-                # funcs are NOT kept alive by a name-selecting import
-                fs.from_imports.add((target, nm))
-        return
+        rhs, j = _buffer_paren_rhs(lines, i, im.group(2))
+        _record_from(im.group(1), [(nm, nm) for nm in _split_names(rhs)], path, fs)
+        return j - i
     im = PLAIN_IMPORT_RE.match(line)
     if im:
         for mod in im.group(1).split(","):
             seg = mod.split(" as ")
             mod_name = seg[0].strip()
             alias = seg[-1].strip() if len(seg) > 1 else mod_name.split(".")[0]
-            relmod = _module_rel(mod_name, path)
-            if relmod and re.fullmatch(r"[A-Za-z_]\w*", alias):
-                fs.consts[alias] = relmod
-                # plain import binds the whole namespace: the module may be
-                # reached dynamically, keep its funcs alive as a unit
-                fs.imported_modules.add(relmod)
+            _record_plain(mod_name, alias, path, fs)
+    return 1
+
+
+def _iter_module_scope(body: list[ast.stmt]):
+    """Statements that run at import time: module scope proper plus the
+    bodies of control-flow wrappers (if/try/with/for/match), but never
+    inside a def or class body (those belong to the fn/class scans).
+    Decorator expressions of skipped defs are yielded — they execute at
+    import (registry-style callbacks)."""
+    for stmt in body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            yield from stmt.decorator_list
+            continue
+        yield stmt
+        for sub in (getattr(stmt, "body", ()), getattr(stmt, "orelse", ()), getattr(stmt, "finalbody", ())):
+            yield from _iter_module_scope(sub)
+        for handler in getattr(stmt, "handlers", ()) or ():
+            yield from _iter_module_scope(handler.body)
+        for case in getattr(stmt, "cases", ()) or ():
+            yield from _iter_module_scope(case.body)
+
+
+def _harvest_ast(tree: ast.Module, path: Path, fs: FileSym) -> None:
+    """AST pass over a parseable file: import facts (anywhere — module,
+    class, or function bodies: a lazy `import viz` inside a handler
+    still binds the receiver) and module-scope liveness the line scan
+    cannot see (indented calls, value refs, receiver binds, dispatch
+    surfaces)."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            mod = "." * node.level + (node.module or "")
+            _record_from(
+                mod, [(a.name, a.asname or a.name) for a in node.names], path, fs
+            )
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                _record_plain(a.name, a.asname or a.name.split(".")[0], path, fs)
+
+    # classes -> their method names (dispatch-surface candidates) and the
+    # in-file classes their bodies reference (stand-ins wrap each other:
+    # FailingClient.create_collection returns FailingAdd, so the wrapped
+    # class is as much a dispatch surface as the injected one)
+    classes: dict[str, set[str]] = {}
+    class_refs: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            methods = set()
+            refs: set[str] = set()
+            for stmt in node.body:
+                for sub in ast.walk(stmt):
+                    if isinstance(sub, ast.Name) and sub.id != node.name:
+                        refs.add(sub.id)
+                    elif isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        methods.add(sub.name)
+            classes[node.name] = methods
+            class_refs[node.name] = refs
+
+    module_refs: set[str] = set()
+    for stmt in _iter_module_scope(tree.body):
+        for node in ast.walk(stmt):
+            if isinstance(node, ast.Name):
+                module_refs.add(node.id)
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                # module code runs at import: the callee is an entry
+                fs.entry_hints.add(node.func.id)
+            elif isinstance(node, ast.Assign):
+                _bind_module_var(node, fs, classes)
+
+    # classes referenced at module scope travel through an opaque
+    # consumer (injected stand-ins, framework singletons): their method
+    # names become runtime-dispatch candidates — review tier, not roots.
+    # The surface closes over the stand-in object graph (wrappers the
+    # dispatch classes themselves reference), breadth-first and sorted
+    # for determinism.
+    frontier = sorted(set(classes) & module_refs)
+    seen: set[str] = set()
+    while frontier:
+        cls = frontier.pop()
+        if cls in seen:
+            continue
+        seen.add(cls)
+        fs.dispatch_names |= classes[cls]
+        frontier.extend(sorted((class_refs.get(cls, set()) & set(classes)) - seen))
+
+
+def _bind_module_var(asg: ast.Assign, fs: FileSym, classes: dict[str, set[str]]) -> None:
+    """Module-level assignment facts:
+    - value ref: `nav.embed = _counting` / `HOOK = helper` hands a file
+      func to another namespace — a genuine use with no call site
+    - receiver bind: `LOG = CheckLog()` / `handler = Stub` makes the
+      target a typed receiver for every body scan (module vars are
+      visible file-wide)"""
+    val = asg.value
+    if isinstance(val, ast.Name):
+        if val.id in fs.funcs:
+            fs.entry_hints.add(val.id)
+        if val.id in classes:
+            for tgt in asg.targets:
+                if isinstance(tgt, ast.Name):
+                    fs.module_vars[tgt.id] = val.id
+    elif isinstance(val, ast.Call) and isinstance(val.func, ast.Name):
+        callee = val.func.id
+        mod = fs.consts.get(callee, "")
+        bound = "module:" + mod if mod else (callee if callee in classes else "")
+        if bound:
+            for tgt in asg.targets:
+                if isinstance(tgt, ast.Name):
+                    fs.module_vars[tgt.id] = bound
 
 
 def parse(path: Path, rel: str) -> FileSym:
@@ -319,8 +457,7 @@ def parse(path: Path, rel: str) -> FileSym:
                 fs.members[sn.group(1)] = sn.group(2)
                 i += 1
                 continue
-            _record_import(line, path, fs)
-            i += 1
+            i += _record_import(line, path, fs, lines, i)
             continue
 
         # module scope (or the __main__-guard block): statements here run
@@ -333,7 +470,7 @@ def parse(path: Path, rel: str) -> FileSym:
         if main_guard_indent >= 0 and ind <= main_guard_indent:
             main_guard_indent = -1  # guard block ended
 
-        _record_import(line, path, fs)
+        i += _record_import(line, path, fs, lines, i) - 1
 
         # __all__ = ["a", "b"]: the module's declared export surface —
         # consumers import these without any in-repo call site. Buffer
@@ -377,6 +514,9 @@ def parse(path: Path, rel: str) -> FileSym:
                 if nm not in MODULE_CALL_SKIP:
                     fs.entry_hints.add(nm)
         i += 1
+
+    if tree is not None:
+        _harvest_ast(tree, path, fs)
 
     for nm in fixture_names:
         if nm in fs.funcs:

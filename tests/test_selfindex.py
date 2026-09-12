@@ -36,11 +36,16 @@ check("self likely-dead is zero", dead["by_tier"].get("likely", 0) == 0,
       f"likely={len(likely)}" + (f" e.g. {likely[0]['path']}:{likely[0]['func']}" if likely else ""))
 
 # server.py MCP handlers are framework dispatch: review tier, never likely
-# (window covers handler funcs + their private helpers: 15 at bb4b762,
-# +1 context overview helper, +4 context render helpers from the #86
-# K5 split — bounded growth, tier still review)
+# — and since #107/#153 fixed the import attribution, their test/import
+# consumers resolve (e.g. tests/test_explore.py:main -> server.py::explore):
+# the tool funcs are REACHABLE, so the candidate window starts at 0. The
+# reachability pin keeps teeth on that attribution (the pre-fix state had
+# 22 review candidates, all false-dead).
+check("server handlers reachable via resolved imports",
+      "server.py::explore" in g.reachable,
+      f"explore reachable={'server.py::explore' in g.reachable}")
 handlers = [c for c in dead["candidates"] if c["path"] == "server.py"]
-check("server handlers stay review", 5 <= len(handlers) <= 24
+check("server handlers stay review", 0 <= len(handlers) <= 24
       and all(c["tier"] == "review" for c in handlers),
       f"{len(handlers)} handler candidates, tiers={sorted({c['tier'] for c in handlers})}")
 
