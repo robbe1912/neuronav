@@ -132,7 +132,7 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_repomap` | repo_map budget/determinism/rank ordering on synthetic graphs | stdlib + numpy |
 | `test_cpphard` | C++ extractor edge cases (macro surface, pairing, dead tiers, determinism) | tree-sitter wheels (hermetic fixtures) |
 | `test_recall` | hybrid recall: BM25F/RRF fusion, ctx hops, degraded mode | chromadb import (hermetic, `NEURONAV_EMBED_FAKE=1`) |
-| `test_embedprov` | embed provider contract (issue #17): provider select/auto-detect, ollama+openai wire adapters, env-vs-config key precedence, 429 backoff | stdlib http.server stub + chromadb import |
+| `test_embedprov` | embed provider contract (issue #17) + collection stamp (issue #103): provider select/auto-detect, ollama+openai wire adapters, env-vs-config key precedence, 429 backoff, stamp keeps/heals hnsw:space | stdlib http.server stub + chromadb import |
 | `test_project_mode` | onboarding + config discovery precedence + viz-as-add-on (issue #27) | stdlib + chromadb import (hermetic temp trees) |
 | `test_viz` | 103-check Playwright harness (real Chrome) | playwright + chrome + a fresh bake |
 | `test_verifier` | Kythe-style verifier fixtures (issue #66): `//-`-shaped goal comments in fixture sources, asserted against extractor output | stdlib + tree-sitter/tree-sitter-cpp (extractor-level only: no config, no index, no chroma) |
