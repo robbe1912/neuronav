@@ -444,7 +444,7 @@ class Graph:
             else:
                 continue
             if member in self.files[dst].members:
-                self._edge(src_key, f"{dst}::VAR:{member}", ty="var")
+                self._edge(src_key, dst + VAR_PREFIX + member, ty="var")
             elif member in self.files[dst].funcs:
                 # property-assignment form: obj.method = x targets the
                 # func (setter-style) without a call paren
@@ -504,7 +504,7 @@ class Graph:
             head, mid, tail = m.groups()
             dst = self._chain_dst(var_types, head, mid)
             if dst and tail in self.files[dst].members:
-                self._edge(src_key, f"{dst}::VAR:{tail}", ty="var")
+                self._edge(src_key, dst + VAR_PREFIX + tail, ty="var")
             elif dst and tail in self.files[dst].funcs:
                 self._emit_call(src_key, dst, tail)
         for m in AS_CAST_CALL_RE.finditer(scan_text):
@@ -538,7 +538,7 @@ class Graph:
         for m in EMIT_RE.finditer(scan_text):
             sig = m.group(1) or m.group(2)
             if sig in fs.signals:
-                self._edge(src_key, f"{fs.path}::SIGNAL:{sig}", ty="signal")
+                self._edge(src_key, fs.path + SIGNAL_PREFIX + sig, ty="signal")
         if CONNECT_RE.search(scan_text):
             for m in STRING_NAME_RE.finditer(scan_text):
                 ref = m.group(1)
