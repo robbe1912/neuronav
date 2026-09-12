@@ -93,10 +93,13 @@ switching is a config edit, not a code change. Details:
 - Loud failures name the provider: count mismatches raise (never pad or
   truncate), wrong-shape responses raise, missing keys against an
   authed endpoint surface the HTTP error. The collection fingerprint
-  records `embed_model` + `embed_provider` (a provider-only change
-  never blocks reuse — the model defines the vector space); base-export
-  manifests gained a `provider` field, older manifests/collections
-  default to `ollama` in messages.
+  records `embed_model` + `embed_provider`: a changed stamp demands a
+  re-embed, a missing provider stamp is pre-#17 lineage (the old
+  client spoke only ollama) that heals via the re-stamp under an
+  ollama config and refuses under any other (#159). Mismatch messages
+  print the raw stored provider (None reads as unstamped), and
+  base-export manifests gate their `dim` stamp the same way — only
+  when present (#159).
 - `NEURONAV_EMBED_FAKE=1` (CI plumbing) short-circuits before any
   network: same deterministic hash vectors as before, provider ignored.
 
