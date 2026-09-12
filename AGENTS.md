@@ -46,13 +46,13 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 
 | module | role |
 |---|---|
-| `nav.py` | config resolution, chroma collection, embed client (provider-pluggable: ollama/openai wires, issue #17), rescan/import/export-base, CLI |
+| `nav.py` | config resolution, chroma collection, embed client (provider-pluggable: ollama/openai wires, issue #17), rescan/import/export-base, CLI — the CLI never imports `viz` (bake-free by design, issue #86 R8) |
 | `graph.py` | file/fn symbol graph, per-fn IO extraction, dead-code tiers |
 | `extractors/` | per-language parsers behind a registry (`gdscript.py`, `python.py`, `cpp.py` — tree-sitter-cpp front-end, `model.py` dataclasses) |
 | `clusters.py` | Louvain + labeler + crosstalk (imported lazily) |
 | `explore.py` | one-call orientation tool (codegraph-discipline: windowed 100-line slices + continuation anchors, issue #69; one `clusters()` pass feeds both stages, issue #44) |
 | `server.py` | FastMCP stdio server; read-only tools carry `readOnlyHint`, `rescan` is the write tool; read tools auto-rescan on worktree drift (stat gate, issue #19) |
-| `viz.py` | Python `_build_data` orchestrator + ONE embedded JS template string -> `graph.html`; owns every nav/graph/chroma edge (J9/J10/J12/J18) and threads the rest through pure leaves |
+| `viz.py` | Python `_build_data` orchestrator + ONE embedded JS template string -> `graph.html`; owns every nav/graph/chroma edge (J9/J10/J12/J18) and threads the rest through pure leaves; `ensure_bake()` (issue #86 R8) is the single rescan->bake entry — `server.visualize` and `onboard._index` delegate to it |
 | `layout.py` | pure strata/layout math for the bake: adjacency, iterative Tarjan SCC, strata depths, seeded force layout (moved verbatim from `viz.py`, issue #86; stdlib + numpy only, no nav/graph/chroma imports) |
 | `bake/` | pure per-job transforms for the viz DATA pipeline (issue #86 phase 2): `gitinfo` head/churn stamps, `files_model` J1-J4, `wires` J5-J8, `semantics` J11, `overlays` J13/J14/J17, `fnio` J15-J16, `budget` row-cap keeper — take g/clusters as args, no chroma/nav imports |
 | `onboard.py` | one-command project onboarding (issue #27): `init`/`wire` write `<project>/.neuronav/config.json` + MCP entries — the install stays read-only, OS-agnostic pure stdlib |
