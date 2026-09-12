@@ -29,7 +29,7 @@ the rest are local gates.
 | `test_server_stdio` | MCP stdio end-to-end: spawns server.py, drives JSON-RPC, asserts the context tool answers | mcp + default-config target repo |
 | `test_autorescan` | auto-rescan stat gate (issue #19): read-tool freshness, TTL burst guard, embed-failure cooldown, `watch_interval_s` watcher — in-process pins + two stdio e2e servers | mcp + chromadb + numpy/networkx/scipy/scikit-learn (hermetic temp target + `NEURONAV_EMBED_FAKE=1`) |
 | `test_searchtext` | capped `search_text` tool (issue #68): file:line:row shape, deterministic order, 20-file/3-line caps with markers + totals, `files_only`, glob, graceful regex errors | mcp + chromadb (hermetic temp config, `NEURONAV_EMBED_FAKE=1`) |
-| `test_baseindex` | export/import-base shards (issue #102): second-run idempotence (WinError 183), mid-swap non-destruction, byte determinism, stale-shard cleanup, fresh-store roundtrip | chromadb import (hermetic temp target, `NEURONAV_EMBED_FAKE=1`) |
+| `test_baseindex` | export/import-base shards (issue #102): second-run idempotence (WinError 183), per-phase non-destruction (mid-write debris outside base, commit rollback, cleanup self-heal), byte determinism, stale-shard cleanup, fresh-store roundtrip | chromadb import (hermetic temp target, `NEURONAV_EMBED_FAKE=1`) |
 | `test_repomap` | repo_map budget bound, byte determinism, rank ordering, god-hub saturation on synthetic graphs | stdlib + numpy (no index, no embeddings) |
 | `test_mwires` | named-wire map exports (`mwires`/`fns`/`meta` contract, map-spec-v2 §0) | chromadb import only (self-sets `NEURONAV_EMBED_FAKE=1`) |
 | `test_recall` | hybrid recall fusion, ctx hops, degraded mode (real+fake modes) | chromadb import; exact-rank pins need a real-embedded store |

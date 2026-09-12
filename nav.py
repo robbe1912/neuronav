@@ -881,11 +881,14 @@ def clusters(
 def export_base() -> dict[str, object]:
     """Dump ids+embeddings+metadata to tracked gz shards. No doc text
     (git has the file contents; import re-attaches from the checkout).
-    Atomic swap (issue #102): every new file lands via one os.replace
-    (manifest last, the coherence marker) and stale shards are removed
-    only afterward, so a failed run never destroys the previous base —
-    and the gzip header is mtime-pinned, so the same store re-exports
-    byte-identical shards."""
+    Commit safety (issue #102): the complete generation is staged in a
+    SIBLING dir (state/base.tmp-export) and validated before the live
+    base is touched at all, then committed by a whole-directory swap
+    with rollback — no per-file mutation of the active base, so a
+    failed run (mid-write, mid-swap, cleanup) always leaves the
+    previous base byte-intact. The gzip header is mtime-pinned and the
+    row json canonical, so the same store re-exports byte-identical
+    shards."""
     with _db_lock():
         col = _collection()
         if col.count() == 0:
@@ -906,15 +909,24 @@ def export_base() -> dict[str, object]:
             ),
             key=lambda r: r[0],
         )
-        BASE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = BASE_DIR / "tmp"
-        if tmp.exists():
-            shutil.rmtree(tmp)
-        tmp.mkdir()
+        staging = BASE_DIR.parent / "base.tmp-export"
+        prev = BASE_DIR.parent / "base.prev-export"
+        # self-heal leftovers from a hard-killed run: staging is always
+        # garbage; a surviving prev with no live base means the kill
+        # landed between the two commit renames — prev IS the last
+        # committed generation, so restore it
+        if staging.exists():
+            shutil.rmtree(staging)
+        if prev.exists():
+            if (BASE_DIR / MANIFEST_NAME).is_file():
+                shutil.rmtree(prev)
+            else:
+                os.replace(prev, BASE_DIR)
+        staging.mkdir(parents=True)
         shards = 0
         for i in range(0, len(rows), SHARD_SIZE):
             chunk = rows[i : i + SHARD_SIZE]
-            shard = tmp / f"shard-{shards:04d}.jsonl.gz"
+            shard = staging / f"shard-{shards:04d}.jsonl.gz"
             # mtime=0 pins the gzip header (no timestamp; the only other
             # variable field, the shard's own basename, is already stable)
             with gzip.GzipFile(
@@ -943,23 +955,37 @@ def export_base() -> dict[str, object]:
             "shards": shards,
             "exported_at": datetime.now(UTC).isoformat(timespec="seconds"),
         }
-        (tmp / MANIFEST_NAME).write_text(
+        # manifest last: it exists only once every shard row is on disk
+        (staging / MANIFEST_NAME).write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
         )
-        # swap-in (issue #102): os.replace is the portable atomic
-        # overwrite — Path.rename onto an existing target raises
-        # WinError 183 on Windows, which killed every second export
-        # after the old shards were already gone. All new files land
-        # first, nothing existing is deleted until then.
-        names = sorted(p.name for p in tmp.iterdir())
-        for name in names:
-            if name != MANIFEST_NAME:
-                os.replace(tmp / name, BASE_DIR / name)
-        os.replace(tmp / MANIFEST_NAME, BASE_DIR / MANIFEST_NAME)
-        for old in BASE_DIR.glob("shard-*.jsonl.gz"):
-            if old.name not in names:
-                old.unlink()
-        tmp.rmdir()
+        # validate the generation is complete BEFORE touching the live
+        # base — exactly the shards the manifest claims, all non-empty
+        staged = sorted(p.name for p in staging.iterdir())
+        if (
+            MANIFEST_NAME not in staged
+            or len(staged) != shards + 1
+            or any((staging / n).stat().st_size == 0 for n in staged)
+        ):
+            raise RuntimeError("incomplete export staging — base left untouched")
+        # commit: swap whole directories. Any exception rolls the
+        # previous base back into place; only a hard kill can land in
+        # the two-rename window, and the self-heal above restores it on
+        # the next run
+        moved_live = False
+        try:
+            if BASE_DIR.is_dir():
+                os.replace(BASE_DIR, prev)
+                moved_live = True
+            os.replace(staging, BASE_DIR)
+        except BaseException:
+            if moved_live and not BASE_DIR.is_dir():
+                os.replace(prev, BASE_DIR)
+            raise
+        # old generation is no longer live — removal is best-effort;
+        # debris never affects reads and the self-heal reaps it
+        if prev.is_dir():
+            shutil.rmtree(prev, ignore_errors=True)
         return manifest
 
 
