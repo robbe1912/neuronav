@@ -56,7 +56,7 @@ WFUSED_WEIGHTS = (1.0, 0.7)  # (vec, bm25) — Main-pinned weighted fusion vs un
 # numbers in bench/RESULTS.md.
 GB_LAMBDA = 1.0
 GB_RRF_K = 60.0
-GB_LAMBDAS = (0.25, 0.5, 1.0, 2.0)
+GB_LAMBDAS = (0.0, 0.25, 0.5, 1.0, 2.0)
 GB_RRF_KS = (30.0, 60.0, 120.0)
 
 
@@ -137,7 +137,6 @@ def _normalize(hits: list) -> list[dict]:
 
 
 def _run_config(repo: Path, search_fn, config: str, queries: list[dict]) -> dict:
-    flags = NEEDS[config]
     per_query = []
     for row in queries:
         hits = _normalize(search_fn(row["q"]))
