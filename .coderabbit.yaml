@@ -40,3 +40,5 @@ reviews:
       enabled: false
     simplify:
       enabled: false
+    autofix:
+      enabled: false
