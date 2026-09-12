@@ -86,10 +86,8 @@ def _churn_hot(paths: list[str]) -> list[float] | None:
         return None
 
 
-def _build_data() -> dict:
-    g = graph.get_graph()
-    clusters = nav.clusters()
-
+def _attach(clusters):
+    """J1: cluster attach — file -> cluster id + cid -> human label."""
     # file -> cluster id
     file_cluster: dict[str, int] = {}
     for c in clusters:
@@ -100,7 +98,11 @@ def _build_data() -> dict:
     cluster_names: dict[str, str] = {
         str(int(c["id"])): c.get("label") or f"c{c['id']}" for c in clusters
     }
+    return file_cluster, cluster_names
 
+
+def _dead_flags(g):
+    """J2: dead-code candidate flags; keeps the raw result for meta."""
     # dead-code candidates per file, normalized by func count: a file with
     # 2 dead helpers out of 65 is NOT a "dead file" — only flag when a
     # meaningful share of its funcs is dead. likely counts 1, review 0.5,
@@ -124,7 +126,11 @@ def _build_data() -> dict:
         n = func_counts.get(pth, 0)
         if n and w / n >= DEAD_SHARE_THRESHOLD:
             dead_flag[pth] = w
+    return dead_flag, dead_likely, dead
 
+
+def _build_nodes(g, file_cluster, dead_flag, dead_likely):
+    """J3: node roster over nav's index ∪ graph files, path-sorted."""
     # nodes: files known to nav's index (searchable corpus) ∪ graph files
     paths = sorted(
         set(file_cluster)
@@ -149,7 +155,11 @@ def _build_data() -> dict:
                 "dl": p in dead_likely and p in dead_flag,
             }
         )
+    return paths, idx, nodes
 
+
+def _build_links(g, idx):
+    """J4: file-level links from typed fn/scene edges, sorted."""
     # edges: aggregate typed func-level/scene edges to file level.
     # types: call | signal | inst (scene contains instance) | attach (scene→script)
     def kfile(k: str) -> str:
@@ -191,6 +201,17 @@ def _build_data() -> dict:
         for (s, t), tys in sorted(pair_types.items())
         for ty, w in sorted(tys.items())
     ]
+    return links
+
+
+def _build_data() -> dict:
+    g = graph.get_graph()
+    clusters = nav.clusters()
+
+    file_cluster, cluster_names = _attach(clusters)
+    dead_flag, dead_likely, dead = _dead_flags(g)
+    paths, idx, nodes = _build_nodes(g, file_cluster, dead_flag, dead_likely)
+    links = _build_links(g, idx)
 
     # function-level call edges: [src_file_idx, src_fn, dst_file_idx, dst_fn, line]
     # mwires: named-wire map rows [ty, sf, sfn, df, dfn, line, extra]
