@@ -31,6 +31,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -145,8 +146,8 @@ def _apply_config(path: Path | None) -> None:
         STATE_DIR = STATE_DIR.resolve()
     DB_DIR = STATE_DIR / "chroma"
     BASE_DIR = STATE_DIR / "base"
-    # the cluster cache belongs to the store this config resolves to
-    _clusters_memo.clear()
+    # cluster memo entries carry their store key (clusters()), so a
+    # config switch self-segregates the cache — nothing to clear here
 
 
 def _neuroignore(path: Path | None) -> frozenset[str]:
@@ -193,10 +194,98 @@ WATCH_INTERVAL_S: float
 STATE_DIR: Path
 DB_DIR: Path
 BASE_DIR: Path
-# clusters() result cache (K2/#86): same engine args + unchanged store
-# -> the same list object, so 10 call-sites stop re-running Louvain.
+# clusters() result cache (K2/#86, store-keyed for #131): same store +
+# engine args + unchanged data -> the same list object, so 10 call-sites
+# stop re-running Louvain; alternation cannot cross-wire stores because
+# the store key rides every entry (see store_key()).
 _clusters_memo: dict[tuple, list] = {}
 _apply_config(_discover_config())
+
+
+# ---- universal mount (issue #131): per-call config scoping -----------------
+#
+# The MCP server routes each tool call to the caller's `dir` by rebinding
+# the config-derived globals above for that call's duration. config_scope
+# saves and exact-restores everything config touches — including the
+# stat-gate fingerprint slots (each project keeps its own drift baseline
+# across alternation) — and swaps graph.py's parsed singleton to the one
+# cached for the incoming store, so switching back does not re-parse.
+# Chroma clients and write locks are cached per store below. The
+# NEURONAV_CONFIG env is deliberately NOT touched: config-file-driven
+# runs keep their #91 loud aborts, and subprocesses keep resolving the
+# boot config.
+
+_CONFIG_FIELDS = (
+    "ROOT", "COLLECTION", "INCLUDE_DIRS", "EXTS", "EXCLUDE_DIRS",
+    "EMBED_URL", "EMBED_MODEL", "EMBED_DIM", "EMBED_PROVIDER",
+    "EMBED_API_KEY", "WATCH_INTERVAL_S", "STATE_DIR", "DB_DIR", "BASE_DIR",
+)
+_GRAPH_CACHE: dict[tuple, object] = {}  # store key -> graph.py singleton
+_FP_CACHE: dict[tuple, tuple] = {}  # store key -> fp slots (drift baseline)
+
+
+def store_key() -> tuple[str, str]:
+    """Identity of the store the active config resolves to — the cache key
+    for chroma clients, write locks, cluster memos and parsed graphs
+    (two configs resolving to one store share its caches by design)."""
+    return (str(DB_DIR), COLLECTION)
+
+
+@contextmanager
+def config_scope(path: Path):
+    """Serve one call under another config, then restore exact state.
+
+    Pairs with server._route (issue #131): `with nav.config_scope(cfg):`
+    rebinds every config-derived global (via _apply_config) plus the
+    stat-gate slots, swaps graph.py's singleton for the one cached under
+    the incoming store, and on exit puts everything back bit for bit — a
+    raised tool error restores just as cleanly. Raises whatever
+    _apply_config raises for a bad config (callers pre-validate)."""
+    import graph as _graph_mod  # lazy: graph imports nav
+
+    global _fp_clean, _fp_last, _fp_last_scan, _fp_dirty
+    saved = {f: globals()[f] for f in _CONFIG_FIELDS}
+    with _fp_lock:
+        saved_fp = (_fp_clean, _fp_last, _fp_last_scan, _fp_dirty)
+    saved_graph = _graph_mod._graph
+    applied = False
+    try:
+        _apply_config(path)
+        applied = True
+        key = store_key()
+        # this store's drift baseline, if a previous scope synced it:
+        # entering with the boot baseline would judge every scoped scan
+        # against the wrong project (sha-gate catches it, but every
+        # routed rescan would pay the full content walk)
+        with _fp_lock:
+            fp = _FP_CACHE.get(key)
+            if fp is not None:
+                _fp_clean, _fp_last, _fp_last_scan, _fp_dirty = fp
+        _graph_mod._graph = _GRAPH_CACHE.get(key)
+        yield
+    finally:
+        if applied:
+            # keep what this scope built for ITS store — and only after a
+            # successful apply: a failed one leaves half-rebound globals
+            # whose store key belongs to no served config
+            key = store_key()
+            _GRAPH_CACHE[key] = _graph_mod._graph
+            with _fp_lock:
+                _FP_CACHE[key] = (_fp_clean, _fp_last, _fp_last_scan, _fp_dirty)
+        for f, v in saved.items():
+            globals()[f] = v
+        with _fp_lock:
+            _fp_clean, _fp_last, _fp_last_scan, _fp_dirty = saved_fp
+        _graph_mod._graph = saved_graph
+
+
+def _memo_drop_current() -> None:
+    """Invalidate the ACTIVE store's cluster memos (K2/#86): rescan/
+    import_base/drop changed one store, so only that store's entries go —
+    alternation keeps the other stores' entries warm (issue #131)."""
+    key = store_key()
+    for k in [k for k in _clusters_memo if k[:2] == key]:
+        del _clusters_memo[k]
 
 MAX_EMBED_CHARS = 30_000  # keep under Ollama context; head of .tscn has script links
 EMBED_BATCH = 32
@@ -399,15 +488,15 @@ def _extends(text: str) -> str:
 
 def _db_lock() -> "FileLock":
     """Advisory cross-process writer lock (server, CLI, viz all write via
-    nav functions). Readers skip it; sqlite handles the rest."""
-    global _LOCK
-    if _LOCK is None:
-        DB_DIR.mkdir(parents=True, exist_ok=True)
-        _LOCK = FileLock(str(DB_DIR / ".write.lock"))
-    return _LOCK
+    nav functions). One lock per store, cached (issue #131): the
+    universal server alternates configs, so the lock must follow the
+    store rather than pin whichever was touched first. Readers skip it;
+    sqlite handles the rest."""
+    DB_DIR.mkdir(parents=True, exist_ok=True)
+    return _LOCKS.setdefault(str(DB_DIR), FileLock(str(DB_DIR / ".write.lock")))
 
 
-_LOCK: FileLock | None = None
+_LOCKS: dict[str, "FileLock"] = {}
 
 
 def _check_model(col: chromadb.Collection) -> None:
@@ -434,8 +523,14 @@ def _check_model(col: chromadb.Collection) -> None:
 
 
 def client() -> "chromadb.PersistentClient":
-    """Chroma client at the configured store (one construction point)."""
-    return chromadb.PersistentClient(path=str(DB_DIR))
+    """Chroma client at the configured store — one per store for the
+    process (issue #131): alternation must not churn handles (deletes
+    were observed silently no-op-ing under client churn) and each open
+    client holds sqlite resources in its store dir."""
+    return _CLIENTS.setdefault(str(DB_DIR), chromadb.PersistentClient(path=str(DB_DIR)))
+
+
+_CLIENTS: dict[str, "chromadb.PersistentClient"] = {}
 
 
 def fns_name() -> str:
@@ -467,7 +562,7 @@ def rescan() -> dict[str, int]:
     """Incremental index: add/update changed files, purge deleted ones.
     Warm passes skip read+hash via the stat fingerprint (issue #42); the
     sha stays the content identity."""
-    _clusters_memo.clear()  # embeddings changed — recompute on demand
+    _memo_drop_current()  # embeddings changed — recompute on demand
     with _db_lock():
         return _rescan_locked()
 
@@ -606,11 +701,12 @@ def clusters(
     in clusters.communities_graph (default 1.0). Mega-blobs are then
     split + every cluster labeled (see clusters.finalize).
     Returns [{id, size, paths: [(path, class_name)], label, confidence,
-    method}]. Memoized (K2/#86): callers share ONE list per argument
-    tuple while the store is unchanged — invalidated by rescan(),
-    import_base(), `drop` and _apply_config (profile switch). Treat the
-    returned list as read-only."""
-    memo_key = (k, min_sim, split_sim, blob_min)
+    method}]. Memoized (K2/#86): callers share ONE list per (store, engine-args)
+    tuple while that store is unchanged — rescan()/import_base()/`drop`
+    drop the store's entries, and a profile switch cannot cross-wire
+    stores because the store key rides every entry (issue #131). Treat
+    the returned list as read-only."""
+    memo_key = store_key() + (k, min_sim, split_sim, blob_min)
     hit = _clusters_memo.get(memo_key)
     if hit is not None:
         return hit
@@ -720,7 +816,7 @@ def export_base() -> dict[str, object]:
 def import_base() -> dict[str, int | str]:
     """Seed local chroma from tracked shards. Skips ids whose files no
     longer exist (deleted/renamed since export) — rescan heals the rest."""
-    _clusters_memo.clear()  # store repopulated — recompute on demand
+    _memo_drop_current()  # store repopulated — recompute on demand
     with _db_lock():
         col = _collection()
         if col.count():
@@ -815,7 +911,7 @@ if __name__ == "__main__":
                 tops = ", ".join(f"{t['pair']} x{t['w']}" for t in wp["top_files"])
                 print(f"  {wp['a']} <-> {wp['b']} : {wp['edges']} edges (top: {tops})")
     elif cmd == "drop":
-        _clusters_memo.clear()  # the store is going away
+        _memo_drop_current()  # the store is going away
         cl = client()
         for name in (COLLECTION, fns_name()):
             try:

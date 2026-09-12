@@ -29,6 +29,11 @@ other code-graph tools (CodeGraph, aider repo map, SCIP).
 
 All read-only tools carry `readOnlyHint`; `rescan` is the one mutating tool.
 
+Every tool also takes an optional trailing `dir` (issue #131): empty
+serves the boot config's repo; any other path routes that one call to
+that checkout's index — one server entry covers every repo on the
+machine. See [One entry, any repo](#one-entry-any-repo-universal-mount).
+
 ## Automatic freshness (auto-rescan)
 
 Every read tool first stats the worktree (mtime/size walk over the configured
@@ -108,6 +113,52 @@ Agent-facing guidance for consuming repos: `templates/agents-snippet.md`.
 `python onboard.py init --index` writes the config + `.gitignore` entry and
 indexes without touching MCP files. `--project <path>` targets another
 directory from anywhere.
+
+## One entry, any repo (universal mount)
+
+Per-project wiring (above) stays the zero-config path, but a harness
+that spans many repos can mount **one** server entry and pass the repo
+per call — this replaces the per-project `mcpServers.neuronav` entries:
+
+```json
+{
+  "mcpServers": {
+    "neuronav": {
+      "command": "E:/path/to/neuronav/.venv/Scripts/python.exe",
+      "args": ["-X", "utf8", "E:/path/to/neuronav/server.py"],
+      "env": {"NEURONAV_CONFIG": "E:/path/to/main-project/.neuronav/config.json"}
+    }
+  }
+}
+```
+
+```jsonc
+// then, per call — no per-project entries, no restart:
+repo_map({"budget_tokens": 1024, "dir": "D:/work/game-a"})
+semantic_search({"query": "save system", "dir": "D:/work/game-b"})
+```
+
+The boot repo (no `dir` passed) follows normal config discovery — the
+`env` pin above just gives the mount a default; without one, a boot that
+finds no repo aborts loudly at startup (zero-files contract).
+
+Routing is stateless by design (issue #131: no activate/switch round
+trip to forget): one call answers from exactly one repo and the next
+call is unaffected. First contact with a fresh dir **onboards** it — the
+same scaffold `onboard.py init` writes (`"state_dir": "default"`, the
+#91 opt-in), then the full build (base shards first when tracked,
+vectors + functions + graph) — and the call answers with the build
+summary in `rescan()`'s format; a long build shows up as one long call,
+exactly like a first `rescan()`. Indexes never cross: chroma clients,
+write locks, cluster memos and the graph cache are all keyed per store.
+Naming a dir is explicit consent to build there — it is not the #91
+silent-store class (config-file-driven runs keep the loud abort). A
+missing/unreadable dir is a loud MCP error naming the dir; a foreign
+config without `state_dir` aborts the call the same way.
+
+Auto-rescan and the watcher stay on the boot project only (the stat
+fingerprint and failure cooldown are process-global); a routed repo
+refreshes via an explicit `rescan({"dir": ...})`.
 
 ## Fast onboarding: base shards (skip the re-embed)
 
