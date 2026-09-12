@@ -1,6 +1,6 @@
 # AGENTS.md — tests/
 
-Eighteen self-contained suites. Each is a standalone script — no pytest — run in
+Nineteen self-contained suites. Each is a standalone script — no pytest — run in
 its own process:
 
 ```
