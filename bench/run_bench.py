@@ -45,8 +45,8 @@ from pathlib import Path
 BENCH_DIR = Path(__file__).resolve().parent
 DEFAULT_REPO = BENCH_DIR.parent
 K = 12  # contract: nav.search(q, k=12)
-CONFIGS = ("vec", "bm25", "expand", "both", "wfused", "gb")
-NEEDS = {"vec": (), "bm25": ("bm25",), "expand": ("expand",), "both": ("bm25", "expand"), "wfused": ("bm25", "expand", "weights"), "gb": ("bm25", "expand", "gboost")}
+CONFIGS = ("vec", "bm25", "expand", "both", "wfused", "gb", "twopass")
+NEEDS = {"vec": (), "bm25": ("bm25",), "expand": ("expand",), "both": ("bm25", "expand"), "wfused": ("bm25", "expand", "weights"), "gb": ("bm25", "expand", "gboost"), "twopass": ("bm25", "expand", "two_pass")}
 WFUSED_WEIGHTS = (1.0, 0.7)  # (vec, bm25) — Main-pinned weighted fusion vs unweighted RRF k=60
 # graph-neighbor boost (issue #73): gb = both + boost at the pinned
 # winner below. λ multiplies the RRF unit 1/(rrf_k+1); each fused top-k
@@ -253,6 +253,8 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool) -> int:
                 if "gboost" in flags:
                     kw["graph_boost"] = GB_LAMBDA
                     kw["rrf_k"] = GB_RRF_K
+                if "two_pass" in flags:
+                    kw["two_pass"] = True
                 return recall.search(query, **kw)
             return nav.search(query, n=K)
 
@@ -427,8 +429,8 @@ def _per_query_table(prefix: str, recs: dict[str, dict]) -> list[str]:
     for row in golden:
         cells = []
         for c in present:
-            r = by_q[c][row["q"]]
-            cells.append("·" if r["rank"] is None else str(r["rank"]))
+            r = by_q[c].get(row["q"])  # records can predate a golden query
+            cells.append("?" if r is None else ("·" if r["rank"] is None else str(r["rank"])))
         lines.append(f"| `{row['q']}` | {row['kind']} | " + " | ".join(cells) + " |")
     lines += ["", "</details>", ""]
     return lines
@@ -492,12 +494,14 @@ def render() -> None:
         "`wfused` = `both` with weighted RRF (vec 1.0 / bm25 0.7) instead of the",
         "pinned unweighted k=60.",
         "`gb` = `both` + the swept graph-neighbor boost (λ winner, see the",
-        "λ × RRF-k sweep section).",
+        "λ × RRF-k sweep section) · `twopass` = `both` + the deterministic",
+        "second retrieve (issue #74: pass-1 hits donate identifiers + bodies",
+        "to the re-embedded augmented query, 2 embeds/query).",
         "",
     ]
     sets = [
-        ("before", "Before — merge-base 63b6f1f (pre-boost, `recall.search` defaults)"),
-        ("after", "After — graph-boost branch (winner pinned in the `gb` config)"),
+        ("before", "Before — merge-base 63b6f1f (pre-boost, pre-two-pass, `recall.search` defaults)"),
+        ("after", "After — recall branch (graph-boost winner in `gb`, two-pass in `twopass`)"),
         ("fake", "FAKE mode — `NEURONAV_EMBED_FAKE=1` plumbing battery"),
     ]
     for prefix, note in sets:

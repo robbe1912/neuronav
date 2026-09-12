@@ -46,6 +46,19 @@ without tool traffic, set `"watch_interval_s": 0.5` (seconds; absent/0 = off)
 in the config: a stdlib daemon thread then polls the same stat gate and
 rescans after a ~2s quiet debounce.
 
+## Two-pass retrieval (optional, issue #74)
+
+`semantic_search` normally retrieves once. Setting `"recall_two_pass": true`
+in the config adds a deterministic second pass (RepoCoder-style iterative
+retrieval, no LLM): the first pass's top hits donate their identifiers and
+fn bodies — char-budgeted — to an augmented query that is re-embedded once
+and RRF-fused with the pass-1 ranks. Hard embed budget: 2 calls per query.
+Engaged hits carry `two_pass: true` (same marker convention as `degraded`);
+when the vector side is down the feature stays out of the way and the
+BM25F-only degraded contract is served unchanged. Default `false` — the
+opt-in reflects the bench A/B (see the issue-74 PR; `bench/RESULTS.md`
+`twopass` column).
+
 ## Prerequisites
 
 - Python 3.11+ (venv)

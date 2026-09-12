@@ -12,6 +12,12 @@ Pure stdlib on the lexical side, no embedding backend dependency:
   ``GRAPH_BOOST``): the fused top-k each promote their 1-hop wire
   neighbors by a rank-decayed λ·RRF-unit bump — the λ × RRF-k sweep
   that chose the default lives in bench/RESULTS.md.
+- optional second retrieve (issue #74, RepoCoder): the pass-1 top-k hits
+  donate their identifier surface + fn bodies (char-budgeted) to an
+  augmented query that is re-embedded once and RRF-fused with pass 1 —
+  opt-in via the config knob ``recall_two_pass`` or the ``two_pass``
+  argument; embed budget pinned at 2 calls per query, engaged hits
+  carry ``two_pass: True``.
 - bidirectional 1-hop expansion: each hit carries up to 3 context
   labels — its strongest-wired graph neighbors, never itself.
 
@@ -42,6 +48,9 @@ CTX_CAP = 3
 # λ·unit/(source rank) to every distinct 1-hop file neighbor. The swept
 # winner lives in bench/RESULTS.md; 0.0 keeps the pinned hybrid intact.
 GRAPH_BOOST = 0.0
+# char budget for the two-pass augmented query's harvested tail
+# (identifiers first, fn bodies fill the rest — issue #74)
+TWO_PASS_BUDGET = 640
 
 # (field, weight) — order aligned with BM25F._field_texts
 FIELDS: tuple[tuple[str, float], ...] = (
@@ -199,28 +208,25 @@ def _vector_ranks(query: str, depth: int) -> tuple[list[str], dict[str, dict]]:
     return ids, metas
 
 
-def _fuse(
-    vec: list[str],
-    lex: list[str],
-    w_vec: float = 1.0,
-    w_lex: float = 1.0,
-    rrf_k: float = RRF_K,
+def _rrf(
+    sides: list[tuple[str, list[str], float]], rrf_k: float = RRF_K
 ) -> list[tuple[str, float, str]]:
-    """Reciprocal-rank fusion (default k=60) with src tagging and
-    optional per-list weights (unweighted = the literal contract form).
-    Sorted by (-score, path) — byte-stable for identical rank lists."""
+    """Reciprocal-rank fusion (default k=60) over (tag, rank-list,
+    weight) sides, tag in {"vec", "bm25"}: a doc any vec side found is
+    "vec", any bm25 side "bm25", both "both". Sorted by (-score, path)
+    — byte-stable for identical rank lists."""
     score: dict[str, float] = {}
-    for ranks, w in ((vec, w_vec), (lex, w_lex)):
+    found: dict[str, set[str]] = {"vec": set(), "bm25": set()}
+    for tag, ranks, w in sides:
         for i, doc in enumerate(ranks):
             score[doc] = score.get(doc, 0.0) + w / (rrf_k + 1.0 + i)
-    in_vec = frozenset(vec)
-    in_lex = frozenset(lex)
+            found[tag].add(doc)
     fused = [
         (
             doc,
             round(s, 6),
-            "both" if doc in in_vec and doc in in_lex
-            else ("vec" if doc in in_vec else "bm25"),
+            "both" if doc in found["vec"] and doc in found["bm25"]
+            else ("vec" if doc in found["vec"] else "bm25"),
         )
         for doc, s in score.items()
     ]
@@ -261,6 +267,19 @@ def _graph_boost(
     return out
 
 
+def _fuse(
+    vec: list[str],
+    lex: list[str],
+    w_vec: float = 1.0,
+    w_lex: float = 1.0,
+    rrf_k: float = RRF_K,
+) -> list[tuple[str, float, str]]:
+    """Two-side RRF — the literal one-vector-list + one-lexical-list
+    contract form; ``search`` uses it for pass-1 ranking, ``_rrf`` for
+    the fused multi-side (two-pass) ranking."""
+    return _rrf([("vec", vec, w_vec), ("bm25", lex, w_lex)], rrf_k)
+
+
 def _file_adjacency(g) -> dict[str, dict[str, int]]:
     """File-level wire counts derived from the fn-level edge sets: edge
     a::f -> b::g is one wire between a and b. Bidirectional by
@@ -290,6 +309,52 @@ def hop_context(files: list[str], g, cap: int = CTX_CAP) -> dict[str, list[str]]
         ]
     return out
 
+def _surface(fs) -> list[str]:
+    """Ordered identifier surface of a FileSym: class name first, then
+    fn / signal / member / const names, each group sorted — the same
+    surface the BM25F symbols field indexes, so a harvested name is
+    guaranteed lexically retrievable."""
+    out: list[str] = []
+    if fs.class_name:
+        out.append(fs.class_name)
+    out += sorted(fs.funcs)
+    out += sorted(fs.signals)
+    out += sorted(fs.members)
+    out += sorted(fs.consts)
+    return out
+
+
+def _augment(query: str, top: list[str], g, budget: int = TWO_PASS_BUDGET) -> str:
+    """RepoCoder-style augmented query (issue #74): the pass-1 top hits
+    donate their identifier surface (sweep 1 — the exact tokens a
+    re-query hunts) and their fn bodies (sweep 2 — semantic mass for the
+    vector side) to a second retrieve. Rank order across hits, sorted
+    order within one, first-seen dedupe, hard char budget: fully
+    deterministic, no RNG anywhere. Returns "" when the graph knows
+    none of the hits (nothing to harvest, pass 2 skipped)."""
+    parts: list[str] = []
+    seen: set[str] = set()
+    for f in top:
+        fs = g.files.get(f)
+        if fs is None:
+            continue
+        for ident in _surface(fs):
+            if ident not in seen:
+                seen.add(ident)
+                parts.append(ident)
+    for f in top:
+        fs = g.files.get(f)
+        if fs is None:
+            continue
+        for name in sorted(fs.funcs):
+            body = fs.funcs[name].body.strip()
+            if body and body not in seen:  # clone bodies count once
+                seen.add(body)
+                parts.append(body)
+    if not parts:
+        return ""
+    return query + "\n" + " ".join(parts)[:budget]
+
 def search(
     query: str,
     k: int = 12,
@@ -298,6 +363,7 @@ def search(
     weights: tuple[float, float] | None = None,
     graph_boost: float | None = None,
     rrf_k: float | None = None,
+    two_pass: bool | None = None,
 ) -> list[dict[str, object]]:
     """Hybrid recall: chroma vector ranks fused with BM25F lexical
     ranks, each hit carrying 1-hop graph context labels. ``bm25`` /
@@ -308,7 +374,17 @@ def search(
     fused top-k source promotes its 1-hop wire neighbors by
     λ·unit/(source rank); None keeps the module default GRAPH_BOOST
     (0.0 = off). ``rrf_k`` overrides the fusion constant for bench
-    sweeps."""
+    sweeps.
+
+    ``two_pass`` (issue #74, RepoCoder): deterministic second retrieve —
+    the pass-1 top-k hits donate identifiers + fn bodies (char-budgeted
+    via ``_augment``) to an augmented query, re-embedded once and
+    RRF-fused with the pass-1 ranks (embed budget: 2 calls per query,
+    hard cap). Engaged hits carry ``two_pass: True``; a failed pass 2
+    warns once on stderr and serves the pass-1 fusion unmarked. Never
+    attempted when the vector side is already degraded — the BM25F-only
+    contract stays byte-identical. None defers to the config knob
+    ``recall_two_pass`` (nav reads it; default from the #74 bench A/B)."""
     k = max(1, min(k, 50))
     w_vec, w_lex = weights if weights is not None else (1.0, 1.0)
     if graph_boost is not None and graph_boost < 0.0:
@@ -316,6 +392,10 @@ def search(
     lam = GRAPH_BOOST if graph_boost is None else graph_boost
     krrf = RRF_K if rrf_k is None else rrf_k
     depth = max(16, 4 * k)
+    if two_pass is None:
+        import nav  # lazy: knob follows the active config (see header)
+
+        two_pass = bool(getattr(nav, "RECALL_TWO_PASS", False))
 
     vec: list[str] = []
     metas: dict[str, dict] = {}
@@ -334,14 +414,39 @@ def search(
 
     g = None
     lex: list[str] = []
-    if bm25 or expand or lam > 0.0:
+    if bm25 or expand or lam > 0.0 or two_pass:
         import graph  # lazy: binding only, attrs read at call time
 
         g = graph.get_graph()
         if bm25:
             lex = [p for p, _s in _cached_index(g.files).scores(query)[:depth]]
 
-    fused = _fuse(vec, lex, w_vec, w_lex, krrf)
+    sides: list[tuple[str, list[str], float]] = [
+        ("vec", vec, w_vec),
+        ("bm25", lex, w_lex),
+    ]
+    engaged = False
+    if two_pass and not reason and g is not None:
+        top = [d for d, _s, _t in _fuse(vec, lex, w_vec, w_lex, krrf)[:k]]
+        aug = _augment(query, top, g)
+        if aug:
+            try:
+                vec2, metas2 = _vector_ranks(aug, depth)  # embed 2 of 2
+            except Exception as exc:  # pass-2 failure = pass-1, loud
+                print(
+                    f"recall: two-pass retrieve failed ({type(exc).__name__}); "
+                    "serving pass-1 fusion",
+                    file=sys.stderr,
+                )
+            else:
+                lex2: list[str] = []
+                if bm25:
+                    lex2 = [p for p, _s in _cached_index(g.files).scores(aug)[:depth]]
+                sides += [("vec", vec2, w_vec), ("bm25", lex2, w_lex)]
+                metas.update(metas2)
+                engaged = True
+
+    fused = _rrf(sides, krrf)
     if lam > 0.0 and g is not None:
         fused = _graph_boost(fused, g, k, lam, krrf)
 
@@ -365,6 +470,8 @@ def search(
             hit["ext"] = str(meta.get("ext", ""))
         if reason:
             hit["degraded"] = True
+        if engaged:
+            hit["two_pass"] = True
         hits.append(hit)
 
     if expand and g is not None and hits:

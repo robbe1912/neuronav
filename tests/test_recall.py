@@ -133,11 +133,68 @@ pure = recall.search("registry parse extract", k=6, bm25=False, expand=False)
 check("pure-vector path: vec src, no ctx",
       bool(pure) and all(h["src"] == "vec" and h["ctx"] == [] for h in pure))
 
-# 7. nav.search delegates to the same fused path (server consumes this)
+# 7. two-pass (RepoCoder, issue #74): opt-in second retrieve — pass-1
+# top hits donate identifiers + fn bodies to the augmented query; the
+# output is byte-stable, the embed budget caps at 2 calls per query,
+# engaged hits carry two_pass=True, and the degraded contract is
+# untouched (pass 2 is never attempted when the vector side is down).
+tp = recall.search("graph signal wiring edges", k=12, two_pass=True)
+tp2 = recall.search("graph signal wiring edges", k=12, two_pass=True)
+check("two-pass byte-stable run-to-run",
+      json.dumps(tp) == json.dumps(tp2) and len(tp) == 12)
+check("two-pass marks every hit", all(h.get("two_pass") is True for h in tp))
+off = recall.search("graph signal wiring edges", k=12, two_pass=False)
+check("two-pass opt-out leaves hits unmarked",
+      bool(off) and all("two_pass" not in h for h in off))
+check("two-pass keeps contract keys and dedup",
+      all(set(h) >= {"file", "score", "src", "ctx"} for h in tp)
+      and len({h["file"] for h in tp}) == 12)
+pv = recall.search("qw" + "xyz  bl" + "orpt", k=8, bm25=False, expand=False, two_pass=True)
+check("two-pass works in pure-vector mode",
+      len(pv) == 8 and all(h.get("two_pass") is True and h["src"] == "vec"
+                           and h["ctx"] == [] for h in pv))
+
+# embed budget: at most 2 embed calls per query even with two passes
+calls: list[int] = []
+_orig_embed = nav.embed
+
+
+def _counting(texts):
+    calls.append(len(texts))
+    return _orig_embed(texts)
+
+
+nav.embed = _counting
+try:
+    recall.search("graph signal wiring edges", k=12, two_pass=True)
+    two_calls = len(calls)
+    calls.clear()
+    recall.search("graph signal wiring edges", k=12, two_pass=False)
+    one_calls = len(calls)
+finally:
+    nav.embed = _orig_embed
+check("two-pass caps the embed budget at 2", two_calls == 2, f"{two_calls} embed calls")
+check("single-pass stays 1 embed call", one_calls == 1, f"{one_calls} embed calls")
+
+# degraded + two_pass: pass 2 skipped, BM25F-only contract byte-identical
+recall._vector_ranks = _boom
+try:
+    err3 = io.StringIO()
+    with contextlib.redirect_stderr(err3):
+        dtp = recall.search("graph signal wiring edges", k=5, two_pass=True)
+finally:
+    recall._vector_ranks = orig
+check("two-pass degraded is byte-identical to plain degraded",
+      json.dumps(dtp) == json.dumps(d))
+check("two-pass degraded keeps the BM25F-only contract",
+      bool(dtp) and all(h.get("degraded") is True and h["src"] == "bm25"
+                        and "two_pass" not in h for h in dtp))
+
+# 8. nav.search delegates to the same fused path (server consumes this)
 via_nav = nav.search("graph signal wiring edges", k=6)
 check("nav.search delegates to recall.search",
-      [h["file"] for h in via_nav]
-      == [h["file"] for h in recall.search("graph signal wiring edges", k=6)],
+      json.dumps(via_nav) == json.dumps(
+          recall.search("graph signal wiring edges", k=6, two_pass=False)),
       str([h["file"] for h in via_nav]))
 
 # 8. graph-neighbor rank boost (issue #73): deterministic post-fusion

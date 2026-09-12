@@ -60,7 +60,7 @@ without touching the config json.
 | `extensions` | `.gd, .tscn` | suffixes kept (must be registered in `extractors/` to parse) |
 | `exclude_dirs` | `.git, __pycache__` | pruned from the directory walk |
 | `.neuroignore` | (file beside config) | extra exclude dir names, one per line, merged into `exclude_dirs` at load |
-| `watch_interval_s` | `0` (off) | >0: the MCP server polls the stat gate every N seconds and auto-rescans without waiting for a tool call (issue #19) |
+| `recall_two_pass` | `false` | >false: `recall.search` runs the deterministic two-pass retrieve (issue #74) — pass-1 top hits donate identifiers + fn bodies (char-budgeted) to a re-embedded augmented query fused with pass 1; embed budget 2/query, hits marked `two_pass`; skipped entirely in degraded BM25F-only mode |
 | `embed_url` | `http://127.0.0.1:11434/api/embed` | embedding endpoint (Ollama `/api/embed` or any OpenAI-compatible `/embeddings`) |
 | `embed_model` | `qwen3-embedding:0.6b` | model name sent verbatim; also the vector-space fingerprint on the collection and in base-export manifests |
 | `embed_dim` | `1024` | explicit per profile — never inferred, mismatch fails loud |
