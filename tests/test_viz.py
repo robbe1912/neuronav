@@ -1,15 +1,13 @@
 # neuronav viz QA harness — drives the real page in headless Chrome.
 # Run: .venv/Scripts/python.exe -X utf8 tests/test_viz.py  (exit 0 = all pass)
 # Uses system Chrome via channel="chrome" (no browser download needed).
-import http.server
-import socketserver
-import threading
 import sys
 import re
-from functools import partial
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
+
+from _page_harness import CheckLog, launch, open_page, serve
 
 ROOT = Path(__file__).resolve().parents[1]
 SHOTS = ROOT / ".tmp" / "shots"
@@ -17,45 +15,27 @@ SHOTS.mkdir(parents=True, exist_ok=True)
 sys.path.insert(0, str(ROOT))
 import nav  # noqa: E402  (the bake lives in the active config's state dir)
 
-FAILURES = []
-
-
-def check(name, cond, detail=""):
-    tag = "PASS" if cond else "FAIL"
-    print(f"{tag} {name}" + (f" — {detail}" if detail else ""))
-    if not cond:
-        FAILURES.append(name)
+LOG = CheckLog()
+check = LOG.check  # the 157 call sites below keep their bare check(...) form
 
 
 def main():
-    handler = partial(http.server.SimpleHTTPRequestHandler,
-                      directory=str(nav.STATE_DIR))  # bake is per-project now
-    # #132: ephemeral loopback port — concurrent viz gates (two test_viz
-    # runs, or test_viz beside qa_readability) can no longer collide on a
-    # fixed port, and a rerun never trips over the TIME_WAIT socket a
-    # previous run left behind.
-    with socketserver.TCPServer(("127.0.0.1", 0), handler) as httpd:
-        t = threading.Thread(target=httpd.serve_forever, daemon=True)
-        t.start()
-        try:
-            run_tests(httpd.server_address[1])
-        finally:
-            httpd.shutdown()
+    # bake is per-project now — the shared harness serves the active
+    # config's state dir on an ephemeral loopback port (#132)
+    httpd, port = serve(nav.STATE_DIR)
+    try:
+        run_tests(port)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
 
 
 def run_tests(port: int):
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(channel="chrome", headless=True)
-        page = browser.new_page(viewport={"width": 1600, "height": 900})
-        page.route("**/favicon.ico", lambda r: r.fulfill(status=200, body=""))
+        browser = launch(pw)
+        # #98-class console/pageerror capture rides open_page(errors=...)
         errors = []
-        page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
-        # #98 class: uncaught JS errors ride the pageerror channel (a
-        # ReferenceError from an rAF/event handler surfaces here even when
-        # no console.error call is made)
-        page.on("pageerror", lambda e: errors.append(str(e)))
-        page.goto(f"http://127.0.0.1:{port}/graph.html", wait_until="load")
-        page.wait_for_timeout(4000)  # frozen layout — settle only
+        page = open_page(browser, port, errors)
         # tests chip is dynamically created (span, text "tests") inside #dirs
         tchip = page.locator("#dirs span").filter(has_text=re.compile(r"^tests$")).first
 
@@ -3465,11 +3445,7 @@ def run_tests(port: int):
 
         browser.close()
 
-    print(f"\n{n_files} files indexed · {len(FAILURES)} failure(s)")
-    if FAILURES:
-        print("FAILED:", ", ".join(FAILURES))
-        sys.exit(1)
-    print("ALL TESTS PASS")
+    LOG.finish(f"{n_files} files indexed")
 
 
 if __name__ == "__main__":
