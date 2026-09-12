@@ -564,6 +564,23 @@ import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 const DATA = __DATA__;
 const nodes = DATA.nodes, links = DATA.links, fedges = DATA.fedges || [], hw = DATA.hw || [];
 const N = nodes.length;
+// shared 2D point-to-segment distance (screen space). Also records the hit
+// param in segT so callers can interpolate depth at the hit point.
+let segT = 0;
+function segDist(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const L2 = dx * dx + dy * dy;
+  let t = L2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / L2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  segT = t;
+  return Math.hypot(ax + t * dx - px, ay + t * dy - py);
+}
+// AABB separation predicate for the 3D label placers: true when a and b
+// clear each other by gap on every axis (one geometry, per-site gaps).
+function separate(a, b, gap) {
+  return a.right < b.left - gap || b.right < a.left - gap ||
+         a.bottom < b.top - gap || b.bottom < a.top - gap;
+}
 // cycle lens (madge cyclicNodeColor steal): files inside call cycles
 // (SCC size > 1), baked by _strata_analysis
 const cycSet = new Set(DATA.meta.cycIds || []);
@@ -1154,17 +1171,6 @@ const bucketPosIB = [], bucketColIB = [], bucketMat = [], bucketMesh = [];
 // at all — filtered/budget-under-arc/fn-wire-replaced; 0.012 dead-end dim
 // reads as nothing; GHOST_K 0.08 ghosts stay pickable)
 const edgeK = new Float32Array(MAXL);
-// shared 2D point-to-segment distance (screen space). Also records the hit
-// param in segT so callers can interpolate depth at the hit point.
-let segT = 0;
-function segHit(px, py, ax, ay, bx, by) {
-  const dx = bx - ax, dy = by - ay;
-  const L2 = dx * dx + dy * dy;
-  let t = L2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / L2 : 0;
-  t = Math.max(0, Math.min(1, t));
-  segT = t;
-  return Math.hypot(ax + t * dx - px, ay + t * dy - py);
-}
 let pickWireZ = 1;   // NDC depth of the last hit — node-front comparisons
 // ONE picker for hover AND click: the meta of the wire under the pointer
 // across every layer that actually RENDERS INK —
@@ -1532,7 +1538,7 @@ function pickWireMeta(e) {
       if (v.z > 1) continue;
       w.set(a[o+3], a[o+4], a[o+5]).project(camera);
       if (w.z > 1) continue;
-      const d = segHit(px, py,
+      const d = segDist(px, py,
         (v.x + 1) / 2 * rect.width, (1 - v.y) / 2 * rect.height,
         (w.x + 1) / 2 * rect.width, (1 - w.y) / 2 * rect.height);
       const m = meta[Math.floor(i / per)];
@@ -1556,7 +1562,7 @@ function pickWireMeta(e) {
       if (v.z > 1) break;
       w.set(arr[o+3], arr[o+4], arr[o+5]).project(camera);
       if (w.z > 1) break;
-      const d = segHit(px, py,
+      const d = segDist(px, py,
         (v.x + 1) / 2 * rect.width, (1 - v.y) / 2 * rect.height,
         (w.x + 1) / 2 * rect.width, (1 - w.y) / 2 * rect.height);
       const dd = d - 1;
@@ -1577,7 +1583,7 @@ function pickWireMeta(e) {
         if (v.z > 1) continue;
         w.set(s.b[0], s.b[1], s.b[2]).project(camera);
         if (w.z > 1) continue;
-        const d = segHit(px, py,
+        const d = segDist(px, py,
           (v.x + 1) / 2 * rect.width, (1 - v.y) / 2 * rect.height,
           (w.x + 1) / 2 * rect.width, (1 - w.y) / 2 * rect.height);
         const dd = d - 3;   // thick target: generous forgiveness
@@ -2511,9 +2517,6 @@ function updateClusterLabs() {
   // centroid. Their boxes come from updateHubs (ran first this tick) —
   // no DOM reads here.
   const hubRects = hubBoxes;
-  const sep = (a, b) =>
-    a.right < b.left - 4 || b.right < a.left - 4 ||
-    a.bottom < b.top - 4 || b.bottom < a.top - 4;
   // project every centroid once; the mean of the on-screen projections is
   // the galaxy center of mass the radial candidates point away from
   const proj = [];
@@ -2543,7 +2546,7 @@ function updateClusterLabs() {
     const tryAt = (x, y) => {
       c.el.style.transform = "translate(" + x.toFixed(1) + "px," + y.toFixed(1) + "px) translate(-50%,-50%)";
       const r = labBox(c.el, x, y, 0.5);
-      return (hubRects.every(hr => sep(r, hr)) && taken.every(t => sep(r, t)) &&
+      return (hubRects.every(hr => separate(r, hr, 4)) && taken.every(t => separate(r, t, 4)) &&
               clabObst.every(q => q[0] < r.left - 6 || q[0] > r.right + 6 ||
                                   q[1] < r.top - 6 || q[1] > r.bottom + 6)) ? r : null;
     };
@@ -3238,21 +3241,19 @@ function updateEdgeLabels() {
   // losing labels try a small nudge before hiding (hub boxes from
   // updateHubs — no DOM reads)
   const hubRects = hubBoxes;
-  const free = (a, b) => a.right < b.left - 2 || b.right < a.left - 2 ||
-    a.bottom < b.top - 2 || b.bottom < a.top - 2;
   const taken = [];
   for (const p of placed) {
     if (taken.length >= 24) { p.el.style.display = "none"; continue; }
     let r = p.r;
-    if (hubRects.some(hr => !free(r, hr)) ||
-        taken.some(t => !free(r, t))) {
+    if (hubRects.some(hr => !separate(r, hr, 2)) ||
+        taken.some(t => !separate(r, t, 2))) {
       let ok = false;
       for (const dy of [-13, 11, -26]) {
         p.el.style.transform = "translate(" + p.x.toFixed(1) + "px," +
           (p.y + dy).toFixed(1) + "px) translate(-50%,-50%)";
         const r2 = labBox(p.el, p.x, p.y + dy, 0.5);
-        if (hubRects.every(hr => free(r2, hr)) &&
-            taken.every(t => free(r2, t))) { r = r2; ok = true; break; }
+        if (hubRects.every(hr => separate(r2, hr, 2)) &&
+            taken.every(t => separate(r2, t, 2))) { r = r2; ok = true; break; }
       }
       if (!ok) { p.el.style.display = "none"; continue; }
     }
@@ -3302,8 +3303,6 @@ function updateXtLabels() {
   // region read as garbage; the later one yields (first come = highest
   // crosstalk count, since meta.crosstalk is baked count-desc)
   const taken = [];
-  const free = (a, b) => a.right < b.left - 4 || b.right < a.left - 4 ||
-    a.bottom < b.top - 4 || b.bottom < a.top - 4;
   for (const k of xtLabs) {
     hubV.set(k.mid[0], k.mid[1], k.mid[2]).project(camera);
     if (hubV.z > 1 || Math.abs(hubV.x) > 1.05 || Math.abs(hubV.y) > 1.05) {
@@ -3313,7 +3312,7 @@ function updateXtLabels() {
     k.el.style.transform = "translate(" + ((hubV.x*0.5+0.5)*w).toFixed(1) + "px," +
       ((-hubV.y*0.5+0.5)*h).toFixed(1) + "px) translate(-50%,-50%)";
     const r = labBox(k.el, (hubV.x*0.5+0.5)*w, (-hubV.y*0.5+0.5)*h, 0.5);
-    if (taken.every(t => free(r, t))) taken.push(r);
+    if (taken.every(t => separate(r, t, 4))) taken.push(r);
     else k.el.style.display = "none";
   }
 }
@@ -3430,8 +3429,6 @@ function updateHubs() {
   hubBoxes.length = 0;   // this frame's placed boxes — the module-level
                          // array the other placers collide against
   const fixed = hubBoxes;
-  const free = (a, b) => a.right < b.left - 4 || b.right < a.left - 4 ||
-    a.bottom < b.top - 4 || b.bottom < a.top - 4;
   for (let hi = 0; hi < hubs.length; hi++) {
     const { i, el } = hubs[hi];
     if (hi >= cap || alphaTgt[i] < 0.5) { el.style.display = "none"; hubOff.delete(i); continue; }
@@ -3452,7 +3449,7 @@ function updateHubs() {
       el.style.transform = "translate(" + (x + prev.dx).toFixed(1) + "px," +
         (y + prev.dy).toFixed(1) + "px) translate(-50%,0)";
       r = labBox(el, x + prev.dx, y + prev.dy, 0);
-      if (fixed.every(f => free(r, f)) && clearOfDots(r)) { fixed.push(r); continue; }
+      if (fixed.every(f => separate(r, f, 4)) && clearOfDots(r)) { fixed.push(r); continue; }
     }
     outer:
     for (const dy of [-19, 17, -42, 41, -65, 65, -88, 88]) {
@@ -3460,7 +3457,7 @@ function updateHubs() {
         el.style.transform = "translate(" + (x + dx).toFixed(1) + "px," +
           (y + dy).toFixed(1) + "px) translate(-50%,0)";
         r = labBox(el, x + dx, y + dy, 0);
-        if (fixed.every(f => free(r, f)) && clearOfDots(r)) { hubOff.set(i, { dx, dy }); break outer; }
+        if (fixed.every(f => separate(r, f, 4)) && clearOfDots(r)) { hubOff.set(i, { dx, dy }); break outer; }
       }
     }
     fixed.push(r);
@@ -3890,8 +3887,6 @@ const _flabV = new THREE.Vector3();
 function updateFocusLabels() {
   if (!fLabs.length) return;
   const w = renderer.domElement.clientWidth, h = renderer.domElement.clientHeight;
-  const clearOf = (a, b) => a.right < b.left - 2 || b.right < a.left - 2 ||
-    a.bottom < b.top - 2 || b.bottom < a.top - 2;
   const hubRects = hubBoxes;   // placed by updateHubs earlier this tick
   const taken = [];
   // station dots are label obstacles (skeptic R8): project them once per
@@ -3943,12 +3938,12 @@ function updateFocusLabels() {
       continue;
     }
     let r = labBox(f.el, x, y, 1);
-    if (hubRects.some(hr => !clearOf(r, hr)) || taken.some(t => !clearOf(r, t)) || !clearDots(r)) {
+    if (hubRects.some(hr => !separate(r, hr, 2)) || taken.some(t => !separate(r, t, 2)) || !clearDots(r)) {
       let ok = false;
       for (const dy of [16, -14, 32, -30]) {
         f.el.style.transform = "translate(" + x.toFixed(1) + "px," + (y + dy).toFixed(1) + "px) translate(-50%,-100%)";
         r = labBox(f.el, x, y + dy, 1);
-        if (hubRects.every(hr => clearOf(r, hr)) && taken.every(t => clearOf(r, t)) && clearDots(r)) { ok = true; break; }
+        if (hubRects.every(hr => separate(r, hr, 2)) && taken.every(t => separate(r, t, 2)) && clearDots(r)) { ok = true; break; }
       }
       if (!ok) { f.el.style.display = "none"; continue; }
     }
@@ -5554,11 +5549,6 @@ function mapShowFn(fi, name) {
   if (temp) fnMeta.splice(k, 1);
 }
 // 6px SCREEN-space wire hit test (section 8): world tolerance = 6 / mapZ
-const mapDistSeg = (px, py, ax, ay, bx, by) => {
-  const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy || 1;
-  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / L2));
-  return Math.hypot(px - ax - t * dx, py - ay - t * dy);
-};
 function mapWireAt(wx, wy) {
   // [issue #84] named wires are 1.5px strokes in dense walls - 6px screen
   // tolerance missed real aims; 10px is the pick band now. The ink gate
@@ -5578,14 +5568,14 @@ function mapWireAt(wx, wy) {
                    3 * mt * t * t * w.c2[0] + t * t * t * x1;
         const by = mt * mt * mt * y0 + 3 * mt * mt * t * w.c1[1] +
                    3 * mt * t * t * w.c2[1] + t * t * t * y1;
-        const d = mapDistSeg(wx, wy, qx, qy, bx, by);
+        const d = segDist(wx, wy, qx, qy, bx, by);
         if (d < bd) { bd = d; best = ix; }
         qx = bx; qy = by;
       }
       return;
     }
     for (let s = 0; s < w.pts.length - 1; s++) {
-      const d = mapDistSeg(wx, wy, w.pts[s][0], w.pts[s][1],
+      const d = segDist(wx, wy, w.pts[s][0], w.pts[s][1],
                            w.pts[s + 1][0], w.pts[s + 1][1]);
       if (d < bd) { bd = d; best = ix; }
     }
@@ -7564,7 +7554,7 @@ mapPane.addEventListener("pointerup", e => {
         for (const sp of mapLayout.spines) {
           if (!sp.pts || sp.pts.length < 2) continue;
           for (let k = 1; k < sp.pts.length; k++)
-            if (mapDistSeg(wx, wy, sp.pts[k-1][0], sp.pts[k-1][1],
+            if (segDist(wx, wy, sp.pts[k-1][0], sp.pts[k-1][1],
                            sp.pts[k][0], sp.pts[k][1]) < tol2) return true;
         }
         return false;
@@ -7651,7 +7641,7 @@ mapPane.addEventListener("click", e => {
     mapLayout.spines.forEach((sp, six) => {
       if (!sp.pts || sp.pts.length < 2) return;
       for (let k = 1; k < sp.pts.length; k++) {
-        const d = mapDistSeg(w.x, w.y, sp.pts[k-1][0], sp.pts[k-1][1],
+        const d = segDist(w.x, w.y, sp.pts[k-1][0], sp.pts[k-1][1],
                              sp.pts[k][0], sp.pts[k][1]);
         if (d < td) { td = d; th = six; }
       }
