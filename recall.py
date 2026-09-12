@@ -12,9 +12,10 @@ Pure stdlib on the lexical side, no embedding backend dependency:
   ``GRAPH_BOOST``): the fused top-k each promote their 1-hop wire
   neighbors by a rank-decayed λ·RRF-unit bump — the λ × RRF-k sweep
   that chose the default lives in bench/RESULTS.md.
-- optional second retrieve (issue #74, RepoCoder): the pass-1 top-k hits
-  donate their identifier surface + fn bodies (char-budgeted) to an
-  augmented query that is re-embedded once and RRF-fused with pass 1 —
+- optional second retrieve (issue #74, RepoCoder): the pass-1 top-k
+  hits donate their identifier surface (char-budgeted, harvested from
+  the deterministic lexical top-k) to an augmented query that is
+  re-embedded once and RRF-fused with pass 1 —
   opt-in via the config knob ``recall_two_pass`` or the ``two_pass``
   argument; embed budget pinned at 2 calls per query, engaged hits
   carry ``two_pass: True``.
@@ -48,9 +49,9 @@ CTX_CAP = 3
 # λ·unit/(source rank) to every distinct 1-hop file neighbor. The swept
 # winner lives in bench/RESULTS.md; 0.0 keeps the pinned hybrid intact.
 GRAPH_BOOST = 0.0
-# char budget for the two-pass augmented query's harvested tail
-# (identifiers first, fn bodies fill the rest — issue #74)
-TWO_PASS_BUDGET = 640
+# char budget for the two-pass augmented query's harvested identifier
+# tail — sized so the original query stays dominant (issue #74 A/B)
+TWO_PASS_BUDGET = 320
 
 # (field, weight) — order aligned with BM25F._field_texts
 FIELDS: tuple[tuple[str, float], ...] = (
@@ -325,13 +326,17 @@ def _surface(fs) -> list[str]:
 
 
 def _augment(query: str, top: list[str], g, budget: int = TWO_PASS_BUDGET) -> str:
-    """RepoCoder-style augmented query (issue #74): the pass-1 top hits
-    donate their identifier surface (sweep 1 — the exact tokens a
-    re-query hunts) and their fn bodies (sweep 2 — semantic mass for the
-    vector side) to a second retrieve. Rank order across hits, sorted
-    order within one, first-seen dedupe, hard char budget: fully
-    deterministic, no RNG anywhere. Returns "" when the graph knows
-    none of the hits (nothing to harvest, pass 2 skipped)."""
+    """RepoCoder-style augmented query (issue #74): the pass-1 lexical
+    top hits donate their identifier surface — the exact tokens a
+    re-query hunts — to a second retrieve. (Lexical pool: a pure
+    function of query + corpus, so pass-1 embed jitter cannot amplify
+    through the harvest.) Rank order across hits, sorted order within
+    one, first-seen dedupe, hard char budget: fully deterministic, no
+    RNG anywhere. Identifier-only and 320 chars on bench evidence
+    (#74 A/B): body text diluted short queries (hit@1 0.40 -> 0.36,
+    hit@5 0.84 -> 0.80) while identifiers alone lift hit@10
+    (0.92 -> 0.96, one full miss recovered) at hit@5 parity. Returns ""
+    when the graph knows none of the hits (pass 2 skipped)."""
     parts: list[str] = []
     seen: set[str] = set()
     for f in top:
@@ -342,15 +347,6 @@ def _augment(query: str, top: list[str], g, budget: int = TWO_PASS_BUDGET) -> st
             if ident not in seen:
                 seen.add(ident)
                 parts.append(ident)
-    for f in top:
-        fs = g.files.get(f)
-        if fs is None:
-            continue
-        for name in sorted(fs.funcs):
-            body = fs.funcs[name].body.strip()
-            if body and body not in seen:  # clone bodies count once
-                seen.add(body)
-                parts.append(body)
     if not parts:
         return ""
     return query + "\n" + " ".join(parts)[:budget]
@@ -377,7 +373,7 @@ def search(
     sweeps.
 
     ``two_pass`` (issue #74, RepoCoder): deterministic second retrieve —
-    the pass-1 top-k hits donate identifiers + fn bodies (char-budgeted
+    the pass-1 top-k hits donate their identifier surface (char-budgeted
     via ``_augment``) to an augmented query, re-embedded once and
     RRF-fused with the pass-1 ranks (embed budget: 2 calls per query,
     hard cap). Engaged hits carry ``two_pass: True``; a failed pass 2
@@ -427,8 +423,15 @@ def search(
     ]
     engaged = False
     if two_pass and not reason and g is not None:
-        top = [d for d, _s, _t in _fuse(vec, lex, w_vec, w_lex, krrf)[:k]]
-        aug = _augment(query, top, g)
+        # harvest pool = the lexical top-k (a pure function of query +
+        # corpus): harvesting from the fused ranks would feed pass-1
+        # embed jitter forward into the augmented query and amplify it
+        # run-to-run (observed: double-run rank flips); the lexical
+        # pool keeps the two query embeds the only jitter surface —
+        # same exposure as the single-pass baseline. Vec fallback only
+        # when the lexical side is switched off entirely.
+        pool = lex[:k] if lex else vec[:k]
+        aug = _augment(query, pool, g)
         if aug:
             try:
                 vec2, metas2 = _vector_ranks(aug, depth)  # embed 2 of 2

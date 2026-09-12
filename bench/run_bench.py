@@ -492,17 +492,18 @@ def render() -> None:
         "Configs: `vec` = cosine only · `bm25` = +BM25F reciprocal-rank fusion ·",
         "`expand` = +bidirectional 1-hop ctx · `both` = the shipped default ·",
         "`wfused` = `both` with weighted RRF (vec 1.0 / bm25 0.7) instead of the",
-        "pinned unweighted k=60.",
-        "`gb` = `both` + the swept graph-neighbor boost (λ winner, see the",
-        "λ × RRF-k sweep section) · `twopass` = `both` + the deterministic",
-        "second retrieve (issue #74: pass-1 hits donate identifiers + bodies",
-        "to the re-embedded augmented query, 2 embeds/query).",
+        "pinned unweighted k=60 · `gb` = `both` + the swept graph-neighbor",
+        "boost (λ winner, see the λ × RRF-k sweep section) · `twopass` =",
+        "`both` + the deterministic second retrieve (issue #74: pass-1",
+        "lexical top hits donate their identifier surface to the",
+        "re-embedded augmented query, 2 embeds/query).",
         "",
     ]
     sets = [
         ("before", "Before — merge-base 63b6f1f (pre-boost, pre-two-pass, `recall.search` defaults)"),
         ("after", "After — recall branch (graph-boost winner in `gb`, two-pass in `twopass`)"),
         ("fake", "FAKE mode — `NEURONAV_EMBED_FAKE=1` plumbing battery"),
+        ("tp", "Two-pass A/B — `feat/two-pass-recall` head 62ef727 (pre-boost baselines + `twopass`)"),
     ]
     for prefix, note in sets:
         chunk = _set_table(prefix, recs, note)

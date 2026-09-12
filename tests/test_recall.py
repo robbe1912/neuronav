@@ -134,7 +134,7 @@ check("pure-vector path: vec src, no ctx",
       bool(pure) and all(h["src"] == "vec" and h["ctx"] == [] for h in pure))
 
 # 7. two-pass (RepoCoder, issue #74): opt-in second retrieve — pass-1
-# top hits donate identifiers + fn bodies to the augmented query; the
+# top hits donate their identifier surface to the augmented query; the
 # output is byte-stable, the embed budget caps at 2 calls per query,
 # engaged hits carry two_pass=True, and the degraded contract is
 # untouched (pass 2 is never attempted when the vector side is down).

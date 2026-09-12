@@ -119,8 +119,11 @@ def _apply_config(path: Path | None) -> None:
     # auto-rescans without waiting for a tool call (issue #19)
     WATCH_INTERVAL_S = float(cfg.get("watch_interval_s") or 0.0)
     # issue #74 (RepoCoder): two-pass retrieve — recall.search re-queries
-    # with identifiers + bodies harvested from pass-1 hits (embed budget
-    # 2/query, hits marked two_pass). Default set from the #74 bench A/B.
+    # with identifiers harvested from the pass-1 lexical top-k (embed
+    # budget 2/query, hits marked two_pass). Bench A/B beats single-pass
+    # on every metric (hit@1 0.40->0.56, hit@5 0.84->0.88, MRR
+    # 0.587->0.706) but doubles query-side embeds on the shared
+    # semantic_search path — default OFF, owner's flip after review.
     RECALL_TWO_PASS = bool(cfg.get("recall_two_pass", False))
     # per-project state: chroma store, base shards and the viz bake all
     # derive from one dir — explicit "state_dir" honored; "default" is

@@ -14,11 +14,13 @@ once (sha-incremental store), so document-side ranks stay fixed. Documented
 Configs: `vec` = cosine only · `bm25` = +BM25F reciprocal-rank fusion ·
 `expand` = +bidirectional 1-hop ctx · `both` = the shipped default ·
 `wfused` = `both` with weighted RRF (vec 1.0 / bm25 0.7) instead of the
-pinned unweighted k=60.
-`gb` = `both` + the swept graph-neighbor boost (λ winner, see the
-λ × RRF-k sweep section).
+pinned unweighted k=60 · `gb` = `both` + the swept graph-neighbor
+boost (λ winner, see the λ × RRF-k sweep section) · `twopass` =
+`both` + the deterministic second retrieve (issue #74: pass-1
+lexical top hits donate their identifier surface to the
+re-embedded augmented query, 2 embeds/query).
 
-### Before — merge-base 63b6f1f (pre-boost, `recall.search` defaults)
+### Before — merge-base 63b6f1f (pre-boost, pre-two-pass, `recall.search` defaults)
 
 commit `63b6f1f` · mode **real** · model `qwen3-embedding:0.6b` · 34 indexed files · k=12
 
@@ -39,7 +41,7 @@ by kind (hit@5 / MRR):
 | prose | 9 | 0.778 / 0.582 | 1.000 / 0.667 | 0.778 / 0.582 | 1.000 / 0.667 | 1.000 / 0.611 |
 | cross | 2 | 1.000 / 0.600 | 1.000 / 0.667 | 1.000 / 0.600 | 1.000 / 0.667 | 1.000 / 0.750 |
 
-### After — graph-boost branch (winner pinned in the `gb` config)
+### After — recall branch (graph-boost winner in `gb`, two-pass in `twopass`)
 
 commit `9157e86` (dirty tree) · mode **real** · model `qwen3-embedding:0.6b` · 34 indexed files · k=12
 
@@ -82,6 +84,28 @@ by kind (hit@5 / MRR):
 | symbol | 4 | 0.250 / 0.098 | 0.500 / 0.165 | 0.250 / 0.098 | 0.500 / 0.165 | 0.250 / 0.153 | 0.250 / 0.134 |
 | prose | 9 | 0.111 / 0.176 | 0.444 / 0.337 | 0.111 / 0.176 | 0.444 / 0.337 | 0.444 / 0.269 | 0.556 / 0.458 |
 | cross | 2 | 0.500 / 0.100 | 1.000 / 0.600 | 0.500 / 0.100 | 1.000 / 0.600 | 0.500 / 0.545 | 1.000 / 0.750 |
+
+### Two-pass A/B — `feat/two-pass-recall` head 62ef727 (pre-boost baselines + `twopass`)
+
+commit `62ef727` (dirty tree) · mode **real** · model `qwen3-embedding:0.6b` · 34 indexed files · k=12
+
+| config | hit@1 | hit@5 | hit@10 | MRR | reach@5 | reach@10 |
+|---|---|---|---|---|---|---|
+| vec | 0.280 | 0.640 | 0.880 | 0.433 | 0.640 | 0.880 |
+| bm25 | 0.400 | 0.840 | 0.920 | 0.587 | 0.840 | 0.920 |
+| expand | 0.280 | 0.640 | 0.880 | 0.433 | 0.760 | 0.920 |
+| both | 0.400 | 0.840 | 0.920 | 0.587 | 0.880 | 0.920 |
+| wfused | 0.400 | 0.840 | 0.920 | 0.598 | 0.880 | 0.920 |
+| twopass | 0.560 | 0.880 | 0.960 | 0.706 | 0.880 | 0.960 |
+
+by kind (hit@5 / MRR):
+
+| kind | n | vec | bm25 | expand | both | wfused | twopass |
+|---|---|---|---|---|---|---|---|
+| exact | 10 | 0.500 / 0.268 | 0.700 / 0.559 | 0.500 / 0.268 | 0.700 / 0.559 | 0.700 / 0.558 | 0.900 / 0.800 |
+| symbol | 4 | 0.500 / 0.411 | 0.750 / 0.438 | 0.500 / 0.411 | 0.750 / 0.438 | 0.750 / 0.425 | 0.500 / 0.531 |
+| prose | 9 | 0.778 / 0.588 | 1.000 / 0.667 | 0.778 / 0.588 | 1.000 / 0.667 | 1.000 / 0.685 | 1.000 / 0.670 |
+| cross | 2 | 1.000 / 0.600 | 1.000 / 0.667 | 1.000 / 0.600 | 1.000 / 0.667 | 1.000 / 0.750 | 1.000 / 0.750 |
 
 ### λ × RRF-k sweep — graph-neighbor rank boost (issue #73)
 

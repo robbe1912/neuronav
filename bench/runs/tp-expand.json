@@ -1,0 +1,198 @@
+{
+ "set": "tp",
+ "config": "expand",
+ "commit": "62ef727",
+ "dirty": true,
+ "mode": "real",
+ "model": "qwen3-embedding:0.6b",
+ "files": 34,
+ "k": 12,
+ "hit@1": 0.28,
+ "hit@5": 0.64,
+ "hit@10": 0.88,
+ "mrr": 0.433,
+ "reach@5": 0.76,
+ "reach@10": 0.92,
+ "by_kind": {
+  "exact": {
+   "n": 10,
+   "hit@1": 0.1,
+   "hit@5": 0.5,
+   "hit@10": 0.7,
+   "mrr": 0.268
+  },
+  "symbol": {
+   "n": 4,
+   "hit@1": 0.25,
+   "hit@5": 0.5,
+   "hit@10": 1.0,
+   "mrr": 0.411
+  },
+  "prose": {
+   "n": 9,
+   "hit@1": 0.444,
+   "hit@5": 0.778,
+   "hit@10": 1.0,
+   "mrr": 0.588
+  },
+  "cross": {
+   "n": 2,
+   "hit@1": 0.5,
+   "hit@5": 1.0,
+   "hit@10": 1.0,
+   "mrr": 0.6
+  }
+ },
+ "per_query": [
+  {
+   "q": "parse_tscn",
+   "rank": 3,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "sha256_of",
+   "rank": 4,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "titleize",
+   "rank": 2,
+   "ctx5": false,
+   "ctx10": true
+  },
+  {
+   "q": "registry_for",
+   "rank": null,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "sync_functions",
+   "rank": 11,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "_fold_continuations",
+   "rank": 7,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "_has_exact",
+   "rank": null,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "_lexical_fallback",
+   "rank": 6,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "import_base",
+   "rank": 5,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "find_functions",
+   "rank": 1,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "NoCacheHandler",
+   "rank": 1,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "LabelContext",
+   "rank": 3,
+   "ctx5": false,
+   "ctx10": true
+  },
+  {
+   "q": "FileSym",
+   "rank": 6,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "Func",
+   "rank": 7,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "where do godot scene resources get read",
+   "rank": 1,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "how do cross-module references become caller edges",
+   "rank": 8,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "what stops two simultaneous rescans from corrupting the store",
+   "rank": 4,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "how do hermetic suites embed without a live model backend",
+   "rank": 6,
+   "ctx5": false,
+   "ctx10": true
+  },
+  {
+   "q": "how are subsystem names chosen from member vocabulary",
+   "rank": 2,
+   "ctx5": false,
+   "ctx10": true
+  },
+  {
+   "q": "which module hosts the agent protocol on stdin and stdout",
+   "rank": 4,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "single call that shows a newcomer how the codebase is organized",
+   "rank": 1,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "how is the embedding index archived inside the repository",
+   "rank": 1,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "how is visual clutter of the rendered page measured",
+   "rank": 1,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "unreachable deletion candidates and their confidence tiers",
+   "rank": 5,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "how are node positions computed reproducibly before baking",
+   "rank": 1,
+   "ctx5": false,
+   "ctx10": false
+  }
+ ]
+}
