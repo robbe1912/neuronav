@@ -231,15 +231,21 @@ check("boost never lowers an existing score",
       bool(common) and all(boost_scores[f] >= base_scores[f] for f in common))
 
 # 8d. promotion is real: with a strong λ, at least one top-k hit under
-# boost is a 1-hop neighbor of the λ=0 top-1 file — pulled into the
-# rank signal from the graph, not from vec/bm25 lists (src says graph).
+# boost is a 1-hop neighbor of the λ=0 top-1 WIRED file — pulled into
+# the rank signal from the graph, not from vec/bm25 lists (src says
+# graph). Top-0 itself is corpus-composition-sensitive under FAKE embeds
+# (hash near-ties let any lexically-heavy file top the list — e.g. a
+# generated-content suite file with no graph edges), so anchor on the
+# first λ=0 hit that actually has neighbors; the boost law is about
+# wired files either way.
+wired0 = next((h["file"] for h in z[:12] if adj2.get(h["file"])), None)
+nb0 = adj2.get(wired0, set())
 strong = recall.search("graph signal wiring edges", k=12, graph_boost=16.0)
-top0 = z[0]["file"]
-nb0 = adj2.get(top0, set())
 check("strong lambda pulls a 1-hop neighbor of the top hit",
-      top0 in adj2  # non-vacuous: the corpus top hit is wired
-      and any(h["file"] in nb0 for h in strong[:12]) and strong[0]["file"] != top0,
-      f"top0={top0} nbs={sorted(nb0)[:3]} strong={[h['file'] for h in strong[:3]]}")
+      wired0 is not None  # non-vacuous: some top-k hit is wired
+      and any(h["file"] in nb0 for h in strong[:12])
+      and strong[0]["file"] != wired0,
+      f"wired0={wired0} nbs={sorted(nb0)[:3]} strong={[h['file'] for h in strong[:3]]}")
 
 # 8e. every graph-tagged hit is a genuine 1-hop neighbor of a λ=0
 # top-k source (boost sources are exactly the fused top-k), and λ=0
