@@ -3,7 +3,8 @@
 ## qa_readability.py — readability / declutter gate for the visualizer
 
 Objective ink-clutter gate over the real page: serves the repo root, loads
-`graph.html` in headless Chrome (playwright, `channel="chrome"`, port 8951),
+`graph.html` in headless Chrome (playwright, `channel="chrome"`, ephemeral
+loopback port — issue #132),
 drives the same focus state as `test_viz.py` (highest-degree node stem),
 and measures clutter metrics from `window.__dbg` in both layers.
 

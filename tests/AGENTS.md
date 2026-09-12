@@ -73,9 +73,11 @@ Suites pick their own config; the shell must not pre-export one:
 ## Playwright harness gotchas (`test_viz`)
 
 - Launches real Chrome via `channel="chrome"` (no browser download).
-- Serves the repo root on port **8931**. Orphaned python/chrome processes
-  from killed runs hold the port: `Get-NetTCPConnection -LocalPort 8931`
-  -> kill the PID, then rerun.
+- Serves the repo root on an **ephemeral loopback port** (issue #132): viz
+  gates may run concurrently — no fixed-port claims, no orphaned-process
+  holds, no TIME_WAIT rerun failures. (`tools/serve.py` keeps its explicit
+  port; `test_project_mode` still pins 9081-9090 to exercise serve.py's
+  port-refusal contract.)
 - Regenerate `graph.html` first — the harness tests the bake, not the
   template.
 - Config-agnostic: assertions data-gate on index content, so the self-index
