@@ -535,17 +535,13 @@ def crosstalk(dir: str = "") -> str:
         return "\n".join(lines)
 
 
-def _ctx_file_of(key: str) -> str:
-    return key.rsplit("::", 1)[0]
-
-
 def _ctx_adjacency(g) -> tuple[dict, dict]:
     """File-level adjacency (both directions, per edge-type counts) and
     cross-file in-degree, aggregated once from the func-level edge set."""
     adj: dict[str, dict[str, dict]] = {}  # file -> nb -> {"->": t:n, "<-": t:n}
     indeg: dict[str, int] = {}
     for (s, d), tys in g.edge_types.items():
-        sf, df = _ctx_file_of(s), _ctx_file_of(d)
+        sf, df = graph.split_key(s), graph.split_key(d)
         if sf == df:
             continue
         cell = adj.setdefault(sf, {}).setdefault(df, {">": {}, "<": {}})

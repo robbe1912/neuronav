@@ -285,12 +285,14 @@ def _file_adjacency(g) -> dict[str, dict[str, int]]:
     """File-level wire counts derived from the fn-level edge sets: edge
     a::f -> b::g is one wire between a and b. Bidirectional by
     construction (an edge makes each file a neighbor of the other)."""
+    import graph  # lazy: binding only, attrs read at call time
+
     adj: dict[str, dict[str, int]] = {}
     for src_key, dsts in g.edges.items():
-        src = src_key.split("::", 1)[0]
+        src = graph.split_key(src_key)
         row = adj.setdefault(src, {})
         for dst_key in dsts:
-            dst = dst_key.split("::", 1)[0]
+            dst = graph.split_key(dst_key)
             if dst == src:
                 continue
             row[dst] = row.get(dst, 0) + 1
