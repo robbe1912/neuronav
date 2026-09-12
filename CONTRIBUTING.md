@@ -13,11 +13,16 @@ python -m venv .venv
 ollama pull qwen3-embedding:0.6b          # default embedding backend; any OpenAI-compatible /embeddings endpoint also works (config/AGENTS.md)
 ```
 
-Windows is the primary dev platform. CI is the gate: the seven hermetic
+Windows is the primary dev platform. CI is the gate: fifteen hermetic
 suites (`test_strata`, `test_crosslang`, `test_pyhard`, `test_cpphard`,
-`test_autorescan`, `test_searchtext`, `test_project_mode`) run on ubuntu
-with `NEURONAV_EMBED_FAKE=1`; the rest (real embeds, Playwright, the
-external target repo) are local gates.
+`test_autorescan`, `test_searchtext`, `test_project_mode`,
+`test_baseindex`, `test_mwires`, `test_recall`, `test_embedprov`,
+`test_repomap`, `test_selfindex`, `test_verifier`, `test_bench`) run on
+ubuntu with `NEURONAV_EMBED_FAKE=1`, plus a `viz` job that builds the
+frozen synthetic corpus (`tests/vizcorpus_build.py`) and runs the full
+Playwright harness (`test_viz`) against it. The rest (real embeds, the
+external target repo) are local gates; `test_viz` also runs locally on
+the self-index or any scratch store via `NEURONAV_CONFIG`.
 
 ## Layout
 
@@ -38,16 +43,14 @@ external target repo) are local gates.
 
 ## Ground rules
 
-1. **Determinism is a contract.** Layout, exports, clusters: seeded and
-   ordered. The external-target regression suite pins exact counts; if your change
-   legitimately shifts them, say so explicitly in the PR and update the pins
-   with justification.
 2. **All suites green before commit.** Minimum bar for any change is the
-   CI set: `test_strata`, `test_crosslang`, `test_pyhard`, `test_cpphard`,
-   `test_autorescan`, `test_project_mode`. Touching nav/graph/index:
-   add `test_selfindex`, `test_target_regression`, `test_explore`,
-   `test_server_stdio`. Touching `viz.py`: regenerate + full Playwright
-   harness (`test_viz`) on BOTH the self-index and the external-target profile.
+   CI set (see above). Touching nav/graph/index: add `test_selfindex`,
+   `test_target_regression`, `test_explore`, `test_server_stdio`.
+   Touching `viz.py`: regenerate + full Playwright harness (`test_viz`)
+   on the frozen corpus AND the self-index —
+   `NEURONAV_CONFIG=<scratch>/config.json NEURONAV_EMBED_FAKE=1 python
+   -X utf8 tests/test_viz.py` (build the corpus first with
+   `tests/vizcorpus_build.py --dest <scratch>`).
 3. **No silent fallbacks.** Missing backend -> loud error or an explicitly
    marked degraded mode (see `explore.py` lexical fallback). Never swallow.
 4. **Read-only MCP tools carry `readOnlyHint`**; mutating behavior goes in

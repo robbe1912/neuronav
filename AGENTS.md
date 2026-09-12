@@ -138,7 +138,7 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_recall` | hybrid recall: BM25F/RRF fusion, ctx hops, degraded mode | chromadb import (hermetic, `NEURONAV_EMBED_FAKE=1`) |
 | `test_embedprov` | embed provider contract (issue #17) + collection stamp (issue #103): provider select/auto-detect, ollama+openai wire adapters, env-vs-config key precedence, 429 backoff, stamp keeps/heals hnsw:space | stdlib http.server stub + chromadb import |
 | `test_project_mode` | onboarding + config discovery precedence + viz-as-add-on (issue #27) | stdlib + chromadb import (hermetic temp trees) |
-| `test_viz` | 103-check Playwright harness (real Chrome) | playwright + chrome + a fresh bake |
+| `test_viz` | 103-check Playwright harness (real Chrome) — CI runs it on the frozen corpus from `tests/vizcorpus_build.py` (issue #100) | playwright + chrome + a fresh bake |
 | `test_verifier` | Kythe-style verifier fixtures (issue #66): `//-`-shaped goal comments in fixture sources, asserted against extractor output | stdlib + tree-sitter/tree-sitter-cpp (extractor-level only: no config, no index, no chroma) |
 | `test_bench` | bench record/golden coherence (issue #104): golden fingerprint determinism, render fails loud naming stale records, coherent sandbox render e2e | stdlib (bench/run_bench.py render path only; no config, no index, no embeds) |
 
@@ -147,7 +147,9 @@ on an ephemeral loopback port (issue #132) — viz gates may run concurrently,
 and orphaned-process port holds / TIME_WAIT rerun failures are structurally
 gone. `tools/serve.py` keeps its explicit port by design (user-facing). The
 harness is config-agnostic: assertions data-gate on index content (dead
-files, cycles, clusters) so self-index AND the target repo both run clean.
+files, cycles, clusters) so the self-index, the frozen corpus, and the
+target repo all run clean (issue #97: interaction checks skip loudly when
+the index shape cannot exercise them — no shape is silently assumed).
 
 `layout.py` owns the five pure strata/layout functions (`_links_adj`,
 `_tarjan_scc`, `_strata_depths`, `_strata_analysis`, `_layout`) moved
