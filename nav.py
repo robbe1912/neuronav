@@ -221,6 +221,7 @@ _CONFIG_FIELDS = (
     "EMBED_API_KEY", "WATCH_INTERVAL_S", "STATE_DIR", "DB_DIR", "BASE_DIR",
 )
 _GRAPH_CACHE: dict[tuple, object] = {}  # store key -> graph.py singleton
+_FP_CACHE: dict[tuple, tuple] = {}  # store key -> fp slots (drift baseline)
 
 
 def store_key() -> tuple[str, str]:
@@ -247,13 +248,30 @@ def config_scope(path: Path):
     with _fp_lock:
         saved_fp = (_fp_clean, _fp_last, _fp_last_scan, _fp_dirty)
     saved_graph = _graph_mod._graph
+    applied = False
     try:
         _apply_config(path)
-        _graph_mod._graph = _GRAPH_CACHE.get(store_key())
+        applied = True
+        key = store_key()
+        # this store's drift baseline, if a previous scope synced it:
+        # entering with the boot baseline would judge every scoped scan
+        # against the wrong project (sha-gate catches it, but every
+        # routed rescan would pay the full content walk)
+        with _fp_lock:
+            fp = _FP_CACHE.get(key)
+            if fp is not None:
+                _fp_clean, _fp_last, _fp_last_scan, _fp_dirty = fp
+        _graph_mod._graph = _GRAPH_CACHE.get(key)
         yield
     finally:
-        # keep the graph built/loaded under this scope for its store
-        _GRAPH_CACHE[store_key()] = _graph_mod._graph
+        if applied:
+            # keep what this scope built for ITS store — and only after a
+            # successful apply: a failed one leaves half-rebound globals
+            # whose store key belongs to no served config
+            key = store_key()
+            _GRAPH_CACHE[key] = _graph_mod._graph
+            with _fp_lock:
+                _FP_CACHE[key] = (_fp_clean, _fp_last, _fp_last_scan, _fp_dirty)
         for f, v in saved.items():
             globals()[f] = v
         with _fp_lock:
