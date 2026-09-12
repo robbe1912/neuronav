@@ -268,6 +268,7 @@ def _build_data() -> dict:
 # rung 4: _JS_MINS_C renamed _JS_PINS (whole span is the pins block per plan 6172-6576)
 # rung 5: _JS_FN_LAYER state block (plan 4361-4802, fnMesh..rebuildFnLayer-1) carved from _JS_MID
 # rung 6: rebuildFnLayer block (plan 4803-5929) = whole _JS_MID_D residual, renamed _JS_FN_LAYER_B
+# rung 7: _JS_LABELS3D + _JS_FOCUS_VIS + _JS_LABELS3D_TAIL carved from _JS_MID (documented resolution: two L3D constants around FOCUS_VIS, join order == original text order)
 _HTML_HEAD = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2375,7 +2376,9 @@ function frameVisible() {
   tweenCamTo(c, c.clone().addScaledVector(dir, Math.max(320, r * 1.8)));
 }
 
-// ---- UI ---------------------------------------------------------------------
+"""
+
+_JS_LABELS3D = r"""// ---- UI ---------------------------------------------------------------------
 const stats = document.getElementById("stats");
 const m = DATA.meta;
 // dead counts are function-level candidates; the map flags a file only when
@@ -2595,7 +2598,9 @@ const level = new Int16Array(N).fill(-1);
 // fn interconnection renders; HUB_FN_BUDGET is retired).
 const HUB_EDGE_BUDGET = 12;
 const GHOST_K = 0.08;
+"""
 
+_JS_FOCUS_VIS = r"""
 // BFS from clicked seeds up to `depth` (issue #33: focus starts ONLY from
 // a node click — search typing highlights in place, it never seeds); the
 // direction mode picks which adjacency half the walk follows
@@ -3167,7 +3172,9 @@ function applyVisibility() {
 // when the focus set is small, label each in-set link's midpoint with its
 // type and weight; large sets skip labels entirely to avoid clutter
 // threshold is relative to graph size so depth-1 neighborhoods stay labeled
-// across data drift while depth 2-3 sets stay clean
+"""
+
+_JS_LABELS3D_TAIL = r"""// across data drift while depth 2-3 sets stay clean
 const DETAIL_MAX = Math.max(120, nodes.length * 0.35);
 const elabsEl = document.getElementById("elabs");
 let eLabs = [], detailMode = false;
@@ -8835,7 +8842,7 @@ tick();
 </html>
 """
 
-_TEMPLATE = (_HTML_HEAD + _JS_MID + _JS_FN_LAYER + _JS_FN_LAYER_B + _JS_LEGEND + _JS_PINS + _JS_MAP_RENDER + _JS_MAP_PAINT + _JS_MAP_INPUT + _JS_MID_B + _JS_DBG)
+_TEMPLATE = (_HTML_HEAD + _JS_MID + _JS_LABELS3D + _JS_FOCUS_VIS + _JS_LABELS3D_TAIL + _JS_FN_LAYER + _JS_FN_LAYER_B + _JS_LEGEND + _JS_PINS + _JS_MAP_RENDER + _JS_MAP_PAINT + _JS_MAP_INPUT + _JS_MID_B + _JS_DBG)
 
 
 
