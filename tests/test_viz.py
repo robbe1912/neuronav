@@ -326,10 +326,19 @@ def run_tests():
                  const txt = (x.textContent || '').slice(0, 60);
                  chip.click();
                  const closed = x.style.display === 'none' && d.legendOpen === false;
-                 return { open, closed, txt }; }"""
+                 // [issue #81] a synthetic chip.click() carries 0,0 coords;
+                 // a capture-phase wire picker that claims chrome clicks
+                 // both kills the chip's own handler (toggle dead) and
+                 // pops a stray wire tip at the corner. Chrome-owned
+                 // clicks must never surface ink.
+                 const tip = document.getElementById('wireTip');
+                 return { open, closed, txt,
+                          tip: tip ? getComputedStyle(tip).display : 'gone' }; }"""
         )
         check("legend chip toggles (trunk vocabulary self-explains)",
               lg and lg["open"] and lg["closed"], str(lg))
+        check("chrome clicks never surface a wire tip (#81 steal class)",
+              lg and lg["tip"] in ("none", "gone"), str(lg))
         vic = page.evaluate(
             """() => { const d = window.__dbg; const nm = d.fnMesh, meta = d.fnMeta;
                  if (!nm || !meta || !meta.length) return { fail: 'no fn layer' };
