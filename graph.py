@@ -24,14 +24,25 @@ import re
 from collections import Counter, defaultdict, deque
 
 import nav
-from extractors.common import PY_CONTROL_KEYWORDS
-from extractors import registry_for
-# language fact needed by the dead-code tier heuristic (native dispatch names)
-from extractors.gdscript import VIRTUALS, GUT_ROOTS, ADDON_VIRTUALS, MANUAL_BASES, parse_gd, parse_tscn
-from extractors.python import PY_HOOKS  # stdlib dispatch hooks (dead-scan tier)
-# C++ front-end facts (issue #13): pairing + registration wiring, the
-# dynamic-dispatch marker for the dead tier, and the repo-wide GDVIRTUAL set
-from extractors.cpp import CPP_DYNAMIC_RE, CPP_EXTS, CPP_MENTION_FLOOR, harvest_registration, scan_calls
+from extractors import (
+    ADDON_VIRTUALS,
+    CPP_DYNAMIC_RE,
+    CPP_EXTS,
+    CPP_MENTION_FLOOR,
+    GUT_ROOTS,
+    MANUAL_BASES,
+    PY_CONTROL_KEYWORDS,
+    PY_HOOKS,
+    VIRTUALS,
+    harvest_registration,
+    parse_gd,
+    parse_tscn,
+    registry_for,
+    scan_calls,
+)
+# single import surface: language facts (VIRTUALS etc.) are re-exported by
+# the extractors package so graph.py never deep-imports an extractor
+# submodule — extractor modules stay free of any graph import (acyclic).
 
 # ---- constants ---------------------------------------------------------------
 # Language-owned constants and entry-point rules (VIRTUALS, GUT_ROOTS,

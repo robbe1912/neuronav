@@ -16,7 +16,24 @@ from __future__ import annotations
 from extractors import cpp
 from extractors import gdscript
 from extractors import python
+from extractors.common import PY_CONTROL_KEYWORDS  # noqa: F401  (re-export)
+from extractors.cpp import (  # noqa: F401  (re-export)
+    CPP_DYNAMIC_RE,
+    CPP_EXTS,
+    CPP_MENTION_FLOOR,
+    harvest_registration,
+    scan_calls,
+)
+from extractors.gdscript import (  # noqa: F401  (re-export)
+    ADDON_VIRTUALS,
+    GUT_ROOTS,
+    MANUAL_BASES,
+    VIRTUALS,
+    parse_gd,
+    parse_tscn,
+)
 from extractors.model import FileSym, Func  # noqa: F401  (re-export)
+from extractors.python import PY_HOOKS  # noqa: F401  (re-export)
 
 # suffix (lowercase) -> extractor module exposing parse() + ENTRY_RULES
 EXTENSIONS: dict[str, object] = {
