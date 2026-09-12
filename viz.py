@@ -8849,6 +8849,16 @@ def generate(out: str | Path | None = None) -> Path:
     out.write_text(html, encoding="utf-8")
     return out
 
+def ensure_bake() -> Path:
+    """The one rescan→bake entry point (D14, issue #86 R8).
+
+    server.visualize and onboard._index delegate here so the bake
+    choreography has a single owner; their own add-on-absence messages
+    stay at the import guard (viz.py itself is delete-able). nav's CLI
+    stays bake-free by design — it must not import viz.
+    """
+    return generate()
+
 if __name__ == "__main__":
     path = generate(sys.argv[1] if len(sys.argv) > 1 else None)
     print(path)
