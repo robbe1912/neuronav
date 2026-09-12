@@ -263,6 +263,7 @@ def _build_data() -> dict:
 
 
 # phase-3 sections (split_plan_js.md rung 1) - ordered join, one script tag, __DATA__/__IMPORTMAP__ replace contract unchanged
+# rung 2: _JS_MAP_RENDER + _JS_MAP_PAINT carved from _JS_MID (split_plan_js.md); file lines re-anchored by content post-rung-1
 _HTML_HEAD = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5711,7 +5712,9 @@ function openFnPicker(fi, x, y) {
 fnPickIn.addEventListener("input", () => fnPickFill(fnPickIn.value));
 fnPickIn.addEventListener("keydown", e => {
   if (e.key === "Escape") { e.stopPropagation(); fnClosePick(); }
-});
+"""
+
+_JS_MAP_RENDER = r"""});
 const MAP_WORLD_W = 1100;   // world width CAP - the pane is a window onto it
 function mapRender() {
   if (!mapVisible) return;
@@ -7008,7 +7011,9 @@ function mapRender() {
 // Pan only — mapZ untouched (refit owns zoom). Consumed exactly once, so
 // it never fights later manual pans; the pulse fires even when the pan is
 // skipped (box already centered).
-function mapConsumeCenterReq() {
+"""
+
+_JS_MAP_PAINT = r"""function mapConsumeCenterReq() {
   if (mapCenterReq < 0) return;
   const rc = mapRects.find(r => r.i === mapCenterReq);
   mapCenterReq = -1;
@@ -7462,7 +7467,9 @@ function setMapVisible(v) {
 // ---- divider drag: resize the split (rAF-throttled), never orbits the 3D ---
 // the divider is its own element — OrbitControls listens on the canvas only,
 // so a drag here cannot start a camera move by construction
-const divider = document.getElementById("divider");
+"""
+
+_JS_MID_B = r"""const divider = document.getElementById("divider");
 let divRaf = 0;
 divider.addEventListener("pointerdown", e => {
   if (!mapVisible) return;
@@ -8814,7 +8821,7 @@ tick();
 </html>
 """
 
-_TEMPLATE = (_HTML_HEAD + _JS_MID + _JS_DBG)
+_TEMPLATE = (_HTML_HEAD + _JS_MID + _JS_MAP_RENDER + _JS_MAP_PAINT + _JS_MID_B + _JS_DBG)
 
 
 
