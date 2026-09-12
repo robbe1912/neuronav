@@ -23,6 +23,7 @@ import nav
 import graph
 from layout import (_links_adj, _tarjan_scc, _strata_depths,
                     _strata_analysis, _layout)
+from bake.budget import _cap_rows
 
 
 def _git_head() -> str:
@@ -83,25 +84,6 @@ def _churn_hot(paths: list[str]) -> list[float] | None:
         return [round(touches.get(p, 0) / mx, 3) for p in paths]
     except Exception:
         return None
-
-
-def _cap_rows(units, prio_key, cost_of, cap: int):
-    """Greedy byte-budget keep over serializable units (spec §4 row 10).
-
-    Walks units in deterministic priority order, keeps each while it
-    still fits under cap; returns (kept units in walk order, units
-    dropped). The keep/drop decision depends only on priority order and
-    per-unit cost — callers own the arrangement (pair grouping, index
-    order, dict rebuild)."""
-    budget = cap
-    kept = []
-    for u in sorted(units, key=prio_key):
-        cost = cost_of(u)
-        if cost > budget:
-            continue
-        budget -= cost
-        kept.append(u)
-    return kept, len(units) - len(kept)
 
 
 def _build_data() -> dict:
