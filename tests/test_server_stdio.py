@@ -125,6 +125,27 @@ TOOL_NAMES = (
 
 
 def main() -> None:
+    # issue #160: the MCP crosstalk shape keeps the pre-#144 top-2
+    # top-files per pair (fmt_crosstalk top_n=2), unpadded pair colon
+    import clusters as _clusters
+
+    _rep = {
+        "clusters": 2, "internal_edges": 3, "external_edges": 4,
+        "external_ratio": 0.5, "unclustered_endpoint_edges": 0,
+        "by_cluster": [],
+        "worst_pairs": [{"a": "A", "b": "B", "edges": 4, "top_files": [
+            {"pair": "x -> y", "w": 3}, {"pair": "p -> q", "w": 2},
+            {"pair": "m -> n", "w": 1},
+        ]}],
+    }
+    _out = _clusters.fmt_crosstalk(_rep, top_n=2)
+    check(
+        "crosstalk MCP shape: top-2 files, unpadded colon (issue #160)",
+        "x -> y x3" in _out and "p -> q x2" in _out and "m -> n" not in _out
+        and "A <-> B:" in _out and "cross-cluster 4 (" in _out,
+        _out.splitlines()[-1],
+    )
+
     env = {k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}
     srv = _spawn(env)
     proc = srv.proc

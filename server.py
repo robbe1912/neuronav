@@ -513,7 +513,7 @@ def crosstalk(dir: str = "") -> str:
 
         g = graph.get_graph()
         rep = _clusters.crosstalk(nav.clusters(), g)
-        return _clusters.fmt_crosstalk(rep)
+        return _clusters.fmt_crosstalk(rep, top_n=2)
 
 
 def _ctx_adjacency(g) -> tuple[dict, dict]:

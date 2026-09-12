@@ -1656,15 +1656,16 @@ def crosstalk(cs: list[dict], g=None) -> dict:
     }
 
 
-def fmt_crosstalk(rep: dict, align: bool = False) -> str:
+def fmt_crosstalk(rep: dict, align: bool = False, top_n: int = 0) -> str:
     """Render a crosstalk() report for humans — the ONE formatter shared
     by the MCP `crosstalk` tool and the nav CLI verb (align=True pads
-    columns for terminal reading). Machines consume the rep dict."""
+    columns for terminal reading; top_n caps the per-pair top-files list —
+    the MCP shape keeps the pre-#144 top-2). Machines consume the rep dict."""
     lines = [
         f"crosstalk: {rep['clusters']} clusters, "
         f"internal {rep['internal_edges']} edges, "
-        f"cross-cluster {rep['external_edges']} "
-        f"({rep['external_ratio'] * 100:.1f}% of clustered)"
+        f"cross-cluster {rep['external_edges']} " + ("edges " if align else "")
+        + f"({rep['external_ratio'] * 100:.1f}% of clustered)"
     ]
     if rep["unclustered_endpoint_edges"]:
         lines.append(
@@ -1687,6 +1688,8 @@ def fmt_crosstalk(rep: dict, align: bool = False) -> str:
     if rep["worst_pairs"]:
         lines += ["", "worst pairs:"]
         for wp in rep["worst_pairs"]:
-            tops = ", ".join(f"{t['pair']} x{t['w']}" for t in wp["top_files"])
-            lines.append(f"  {wp['a']} <-> {wp['b']}: {wp['edges']} edges (top: {tops})")
+            top = wp["top_files"][:top_n] if top_n else wp["top_files"]
+            tops = ", ".join(f"{t['pair']} x{t['w']}" for t in top)
+            sep = " : " if align else ": "
+            lines.append(f"  {wp['a']} <-> {wp['b']}{sep}{wp['edges']} edges (top: {tops})")
     return "\n".join(lines)
