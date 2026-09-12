@@ -37,6 +37,16 @@ the rest are local gates.
 | `test_viz` | 103-check Playwright harness over the real baked page | playwright + chrome + a fresh `graph.html` bake |
 | `test_verifier` | Kythe-style verifier fixtures (issue #66): `//-`-shaped goal comments inlined in fixture sources, asserted against extractor output (FileSym + cpp scan_calls); `@fn dead` is corpus-local liveness | stdlib + tree-sitter/tree-sitter-cpp for the C++ goals — extractor-level only: no config, no index, no chroma |
 
+`_page_harness.py` (issue #86 strand R9) is the shared Playwright harness
+the two browser suites ride: `serve()` (no-cache loopback server, ephemeral
+port per issue #132; `reuse=` preserves the suites' historic bind
+difference), `launch()` (real Chrome), `open_page()` (settled 1600x900 page
+with optional console/pageerror capture), `probe_dbg()` (broken-bake probe),
+and the `CheckLog` accumulator with the suites' summary/exit contract.
+Consumed by `tests/test_viz.py` (sys.path) and `tools/qa_readability.py`
+(`tests._page_harness`) — the suites keep their own assertions; harness
+changes may never weaken or drop a check.
+
 `probe_scene_placement.py` is a manual probe script, not a suite.
 
 ## Config self-selection (the leakage trap)
