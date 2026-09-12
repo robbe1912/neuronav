@@ -32,7 +32,7 @@ from extractors.gdscript import (  # noqa: F401  (re-export)
     parse_gd,
     parse_tscn,
 )
-from extractors.model import FileSym, Func  # noqa: F401  (re-export)
+from extractors.model import FileSym, Func, add_class_ctx  # noqa: F401  (re-export)
 from extractors.python import PY_HOOKS  # noqa: F401  (re-export)
 
 # suffix (lowercase) -> extractor module exposing parse() + ENTRY_RULES

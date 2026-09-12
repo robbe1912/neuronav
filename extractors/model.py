@@ -9,7 +9,8 @@ extractor module, not here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from typing import Iterable, Iterator
 
 
 @dataclass
@@ -25,6 +26,14 @@ class Func:
     ret: str = ""                                   # declared return type
     writes: set = field(default_factory=set)        # members assigned (self.x =)
     mut_params: set = field(default_factory=set)    # params mutated via p.mutator(
+    # cAST-style size-aware doc chunking (issue #76). Extractors keep the
+    # granular single-fn entries; the graph fn-doc builder re-uses these to
+    # paint class context or split monsters. kind: "raw" (parser slice),
+    # "class_ctx" (micro-fn carries its class's other methods),
+    # "chunk" (one statement block of a monster). members collects the
+    # merged-in sibling bodies for class_ctx chunks.
+    kind: str = "raw"
+    members: list = field(default_factory=list)     # [(name, line, body)]
 
     @property
     def key(self) -> str:
@@ -72,3 +81,32 @@ class FileSym:
     # c++ members declared under a private access region (stronger dead
     # candidates than public-unused once a tier pass consumes this)
     private_members: set[str] = field(default_factory=set)
+
+
+# -- cAST-style doc chunking helpers (issue #76) -----------------------------
+
+
+def add_class_ctx(
+    funcs: dict[str, Func],
+    name: str,
+    members: Iterable[Func],
+    siblings: Iterable[str] | None = None,
+) -> None:
+    """Overlay the class document on a micro-fn's Func (pure: the caller
+    owns persistence).
+
+    ``members`` fold in class context WITHOUT losing the fn's own identity —
+    the doc hard-splits on the owned signature line, and every fold carries
+    a ``-- name:line --`` banner (the same convention the fn index already
+    uses), so agents can still find the exact fn inside the merged doc.
+    Discards classes with no usable member (caller decides). Does NOT
+    re-wrap the fn signature (docstring/param-length rules live with the
+    graph fn-doc builder, keep the candidate surface honest)."""
+    folded = members if siblings is None else [
+        m for m in members if m.name not in siblings
+    ]
+    if not folded:
+        return
+    funcs[name] = replace(
+        funcs[name], kind="class_ctx", members=[(m.name, m.line, m.body) for m in folded]
+    )

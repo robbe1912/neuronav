@@ -329,7 +329,10 @@ def parse_gd(path: Path, rel: str) -> FileSym:
                     body_start = k + 1
         if varname:
             # `set(v):` / `get():` accessor block under a class-level var —
-            # parse as a rooted pseudo-func so its body's calls stay alive
+            # parse as a rooted pseudo-func so its body's calls stay alive.
+            # Small accessors then fold into class context like any other
+            # micro fn (graph _overlay_class_context merges by line
+            # proximity, cAST issue #76).
             base = _indent(line)
             body, j = scan_indented_block(lines, body_start, base, _indent)
             pname = f"_{kind}_{varname}"

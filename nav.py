@@ -68,7 +68,7 @@ def _apply_config(path: Path | None) -> None:
     and again by ``nav.py --config <path>`` (which also sets NEURONAV_CONFIG
     so subprocesses and sibling modules like graph.py agree). ``path=None``
     means no config anywhere: pure cwd defaults (issue #27)."""
-    global ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM, EMBED_PROVIDER, EMBED_API_KEY, WATCH_INTERVAL_S, RECALL_TWO_PASS, STATE_DIR, DB_DIR, BASE_DIR
+    global ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM, EMBED_PROVIDER, EMBED_API_KEY, WATCH_INTERVAL_S, RECALL_TWO_PASS, CHUNK_CAST, STATE_DIR, DB_DIR, BASE_DIR
     if path is not None and not path.is_file():
         # issue #41: an explicit config path is a contract, not a hint —
         # silently degrading to walk-all defaults flips the walk identity
@@ -125,6 +125,18 @@ def _apply_config(path: Path | None) -> None:
     # 0.587->0.706) but doubles query-side embeds on the shared
     # semantic_search path — default OFF, owner's flip after review.
     RECALL_TWO_PASS = bool(cfg.get("recall_two_pass", False))
+    # issue #76/#141 (cAST chunking): split monster fn bodies into
+    # statement-block chunk docs + fold micro fns into class context,
+    # in the fn-level index only. The fresh-store bench A/B (real
+    # qwen3 embeds, per-config scratch stores) showed NO lift and NO
+    # regression — recall reads the file layer; the fn layer is
+    # invisible to it — and the earlier regression table was a
+    # stale-store artifact. The feature ships dark until a passing A/B
+    # at flip time: 0.0 = OFF — byte-identical pre-#141 fn docs;
+    # 1.0 = calibrated thresholds, other positives scale them.
+    # Bench-opt-in, owner's flip after a passing A/B (same law as
+    # recall_two_pass).
+    CHUNK_CAST = float(cfg.get("chunk_cast", 0.0))
     # per-project state: chroma store, base shards and the viz bake all
     # derive from one dir — explicit "state_dir" honored; "default" is
     # the opt-in for <root>/.neuronav. Relative values resolve against
@@ -199,6 +211,7 @@ EMBED_PROVIDER: str
 EMBED_API_KEY: str
 WATCH_INTERVAL_S: float
 RECALL_TWO_PASS: bool
+CHUNK_CAST: float
 STATE_DIR: Path
 DB_DIR: Path
 BASE_DIR: Path
@@ -226,7 +239,7 @@ _apply_config(_discover_config())
 _CONFIG_FIELDS = (
     "ROOT", "COLLECTION", "INCLUDE_DIRS", "EXTS", "EXCLUDE_DIRS",
     "EMBED_URL", "EMBED_MODEL", "EMBED_DIM", "EMBED_PROVIDER",
-    "EMBED_API_KEY", "WATCH_INTERVAL_S", "RECALL_TWO_PASS",
+    "EMBED_API_KEY", "WATCH_INTERVAL_S", "RECALL_TWO_PASS", "CHUNK_CAST",
     "STATE_DIR", "DB_DIR", "BASE_DIR",
 )
 _GRAPH_CACHE: dict[tuple, object] = {}  # store key -> graph.py singleton
