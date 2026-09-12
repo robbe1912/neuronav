@@ -525,9 +525,16 @@ def _check_model(col: chromadb.Collection) -> chromadb.Collection:
     """Embedding fingerprint on the live collection — model AND provider
     (issue #17 stamped both): a same-name model behind a different
     provider is not guaranteed to be the same vector space, so a
-    changed or missing key demands a re-embed; a re-stamp would copy
+    CHANGED key demands a re-embed; a re-stamp would copy
     wrong-provider vectors verbatim (CodeRabbit hardening on #151).
-    Unstamped collections (pre-#17, both keys absent) take the copy
+    A MISSING provider key is lineage, not drift (issue #159): pre-#17
+    stores carry the model yet no provider, and the pre-#17 client
+    spoke only the Ollama wire protocol — so the stamp heals to
+    EMBED_PROVIDER via the re-stamp path when the config is ollama,
+    while a provider-less store under any other config is genuine
+    drift and still refuses. Mismatch messages print the raw stored
+    provider (None reads as unstamped), never a fabricated default.
+    Fully unstamped collections (both keys absent) take the copy
     path — nothing contradicts the config.
 
     The stamp must also keep hnsw:space=cosine (issue #103): chroma's
@@ -541,15 +548,19 @@ def _check_model(col: chromadb.Collection) -> chromadb.Collection:
     temp on the next call."""
     meta = col.metadata or {}
     stored = meta.get("embed_model")
-    if stored is not None and (stored != EMBED_MODEL
-                               or meta.get("embed_provider") != EMBED_PROVIDER):
+    provider = meta.get("embed_provider")
+    # absent provider = pre-#17 lineage: the only client that could
+    # have built the store spoke ollama, so that is the effective stamp
+    lineage = provider if provider is not None else "ollama"
+    if stored is not None and (stored != EMBED_MODEL or lineage != EMBED_PROVIDER):
         raise RuntimeError(
             f"index was built with embed model '{stored}' (provider "
-            f"'{meta.get('embed_provider', 'ollama')}') but config says "
+            f"{provider!r}) but config says "
             f"'{EMBED_MODEL}' (provider '{EMBED_PROVIDER}') — run "
             "`python nav.py drop` then rescan"
         )
-    if stored == EMBED_MODEL and meta.get("hnsw:space") == "cosine":
+    if (stored == EMBED_MODEL and provider == EMBED_PROVIDER
+            and meta.get("hnsw:space") == "cosine"):
         return _adopt_orphan(col)
     return _restamp(col)
 
@@ -1014,12 +1025,16 @@ def import_base() -> dict[str, int | str]:
         if not manifest_path.is_file():
             return {"skipped": 0}
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest.get("model") != EMBED_MODEL or manifest.get("dim") != EMBED_DIM:
+        dim = manifest.get("dim")
+        # stamps gate when present (#159): a manifest without dim is not
+        # a mismatch — the model is the fingerprint, the shards carry
+        # the true vectors — and the message shows raw stored values
+        if manifest.get("model") != EMBED_MODEL or (dim is not None and dim != EMBED_DIM):
             raise RuntimeError(
-                f"base index model mismatch: {manifest.get('model')}/"
-                f"{manifest.get('dim')} (provider "
-                f"'{manifest.get('provider', 'ollama')}') vs config "
-                f"{EMBED_MODEL}/{EMBED_DIM} (provider '{EMBED_PROVIDER}')"
+                f"base index model mismatch: {manifest.get('model')}/{dim} "
+                f"(provider {manifest.get('provider')!r}) vs config "
+                f"{EMBED_MODEL}/{EMBED_DIM} (provider '{EMBED_PROVIDER}') — run "
+                "`python nav.py drop` then rescan"
             )
         ids: list[str] = []
         embs: list[list[float]] = []

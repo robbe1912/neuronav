@@ -5,6 +5,7 @@
 # Hermetic: loopback stub server (stdlib http.server, ephemeral port)
 # speaking both the Ollama /api/embed and OpenAI /v1/embeddings wire
 # shapes; temp config + state dir — never the real index or .neuronav.
+import gzip
 import io
 import json
 import os
@@ -379,6 +380,128 @@ try:
     check("no re-stamp temp left behind", False, "temp collection still present")
 except Exception:
     check("no re-stamp temp left behind", True)
+
+# --- #159: legacy pre-#17 stores heal instead of refusing ----------------
+MODE["protocol"] = "ollama"
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/api/embed", embed_model="m-leg", embed_provider="ollama")
+
+
+def legacy_store(meta):
+    """Main collection in a legacy shape: model-stamped vectors, minus
+    whatever keys the era did not stamp yet (engine-store verified:
+    model present, provider and hnsw:space null)."""
+    try:
+        cl.delete_collection(nav.COLLECTION)
+    except Exception:
+        pass
+    col = cl.create_collection(name=nav.COLLECTION, metadata=meta)
+    col.add(ids=["v1", "v2"], embeddings=[[1.0, 0.9], [5.0, 3.0]],
+            documents=["doc one", "doc two"], metadatas=[{"sha": "a"}, {"sha": "b"}])
+    return col
+
+
+def legacy_open(meta):
+    """legacy_store + _collection(); returns (col, stderr, exc) so a
+    hard refusal reports as a FAIL row, not a crashed suite."""
+    col = legacy_store(meta)
+    err = io.StringIO()
+    try:
+        with redirect_stderr(err):
+            return nav._collection(), err.getvalue(), None
+    except RuntimeError as e:
+        return None, err.getvalue(), e
+
+
+legacy = legacy_store({"embed_model": "m-leg"})  # the engine-store shape
+snap = legacy.get(include=["embeddings", "documents", "metadatas"])
+legacy_records = {i: (list(map(float, e)), d, m) for i, e, d, m in
+                  zip(snap["ids"], snap["embeddings"], snap["documents"], snap["metadatas"])}
+err = io.StringIO()
+healed = None
+try:
+    with redirect_stderr(err):
+        healed = nav._collection()
+    check("legacy store (model stamped, provider absent) heals via re-stamp (#159)", True)
+except RuntimeError as e:
+    check("legacy store (model stamped, provider absent) heals via re-stamp (#159)",
+          False, str(e))
+if healed is not None:
+    m = healed.metadata or {}
+    check("heal stamps current provider + model + space (#159)",
+          m.get("embed_provider") == "ollama" and m.get("embed_model") == "m-leg"
+          and m.get("hnsw:space") == "cosine", str(m))
+    check("heal keeps vectors (#159)", healed.count() == 2, str(healed.count()))
+    got = healed.get(include=["embeddings", "documents", "metadatas"])
+    check("heal keeps records identical by id (#159)",
+          rec_eq({i: (list(map(float, e)), d, m) for i, e, d, m in
+                  zip(got["ids"], got["embeddings"], got["documents"], got["metadatas"])},
+                 legacy_records), "")
+    check("healed store serves normal ops: cosine ranking (#159)",
+          healed.query(query_embeddings=[[1.0, 0.0]], n_results=2)["ids"][0] == ["v2", "v1"],
+          str(healed.query(query_embeddings=[[1.0, 0.0]], n_results=2)["ids"]))
+    check("heal is announced on stderr (#159)", "re-stamp" in err.getvalue(), err.getvalue().strip())
+    check("healed store takes the stamped fast path next call (#159)",
+          nav._collection().count() == 2, "")
+
+# mid-era shape (between #103 and #17): model + space stamped, provider
+# absent — the fast path must not swallow it, the stamp still heals
+healed2, out2, exc2 = legacy_open({"hnsw:space": "cosine", "embed_model": "m-leg"})
+check("mid-era store (space stamped, provider absent) heals too (#159)",
+      exc2 is None and (healed2.metadata or {}).get("embed_provider") == "ollama",
+      str(exc2) if exc2 else str(healed2.metadata))
+check("mid-era heal keeps vectors (#159)",
+      healed2 is not None and healed2.count() == 2,
+      str(healed2.count()) if healed2 else "refused")
+
+# provider-less vectors are pre-#17 ollama-protocol output: under an
+# openai config that is real drift — refuse, printing the raw stamp
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/api/embed", embed_model="m-leg", embed_provider="openai")
+_, _, exc3 = legacy_open({"embed_model": "m-leg"})
+check("provider-less store vs openai config still refuses (#159)",
+      exc3 is not None and "run `python nav.py drop`" in str(exc3),
+      str(exc3) if exc3 else "no exception")
+check("refusal prints the raw stored provider, no 'ollama' default (#159)",
+      exc3 is not None and "provider None" in str(exc3) and "provider 'openai'" in str(exc3),
+      str(exc3))
+
+# --- #159: base manifest gates dim only when stamped -----------------------
+write_cfg(embed_url=f"http://127.0.0.1:{PORT}/api/embed", embed_model="m-leg", embed_provider="ollama")
+nav.BASE_DIR.mkdir(parents=True)
+for rid in ("f1.txt", "f2.txt"):
+    (nav.ROOT / rid).write_text(f"content of {rid}\n", encoding="utf-8")
+with gzip.GzipFile(nav.BASE_DIR / "shard-0000.jsonl.gz", mode="wb", compresslevel=9, mtime=0) as f:
+    for rid, emb in (("f1.txt", [1.0, 0.9]), ("f2.txt", [5.0, 3.0])):
+        f.write((json.dumps({"id": rid, "emb": emb, "meta": {"sha": rid}},
+                            sort_keys=True) + "\n").encode("utf-8"))
+manifest = {"model": "m-leg", "count": 2, "shards": 1,
+            "exported_at": "2026-09-12T00:00:00+00:00"}  # no dim/provider: legacy
+(nav.BASE_DIR / nav.MANIFEST_NAME).write_text(json.dumps(manifest, indent=2) + "\n",
+                                              encoding="utf-8")
+try:  # import seeds only an empty store
+    cl.delete_collection(nav.COLLECTION)
+except Exception:
+    pass
+try:
+    report = nav.import_base()
+    check("manifest without dim/provider imports fine (#159)",
+          report.get("imported") == 2, str(report))
+except RuntimeError as e:
+    check("manifest without dim/provider imports fine (#159)", False, str(e))
+manifest["dim"] = 999  # present and wrong: the hard gate stays
+(nav.BASE_DIR / nav.MANIFEST_NAME).write_text(json.dumps(manifest, indent=2) + "\n",
+                                              encoding="utf-8")
+try:  # empty again for the refusal leg
+    cl.delete_collection(nav.COLLECTION)
+except Exception:
+    pass
+try:
+    nav.import_base()
+    check("manifest with a changed dim still refuses (#159)", False, "no exception")
+except RuntimeError as e:
+    check("manifest with a changed dim still refuses (#159)",
+          "999" in str(e) and "run `python nav.py drop`" in str(e), str(e))
+    check("manifest refusal prints the raw provider, no 'ollama' default (#159)",
+          "provider None" in str(e), str(e))
 
 print()
 print(f"{len(FAILS)} failure(s)" + (": " + ", ".join(FAILS) if FAILS else ""))
