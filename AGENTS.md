@@ -65,9 +65,10 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 
 ## viz.py template laws
 
-The template is an ordered join of section constants — join order is the
-original text order, byte-identical to the former single string, one
-script tag; the `__DATA__` and `__IMPORTMAP__` replaces are unchanged.
+The template is an ordered join of section constants — `_HTML_HEAD` then
+the `_JS_*` sections; join order is the original text order, byte-identical
+to the former single string, one script tag; the `__DATA__` and
+`__IMPORTMAP__` replaces are unchanged.
 Edit JS directly, but `graph.html` bakes the template at
 `generate()` time: **regen after every template edit** or you test stale JS
 (this has bitten us). Serve the bake via `python tools/serve.py`
