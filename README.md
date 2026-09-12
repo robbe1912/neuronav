@@ -73,7 +73,7 @@ flip per project after trying it.
   Ollama's own `/v1` layer): point `embed_url` at it and, if it needs a
   key, set `NEURONAV_EMBED_KEY` (env beats the config's `embed_api_key`,
   so secrets stay out of tracked files). See `config/AGENTS.md`.
-- `pip install chromadb httpx "mcp<2" numpy networkx scipy scikit-learn` (into the venv)
+- `pip install chromadb httpx "mcp<2" numpy networkx scipy scikit-learn "tree-sitter==0.26.0" "tree-sitter-cpp==0.23.4"` (into the venv)
 
 The default setup keeps embeddings on the machine; queries and indexing
 both need the backend reachable.
@@ -84,7 +84,7 @@ both need the backend reachable.
 git clone <this repo>
 cd neuronav
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install chromadb httpx "mcp<2" numpy networkx scipy scikit-learn
+.venv\Scripts\python.exe -m pip install chromadb httpx "mcp<2" numpy networkx scipy scikit-learn "tree-sitter==0.26.0" "tree-sitter-cpp==0.23.4"
 ```
 
 ## Wire into a project (one command, any OS)
