@@ -136,6 +136,13 @@ def _continue(anchor: str) -> str:
         return (f'unreadable anchor "{anchor}" - expected path:start-end '
                 "exactly as printed at the end of an explore slice")
     path, start, end = m.group(1), int(m.group(2)), int(m.group(3))
+    # scope guard (issue #105): anchors were the one read path not confined
+    # to the index — pathlib joins an absolute or ../ path straight out of
+    # ROOT, handing a prompt-injected agent an unlogged arbitrary read.
+    # Same law as every sibling read tool: the file must be in g.files
+    # (get_graph() is cached — the same graph the funnel path used).
+    if path.replace("\\", "/") not in graph.get_graph().files:
+        return f"anchor window unavailable: {path} is not an indexed file"
     # TOTAL_CAP minus header+anchor overhead so the backstop clamp below
     # can never bite mid-handle
     sl = _slice(path, start, end, TOTAL_CAP - 300)
