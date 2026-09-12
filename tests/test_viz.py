@@ -47,6 +47,10 @@ def run_tests():
         page.route("**/favicon.ico", lambda r: r.fulfill(status=200, body=""))
         errors = []
         page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+        # #98 class: uncaught JS errors ride the pageerror channel (a
+        # ReferenceError from an rAF/event handler surfaces here even when
+        # no console.error call is made)
+        page.on("pageerror", lambda e: errors.append(str(e)))
         page.goto(f"http://127.0.0.1:{PORT}/graph.html", wait_until="load")
         page.wait_for_timeout(4000)  # frozen layout — settle only
         # tests chip is dynamically created (span, text "tests") inside #dirs
@@ -3239,6 +3243,21 @@ def run_tests():
         # artifact: screenshot of the focused fn-layer state
         page.screenshot(path=str(SHOTS / "last_run.png"), scale="css", type="png")
         print("artifact: .tmp/shots/last_run.png")
+        # #98 watchdog: NO console error and NO uncaught JS error may fire
+        # anywhere in the session — boot, search-focus entry, depth
+        # escalation, wire/trunk/leg pins (2D + 3D), the stale-reap refocus
+        # walk, toggles, camera moves. #98 shipped because only the boot
+        # window was asserted: a ReferenceError (busLodInit evaluated
+        # outside its — mistakenly tick-nested — scope) stalled the rAF
+        # chain in a later flow while every check still passed.
+        # Exemptions: favicon (route stub above) and setPointerCapture —
+        # the harness dispatches synthetic PointerEvents with no active
+        # pointer id; a real input device cannot produce that failure.
+        real_errors = [e for e in errors
+                       if "favicon" not in e and "setPointerCapture" not in e]
+        check("console clean across boot+focus+pin (watchdog)",
+              not real_errors, "; ".join(real_errors[:5]))
+
         browser.close()
 
     print(f"\n{n_files} files indexed · {len(FAILURES)} failure(s)")
