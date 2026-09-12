@@ -308,10 +308,10 @@ _HTML_HEAD = r"""<!DOCTYPE html>
     text-align:center; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   button.on { color:#1de9b6; border-color:#1de9b688; }
   #info { position:fixed; top:12px; right:12px; z-index:10; width:290px;
-    transition:right .25s ease; }
-  #info.mapShift { right: calc(var(--pane-w) + 18px); }  /* clear of the map pane */
+    transition:right .25s ease;
     background:rgba(10,14,18,.88); border:1px solid #1de9b633; border-radius:10px;
     padding:12px; display:none; backdrop-filter: blur(4px); }
+  #info.mapShift { right: calc(var(--pane-w) + 18px); }  /* clear of the map pane */
   #info h2 { font-size:13px; margin:0 0 4px; color:#fff; word-break:break-all; }
   #info .sub { font-size:11px; color:#78909c; margin-bottom:8px; }
   #info .tag { display:inline-block; font-size:10px; padding:1px 7px;
@@ -8365,14 +8365,15 @@ document.addEventListener("pointerdown", e => {
 }, true);          // a wire click re-shows it right after
 document.addEventListener("click", e => {
   if (!focusActive || !fnLines) return;
-  // [issues #82/#81] click routing is by surface: only the 3D canvas and
-  // the fn-box labels (.flab) sit above the wires' pixels, so a wire may
-  // claim a press there — and only there. Every other surface (the 2D
-  // map pane + its overlays, chips, sliders, result rows) owns its click
-  // outright: this handler runs in the CAPTURE phase, so a stopPropagation
-  // below would kill the chrome's own handler before it ever fired — the
-  // legend chip went dead exactly that way when ink met its synthetic
-  // 0,0 click point.
+  // [issues #82/#81/#111] click routing is by surface: only the 3D canvas
+  // and the fn-box labels (.flab) sit above the wires' pixels, so a wire
+  // may claim a press there — and only there. Every other surface (the 2D
+  // map pane + its overlays, the #info panel + its rows, legend/dir chips,
+  // crumb buttons, fnPick rows, search results) owns its click outright:
+  // this handler runs in the CAPTURE phase, so a stopPropagation below
+  // would kill the chrome's own handler before it ever fired — the legend
+  // chip (#81) and the #info rows (#111) went dead exactly that way when
+  // ink met their click points.
   if (e.target !== renderer.domElement &&
       !(e.target.classList && e.target.classList.contains("flab"))) return;
   if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;

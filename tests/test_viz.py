@@ -329,6 +329,27 @@ def run_tests(port: int):
               lg and lg["open"] and lg["closed"], str(lg))
         check("chrome clicks never surface a wire tip (#81 steal class)",
               lg and lg["tip"] in ("none", "gone"), str(lg))
+        # [issue #111] the #info panel must render as chrome: a misplaced
+        # closing brace orphaned #info's background/border/padding and, via
+        # CSS error recovery, swallowed the #info h2 rule too — the panel
+        # degraded to bare floating text over the 3D scene.
+        icss = page.evaluate(
+            """() => { const el = document.getElementById('info');
+                 if (!el) return null;
+                 const cs = getComputedStyle(el);
+                 const h2 = el.querySelector('h2');
+                 return { disp: cs.display,
+                          bg: cs.backgroundColor,
+                          bd: cs.borderTopWidth,
+                          pd: cs.paddingTop,
+                          h2px: h2 ? getComputedStyle(h2).fontSize
+                                   : 'none' }; }"""
+        )
+        check("info panel renders as chrome (#111 css rot)",
+              icss and icss["disp"] == "block"
+              and icss["bg"] not in ("rgba(0, 0, 0, 0)", "transparent")
+              and icss["bd"] != "0px" and icss["pd"] != "0px"
+              and icss["h2px"] == "13px", str(icss))
         vic = page.evaluate(
             """() => { const d = window.__dbg; const nm = d.fnMesh, meta = d.fnMeta;
                  if (!nm || !meta || !meta.length) return { fail: 'no fn layer' };
@@ -3431,6 +3452,58 @@ def run_tests(port: int):
                   focC == focB, f"{focB} stays {focC}")
         else:
             print("SKIP drifted card click - no second card on screen")
+        # [issue #111 steal class — #81 family at real coordinates] wire
+        # ink that projects under an #info row must not claim the click:
+        # find a row pixel where the picker sees ink (bounded orbit
+        # search), real-click it, and require the row's focus jump to fire
+        # with no wire tip surfaced. Runs at the tail because the real
+        # click legitimately jumps focus (and the camera tween with it).
+        if not page.locator("#info li").count():
+            enter_focus_via_row()  # guarantee a populated #info panel
+        tgt0 = page.evaluate("() => window.__dbg.focusFileIdx")
+        spot = None
+        for _ in range(6):
+            spot = page.evaluate(
+                """() => { const d = window.__dbg;
+                     const r = document.getElementById('info')
+                                       .getBoundingClientRect();
+                     for (let x = r.x + 12; x < r.right - 12; x += 16)
+                       for (let y = r.y + 12;
+                            y < Math.min(r.bottom - 12, 470); y += 12) {
+                         if (!d.pickWireMeta({ clientX: x, clientY: y }))
+                           continue;
+                         const el = document.elementFromPoint(x, y);
+                         const li = el && el.closest('#info li');
+                         if (li && !li.classList.contains('more'))
+                           return { x, y,
+                                    txt: li.textContent.slice(0, 40) };
+                       }
+                     return null; }"""
+            )
+            if spot:
+                break
+            page.mouse.move(800, 450)  # orbit: bring ink under the panel
+            page.mouse.down()
+            for k in range(8):
+                page.mouse.move(800 + (k - 4) * 42, 450 + (k - 4) * 16,
+                                steps=2)
+            page.mouse.up()
+            page.wait_for_timeout(600)
+        if spot:
+            page.mouse.click(spot["x"], spot["y"])
+            page.wait_for_timeout(900)
+            hj = page.evaluate(
+                """() => { const t = document.getElementById('wireTip');
+                     return { focus: window.__dbg.focusFileIdx,
+                              tip: t ? getComputedStyle(t).display
+                                     : 'gone' }; }"""
+            )
+            check("info rows keep their click over wire ink (#111 steal class)",
+                  hj["focus"] != tgt0 and hj["tip"] in ("none", "gone"),
+                  f"spot={spot} tgt0={tgt0} hj={hj}")
+        else:
+            check("info rows keep their click over wire ink (#111 steal class)",
+                  False, "no ink-under-row pixel found in 6 orbits")
 
         # artifact: screenshot of the focused fn-layer state
         page.screenshot(path=str(SHOTS / "last_run.png"), scale="css", type="png")
