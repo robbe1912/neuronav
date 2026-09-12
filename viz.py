@@ -115,16 +115,14 @@ def _dead_flags(g):
         if fs.ext == ".gd":
             func_counts[rel] = len(fs.funcs)
     for cand in dead["candidates"]:
-        if cand["tier"] == "likely":
-            dead_weight[cand["path"]] += 1.0
+        tier = cand["tier"]
+        dead_weight[cand["path"]] += graph.DEAD_TIER_WEIGHTS.get(tier, 0.5)
+        if tier == "likely":
             dead_likely.add(cand["path"])
-        else:
-            dead_weight[cand["path"]] += 0.5
-    DEAD_SHARE_THRESHOLD = 0.4
     dead_flag: dict[str, float] = {}
     for pth, w in dead_weight.items():
         n = func_counts.get(pth, 0)
-        if n and w / n >= DEAD_SHARE_THRESHOLD:
+        if n and w / n >= graph.DEAD_SHARE_THRESHOLD:
             dead_flag[pth] = w
     return dead_flag, dead_likely, dead
 
