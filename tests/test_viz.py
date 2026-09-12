@@ -3502,6 +3502,8 @@ def run_tests(port: int):
         if drift_card:
             camA = page.evaluate(
                 "() => window.__dbg.camera.position.toArray()")
+            tgtA = page.evaluate(
+                "() => window.__dbg.controls.target.toArray()")
             focA = page.evaluate("() => window.__dbg.focusFileIdx")
             page.mouse.move(drift_card["hx"] - 5, drift_card["hy"] - 4)
             page.mouse.down()
@@ -3513,11 +3515,20 @@ def run_tests(port: int):
             page.wait_for_timeout(900)
             camB = page.evaluate(
                 "() => window.__dbg.camera.position.toArray()")
+            tgtB = page.evaluate(
+                "() => window.__dbg.controls.target.toArray()")
             focB = page.evaluate("() => window.__dbg.focusFileIdx")
             dcam = max(abs(a - b) for a, b in zip(camA, camB))
+            dtgt = max(abs(a - b) for a, b in zip(tgtA, tgtB))
+            # #97: the cam clause is a proxy for "the re-frame fired" -
+            # dense cores can re-frame a near neighbour from an inherited
+            # camera direction with a sub-1wu position move. The tween
+            # TARGET moving (or the camera) is the honest discriminator:
+            # a swallowed click moves neither.
             check("drifted card click still refocuses",
-                  focB != focA and dcam > 1,
-                  f"{focA} -> {focB}, cam delta {dcam:.1f}")
+                  focB != focA and (dcam > 1 or dtgt > 1),
+                  f"{focA} -> {focB}, cam delta {dcam:.1f}, "
+                  f"target delta {dtgt:.1f}")
             # negative rung: >=12px TOTAL travel is a pan, not a click -
             # the press must NOT refocus (boundary is travel, not
             # per-axis). #146: 7 diagonal (+1,+1) moves are only 9.9px -
