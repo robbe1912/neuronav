@@ -52,7 +52,8 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `clusters.py` | Louvain + labeler + crosstalk (imported lazily) |
 | `explore.py` | one-call orientation tool (codegraph-discipline: windowed 100-line slices + continuation anchors, issue #69; one `clusters()` pass feeds both stages, issue #44) |
 | `server.py` | FastMCP stdio server; read-only tools carry `readOnlyHint`, `rescan` is the write tool; read tools auto-rescan on worktree drift (stat gate, issue #19) |
-| `viz.py` | Python `_build_data` + ONE embedded JS template string -> `graph.html` |
+| `viz.py` | Python `_build_data` orchestrator + ONE embedded JS template string -> `graph.html` (pure layout math lives in `layout.py`) |
+| `layout.py` | pure strata/layout math for the bake: adjacency, iterative Tarjan SCC, strata depths, seeded force layout (moved verbatim from `viz.py`, issue #86; stdlib + numpy only, no nav/graph/chroma imports) |
 | `onboard.py` | one-command project onboarding (issue #27): `init`/`wire` write `<project>/.neuronav/config.json` + MCP entries — the install stays read-only, OS-agnostic pure stdlib |
 | `tools/` | dev gate + viewer: `qa_readability.py` (readability/declutter gate), `serve.py` (no-cache viewer, exclusive bind + per-OS port-owner hint) |
 | `config/` | named config profiles; `config.json` (root, gitignored) is the default |

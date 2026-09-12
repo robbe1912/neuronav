@@ -31,6 +31,7 @@ target repo) are local gates.
 | `onboard.py` | one-command project onboarding (issue #27): init/wire — install stays read-only, cross-platform |
 | `server.py` | FastMCP stdio server (12 tools) |
 | `viz.py` | optional add-on: data build + embedded three.js template -> `graph.html` |
+| `layout.py` | pure strata/layout math for the viz bake (stdlib + numpy only) |
 | `tools/` | dev gate (`qa_readability.py`) + no-cache bake viewer (`serve.py`) |
 | `bench/` | recall benchmark: golden set + `run_bench.py`, results committed in `bench/RESULTS.md` |
 
