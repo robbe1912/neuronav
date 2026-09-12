@@ -262,9 +262,9 @@ def _build_data() -> dict:
     )
 
 
-# phase-3 sections (split_plan_js.md rung 1) - ordered join, one script tag, __DATA__/__IMPORTMAP__ replace contract unchanged
-# rung 2: _JS_MAP_RENDER + _JS_MAP_PAINT carved from _JS_MID (split_plan_js.md); file lines re-anchored by content post-rung-1
-# rung 3: _JS_MAP_INPUT + _JS_LEGEND carved (split_plan_js.md); residuals _JS_MID/_JS_MID_B/_JS_MID_C collapse at rung 8
+# phase-3 sections (issue #86 rungs) - ordered join, one script tag, __DATA__/__IMPORTMAP__ replace contract unchanged
+# rung 2: _JS_MAP_RENDER + _JS_MAP_PAINT carved from _JS_MID; file lines re-anchored by content post-rung-1
+# rung 3: _JS_MAP_INPUT + _JS_LEGEND carved; residuals _JS_MID/_JS_MID_B/_JS_MID_C collapse at rung 8
 # rung 4: _JS_MINS_C renamed _JS_PINS (whole span is the pins block per plan 6172-6576)
 # rung 5: _JS_FN_LAYER state block (plan 4361-4802, fnMesh..rebuildFnLayer-1) carved from _JS_MID
 # rung 6: rebuildFnLayer block (plan 4803-5929) = whole _JS_MID_D residual, renamed _JS_FN_LAYER_B
@@ -5721,10 +5721,10 @@ function openFnPicker(fi, x, y) {
 fnPickIn.addEventListener("input", () => fnPickFill(fnPickIn.value));
 fnPickIn.addEventListener("keydown", e => {
   if (e.key === "Escape") { e.stopPropagation(); fnClosePick(); }
+});
 """
 
-_JS_MAP_RENDER = r"""});
-const MAP_WORLD_W = 1100;   // world width CAP - the pane is a window onto it
+_JS_MAP_RENDER = r"""const MAP_WORLD_W = 1100;   // world width CAP - the pane is a window onto it
 function mapRender() {
   if (!mapVisible) return;
   const ctx = mapPane.getContext("2d");
