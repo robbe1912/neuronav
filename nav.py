@@ -421,9 +421,18 @@ def _check_model(col: chromadb.Collection) -> None:
     stored = meta.get("embed_model")
     if stored is None:
         try:
-            col.modify(metadata={"embed_model": EMBED_MODEL, "embed_provider": EMBED_PROVIDER})
-        except Exception:
-            pass  # chroma refusing metadata modify is non-fatal
+            # merge, never replace: modify() swaps the whole metadata
+            # dict, so a bare stamp destroyed every pre-existing key
+            # (#103). hnsw:* keys are excluded — chroma refuses any
+            # modify that carries them once the collection exists (the
+            # distance function itself lives in the segment config, so
+            # a stamp never endangers it).
+            stamp = {k: v for k, v in meta.items() if not k.startswith("hnsw:")}
+            stamp["embed_model"] = EMBED_MODEL
+            stamp["embed_provider"] = EMBED_PROVIDER
+            col.modify(metadata=stamp)
+        except Exception as e:
+            print(f"neuronav: metadata stamp failed ({e}); continuing", file=sys.stderr)
     elif stored != EMBED_MODEL:
         raise RuntimeError(
             f"index was built with embed model '{stored}' (provider "
