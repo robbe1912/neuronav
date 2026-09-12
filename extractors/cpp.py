@@ -75,6 +75,7 @@ _QUERY_SRC = """
 (preproc_include path: (string_literal) @include.path) @include.def
 (call_expression function: (field_expression field: (field_identifier) @call.field)) @call.def
 (call_expression function: (qualified_identifier) @callq.name) @callq.def
+(call_expression function: (identifier) @calli.name) @calli.def
 (call_expression function: (template_function name: (identifier) @callt.name)) @callt.def
 (call_expression function: (field_expression field: (template_method name: (field_identifier) @calltf.name))) @calltf.def
 (pointer_expression argument: (identifier) @fref.name) @fref.def
@@ -536,9 +537,12 @@ def scan_calls(path: Path, rel: str) -> list[dict]:
     """Call/reference/instantiation sites for graph edge minting.
 
     One dict per site, start_byte-ordered (deterministic): {name, line,
-    kind}. kind: call (obj.method()), callq (A::b()), callt (f<T>()),
-    calltf (obj.m<T>()), fref (&fn), frefq (&C::fn), new (new T).
-    memnew(T)/memnew_arr(T) — the engine idiom — folds in as new-kind.
+    kind}. kind: call (obj.method()), callq (A::b()), calli (plain
+    helper(), issue #110 — free-function call sites land like qualified
+    ones; graph resolution still drops names matching no corpus func),
+    callt (f<T>()), calltf (obj.m<T>()), fref (&fn), frefq (&C::fn),
+    new (new T). memnew(T)/memnew_arr(T) — the engine idiom — folds
+    in as new-kind.
     """
     text = path.read_text(encoding="utf-8", errors="replace")
     src = text.encode("utf-8")
@@ -549,6 +553,7 @@ def scan_calls(path: Path, rel: str) -> list[dict]:
     for kind, key in (
         ("call", "call.field"),
         ("callq", "callq.name"),
+        ("calli", "calli.name"),
         ("callt", "callt.name"),
         ("calltf", "calltf.name"),
         ("fref", "fref.name"),
@@ -570,6 +575,18 @@ def scan_calls(path: Path, rel: str) -> list[dict]:
     sites.sort(key=lambda s: (s["line"], s["name"], s["kind"]))
     return sites
     return fs
+
+
+def is_implicit_entry(name: str) -> bool:
+    """True for functions invoked with no static call site (issue #109):
+    destructors (~X), overloaded operators (operator+, operator()) and
+    conversion operators (operator bool). Infix syntax, implicit
+    conversions and destruction mint no call_expression the query can
+    see, so liveness is unprovable and dead-tier candidacy must skip
+    them. A plain identifier like operator_helpers does not match: the
+    character after 'operator' must not be an identifier character.
+    """
+    return name.startswith("~") or bool(re.match(r"operator(?:\W|$)", name))
 
 
 # funcs the engine/runtime may invoke without any static call site

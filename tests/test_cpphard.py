@@ -42,7 +42,7 @@ sys.path.insert(0, str(HERE))
 
 import graph  # noqa: E402  (needs NEURONAV_CONFIG set first)
 
-from extractors.cpp import CPP_EXTS, CPP_MENTION_FLOOR, harvest_registration  # noqa: E402
+from extractors.cpp import CPP_EXTS, CPP_MENTION_FLOOR, harvest_registration, is_implicit_entry  # noqa: E402
 
 
 def digest(g) -> str:
@@ -167,6 +167,24 @@ check("f10 mention counts at floor boundary",
       and _mc.get("mention_free_helper") == 1,
       f"rescued={_mc.get('rescued_by_mentions')} control={_mc.get('mention_free_helper')} floor={CPP_MENTION_FLOOR}")
 
+# fixture 11: plain_calls.cpp (issue #110) — plain-identifier call sites
+# mint call edges like qualified ones. At base BOTH plain helpers died as
+# false 'review' (definition + dropped call == mention floor) while the
+# callq/frefq arms kept working. The uncalled control is still a dead
+# candidate — review, not likely, because the file itself is
+# ClassDB-dynamic (same shape as f1's unused_private_helper pin).
+check("f11 plain helper alive (free-function call site)",
+      alive("plain_calls.cpp", "plain_helper"),
+      str(tier("plain_calls.cpp", "plain_helper")))
+check("f11 paired plain helper alive", alive("plain_calls.cpp", "paired_helper"))
+check("f11 bound caller alive", alive("plain_calls.cpp", "run_plain"))
+check("f11 uncalled control dead (review: ClassDB file, like f1)",
+      tier("plain_calls.cpp", "unused_plain_fn") == "review",
+      str(tier("plain_calls.cpp", "unused_plain_fn")))
+check("f11 plain call edge minted",
+      "plain_calls.cpp::plain_helper" in g.edges.get("plain_calls.cpp::run_plain", set()),
+      str(sorted(g.edges.get("plain_calls.cpp::run_plain", set()))))
+
 # provider.h bound method
 check("provider provide_value alive", alive("provider.h", "provide_value"))
 
@@ -186,6 +204,10 @@ for rel, fs in g.files.items():
 bad_bound = [(p, f, t) for (p, f), t in DEAD.items() if (p, f) in bound_names]
 check("meta: no bound method in dead candidates", not bad_bound, str(bad_bound))
 
+# meta-invariant: implicit-entry names (issue #109) are never dead
+_bad_impl = sorted((p, f) for (p, f) in DEAD if is_implicit_entry(f))
+check("meta: no implicit-entry func in dead candidates", not _bad_impl, str(_bad_impl))
+
 # determinism: same data -> same bytes (two rebuilds, seeded-independent
 # because the C++ path has no rng; proves ordered-capture stability)
 g2 = graph.get_graph(rebuild=True)
@@ -201,6 +223,18 @@ check("t5 operator name", "operator+" in _dt, str(sorted(_dt)))
 check("t5 conversion operator",
       sum(1 for n in _dt if n.startswith("operator") and n != "operator+") >= 1,
       str(sorted(_dt)))
+
+# issue #109: dtors / operators / conversion operators are implicit-entry
+# — no static call site can exist, so they are never dead candidates
+check("t5 dtor never dead (implicit entry)",
+      tier("dtor_operator.h", "~DtorOp") is None,
+      str(tier("dtor_operator.h", "~DtorOp")))
+check("t5 operator never dead (implicit entry)",
+      tier("dtor_operator.h", "operator+") is None,
+      str(tier("dtor_operator.h", "operator+")))
+check("t5 conversion never dead (implicit entry)",
+      all(tier("dtor_operator.h", n) is None for n in _dt if n.startswith("operator")),
+      str({n: tier("dtor_operator.h", n) for n in _dt if n.startswith("operator")}))
 
 # T1: templated call sites mint call edges (template_function/method arms)
 check("t1 template fn alive", alive("template_calls.cpp", "maxf"))

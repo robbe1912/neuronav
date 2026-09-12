@@ -22,6 +22,7 @@ from extractors.cpp import (  # noqa: F401  (re-export)
     CPP_EXTS,
     CPP_MENTION_FLOOR,
     harvest_registration,
+    is_implicit_entry,
     scan_calls,
 )
 from extractors.gdscript import (  # noqa: F401  (re-export)

@@ -36,6 +36,7 @@ from extractors import (
     VIRTUALS,
     add_class_ctx,
     harvest_registration,
+    is_implicit_entry,
     parse_gd,
     parse_tscn,
     registry_for,
@@ -1051,6 +1052,17 @@ class Graph:
                 if name in wildcard_names:
                     continue
                 if name in self.referenced_names:
+                    continue
+                # cpp implicit-entry surfaces (issue #109): destructors,
+                # overloaded operators and conversion operators are
+                # invoked without any call site — destroyed temporaries,
+                # implicit conversions, infix syntax — so liveness cannot
+                # be disproven and they are never dead candidates. This
+                # outranks the mention floor, which could never fire for
+                # these names anyway: MENTION_TOKEN_RE tokenizes ~DtorOp
+                # to 'DtorOp' and 'operator bool' to 'operator', so the
+                # raw-name lookups miss by construction.
+                if fs.ext in CPP_EXTS and is_implicit_entry(name):
                     continue
                 tier = "review" if file_is_dynamic else "likely"
                 # functions on classes extending bases we cannot resolve (engine
