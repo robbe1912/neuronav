@@ -498,47 +498,8 @@ def _layout_stage(nodes, links, sims, ckeys, cmat):
     return pos_baked, depths, cyc_ids, hot
 
 
-def _build_data() -> dict:
-    g = graph.get_graph()
-    clusters = nav.clusters()
-
-    file_cluster, cluster_names = _attach(clusters)
-    dead_flag, dead_likely, dead = _dead_flags(g)
-    paths, idx, nodes = _build_nodes(g, file_cluster, dead_flag, dead_likely)
-    links = _build_links(g, idx)
-
-    # lazy pagerank shared by the wire + fio budgets (J7/J16 over-cap
-    # branches only — small-repo bakes never compute it)
-    _rank = None
-
-    def rank_of(path: str) -> float:
-        nonlocal _rank
-        if _rank is None:
-            _rank = g.pagerank()
-        return _rank.get(path, 0.0)
-
-    fedges, mwires = _emit_wire_rows(g, idx)
-    sig_rows, sig_resolved, sig_unresolved = _signal_wires(g, idx)
-    mwires.extend(sig_rows)
-    # deterministic named-wire order: ty, sf, df, dfn, sfn, line (spec §0)
-    mwires.sort(key=lambda w: (w[0], w[1], w[3], w[4], w[2], w[5]))
-    fedges, mwires, wire_dropped = _wire_budget(fedges, mwires, paths, rank_of)
-    fns = _fn_roster(g, paths)
-
-    n_clusters = len(clusters)
-
-    sims, emb = _knn_sims(paths)
-    cid_gid, groups2 = _supergroups(clusters, paths, emb)
-
-    # supergroup id per node (gid; -1 = unclustered / groups unavailable)
-    for nd in nodes:
-        nd["gid"] = cid_gid.get(nd["cluster"], -1)
-
-    ckeys, cmat = _cluster_matrix(paths, nodes)
-    pos_baked, depths, cyc_ids, hot = _layout_stage(
-        nodes, links, sims, ckeys, cmat
-    )
-
+def _highways(pos_baked, nodes, links):
+    """J13: long inter-cluster links as bundled bezier arc polylines."""
     # highways: long inter-cluster links render as bundled quadratic bezier
     # arcs (16 segments) instead of straight chords — straight ring-diameter
     # edges visually re-fused the galaxy core. Control point sits on the
@@ -600,7 +561,11 @@ def _build_data() -> dict:
                 hw.append([li, pts])
         except Exception:
             hw = []
+    return hw
 
+
+def _cap_highways(hw, links):
+    """J14: hw arc byte budget — heaviest links first, ties by index."""
     # hw arc budget (spec §4 row 10): bezier control polylines are ~400 B
     # each and scale with long inter-cluster links. Below the cap nothing
     # changes; above it arcs of the heaviest links survive first (ties by
@@ -617,8 +582,11 @@ def _build_data() -> dict:
         )
         hw_dropped = len(hw) - len(kept_hw)
         hw = [hw[i] for i in sorted(kept_hw)]
+    return hw, hw_dropped
 
 
+def _fn_io(g):
+    """J15: per-function IO surface keyed "path::func"."""
     # per-function IO surface (params / ret / member writes / mutated params),
     # keyed "path::func". consumed by the fn click panel (signature line +
     # write chips), the focus-label writes-state badge and the mutators
@@ -635,7 +603,11 @@ def _build_data() -> dict:
                 "w": sorted(fn.writes),
                 "mp": sorted(fn.mut_params),
             }
+    return fio
 
+
+def _cap_fnio(fio, rank_of):
+    """J16: fio byte budget — survives by file pagerank, ties by key."""
     # fio byte budget (spec §4 row 10): per-fn IO signatures carry C++
     # type strings (200-300 B/row at engine scale). Below the cap nothing
     # changes; above it entries survive by pagerank of their file (ties by
@@ -643,20 +615,21 @@ def _build_data() -> dict:
     fio_dropped = 0
     _FIO_BYTE_CAP = 3_000_000
     if len(json.dumps(fio, separators=(",", ":"))) > _FIO_BYTE_CAP:
-        if _rank is None:
-            _rank = g.pagerank()
         kept_units, _ = _cap_rows(
             list(fio.items()),
             prio_key=lambda kv: (
-                -_rank.get(kv[0].split("::", 1)[0], 0.0), kv[0],
+                -rank_of(kv[0].split("::", 1)[0]), kv[0],
             ),
             cost_of=lambda kv: len(json.dumps([kv[0], kv[1]], separators=(",", ":"))) + 1,
             cap=_FIO_BYTE_CAP,
         )
         fio_dropped = len(fio) - len(kept_units)
         fio = dict(kept_units)
+    return fio, fio_dropped
 
 
+def _crosstalk_top(links, nodes):
+    """J17: top inter-cluster corridors (count desc, then cid asc)."""
     # crosstalk corridors: top inter-cluster file pairs by edge count, baked
     # for the overview labels. Deterministic order: count desc, then cid asc.
     cl_of = [nd["cluster"] for nd in nodes]
@@ -671,7 +644,14 @@ def _build_data() -> dict:
         {"a": a, "b": b, "n": k}
         for (a, b), k in sorted(pair_n.items(), key=lambda kv: (-kv[1], kv[0][0], kv[0][1]))[:5]
     ]
+    return crosstalk
 
+
+def _assemble(nodes, links, fedges, mwires, fns, hw, fio, pos, hot,
+              groups2, n_clusters, dead_flag, dead, cluster_names,
+              depths, cyc_ids, crosstalk, sig_resolved, sig_unresolved,
+              wire_dropped, hw_dropped, fio_dropped):
+    """J18: final DATA assembly with conditional channels."""
     data = {
         "nodes": nodes,
         "links": links,
@@ -680,7 +660,7 @@ def _build_data() -> dict:
         "fns": fns,
         "hw": hw,
         "fio": fio,
-        "pos": pos_baked,
+        "pos": pos,
         "meta": {
             "files": len(nodes),
             "edges": len(links),
@@ -722,6 +702,63 @@ def _build_data() -> dict:
             "fioDropped": fio_dropped,
         }
     return data
+
+
+def _build_data() -> dict:
+    g = graph.get_graph()
+    clusters = nav.clusters()
+
+    file_cluster, cluster_names = _attach(clusters)
+    dead_flag, dead_likely, dead = _dead_flags(g)
+    paths, idx, nodes = _build_nodes(g, file_cluster, dead_flag, dead_likely)
+    links = _build_links(g, idx)
+
+    # lazy pagerank shared by the wire + fio budgets (J7/J16 over-cap
+    # branches only — small-repo bakes never compute it)
+    _rank = None
+
+    def rank_of(path: str) -> float:
+        nonlocal _rank
+        if _rank is None:
+            _rank = g.pagerank()
+        return _rank.get(path, 0.0)
+
+    fedges, mwires = _emit_wire_rows(g, idx)
+    sig_rows, sig_resolved, sig_unresolved = _signal_wires(g, idx)
+    mwires.extend(sig_rows)
+    # deterministic named-wire order: ty, sf, df, dfn, sfn, line (spec §0)
+    mwires.sort(key=lambda w: (w[0], w[1], w[3], w[4], w[2], w[5]))
+    fedges, mwires, wire_dropped = _wire_budget(fedges, mwires, paths, rank_of)
+    fns = _fn_roster(g, paths)
+
+    n_clusters = len(clusters)
+
+    sims, emb = _knn_sims(paths)
+    cid_gid, groups2 = _supergroups(clusters, paths, emb)
+
+    # supergroup id per node (gid; -1 = unclustered / groups unavailable)
+    for nd in nodes:
+        nd["gid"] = cid_gid.get(nd["cluster"], -1)
+
+    ckeys, cmat = _cluster_matrix(paths, nodes)
+    pos_baked, depths, cyc_ids, hot = _layout_stage(
+        nodes, links, sims, ckeys, cmat
+    )
+
+    hw = _highways(pos_baked, nodes, links)
+    hw, hw_dropped = _cap_highways(hw, links)
+
+    fio = _fn_io(g)
+    fio, fio_dropped = _cap_fnio(fio, rank_of)
+
+    crosstalk = _crosstalk_top(links, nodes)
+
+    return _assemble(
+        nodes, links, fedges, mwires, fns, hw, fio, pos_baked, hot,
+        groups2, n_clusters, dead_flag, dead, cluster_names,
+        depths, cyc_ids, crosstalk, sig_resolved, sig_unresolved,
+        wire_dropped, hw_dropped, fio_dropped,
+    )
 
 
 _TEMPLATE = r"""<!DOCTYPE html>
