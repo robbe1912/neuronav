@@ -32,6 +32,7 @@ target repo) are local gates.
 | `server.py` | FastMCP stdio server (12 tools) |
 | `viz.py` | optional add-on: data build + embedded three.js template -> `graph.html` |
 | `layout.py` | pure strata/layout math for the viz bake (stdlib + numpy only) |
+| `bake/` | pure per-job transforms for the viz DATA pipeline (g/clusters in, DATA rows out) |
 | `tools/` | dev gate (`qa_readability.py`) + no-cache bake viewer (`serve.py`) |
 | `bench/` | recall benchmark: golden set + `run_bench.py`, results committed in `bench/RESULTS.md` |
 
