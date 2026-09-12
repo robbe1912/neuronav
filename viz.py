@@ -352,16 +352,11 @@ def _fn_roster(g, paths):
     return fns
 
 
-def _knn_sims(paths):
-    """J9: semantic kNN pairs; owns chroma fetch #1 and hands the
-    normalized embeddings to _supergroups so the pair share one fetch
-    exactly as the monolith did. Returns (sims, emb-or-None)."""
-    # semantic kNN pairs from nav's embedding store — layout-only forces,
-    # never rendered as edges: mutual top-6 neighbours with cosine >= 0.45
-    # (mutual links resist transitive chaining, mirroring nav.clusters()).
-    # Degrades to [] if the chroma store is missing/empty.
-    sims: list[list] = []
-    emb = None
+def _fetch_embeddings(paths):
+    """The ONE chroma embedding fetch per bake (D4/V7): the two original
+    fetch sites issued byte-identical calls, so hoisting the fetch is
+    semantic-preserving. Returns (emb_idx, normalized float32 rows) for
+    the indexed paths, or None when the store is missing/empty."""
     try:
         import numpy as np
 
@@ -376,19 +371,42 @@ def _knn_sims(paths):
             norms = np.linalg.norm(embs, axis=1, keepdims=True)
             norms[norms == 0] = 1.0
             embs /= norms
-            sim = embs @ embs.T
-            np.fill_diagonal(sim, -1.0)
-            from clusters import topk_desc
+            return emb_idx, embs
+    except Exception:
+        return None
+    return None
 
-            knn = topk_desc(sim, 6)
-            for a in range(len(rows)):
-                for b in knn[a]:
-                    b = int(b)
-                    if a < b and a in knn[b] and sim[a, b] >= 0.45:
-                        sims.append([a, b, round(float(sim[a, b]), 4)])
-            emb = (emb_idx, embs)
+
+def _knn_sims(paths, emb):
+    """J9: semantic kNN pairs from the bake's one embedding fetch.
+    Returns (sims, emb) — the emb passthrough lets supergroups degrade
+    exactly when the kNN stage failed (None also when the fetch did),
+    mirroring the monolith's shared outer try."""
+    # semantic kNN pairs from nav's embedding store — layout-only forces,
+    # never rendered as edges: mutual top-6 neighbours with cosine >= 0.45
+    # (mutual links resist transitive chaining, mirroring nav.clusters()).
+    # Degrades to [] if the chroma store is missing/empty.
+    sims: list[list] = []
+    if emb is None:
+        return sims, None
+    emb_idx, embs = emb
+    try:
+        import numpy as np
+
+        rows = [emb_idx[p] for p in paths if p in emb_idx]
+        sim = embs @ embs.T
+        np.fill_diagonal(sim, -1.0)
+        from clusters import topk_desc
+
+        knn = topk_desc(sim, 6)
+        for a in range(len(rows)):
+            for b in knn[a]:
+                b = int(b)
+                if a < b and a in knn[b] and sim[a, b] >= 0.45:
+                    sims.append([a, b, round(float(sim[a, b]), 4)])
     except Exception:
         sims = []
+        return sims, None
     return sims, emb
 
 
@@ -426,45 +444,38 @@ def _supergroups(clusters, paths, emb):
     return cid_gid, groups2
 
 
-def _cluster_matrix(paths, nodes):
-    """J11: cluster-centroid cosine matrix for layout springs; owns
-    chroma fetch #2 (byte-identical call to fetch #1 — V7 dedupes)."""
+def _cluster_matrix(paths, nodes, emb):
+    """J11: cluster-centroid cosine matrix from the bake's one embedding
+    fetch — independent try, so a kNN-stage failure never degrades cmat
+    (the monolith's second fetch was equally independent)."""
     # cluster-level semantic sims for the layout: cosine between cluster
     # embedding centroids (mean of member embeddings). Drives cluster
     # springs + repulsion caps so semantically related clusters (VFX
     # family) sit as neighbors in the galaxy. Degrades to None.
     ckeys: list = []
     cmat = None
+    if emb is None:
+        return ckeys, cmat
+    emb_idx, embs = emb
     try:
         import numpy as cnp
 
-        col = nav._collection()
-        if col.count():
-            got = col.get(include=["embeddings"])
-            emb_idx = {rid: i for i, rid in enumerate(got["ids"])}
-            rows = [emb_idx[p] for p in paths if p in emb_idx]
-            embs = cnp.array(
-                [got["embeddings"][r] for r in rows], dtype=cnp.float32
-            )
-            norms = cnp.linalg.norm(embs, axis=1, keepdims=True)
-            norms[norms == 0] = 1.0
-            embs /= norms
-            p2c = {nd["path"]: nd["cluster"] for nd in nodes}
-            groups: dict = {}
-            for r_i, p in enumerate([p for p in paths if p in emb_idx]):
-                ci = p2c.get(p, -1)
-                if ci >= 0:
-                    groups.setdefault(ci, []).append(embs[r_i])
-            ckeys = sorted(groups)
-            cent = cnp.stack([
-                cnp.mean(cnp.stack(groups[c]), axis=0) for c in ckeys
-            ])
-            cn = cnp.linalg.norm(cent, axis=1, keepdims=True)
-            cn[cn == 0] = 1.0
-            cent /= cn
-            cmat = (cent @ cent.T).astype(cnp.float32)
-            cnp.fill_diagonal(cmat, 0.0)
-            cmat = cmat.tolist()
+        p2c = {nd["path"]: nd["cluster"] for nd in nodes}
+        groups: dict = {}
+        for r_i, p in enumerate([p for p in paths if p in emb_idx]):
+            ci = p2c.get(p, -1)
+            if ci >= 0:
+                groups.setdefault(ci, []).append(embs[r_i])
+        ckeys = sorted(groups)
+        cent = cnp.stack([
+            cnp.mean(cnp.stack(groups[c]), axis=0) for c in ckeys
+        ])
+        cn = cnp.linalg.norm(cent, axis=1, keepdims=True)
+        cn[cn == 0] = 1.0
+        cent /= cn
+        cmat = (cent @ cent.T).astype(cnp.float32)
+        cnp.fill_diagonal(cmat, 0.0)
+        cmat = cmat.tolist()
     except Exception:
         ckeys = []
         cmat = None
@@ -731,14 +742,15 @@ def _build_data() -> dict:
 
     n_clusters = len(clusters)
 
-    sims, emb = _knn_sims(paths)
-    cid_gid, groups2 = _supergroups(clusters, paths, emb)
+    emb = _fetch_embeddings(paths)
+    sims, emb_knn = _knn_sims(paths, emb)
+    cid_gid, groups2 = _supergroups(clusters, paths, emb_knn)
 
     # supergroup id per node (gid; -1 = unclustered / groups unavailable)
     for nd in nodes:
         nd["gid"] = cid_gid.get(nd["cluster"], -1)
 
-    ckeys, cmat = _cluster_matrix(paths, nodes)
+    ckeys, cmat = _cluster_matrix(paths, nodes, emb)
     pos_baked, depths, cyc_ids, hot = _layout_stage(
         nodes, links, sims, ckeys, cmat
     )
