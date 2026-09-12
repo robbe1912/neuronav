@@ -264,6 +264,7 @@ def _build_data() -> dict:
 
 # phase-3 sections (split_plan_js.md rung 1) - ordered join, one script tag, __DATA__/__IMPORTMAP__ replace contract unchanged
 # rung 2: _JS_MAP_RENDER + _JS_MAP_PAINT carved from _JS_MID (split_plan_js.md); file lines re-anchored by content post-rung-1
+# rung 3: _JS_MAP_INPUT + _JS_LEGEND carved (split_plan_js.md); residuals _JS_MID/_JS_MID_B/_JS_MID_C collapse at rung 8
 _HTML_HEAD = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5065,7 +5066,9 @@ function rebuildFnLayer(focusing) {
   }
 }
 
-const legend = document.getElementById("legend");
+"""
+
+_JS_LEGEND = r"""const legend = document.getElementById("legend");
 // chips double as the empty-state undo handles, so keep a cid -> element map
 const legendChips = new Map();
 function buildLegend() {
@@ -5306,7 +5309,9 @@ function mapClosePick() { mapPickEl.style.display = "none"; mapPickRc = null; }
 // set invariant). The emphasis re-resolves from an identity KEY on every
 // paint, so the pin survives pan / zoom / hover-out / repaints until it
 // is explicitly dismissed. Indices are NOT identity: layout rebuilds
-// re-create the records; keys re-resolve against the fresh arrays.
+"""
+
+_JS_MID_C = r"""// re-create the records; keys re-resolve against the fresh arrays.
 let wirePin = null;    // {surface:'map'|'ball', kind:'wire'|'trunk'|'link', id, menu} | null
 let pinCover = 0;      // polylines the last paint emphasized (mapInfo probe)
 const wireKeyOf = w => "w|" + w.sf + "|" + w.sfn + "|" + w.df + "|" + w.dfn + "|" + w.ty;
@@ -7469,7 +7474,7 @@ function setMapVisible(v) {
 // so a drag here cannot start a camera move by construction
 """
 
-_JS_MID_B = r"""const divider = document.getElementById("divider");
+_JS_MAP_INPUT = r"""const divider = document.getElementById("divider");
 let divRaf = 0;
 divider.addEventListener("pointerdown", e => {
   if (!mapVisible) return;
@@ -7798,7 +7803,9 @@ document.getElementById("bGround").onclick = e => {
   groundGrid.visible = showGround;
   e.target.classList.toggle("on", showGround);
 };
-const searchEl = document.getElementById("search");
+"""
+
+_JS_MID_B = r"""const searchEl = document.getElementById("search");
 const depthEl = document.getElementById("depth");
 const cbFnEl = document.getElementById("cbFn");
 fnMode = cbFnEl.checked;   // checkbox is the truth; sync the flag at boot
@@ -8821,7 +8828,7 @@ tick();
 </html>
 """
 
-_TEMPLATE = (_HTML_HEAD + _JS_MID + _JS_MAP_RENDER + _JS_MAP_PAINT + _JS_MID_B + _JS_DBG)
+_TEMPLATE = (_HTML_HEAD + _JS_MID + _JS_LEGEND + _JS_MID_C + _JS_MAP_RENDER + _JS_MAP_PAINT + _JS_MAP_INPUT + _JS_MID_B + _JS_DBG)
 
 
 
