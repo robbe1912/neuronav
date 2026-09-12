@@ -1,8 +1,9 @@
 # strata layout QA — call-depth layering invariants, stdlib + numpy only.
 # Run: python tests/test_strata.py   (exit 0 = all pass)
-# Does NOT import viz (viz -> nav -> chromadb); _strata_depths/_layout are
-# extracted from viz.py's AST so the test exercises the real shipped code.
-import ast
+# Imports layout.py directly (phase-2 V1, issue #86): the five pure fns
+# moved out of viz.py and layout has no nav/chroma edge, so the test
+# exercises the real shipped module. The old AST-extraction + {"os","sys"}
+# whitelist law is deleted with that move.
 import hashlib
 import json
 import math
@@ -21,17 +22,13 @@ def check(name, cond, detail=""):
 
 
 def load_viz_funcs():
-    tree = ast.parse((ROOT / "viz.py").read_text(encoding="utf-8"))
-    body = [x for x in tree.body
-            if isinstance(x, ast.FunctionDef)
-            and x.name in ("_links_adj", "_tarjan_scc", "_strata_depths",
-                           "_strata_analysis", "_layout")]
-    assert len(body) == 5, "expected strata helpers + _layout in viz.py"
-    mod = ast.Module(body=body, type_ignores=[])
-    import os as _os
-    g = {"os": _os, "sys": sys}   # _layout debug prints guard on os.environ
-    exec(compile(mod, str(ROOT / "viz.py"), "exec"), g)
-    return g
+    sys.path.insert(0, str(ROOT))
+    import layout
+    names = ("_links_adj", "_tarjan_scc", "_strata_depths",
+             "_strata_analysis", "_layout")
+    missing = [n for n in names if not hasattr(layout, n)]
+    assert not missing, f"layout.py lost: {missing}"
+    return {n: getattr(layout, n) for n in names}
 
 
 def build_fixture():

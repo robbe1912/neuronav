@@ -117,7 +117,7 @@ network dependencies — keep it that way; never add a CDN reference.
 
 | suite | covers | needs |
 |---|---|---|
-| `test_strata` | depth layering, cycles, determinism (AST-extracts real functions) | stdlib + numpy |
+| `test_strata` | depth layering, cycles, determinism (imports the real `layout.py`) | stdlib + numpy |
 | `test_crosslang` | self-index integration: parse + embed + fn search | chroma + Ollama (or `NEURONAV_EMBED_FAKE=1` for plumbing-only runs — what CI uses) |
 | `test_pyhard` | python extractor edge cases | numpy + chromadb import only (hermetic fixture config) |
 | `test_mwires` | named-wire map exports (`mwires`/`fns`/`meta` contract, map-spec-v2 §0) | chromadb import only (suite self-sets `NEURONAV_EMBED_FAKE=1`, hermetic fixture config) |
@@ -140,9 +140,11 @@ port (`Get-NetTCPConnection -LocalPort 8931` -> kill PID). The harness is
 config-agnostic: assertions data-gate on index content (dead files, cycles,
 clusters) so self-index AND the target repo both run clean.
 
-`test_strata` extracts functions from `viz.py`'s AST into a synthetic module —
-if you add a module-level dependency to `_layout`/`_strata_*`, whitelist it in
-the test's `load_viz_funcs`.
+`layout.py` owns the five pure strata/layout functions (`_links_adj`,
+`_tarjan_scc`, `_strata_depths`, `_strata_analysis`, `_layout`) moved
+verbatim out of `viz.py` (issue #86); `tests/test_strata.py` imports it
+directly. Keep the module free of nav/graph/chroma imports — it must stay
+importable with stdlib + numpy only.
 
 Pin-update policy: the regression floors exist to catch extractor/graph
 changes. Re-pin ONLY on user-side target drift, saying so explicitly; never
