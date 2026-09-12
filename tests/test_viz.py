@@ -17,7 +17,6 @@ SHOTS.mkdir(parents=True, exist_ok=True)
 sys.path.insert(0, str(ROOT))
 import nav  # noqa: E402  (the bake lives in the active config's state dir)
 
-PORT = 8931
 FAILURES = []
 
 
@@ -31,16 +30,20 @@ def check(name, cond, detail=""):
 def main():
     handler = partial(http.server.SimpleHTTPRequestHandler,
                       directory=str(nav.STATE_DIR))  # bake is per-project now
-    with socketserver.TCPServer(("127.0.0.1", PORT), handler) as httpd:
+    # #132: ephemeral loopback port — concurrent viz gates (two test_viz
+    # runs, or test_viz beside qa_readability) can no longer collide on a
+    # fixed port, and a rerun never trips over the TIME_WAIT socket a
+    # previous run left behind.
+    with socketserver.TCPServer(("127.0.0.1", 0), handler) as httpd:
         t = threading.Thread(target=httpd.serve_forever, daemon=True)
         t.start()
         try:
-            run_tests()
+            run_tests(httpd.server_address[1])
         finally:
             httpd.shutdown()
 
 
-def run_tests():
+def run_tests(port: int):
     with sync_playwright() as pw:
         browser = pw.chromium.launch(channel="chrome", headless=True)
         page = browser.new_page(viewport={"width": 1600, "height": 900})
@@ -51,7 +54,7 @@ def run_tests():
         # ReferenceError from an rAF/event handler surfaces here even when
         # no console.error call is made)
         page.on("pageerror", lambda e: errors.append(str(e)))
-        page.goto(f"http://127.0.0.1:{PORT}/graph.html", wait_until="load")
+        page.goto(f"http://127.0.0.1:{port}/graph.html", wait_until="load")
         page.wait_for_timeout(4000)  # frozen layout — settle only
         # tests chip is dynamically created (span, text "tests") inside #dirs
         tchip = page.locator("#dirs span").filter(has_text=re.compile(r"^tests$")).first
