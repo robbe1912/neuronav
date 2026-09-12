@@ -1,21 +1,27 @@
 # base-index export/import shards (issue #102) — run in its own process:
 #   .venv/Scripts/python.exe -X utf8 tests/test_baseindex.py
 #
-# Hermetic: generated temp target tree + config under the system temp dir
-# (never the real index), NEURONAV_EMBED_FAKE=1 (deterministic hash
-# embeddings, no Ollama). Pins the issue #102 contract:
-#   (a) second-run idempotence: exporting over an existing base succeeds
-#       on Windows (Path.rename onto an existing manifest raised WinError
-#       183 after the old shards were already unlinked) and the on-disk
-#       manifest is the new run's — nothing stranded in base/tmp
-#   (b) non-destruction: a failure during the swap leaves the previous
-#       base byte-identical (unlink-first used to destroy it first)
-#   (c) byte determinism: re-exporting the same store rewrites identical
-#       shard bytes (gzip header mtime pinned to 0)
-#   (d) stale-shard cleanup: a smaller re-export drops shards the new run
-#       no longer carries — the disk shard set matches manifest["shards"]
+# Hermetic: generated temp target tree + config under the suite's own
+# mkdtemp dir (never the real index), NEURONAV_EMBED_FAKE=1
+# (deterministic hash embeddings, no Ollama). Pins the issue #102
+# contract plus the CodeRabbit follow-up on PR #152:
+#   (a) second-run idempotence: exporting over an existing base
+#       succeeds on Windows and the on-disk manifest is the new run's
+#   (b) failed-run non-destruction, per failure phase:
+#       - mid-write: live base untouched, debris staged OUTSIDE it
+#       - commit-phase interruption: live base byte-identical (rolled
+#         back), never a mixed generation
+#       - cleanup failure: export still commits, debris self-heals on
+#         the next run
+#       - retry after any failure heals to the new generation
+#   (c) byte determinism: re-exporting the same store rewrites
+#       identical shard bytes (gzip header mtime pinned to 0)
+#   (d) stale-shard cleanup: a smaller re-export drops shards the new
+#       run no longer carries — the disk shard set matches
+#       manifest["shards"]
 #   (e) roundtrip: shards + manifest copied into a fresh store import
 #       every id; a non-empty store skips instead of double-seeding
+import gzip
 import json
 import os
 import shutil
@@ -39,7 +45,10 @@ def write_tree(n: int) -> None:
 
 write_tree(4)
 
-CFG = Path(tempfile.gettempdir()) / "neuronav_baseindex_config.json"
+# both configs live under the suite's unique TMP root — concurrent suite
+# processes can never overwrite each other's config (CodeRabbit, #152)
+CFG = TMP / "config.json"
+CFG2 = TMP / "config2.json"
 CFG.write_text(
     json.dumps(
         {
@@ -79,9 +88,13 @@ def disk_shards() -> list[str]:
     return sorted(p.name for p in nav.BASE_DIR.glob("shard-*.jsonl.gz"))
 
 
+def disk_manifest() -> dict:
+    return json.loads(
+        (nav.BASE_DIR / nav.MANIFEST_NAME).read_text(encoding="utf-8")
+    )
+
+
 def try_export() -> tuple[dict, str]:
-    """export_base(), with the issue #102 crash captured as a failure
-    detail instead of a suite-killing traceback."""
     try:
         return nav.export_base(), ""
     except OSError as e:
@@ -98,16 +111,7 @@ m2, err2 = try_export()
 check("second export succeeds (issue #102)", not err2, err2)
 
 if not err2:
-    disk_man = json.loads(
-        (nav.BASE_DIR / nav.MANIFEST_NAME).read_text(encoding="utf-8")
-    )
-    check("on-disk manifest is the second run's", disk_man == m2, str(disk_man))
-    stranded = (
-        sorted(p.name for p in (nav.BASE_DIR / "tmp").iterdir())
-        if (nav.BASE_DIR / "tmp").is_dir()
-        else []
-    )
-    check("no files stranded in base/tmp", not stranded, str(stranded))
+    check("on-disk manifest is the second run's", disk_manifest() == m2)
 
     # ---- (c) byte determinism: same store, two exports, same bytes -----
     check(
@@ -115,63 +119,115 @@ if not err2:
         base_files()["shard-0000.jsonl.gz"] == bytes1["shard-0000.jsonl.gz"],
     )
 
-# ---- (b) non-destruction on a mid-swap failure -------------------------------
+# ---- (b) failed-run non-destruction ------------------------------------------
+# mutate the indexed data first so the attempted export carries a REAL
+# new generation — a partial-swap bug would then change base bytes
+# (CodeRabbit: a no-op export can pass a corruption check vacuously)
+(TMP / "src" / "extra_thing.py").write_text(
+    "def extra_thing_run(scale):\n    return scale * 99\n", encoding="utf-8"
+)
+nav.rescan()
 before = base_files()
-_orig_replace, _orig_rename = os.replace, Path.rename
+check("base carried shards entering the failure legs",
+      any(n.startswith("shard-") for n in before), str(sorted(before)))
+
+# leg 1 — die mid-staging-write: live base must be untouched and the
+# debris must live OUTSIDE it (the old design staged inside base/tmp)
+_writes = {"n": 0}
+_gz_write = gzip.GzipFile.write
+
+
+def _gz_write_boom(self, data):
+    _writes["n"] += 1
+    if _writes["n"] >= 3:
+        raise OSError(28, "simulated mid-write failure (disk full)")
+    return _gz_write(self, data)
+
+
+gzip.GzipFile.write = _gz_write_boom
+_, errA = try_export()
+gzip.GzipFile.write = _gz_write
+check("mid-write failure raises", bool(errA), errA)
+check("live base untouched after mid-write failure", base_files() == before,
+      f"before={sorted(before)} after={sorted(base_files())}")
+check("mid-write debris staged outside the live base",
+      "tmp" not in [p.name for p in nav.BASE_DIR.iterdir()],
+      str([p.name for p in nav.BASE_DIR.iterdir()]))
+
+# leg 2 — interrupt the commit: the live base must stay byte-identical
+# (rolled back), never a mix of two generations. Fires on a per-file
+# swap at the manifest AND on a directory swap at the final rename.
+_os_replace = os.replace
 
 
 def _replace_boom(src, dst, *a, **k):
-    if nav.BASE_DIR == Path(dst) or nav.BASE_DIR in Path(dst).parents:
-        raise OSError(13, "simulated mid-swap failure (lock/permission)")
-    return _orig_replace(src, dst, *a, **k)
+    dst = Path(dst)
+    if (
+        dst == nav.BASE_DIR and Path(src).name != "base.prev-export"
+    ) or dst.name == nav.MANIFEST_NAME:
+        raise OSError(13, "simulated commit failure (lock/permission)")
+    return _os_replace(src, dst, *a, **k)
 
 
-def _rename_boom(self, target):
-    if nav.BASE_DIR == Path(target) or nav.BASE_DIR in Path(target).parents:
-        raise OSError(13, "simulated mid-swap failure (lock/permission)")
-    return _orig_rename(self, target)
-
-
-# patch both move primitives: whichever the swap uses (Path.rename
-# pre-fix, os.replace post-fix), the failure lands mid-swap
 os.replace = _replace_boom
-Path.rename = _rename_boom
-try:
-    nav.export_base()
-    raised = False
-except OSError:
-    raised = True
-finally:
-    os.replace = _orig_replace
-    Path.rename = _orig_rename
-check("mid-swap failure raises", raised)
-check("base carried shards entering the failure test",
-      any(n.startswith("shard-") for n in before), str(sorted(before)))
-check("previous base byte-identical after failed run", base_files() == before,
+_, errB = try_export()
+os.replace = _os_replace
+check("commit-phase interruption raises", bool(errB), errB)
+check("live base byte-identical after commit-phase interruption",
+      base_files() == before,
       f"before={sorted(before)} after={sorted(base_files())}")
 
-# ---- (d) stale-shard cleanup on a shrinking re-export ------------------------
-write_tree(4 + nav.SHARD_SIZE + 6)  # 2 full shards + remainder
-nav.rescan()
-m3, err3 = try_export()
-check("grown export spans multiple shards",
-      not err3 and m3.get("shards") == 2 and len(disk_shards()) == 2,
-      err3 or f"{m3['shards']} shards, disk={disk_shards()}")
+# retry heals: a clean run after the failures lands the new generation
+mR = nav.export_base()
+check("retry after failures heals to the new generation",
+      mR["count"] == 5 and disk_manifest() == mR and disk_shards() == ["shard-0000.jsonl.gz"],
+      f"{mR} disk={disk_shards()}")
 
-for i in range(4, 4 + nav.SHARD_SIZE + 6):
+# leg 3 — cleanup failure after a committed swap: the export must still
+# succeed (the old generation is no longer live) and the debris must
+# self-heal on the next run
+_rmtree = shutil.rmtree
+
+
+def _rmtree_noop(path, *a, **k):
+    # faithful simulation of rmtree(ignore_errors=True) hitting a locked
+    # dir: deletes nothing, raises nothing, leaves the debris in place
+    if str(path).endswith("base.prev-export"):
+        return
+    return _rmtree(path, *a, **k)
+
+
+shutil.rmtree = _rmtree_noop
+mC = nav.export_base()
+shutil.rmtree = _rmtree
+check("cleanup failure does not fail a committed export",
+      mC["count"] == 5 and disk_manifest() == mC, str(mC))
+check("prev-generation debris tolerated for the next run",
+      (nav.BASE_DIR.parent / "base.prev-export").is_dir())
+nav.export_base()
+check("next run self-heals the leftover debris",
+      not (nav.BASE_DIR.parent / "base.prev-export").exists())
+
+# ---- (d) stale-shard cleanup on a shrinking re-export ------------------------
+write_tree(5 + nav.SHARD_SIZE + 6)  # 2 full shards + remainder
+nav.rescan()
+m3 = nav.export_base()
+check("grown export spans multiple shards",
+      m3["shards"] == 2 and len(disk_shards()) == 2,
+      f"{m3['shards']} shards, disk={disk_shards()}")
+
+for i in range(4, 5 + nav.SHARD_SIZE + 6):
     (TMP / "src" / f"mod{i:04d}_thing.py").unlink()
 shrink = nav.rescan()
-m4, err4 = try_export()
+m4 = nav.export_base()
 check("shrink rescan purged the grown files",
-      shrink["deleted"] == nav.SHARD_SIZE + 6 and nav.count() == 4,
+      shrink["deleted"] == nav.SHARD_SIZE + 7 and nav.count() == 5,
       f"deleted={shrink['deleted']} count={nav.count()}")
 check("stale shard removed, disk set matches manifest",
-      not err4 and disk_shards() == ["shard-0000.jsonl.gz"] and m4.get("shards") == 1,
-      err4 or f"disk={disk_shards()} manifest_shards={m4['shards']}")
+      disk_shards() == ["shard-0000.jsonl.gz"] and m4["shards"] == 1,
+      f"disk={disk_shards()} manifest_shards={m4['shards']}")
 
 # ---- (e) roundtrip: shards into a fresh store --------------------------------
-STATE2 = TMP / "state2"
-CFG2 = Path(tempfile.gettempdir()) / "neuronav_baseindex_config2.json"
 CFG2.write_text(
     json.dumps(
         {
@@ -179,21 +235,20 @@ CFG2.write_text(
             "collection": "baseindex",
             "include_dirs": ["src"],
             "extensions": [".py"],
-            "state_dir": str(STATE2),
+            "state_dir": str(TMP / "state2"),
         }
     ),
     encoding="utf-8",
 )
-os.environ["NEURONAV_CONFIG"] = str(CFG2)
-nav._apply_config(CFG2)
+nav._apply_config(CFG2)  # selects the second config directly
 shutil.copytree(TMP / "state" / "base", nav.BASE_DIR)
 
 r = nav.import_base()
 check("fresh store imports every id",
-      r.get("imported") == 4 and r.get("manifest_count") == 4, str(r))
-check("imported count matches the store", nav.count() == 4, str(nav.count()))
+      r.get("imported") == 5 and r.get("manifest_count") == 5, str(r))
+check("imported count matches the store", nav.count() == 5, str(nav.count()))
 r2 = nav.import_base()
-check("non-empty store skips re-import", r2 == {"skipped": 4}, str(r2))
+check("non-empty store skips re-import", r2 == {"skipped": 5}, str(r2))
 
 print(f"\n{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)
