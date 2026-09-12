@@ -1654,3 +1654,39 @@ def crosstalk(cs: list[dict], g=None) -> dict:
         "by_cluster": by_cluster,
         "worst_pairs": worst_pairs,
     }
+
+
+def fmt_crosstalk(rep: dict, align: bool = False) -> str:
+    """Render a crosstalk() report for humans — the ONE formatter shared
+    by the MCP `crosstalk` tool and the nav CLI verb (align=True pads
+    columns for terminal reading). Machines consume the rep dict."""
+    lines = [
+        f"crosstalk: {rep['clusters']} clusters, "
+        f"internal {rep['internal_edges']} edges, "
+        f"cross-cluster {rep['external_edges']} "
+        f"({rep['external_ratio'] * 100:.1f}% of clustered)"
+    ]
+    if rep["unclustered_endpoint_edges"]:
+        lines.append(
+            f"  ({rep['unclustered_endpoint_edges']} edges touch unclustered files)"
+        )
+    lines += ["", "per cluster (top 10 by external):"]
+    for r in rep["by_cluster"][:10]:
+        if align:
+            lines.append(
+                f"  [{r['id']:>2}] {r['label'][:34]:<34} n={r['size']:<3}"
+                f" internal {r['internal']:<4} out {r['external_out']:<4}"
+                f" in {r['external_in']:<4} ext {r['external_share'] * 100:.0f}%"
+            )
+        else:
+            lines.append(
+                f"  [{r['id']:>2}] {r['label'][:34]}  n={r['size']}  "
+                f"internal {r['internal']}  out {r['external_out']}  "
+                f"in {r['external_in']}  ext {r['external_share'] * 100:.0f}%"
+            )
+    if rep["worst_pairs"]:
+        lines += ["", "worst pairs:"]
+        for wp in rep["worst_pairs"]:
+            tops = ", ".join(f"{t['pair']} x{t['w']}" for t in wp["top_files"])
+            lines.append(f"  {wp['a']} <-> {wp['b']}: {wp['edges']} edges (top: {tops})")
+    return "\n".join(lines)
