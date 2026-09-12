@@ -77,8 +77,9 @@ def main() -> int:
 
     # Windowed slices (issue #69): 100-line cap + deterministic continuation
     # anchors. Hermetic core first: a synthetic 250-line file under .tmp
-    # (gitignored, on the index exclude list) drives _slice and anchor
-    # paging directly — no index needed for these.
+    # (gitignored, on the index exclude list) drives _slice directly — no
+    # index needed for those; run()-level paging targets indexed files only
+    # (issue #105 scope guard).
     fixture_rel = ".tmp/test_explore_window.py"
     fixture = Path(xp.nav.ROOT) / fixture_rel
     fixture.parent.mkdir(parents=True, exist_ok=True)
@@ -112,17 +113,38 @@ def main() -> int:
         check("anchor continues from the char-capped cut",
               m is not None and m.group(1) == str(shown + 1))
 
-        # anchor paging through run(): next window without the funnel
-        page = xp.run("ignored query", anchor=f"{fixture_rel}:101-200")
+        # anchor paging through run(): next window without the funnel.
+        # Paging is confined to the index (issue #105), so the target is an
+        # indexed file derived from the loaded graph, not the excluded
+        # .tmp fixture.
+        gidx = s.graph.get_graph()
+        _nlines = lambda p: len((Path(xp.nav.ROOT) / p).read_text(
+            encoding="utf-8", errors="replace").splitlines())
+        ipath = max(sorted(gidx.files), key=_nlines)
+        check("self-index has a file tall enough to page (non-vacuous)",
+              _nlines(ipath) >= 200, f"{ipath} has {_nlines(ipath)} lines")
+        page = xp.run("ignored query", anchor=f"{ipath}:101-200")
         check("anchor page serves the requested window",
-              page.startswith(f"** {fixture_rel} **") and "\n101\t" in page)
+              page.startswith(f"** {ipath} **") and "\n101\t" in page)
         check("anchor page re-orients nothing (no repo map/clusters)",
               "== repo map ==" not in page and "== clusters ==" not in page)
         check("anchor page still budget-capped", len(page) <= xp.TOTAL_CAP)
         check("bad anchor gets guidance, not error",
               "unreadable anchor" in xp.run("q", anchor="garbage"))
+        n = _nlines(ipath)
         check("stale anchor (past EOF) gets guidance, not error",
-              "anchor window is empty" in xp.run("q", anchor=f"{fixture_rel}:5000-5010"))
+              "anchor window is empty" in xp.run(
+                  "q", anchor=f"{ipath}:{n + 100}-{n + 110}"))
+
+        # Scope guard (issue #105): an existing-but-unindexed file, a ../
+        # traversal, and an absolute path all get guidance — never file text.
+        esc = xp.run("q", anchor=f"../../{fixture_rel}:1-5")
+        abs_ = xp.run("q", anchor=f"{fixture.as_posix()}:1-5")
+        unidx = xp.run("q", anchor=f"{fixture_rel}:1-5")
+        check("unindexed/escaped anchors get guidance, not file text (issue #105)",
+              all("not an indexed file" in r for r in (esc, abs_, unidx))
+              and "line 001" not in esc + abs_ + unidx,
+              esc[:120])
 
         # Funnel path on real index data: the longest fn in the self-index
         # must come back as a window (height law) carrying an anchor.
