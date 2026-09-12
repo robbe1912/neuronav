@@ -269,6 +269,7 @@ def _build_data() -> dict:
 # rung 5: _JS_FN_LAYER state block (plan 4361-4802, fnMesh..rebuildFnLayer-1) carved from _JS_MID
 # rung 6: rebuildFnLayer block (plan 4803-5929) = whole _JS_MID_D residual, renamed _JS_FN_LAYER_B
 # rung 7: _JS_LABELS3D + _JS_FOCUS_VIS + _JS_LABELS3D_TAIL carved from _JS_MID (documented resolution: two L3D constants around FOCUS_VIS, join order == original text order)
+# rung 8 FINAL: _JS_EDGES/_JS_TICK carved from MID (renamed _JS_CORE), _JS_PANEL/_JS_EVENTS carved from MID_B; 17-constant join complete
 _HTML_HEAD = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -553,7 +554,7 @@ __IMPORTMAP__
 </script>
 """
 
-_JS_MID = r"""<script type="module">
+_JS_CORE = r"""<script type="module">
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
@@ -1077,7 +1078,9 @@ function refreshCollapse() {
 // edges: LineMaterial renders true pixel-width lines (WebGL caps
 // LineBasicMaterial linewidth at 1px); one linewidth per material, so links
 // are split into three weight buckets, each its own LineSegments2 over an
-// instanced geometry whose buffers mutate in place (no per-frame rebuild)
+"""
+
+_JS_EDGES = r"""// instanced geometry whose buffers mutate in place (no per-frame rebuild)
 const MAXL = links.length;
 // full-saturation per-type hue: calls neutral-white, signals amber,
 // contains (inst/attach) cyan, anything else green
@@ -1853,7 +1856,9 @@ function popFocus() {
 // round-5 LOD gate (user-acceptance): a bus element is visible only when
 // the boxes it serves RESOLVE on screen — at far zoom whole trunks read
 // as "nowhere to nowhere" and sub-junction dots as droplets on wires.
-// Pure function of camera pose + build data; no layout change.
+"""
+
+_JS_TICK = r"""// Pure function of camera pose + build data; no layout change.
 function busLodInit() {
   const hpx = renderer.domElement.clientHeight || 900;
   const wuPerPx = 2 * Math.tan(camera.fov * Math.PI / 360) / hpx;
@@ -7819,7 +7824,7 @@ document.getElementById("bGround").onclick = e => {
 };
 """
 
-_JS_MID_B = r"""const searchEl = document.getElementById("search");
+_JS_PANEL = r"""const searchEl = document.getElementById("search");
 const depthEl = document.getElementById("depth");
 const cbFnEl = document.getElementById("cbFn");
 fnMode = cbFnEl.checked;   // checkbox is the truth; sync the flag at boot
@@ -8161,7 +8166,9 @@ function fnStalkHide() { if (fnStalk) fnStalk.visible = false; }
 // greyout also dims the DOM label layers (hub pills, cluster names, focus
 // labels): labels at full ink floating over a greyed scene read as
 // un-greyed content
-const greyLabelEls = ["hubs", "clabs", "flabs"].map(id => document.getElementById(id));
+"""
+
+_JS_EVENTS = r"""const greyLabelEls = ["hubs", "clabs", "flabs"].map(id => document.getElementById(id));
 function greyLabelsDim(on) {
   greyLabelEls.forEach(el => { el.style.opacity = on ? 0.25 : ""; });
 }
@@ -8842,7 +8849,7 @@ tick();
 </html>
 """
 
-_TEMPLATE = (_HTML_HEAD + _JS_MID + _JS_LABELS3D + _JS_FOCUS_VIS + _JS_LABELS3D_TAIL + _JS_FN_LAYER + _JS_FN_LAYER_B + _JS_LEGEND + _JS_PINS + _JS_MAP_RENDER + _JS_MAP_PAINT + _JS_MAP_INPUT + _JS_MID_B + _JS_DBG)
+_TEMPLATE = (_HTML_HEAD + _JS_CORE + _JS_EDGES + _JS_TICK + _JS_LABELS3D + _JS_FOCUS_VIS + _JS_LABELS3D_TAIL + _JS_FN_LAYER + _JS_FN_LAYER_B + _JS_LEGEND + _JS_PINS + _JS_MAP_RENDER + _JS_MAP_PAINT + _JS_MAP_INPUT + _JS_PANEL + _JS_EVENTS + _JS_DBG)
 
 
 
