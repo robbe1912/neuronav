@@ -1,0 +1,60 @@
+name: openhands-claim
+
+# When @openhands is invoked on an issue, immediately scaffold a linked DRAFT
+# PR marking the issue as claimed, so no seat duplicates the work (mirrors the
+# repo's draft-PR-immediately convention for external agents).
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  claim:
+    if: >
+      github.event.issue.pull_request == null &&
+      contains(github.event.comment.body, '@openhands') &&
+      (github.event.comment.user.type == 'User' || github.event.comment.user.login == 'github-actions[bot]') &&
+      !startsWith(github.event.comment.body, 'NOCLAIM')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Label the issue as agent-claimed
+        run: |
+          gh label create "agent:openhands" --color D4C5F9 --description "claimed by @openhands (external agent)" || true
+          gh issue edit "$ISSUE" --add-label "agent:openhands"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ github.event.issue.number }}
+
+      - name: Create placeholder branch
+        run: |
+          git config user.name "openhands-claim-bot"
+          git config user.email "actions@github.com"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git checkout -b "agent/issue-${ISSUE}"
+          git commit --allow-empty -m "chore: placeholder claim for issue #${ISSUE} (openhands)"
+          git push origin "agent/issue-${ISSUE}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ github.event.issue.number }}
+
+      - name: Open linked draft PR (idempotent)
+        run: |
+          gh pr create \
+            --draft \
+            --head "agent/issue-${ISSUE}" \
+            --title "[placeholder] issue #${ISSUE} claimed by @openhands" \
+            --body "Marks #${ISSUE} as claimed by @openhands (invoked by @${AUTHOR}).
+
+          DO NOT MERGE — this placeholder exists only to broadcast ownership.
+          It self-closes when the agent's real PR for #${ISSUE} arrives.
+
+          Closes #${ISSUE}" || echo "placeholder PR already exists"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ github.event.issue.number }}
+          AUTHOR: ${{ github.event.comment.user.login }}

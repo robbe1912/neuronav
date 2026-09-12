@@ -1,0 +1,46 @@
+name: openhands-queue
+
+# 24/7 external-agent queue: hourly, if no @openhands claim is open, invoke
+# @openhands on the lowest-numbered issue labeled `agent-queue` (explicit
+# per-issue opt-in). The claim workflow then scaffolds the linked draft PR.
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: openhands-queue
+  cancel-in-progress: false
+
+permissions:
+  issues: write
+
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    steps:
+      - name: One-at-a-time guard
+        id: guard
+        run: |
+          if gh issue list --state open --label "agent:openhands" --json number --jq 'length' | grep -qv '^0$'; then
+            echo "busy=true" >> "$GITHUB_OUTPUT"
+            echo "an @openhands claim is already open — skipping this tick"
+          else
+            echo "busy=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Invoke @openhands on the oldest queued issue
+        if: steps.guard.outputs.busy == 'false'
+        run: |
+          ISSUE=$(gh issue list --state open --label "agent-queue" --json number --jq 'sort_by(.number) | .[0].number // empty')
+          if [ -z "$ISSUE" ]; then
+            echo "queue empty"
+            exit 0
+          fi
+          gh issue comment "$ISSUE" --body "@openhands please implement this issue end-to-end and open a pull request. Read AGENTS.md at the repo root first for the repo laws (determinism, suite gate, conventional commits, no live-store configs: any scratch config needs an explicit state_dir)."
+          gh issue edit "$ISSUE" --remove-label "agent-queue"
+          echo "invoked @openhands on #$ISSUE"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
