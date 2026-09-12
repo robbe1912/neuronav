@@ -1,39 +1,39 @@
 {
  "set": "after",
  "config": "bm25",
- "commit": "e582a99",
- "dirty": false,
+ "commit": "9157e86",
+ "dirty": true,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
- "files": 25,
+ "files": 34,
  "k": 12,
- "hit@1": 0.4,
- "hit@5": 0.8,
+ "hit@1": 0.44,
+ "hit@5": 0.84,
  "hit@10": 0.92,
- "mrr": 0.595,
- "reach@5": 0.8,
+ "mrr": 0.624,
+ "reach@5": 0.84,
  "reach@10": 0.92,
  "by_kind": {
   "exact": {
    "n": 10,
-   "hit@1": 0.5,
-   "hit@5": 0.8,
-   "hit@10": 1.0,
-   "mrr": 0.656
+   "hit@1": 0.4,
+   "hit@5": 0.7,
+   "hit@10": 0.9,
+   "mrr": 0.561
   },
   "symbol": {
    "n": 4,
-   "hit@1": 0.25,
-   "hit@5": 0.5,
-   "hit@10": 0.5,
-   "mrr": 0.396
+   "hit@1": 0.5,
+   "hit@5": 0.75,
+   "hit@10": 0.75,
+   "mrr": 0.625
   },
   "prose": {
    "n": 9,
-   "hit@1": 0.333,
-   "hit@5": 0.889,
+   "hit@1": 0.444,
+   "hit@5": 1.0,
    "hit@10": 1.0,
-   "mrr": 0.599
+   "mrr": 0.685
   },
   "cross": {
    "n": 2,
@@ -64,13 +64,13 @@
   },
   {
    "q": "registry_for",
-   "rank": 10,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "sync_functions",
-   "rank": 3,
+   "rank": 6,
    "ctx5": false,
    "ctx10": false
   },
@@ -82,19 +82,19 @@
   },
   {
    "q": "_has_exact",
-   "rank": 8,
+   "rank": 9,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "_lexical_fallback",
-   "rank": 2,
+   "rank": 3,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "import_base",
-   "rank": 1,
+   "rank": 2,
    "ctx5": false,
    "ctx10": false
   },
@@ -123,8 +123,8 @@
    "ctx10": false
   },
   {
-   "q": "TargetClass",
-   "rank": 12,
+   "q": "Func",
+   "rank": 1,
    "ctx5": false,
    "ctx10": false
   },
@@ -136,19 +136,19 @@
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": 7,
+   "rank": 3,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "what stops two simultaneous rescans from corrupting the store",
-   "rank": 4,
+   "rank": 1,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "how do hermetic suites embed without a live model backend",
-   "rank": 1,
+   "rank": 2,
    "ctx5": false,
    "ctx10": false
   },
@@ -160,7 +160,7 @@
   },
   {
    "q": "which module hosts the agent protocol on stdin and stdout",
-   "rank": 2,
+   "rank": 3,
    "ctx5": false,
    "ctx10": false
   },
@@ -172,7 +172,7 @@
   },
   {
    "q": "how is the embedding index archived inside the repository",
-   "rank": 2,
+   "rank": 1,
    "ctx5": false,
    "ctx10": false
   },

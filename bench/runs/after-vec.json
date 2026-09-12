@@ -1,46 +1,46 @@
 {
  "set": "after",
  "config": "vec",
- "commit": "e582a99",
- "dirty": false,
+ "commit": "9157e86",
+ "dirty": true,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
- "files": 25,
+ "files": 34,
  "k": 12,
- "hit@1": 0.24,
- "hit@5": 0.68,
+ "hit@1": 0.28,
+ "hit@5": 0.6,
  "hit@10": 0.88,
- "mrr": 0.455,
- "reach@5": 0.68,
+ "mrr": 0.427,
+ "reach@5": 0.6,
  "reach@10": 0.88,
  "by_kind": {
   "exact": {
    "n": 10,
    "hit@1": 0.1,
-   "hit@5": 0.5,
-   "hit@10": 0.8,
-   "mrr": 0.312
+   "hit@5": 0.4,
+   "hit@10": 0.7,
+   "mrr": 0.257
   },
   "symbol": {
    "n": 4,
    "hit@1": 0.25,
-   "hit@5": 0.5,
-   "hit@10": 0.75,
-   "mrr": 0.396
+   "hit@5": 0.75,
+   "hit@10": 1.0,
+   "mrr": 0.425
   },
   "prose": {
    "n": 9,
    "hit@1": 0.444,
-   "hit@5": 0.889,
+   "hit@5": 0.778,
    "hit@10": 1.0,
-   "mrr": 0.664
+   "mrr": 0.582
   },
   "cross": {
    "n": 2,
-   "hit@1": 0.0,
-   "hit@5": 1.0,
+   "hit@1": 0.5,
+   "hit@5": 0.5,
    "hit@10": 1.0,
-   "mrr": 0.35
+   "mrr": 0.583
   }
  },
  "per_query": [
@@ -52,7 +52,7 @@
   },
   {
    "q": "sha256_of",
-   "rank": 2,
+   "rank": 5,
    "ctx5": false,
    "ctx10": false
   },
@@ -70,7 +70,7 @@
   },
   {
    "q": "sync_functions",
-   "rank": 7,
+   "rank": 12,
    "ctx5": false,
    "ctx10": false
   },
@@ -94,7 +94,7 @@
   },
   {
    "q": "import_base",
-   "rank": 3,
+   "rank": 7,
    "ctx5": false,
    "ctx10": false
   },
@@ -118,13 +118,13 @@
   },
   {
    "q": "FileSym",
-   "rank": 6,
+   "rank": 5,
    "ctx5": false,
    "ctx10": false
   },
   {
-   "q": "TargetClass",
-   "rank": 12,
+   "q": "Func",
+   "rank": 6,
    "ctx5": false,
    "ctx10": false
   },
@@ -136,19 +136,19 @@
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": 7,
+   "rank": 9,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "what stops two simultaneous rescans from corrupting the store",
-   "rank": 2,
+   "rank": 4,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "how do hermetic suites embed without a live model backend",
-   "rank": 2,
+   "rank": 8,
    "ctx5": false,
    "ctx10": false
   },
@@ -160,7 +160,7 @@
   },
   {
    "q": "which module hosts the agent protocol on stdin and stdout",
-   "rank": 3,
+   "rank": 4,
    "ctx5": false,
    "ctx10": false
   },
@@ -184,13 +184,13 @@
   },
   {
    "q": "unreachable deletion candidates and their confidence tiers",
-   "rank": 5,
+   "rank": 6,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "how are node positions computed reproducibly before baking",
-   "rank": 2,
+   "rank": 1,
    "ctx5": false,
    "ctx10": false
   }

@@ -1,58 +1,58 @@
 {
  "set": "fake",
  "config": "bm25",
- "commit": "e582a99",
+ "commit": "9157e86",
  "dirty": false,
  "mode": "fake",
  "model": "hash-embed",
- "files": 25,
+ "files": 34,
  "k": 12,
  "hit@1": 0.24,
- "hit@5": 0.44,
+ "hit@5": 0.6,
  "hit@10": 0.92,
- "mrr": 0.389,
- "reach@5": 0.44,
+ "mrr": 0.379,
+ "reach@5": 0.6,
  "reach@10": 0.92,
  "by_kind": {
   "exact": {
    "n": 10,
-   "hit@1": 0.6,
+   "hit@1": 0.3,
    "hit@5": 0.7,
    "hit@10": 1.0,
-   "mrr": 0.698
+   "mrr": 0.457
   },
   "symbol": {
    "n": 4,
    "hit@1": 0.0,
-   "hit@5": 0.25,
+   "hit@5": 0.5,
    "hit@10": 0.75,
-   "mrr": 0.15
+   "mrr": 0.165
   },
   "prose": {
    "n": 9,
-   "hit@1": 0.0,
-   "hit@5": 0.222,
+   "hit@1": 0.222,
+   "hit@5": 0.444,
    "hit@10": 0.889,
-   "mrr": 0.165
+   "mrr": 0.337
   },
   "cross": {
    "n": 2,
-   "hit@1": 0.0,
-   "hit@5": 0.5,
+   "hit@1": 0.5,
+   "hit@5": 1.0,
    "hit@10": 1.0,
-   "mrr": 0.333
+   "mrr": 0.6
   }
  },
  "per_query": [
   {
    "q": "parse_tscn",
-   "rank": 1,
+   "rank": 7,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "sha256_of",
-   "rank": 6,
+   "rank": 7,
    "ctx5": false,
    "ctx10": false
   },
@@ -64,31 +64,31 @@
   },
   {
    "q": "registry_for",
-   "rank": 1,
+   "rank": 3,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "sync_functions",
-   "rank": 7,
+   "rank": 6,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "_fold_continuations",
-   "rank": 1,
+   "rank": 3,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "_has_exact",
-   "rank": 2,
+   "rank": 1,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "_lexical_fallback",
-   "rank": 6,
+   "rank": 4,
    "ctx5": false,
    "ctx10": false
   },
@@ -100,19 +100,19 @@
   },
   {
    "q": "find_functions",
-   "rank": 1,
+   "rank": 5,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "NoCacheHandler",
-   "rank": 7,
+   "rank": 8,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "LabelContext",
-   "rank": 8,
+   "rank": 5,
    "ctx5": false,
    "ctx10": false
   },
@@ -123,74 +123,74 @@
    "ctx10": false
   },
   {
-   "q": "TargetClass",
+   "q": "Func",
    "rank": 3,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "where do godot scene resources get read",
-   "rank": 8,
+   "rank": 4,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": 6,
-   "ctx5": false,
-   "ctx10": false
-  },
-  {
-   "q": "what stops two simultaneous rescans from corrupting the store",
-   "rank": null,
-   "ctx5": false,
-   "ctx10": false
-  },
-  {
-   "q": "how do hermetic suites embed without a live model backend",
    "rank": 5,
    "ctx5": false,
    "ctx10": false
   },
   {
+   "q": "what stops two simultaneous rescans from corrupting the store",
+   "rank": 7,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "how do hermetic suites embed without a live model backend",
+   "rank": 1,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
    "q": "how are subsystem names chosen from member vocabulary",
-   "rank": 10,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "which module hosts the agent protocol on stdin and stdout",
-   "rank": 8,
+   "rank": 6,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "single call that shows a newcomer how the codebase is organized",
-   "rank": 2,
+   "rank": 9,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "how is the embedding index archived inside the repository",
-   "rank": 10,
+   "rank": 6,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "how is visual clutter of the rendered page measured",
-   "rank": 6,
+   "rank": 1,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "unreachable deletion candidates and their confidence tiers",
-   "rank": 6,
+   "rank": 5,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "how are node positions computed reproducibly before baking",
-   "rank": 2,
+   "rank": 1,
    "ctx5": false,
    "ctx10": false
   }
