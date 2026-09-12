@@ -24,14 +24,25 @@ import re
 from collections import Counter, defaultdict, deque
 
 import nav
-from extractors.common import PY_CONTROL_KEYWORDS
-from extractors import registry_for
-# language fact needed by the dead-code tier heuristic (native dispatch names)
-from extractors.gdscript import VIRTUALS, GUT_ROOTS, ADDON_VIRTUALS, MANUAL_BASES, parse_gd, parse_tscn
-from extractors.python import PY_HOOKS  # stdlib dispatch hooks (dead-scan tier)
-# C++ front-end facts (issue #13): pairing + registration wiring, the
-# dynamic-dispatch marker for the dead tier, and the repo-wide GDVIRTUAL set
-from extractors.cpp import CPP_DYNAMIC_RE, CPP_EXTS, CPP_MENTION_FLOOR, harvest_registration, scan_calls
+from extractors import (
+    ADDON_VIRTUALS,
+    CPP_DYNAMIC_RE,
+    CPP_EXTS,
+    CPP_MENTION_FLOOR,
+    GUT_ROOTS,
+    MANUAL_BASES,
+    PY_CONTROL_KEYWORDS,
+    PY_HOOKS,
+    VIRTUALS,
+    harvest_registration,
+    parse_gd,
+    parse_tscn,
+    registry_for,
+    scan_calls,
+)
+# single import surface: language facts (VIRTUALS etc.) are re-exported by
+# the extractors package so graph.py never deep-imports an extractor
+# submodule — extractor modules stay free of any graph import (acyclic).
 
 # ---- constants ---------------------------------------------------------------
 # Language-owned constants and entry-point rules (VIRTUALS, GUT_ROOTS,
@@ -53,6 +64,31 @@ BARE_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\s*\(")
 # string literals included — never a rescan per dead candidate
 MENTION_TOKEN_RE = re.compile(r"[A-Za-z_]\w*")
 
+# ---- fn-key grammar (single owner) -------------------------------------------
+# Node keys in Graph.edges/reverse/roots/referenced are "path::func" plus
+# three pseudo-node spellings: "path::tscn" (scene file node),
+# "path::SIGNAL:name" (signal node), "path::VAR:member" (member-write
+# node); a bare "*::name" marks name-only references. The grammar is
+# FROZEN — the viz template's fnKey/keyFile logic mirrors it, so any
+# change is a both-sides contract (graph.py + viz.py template), never
+# one-sided. split_key's "first :: wins" is safe because extractor
+# captures are identifier-shaped (never contain "::").
+FN_KEY_SEP = "::"
+TSCN_SUFFIX = "::tscn"
+SIGNAL_PREFIX = "::SIGNAL:"
+VAR_PREFIX = "::VAR:"
+
+
+def fn_key(rel: str, name: str) -> str:
+    """Function-node key: repo-relative path + function name."""
+    return f"{rel}{FN_KEY_SEP}{name}"
+
+
+def split_key(key: str) -> str:
+    """File part of any node key (fn, scene, signal, member spellings):
+    everything before the first separator. Bare file keys (cpp v1.1
+    header-scope sources carry none) pass through whole."""
+    return key.split(FN_KEY_SEP, 1)[0]
 # dead-tier weights (viz J2 consumes): per-tier weight for dead-code
 # candidates — "likely" 1.0, "review" 0.5 — and the dead-file share
 # threshold: a file only flags dead when its dead weight reaches this
@@ -381,7 +417,6 @@ class Graph:
         return self
 
     def _scan_body(self, fs: FileSym, fn: Func) -> None:
-        src_key = fn.key
         # multi-line call arguments defeat line-based regex passes: fold
         # continuation lines (unbalanced parens/brackets) into single
         # logical lines before scanning; fn.body stays raw for display
@@ -390,6 +425,14 @@ class Graph:
         var_types = dict(fs.members)
         for pm in PARAM_TYPED_RE.finditer(scan_text):
             var_types[pm.group(1)] = pm.group(2)
+        self._scan_calls(fs, fn, scan_text, var_types)
+        self._scan_liveness(fs, fn, scan_text)
+        self._scan_chains(fs, fn, scan_text, var_types)
+        self._scan_signals(fs, fn, scan_text)
+
+    def _scan_calls(self, fs: FileSym, fn: Func, scan_text: str, var_types: dict) -> None:
+        """Typed-receiver call edges and member-var cross-references."""
+        src_key = fn.key
         for m in QUALIFIED_CALL_RE.finditer(scan_text):
             head, fname = m.group(1), m.group(2)
             cls = head if head in self.class_map else var_types.get(head)
@@ -425,11 +468,17 @@ class Graph:
             else:
                 continue
             if member in self.files[dst].members:
-                self._edge(src_key, f"{dst}::VAR:{member}", ty="var")
+                self._edge(src_key, dst + VAR_PREFIX + member, ty="var")
             elif member in self.files[dst].funcs:
                 # property-assignment form: obj.method = x targets the
                 # func (setter-style) without a call paren
                 self._emit_call(src_key, dst, member)
+
+    def _scan_liveness(self, fs: FileSym, fn: Func, scan_text: str) -> None:
+        """Name-keeping harvest: dynamically loaded scripts, dynamic-
+        dispatch string refs, callback-convention identifiers. No edges —
+        these only keep funcs out of dead-code tiers."""
+        src_key = fn.key
         # dynamically loaded scripts: any "res://....gd" string literal in
         # the body keeps every func of that file alive
         for m in RES_LOAD_RE.finditer(scan_text):
@@ -470,6 +519,10 @@ class Graph:
             nm = m.group(1)
             if nm not in ASSIGN_RHS_SKIP:
                 self.referenced_names.add(nm)
+
+    def _scan_chains(self, fs: FileSym, fn: Func, scan_text: str, var_types: dict) -> None:
+        """Two-level typed chains, casts, and bare/inherited calls."""
+        src_key = fn.key
         # two-level typed chains: ctx.teams.team_ids(...) — resolve head to
         # its class, hop through a declared member, then emit
         for m in CHAIN_CALL_RE.finditer(scan_text):
@@ -485,7 +538,7 @@ class Graph:
             head, mid, tail = m.groups()
             dst = self._chain_dst(var_types, head, mid)
             if dst and tail in self.files[dst].members:
-                self._edge(src_key, f"{dst}::VAR:{tail}", ty="var")
+                self._edge(src_key, dst + VAR_PREFIX + tail, ty="var")
             elif dst and tail in self.files[dst].funcs:
                 self._emit_call(src_key, dst, tail)
         for m in AS_CAST_CALL_RE.finditer(scan_text):
@@ -514,19 +567,23 @@ class Graph:
                 if fs.class_name and fs.class_name in self._subclasses:
                     for sub in self._subclasses[fs.class_name]:
                         if name in self.files[sub].funcs:
-                            self._edge(src_key, f"{sub}::{name}")
+                            self._edge(src_key, fn_key(sub, name))
+
+    def _scan_signals(self, fs: FileSym, fn: Func, scan_text: str) -> None:
+        """Signal emits -> signal nodes; connect/Callable string refs -> handlers."""
+        src_key = fn.key
         # signal emits -> signal nodes; connect/Callable string refs -> handlers
         for m in EMIT_RE.finditer(scan_text):
             sig = m.group(1) or m.group(2)
             if sig in fs.signals:
-                self._edge(src_key, f"{fs.path}::SIGNAL:{sig}", ty="signal")
+                self._edge(src_key, fs.path + SIGNAL_PREFIX + sig, ty="signal")
         if CONNECT_RE.search(scan_text):
             for m in STRING_NAME_RE.finditer(scan_text):
                 ref = m.group(1)
                 if ref in fs.funcs:
-                    self._edge(src_key, f"{fs.path}::{ref}", ty="signal")
+                    self._edge(src_key, fn_key(fs.path, ref), ty="signal")
                     # handlers fire on signal emit — entry points, traverse
-                    self.roots.add(f"{fs.path}::{ref}")
+                    self.roots.add(fn_key(fs.path, ref))
                 # cross-file: _on_* handlers commonly target other scripts
                 elif ref.startswith("_on_"):
                     self.referenced.add(f"*::{ref}")
@@ -535,13 +592,13 @@ class Graph:
             for m in CONNECT_METHOD_RE.finditer(scan_text):
                 ref = m.group(1)
                 if ref in fs.funcs:
-                    self._edge(src_key, f"{fs.path}::{ref}", ty="signal")
-                    self.roots.add(f"{fs.path}::{ref}")
+                    self._edge(src_key, fn_key(fs.path, ref), ty="signal")
+                    self.roots.add(fn_key(fs.path, ref))
                 else:
                     # inherited handler: resolve up the extends chain
                     anc = self._ancestor_def(fs, ref)
                     if anc and ref in self.files[anc].funcs:
-                        key = f"{anc}::{ref}"
+                        key = fn_key(anc, ref)
                         self._edge(src_key, key, ty="signal")
                         self.roots.add(key)
 
@@ -663,11 +720,11 @@ class Graph:
     def _emit_call(self, src: str, dst: str, fname: str) -> None:
         """Call edge + virtual-dispatch completion: a call resolved to a
         base class may land on any subclass override — mirror the edge."""
-        self._edge(src, f"{dst}::{fname}")
+        self._edge(src, fn_key(dst, fname))
         base = self.files[dst].class_name or dst
         for sub in self._subclasses.get(base, ()):
             if fname in self.files[sub].funcs:
-                self._edge(src, f"{sub}::{fname}")
+                self._edge(src, fn_key(sub, fname))
 
     def _chain_dst(self, var_types: dict, head: str, mid: str) -> str:
         """Resolve head.mid to the class declaring that member, or ''."""
@@ -712,14 +769,14 @@ class Graph:
             for script_rel in self.script_rels(fs):
                 for _, handler in fs.connections:
                     if handler in self.files[script_rel].funcs:
-                        key = f"{script_rel}::{handler}"
+                        key = fn_key(script_rel, handler)
                         self.roots.add(key)
-                        self._edge(f"{rel}::tscn", key, ty="signal")
-                self._edge(f"{rel}::tscn", f"{script_rel}::tscn", ty="attach")
+                        self._edge(rel + TSCN_SUFFIX, key, ty="signal")
+                self._edge(rel + TSCN_SUFFIX, script_rel + TSCN_SUFFIX, ty="attach")
             for inst in fs.instances:
                 inst_rel = self._res_to_rel(inst)
                 if inst_rel and inst_rel in self.files:
-                    self._edge(f"{rel}::tscn", f"{inst_rel}::tscn", ty="inst")
+                    self._edge(rel + TSCN_SUFFIX, inst_rel + TSCN_SUFFIX, ty="inst")
 
     def _res_to_rel(self, res_path: str) -> str:
         if not res_path:
@@ -794,10 +851,10 @@ class Graph:
 
             def target(cls: str, name: str) -> str:
                 if name in fs.funcs:
-                    return f"{rel}::{name}"
+                    return fn_key(rel, name)
                 class_file = self.class_map.get(cls, "")
                 if class_file and name in self.files[class_file].funcs:
-                    return f"{class_file}::{name}"
+                    return fn_key(class_file, name)
                 return ""
 
             for b in reg["binds"]:
@@ -862,11 +919,11 @@ class Graph:
             if len(parts) == 2:
                 cls_file = self.class_map.get(parts[0], "")
                 if cls_file and parts[1] in self.files[cls_file].funcs:
-                    dst = f"{cls_file}::{parts[1]}"
+                    dst = fn_key(cls_file, parts[1])
             elif name in fs.funcs:
-                dst = f"{rel}::{name}"
+                dst = fn_key(rel, name)
             elif hdr and name in self.files[hdr].funcs:
-                dst = f"{hdr}::{name}"
+                dst = fn_key(hdr, name)
             if dst:
                 src = container(site["line"])
                 if src and src != dst:
@@ -935,7 +992,7 @@ class Graph:
         while queue:
             cur = queue.popleft()
             for nxt in self.edges.get(cur, ()):  # forward edges
-                if nxt not in seen and not nxt.endswith("::tscn"):
+                if nxt not in seen and not nxt.endswith(TSCN_SUFFIX):
                     seen.add(nxt)
                     queue.append(nxt)
         self.reachable = seen
@@ -1055,7 +1112,7 @@ class Graph:
                 callers = sorted(self.reverse.get(key, ()))
                 callees = sorted(self.edges.get(key, ()))
                 out_lines.append(self._fmt_node(key, callers, callees))
-                nxt |= {c for c in callees + callers if not c.endswith("::tscn")}
+                nxt |= {c for c in callees + callers if not c.endswith(TSCN_SUFFIX)}
             frontier = nxt - seen_keys
             if not frontier:
                 break
@@ -1065,14 +1122,14 @@ class Graph:
         hits = []
         for rel, fs in self.files.items():
             if symbol in fs.funcs:
-                hits.append(f"{rel}::{symbol}")
+                hits.append(fn_key(rel, symbol))
             if fs.class_name == symbol:
-                hits.extend(f"{rel}::{f}" for f in fs.funcs)
+                hits.extend(fn_key(rel, f) for f in fs.funcs)
         if not hits:
             for rel, fs in self.files.items():
                 for name in fs.funcs:
                     if symbol.lower() in name.lower():
-                        hits.append(f"{rel}::{name}")
+                        hits.append(fn_key(rel, name))
         return hits[:10]
 
     def _fmt_node(self, key: str, callers: list[str], callees: list[str]) -> str:
@@ -1306,7 +1363,7 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
                 for rid, meta in zip(got["ids"], got["metadatas"])
             }
         for name, fn in fs.funcs.items():
-            rid = f"{rel}::{name}"
+            rid = fn_key(rel, name)
             current.add(rid)
             # signature line up front: better embeddings + agents see the IO
             # surface without opening the file

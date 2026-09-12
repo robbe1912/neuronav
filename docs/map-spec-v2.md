@@ -6,8 +6,8 @@ Adversarial cycle: designer spec v1 → 16-finding attack → merged v2 ([F#] = 
 NEW exports (fedges/fio untouched — 3D layer, search, showFnInfo unaffected):
 - `DATA.mwires: [[ty, sf, sfn, df, dfn, line, extra], …]`
   - call ← fedges-identical filters: `["call", sf, sfn, df, dfn, line, null]`
-  - var ← g.edges dsts endswith `::VAR:` (graph.py L404): `["var", sf, sfn, df, member, line, null]`
-  - signal ← tscn fs.connections resolved via script_rels mirroring _wire_tscn (graph.py L670-686): `["signal", tscn_f, SIGNAL_NAME, script_f, handler, 0, null]` [F5: sfn = signal name]
+  - var ← g.edges dsts endswith `::VAR:` (graph.py member-write emission sites; grammar constants `FN_KEY_SEP`/`VAR_PREFIX` in graph.py's fn-key block): `["var", sf, sfn, df, member, line, null]`
+  - signal ← tscn fs.connections resolved via script_rels mirroring graph.py `_wire_tscn`: `["signal", tscn_f, SIGNAL_NAME, script_f, handler, 0, null]` [F5: sfn = signal name]
 - `DATA.fns: {path: [[fn_name, line], …]}` from g.files[p].funcs (complete roster)
 - `DATA.meta: {sig_resolved: n, sig_unresolved: m}` [F13]
 

@@ -70,7 +70,9 @@ An extractor module must expose:
 1. Create `extractors/<lang>.py` implementing `parse(path, rel)` returning
    a FileSym-like (reuse `extractors.model.FileSym` or define compatible
    dataclasses). Define `ENTRY_RULES` for its entry points.
-2. Register suffixes in `extractors/__init__.py::EXTENSIONS`.
+2. Register suffixes in `extractors/__init__.py::EXTENSIONS`, re-exporting
+    any language facts `graph.py` needs — the graph imports the package
+    only, never an extractor submodule (acyclic).
 3. Make sure the suffixes are indexed: `nav.EXTS` comes from the
     config's `"extensions"` list (default `[".gd", ".tscn"]`) — add them
     there (a second config like `config/neuronav.json` can index a different

@@ -899,26 +899,7 @@ if __name__ == "__main__":
         import graph as _graph
 
         rep = _clusters.crosstalk(clusters(), _graph.get_graph())
-        print(
-            f"crosstalk: {rep['clusters']} clusters, "
-            f"internal {rep['internal_edges']} edges, "
-            f"cross-cluster {rep['external_edges']} edges "
-            f"({rep['external_ratio'] * 100:.1f}% of clustered)"
-        )
-        if rep["unclustered_endpoint_edges"]:
-            print(f"  ({rep['unclustered_endpoint_edges']} edges touch unclustered files)")
-        print("per cluster (top 10 by external):")
-        for r in rep["by_cluster"][:10]:
-            print(
-                f"  [{r['id']:>2}] {r['label'][:34]:<34} n={r['size']:<3}"
-                f" internal {r['internal']:<4} out {r['external_out']:<4}"
-                f" in {r['external_in']:<4} ext {r['external_share'] * 100:.0f}%"
-            )
-        if rep["worst_pairs"]:
-            print("worst pairs:")
-            for wp in rep["worst_pairs"]:
-                tops = ", ".join(f"{t['pair']} x{t['w']}" for t in wp["top_files"])
-                print(f"  {wp['a']} <-> {wp['b']} : {wp['edges']} edges (top: {tops})")
+        print(_clusters.fmt_crosstalk(rep, align=True))
     elif cmd == "drop":
         _memo_drop_current()  # the store is going away
         cl = client()

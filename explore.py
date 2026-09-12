@@ -78,13 +78,14 @@ def _seed_hits(query: str, n: int) -> tuple[list[dict], bool]:
 def _flow(g, path: str, fn_name: str) -> str:
     """One-line callers/callees header from the structural graph
     (g.edges = out-adjacency, g.reverse = in-adjacency)."""
-    key = f"{path}::{fn_name}"
+    key = graph.fn_key(path, fn_name)
     callers: set = g.reverse.get(key) or set()
     callees: set = g.edges.get(key) or set()
     fmt = lambda keys: ", ".join(
         # name shown verbatim: _build_data stays _build_data
         # (lstrip("_") used to mangle it to build_data)
-        k.split("::", 1)[0].rsplit("/", 1)[-1] + "::" + k.split("::", 1)[1][:24]
+        graph.split_key(k).rsplit("/", 1)[-1] + graph.FN_KEY_SEP
+        + k.split(graph.FN_KEY_SEP, 1)[1][:24]
         for k in sorted(keys)[:3]
     ) + (f" +{len(keys) - 3} more" if len(keys) > 3 else "")
     return f"callers: {len(callers)} ({fmt(callers) if callers else 'none - entry or dead'}) | callees: {len(callees)}"
