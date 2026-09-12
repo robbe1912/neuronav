@@ -2706,60 +2706,7 @@ function popFocus() {
   tweenCamTo(f.target, f.cam);
   applyVisibility();
 }
-function tick() {
-  const nowT = performance.now();
-  // map selection pulse: keep the pane repainting while the amber ring
-  // breathes; drop it at end of life (pane closed -> pulse frozen, not lost)
-  if (mapPulse && mapVisible) {
-    if (performance.now() - mapPulse.t0 > MAP_PULSE_MS) mapPulse = null;
-    drawMapPane();
-  }
-  // dash-flow while focusing: offsets walk each edge along its s→t vertex
-  // order (caller→callee), with a per-bucket phase hashed from the bucket
-  // index so the flow reads per-edge instead of one global march. Overview
-  // keeps dashed fully off — USE_DASH leaves the shader, so nothing
-  // shimmers at rest.
-  const flowT = nowT / 1000;
-  bucketMat.forEach((em, i) => {
-    if (edgeFlowOn) {
-      if (!em.dashed) { em.dashed = true; em.dashSize = 8; em.gapSize = 5; em.needsUpdate = true; }
-      const period = em.dashSize + em.gapSize;
-      const hashI = (i * 2654435761) % 997 / 997 * period;
-      em.dashOffset = -((flowT * FLOW_SPEED + hashI * 13) % period);
-    } else if (em.dashed) {
-      em.dashed = false; em.dashOffset = 0; em.needsUpdate = true;
-    }
-  });
-  // focus arcs share the dash-flow direction cue (single material — the
-  // per-link phase lives in the lineDistance attribute)
-  if (focusArcs && focusArcs.lines.visible && edgeFlowOn) {
-    const fp = focusArcs.mat.dashSize + focusArcs.mat.gapSize;
-    focusArcs.mat.dashOffset = -((flowT * FLOW_SPEED) % fp);
-  }
-  // fn wires: dash-flow direction cue + LOD fade — the layer dissolves as
-  // the camera pulls away from the ball (1px salad reads as noise from afar)
-  if (fnLines && fnLines.visible && edgeFlowOn) {
-    const fp = 7 + 4;   // dashSize + gapSize of the fn-wire dashed material
-    fnLines.material.dashOffset = -((flowT * FLOW_SPEED) % fp);
-  }
-  if (fnLines && compactBallR > 0 && hubRing) {
-    const cd = camera.position.distanceTo(hubRing.position);
-    let lod = Math.max(0, Math.min(1, (2.8 * compactBallR - cd) / (0.9 * compactBallR)));
-    // the fade is a FAR-ZOOM noise control; when the focus-state gate
-    // serves the tier the paint must be FULL — dim dots at the default
-    // focus camera (0.60/0.40) made a geometrically-served state read
-    // as spheres-only (skeptic r5-final objection)
-    if (_lodServe) lod = 1;
-    fnLines.material.opacity = 0.75 * lod;
-    if (fnQuiet) fnQuiet.material.opacity = 0.16 * lod;
-    if (fnBus) fnBus.material.opacity = 0.35 + 0.65 * lod;
-    if (fnJDot) fnJDot.material.opacity = 0.35 + 0.55 * lod;
-    if (fnArrows) fnArrows.material.opacity = 0.9 * lod;
-    _oDot = fnJDot ? 0.35 + 0.55 * lod : 0;
-    _oArrow = fnArrows ? 0.9 * lod : 0;
-  } else { _oDot = 0; _oArrow = 0; }
-  // conduit width is SCREEN-CONSTANT per segment: radius ∝ each segment's own
-  // distance to the camera (~2.4px on screen at every depth, next to 1px wires)
+
 // round-5 LOD gate (user-acceptance): a bus element is visible only when
 // the boxes it serves RESOLVE on screen — at far zoom whole trunks read
 // as "nowhere to nowhere" and sub-junction dots as droplets on wires.
@@ -2854,6 +2801,61 @@ function busLodInit() {
   };
   return { res, resA, trOK, stOK, legOK, pxOf, tkPx };
 }
+
+function tick() {
+  const nowT = performance.now();
+  // map selection pulse: keep the pane repainting while the amber ring
+  // breathes; drop it at end of life (pane closed -> pulse frozen, not lost)
+  if (mapPulse && mapVisible) {
+    if (performance.now() - mapPulse.t0 > MAP_PULSE_MS) mapPulse = null;
+    drawMapPane();
+  }
+  // dash-flow while focusing: offsets walk each edge along its s→t vertex
+  // order (caller→callee), with a per-bucket phase hashed from the bucket
+  // index so the flow reads per-edge instead of one global march. Overview
+  // keeps dashed fully off — USE_DASH leaves the shader, so nothing
+  // shimmers at rest.
+  const flowT = nowT / 1000;
+  bucketMat.forEach((em, i) => {
+    if (edgeFlowOn) {
+      if (!em.dashed) { em.dashed = true; em.dashSize = 8; em.gapSize = 5; em.needsUpdate = true; }
+      const period = em.dashSize + em.gapSize;
+      const hashI = (i * 2654435761) % 997 / 997 * period;
+      em.dashOffset = -((flowT * FLOW_SPEED + hashI * 13) % period);
+    } else if (em.dashed) {
+      em.dashed = false; em.dashOffset = 0; em.needsUpdate = true;
+    }
+  });
+  // focus arcs share the dash-flow direction cue (single material — the
+  // per-link phase lives in the lineDistance attribute)
+  if (focusArcs && focusArcs.lines.visible && edgeFlowOn) {
+    const fp = focusArcs.mat.dashSize + focusArcs.mat.gapSize;
+    focusArcs.mat.dashOffset = -((flowT * FLOW_SPEED) % fp);
+  }
+  // fn wires: dash-flow direction cue + LOD fade — the layer dissolves as
+  // the camera pulls away from the ball (1px salad reads as noise from afar)
+  if (fnLines && fnLines.visible && edgeFlowOn) {
+    const fp = 7 + 4;   // dashSize + gapSize of the fn-wire dashed material
+    fnLines.material.dashOffset = -((flowT * FLOW_SPEED) % fp);
+  }
+  if (fnLines && compactBallR > 0 && hubRing) {
+    const cd = camera.position.distanceTo(hubRing.position);
+    let lod = Math.max(0, Math.min(1, (2.8 * compactBallR - cd) / (0.9 * compactBallR)));
+    // the fade is a FAR-ZOOM noise control; when the focus-state gate
+    // serves the tier the paint must be FULL — dim dots at the default
+    // focus camera (0.60/0.40) made a geometrically-served state read
+    // as spheres-only (skeptic r5-final objection)
+    if (_lodServe) lod = 1;
+    fnLines.material.opacity = 0.75 * lod;
+    if (fnQuiet) fnQuiet.material.opacity = 0.16 * lod;
+    if (fnBus) fnBus.material.opacity = 0.35 + 0.65 * lod;
+    if (fnJDot) fnJDot.material.opacity = 0.35 + 0.55 * lod;
+    if (fnArrows) fnArrows.material.opacity = 0.9 * lod;
+    _oDot = fnJDot ? 0.35 + 0.55 * lod : 0;
+    _oArrow = fnArrows ? 0.9 * lod : 0;
+  } else { _oDot = 0; _oArrow = 0; }
+  // conduit width is SCREEN-CONSTANT per segment: radius ∝ each segment's own
+  // distance to the camera (~2.4px on screen at every depth, next to 1px wires)
   fnLodV = { bollardsShown: 0, bollardsGated: 0, conduitsShown: 0, conduitsGated: 0,
              chevShown: 0, minChevPx: Infinity, minServedBoxPx: Infinity, minBollardPx: Infinity,
              serveFi: -1, servePx: -1, oDot: _oDot, oArrow: _oArrow };
