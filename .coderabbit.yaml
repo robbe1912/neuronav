@@ -1,0 +1,42 @@
+# CodeRabbit configuration — neuronav
+# OSS review seat alongside the in-house pair-reviewer process (see AGENTS.md).
+language: en-US
+tone_instructions: >-
+  Terse evidence-first engineer. Flag correctness, determinism (seeded layout,
+  no Math.random/Date.now in the viz.py JS template), and test-contract breaks.
+  No ceremony, no marketing.
+reviews:
+  profile: chill
+  path_filters:
+    - "!.team_scratch/**"
+    - "!qa/**"
+    - "!**/graph.html"
+    - "!vendor/three-0.160.0/**"
+    - "!.tmp/**"
+  path_instructions:
+    - path: "viz.py"
+      instructions: >-
+        viz.py embeds the entire JS template as one string; JS is edited inline.
+        Laws: layout/export paths must stay deterministic (seeded rng 1234, no
+        unordered iteration, index/lexical final tiebreaks on every sort);
+        window.__dbg harness-contract entries must never be removed; graph.html
+        bakes must be regenerated after every template edit. Prefer minimal
+        diffs; the template executes top-to-bottom at boot (TDZ).
+    - path: "extractors/**"
+      instructions: >-
+        Extractors feed byte-stable exports: fixed sort keys, tiebreaks and
+        mention-count floors (CPP_MENTION_FLOOR=2) are load-bearing and pinned
+        by test_verifier/test_pyhard/test_cpphard. FileSym and
+        scan_calls(name, line, kind) are public contracts.
+    - path: "tests/**"
+      instructions: >-
+        Suites are self-contained and config-agnostic; they self-select config
+        via internal setdefault and must never see NEURONAV_CONFIG exported.
+        A check must fail on a plausible bug, never pin implementation details.
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: false
