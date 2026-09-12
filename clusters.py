@@ -59,6 +59,9 @@ MERGE_SIM = 0.55       # centroid cosine needed to merge a small subcluster
 SPLIT_SIM = 0.65       # default agglomerative similarity floor (dist 0.35)
 RECURSE_SIM = 0.70     # second-pass floor for still-big subclusters (0.30)
 MAX_DEPTH = 2
+PART_SOFT_CAP = 66     # routing passes stop adding to a part at this size
+PART_CAP = 70          # hard mega-blob cap the final enforce pass guarantees
+CHUNK_MIN = 55         # deterministic chunk fill target when a part refuses every cut
 
 TOKEN_CAMEL_RE = re.compile(r"([a-z0-9])([A-Z])")
 
@@ -1030,33 +1033,34 @@ def _split_units(
     return parts
 
 
-def finalize(
-    raw: list[dict], ids: list[str], mat, split_sim: float = SPLIT_SIM, blob_min: int = BLOB_MIN,
-    adj: dict[str, dict[str, float]] | None = None,
-    units: list[list[str]] | None = None,
+def _pass_split_units(
+    raw: list[dict], rows: dict[str, int], mat, unit_of: dict[str, list[str]],
+    split_sim: float, blob_min: int,
 ) -> list[dict]:
-    """Split mega-blobs, merge tiny subclusters, label everything.
-
-    raw: [{id, size, paths: [(path, class_name)]}] from the engine.
-    adj: file-level weighted structural adjacency (hub gating + infra
-    routing context); optional for the legacy kNN engine.
-    units: welded scene+script groups from the engine; blob splitting
-    runs on unit centroids so a weld is never divided.
-    Returns same dicts plus label / confidence / method per cluster.
-    """
-    rows = {p: i for i, p in enumerate(ids)}
-    unit_of: dict[str, list[str]] = {p: list(u) for u in (units or []) for p in u}
     parts: list[dict] = []
     for c in raw:
         if c["size"] > blob_min:
             parts.extend(_split_units(c, rows, mat, unit_of, split_sim, depth=1))
         else:
             parts.append({"paths": list(c["paths"]), "size": c["size"]})
+    return parts
+
+
+def _pass_pack_split(parts: list[dict], rows: dict[str, int], mat) -> list[dict]:
     # surgical asset-pack split for genuinely mixed pack communities
-    parts = [p for c in parts for p in _split_pack_cluster(c, rows, mat)]
+    return [p for c in parts for p in _split_pack_cluster(c, rows, mat)]
 
-    parts = _merge_small(parts, rows, mat)
 
+def _pass_merge_small(parts: list[dict], rows: dict[str, int], mat) -> list[dict]:
+    return _merge_small(parts, rows, mat)
+
+
+def _pass_pack_consolidate(
+    parts: list[dict], unit_of: dict[str, list[str]], units: list[list[str]] | None
+) -> tuple[list[dict], dict[str, list[str]]]:
+    """Pack consolidation pass. Returns (parts, unit_of): when welded units
+    exist, unit_of is rebound to the engine's original unit lists (content
+    identical to the copies built in finalize) for the passes downstream."""
     # pack consolidation: the split/merge passes above can leave pack
     # scenes strayed into other parts (audit: five fire scenes in earth,
     # earth files in the world blob). Each pack joins the part holding
@@ -1096,13 +1100,13 @@ def finalize(
                 home, hn = sorted(cnt.items(), key=lambda kv: (-kv[1], kv[0]))[0]
                 if hn * 5 < pack_total[k] * 2:  # home must hold >=40% of pack
                     continue
-                if len(parts[home]["paths"]) > 66:
+                if len(parts[home]["paths"]) > PART_SOFT_CAP:
                     # plurality part oversized: next-best eligible part
                     home = next(
                         (
                             pi
                             for pi, _n in sorted(cnt.items(), key=lambda kv: (-kv[1], kv[0]))
-                            if pi != home and len(parts[pi]["paths"]) <= 66
+                            if pi != home and len(parts[pi]["paths"]) <= PART_SOFT_CAP
                         ),
                         -1,
                     )
@@ -1114,7 +1118,7 @@ def finalize(
                     share, tot = _part_share(parts[pi], k)
                     if tot and share * 5 >= tot:
                         continue  # strayed part is itself pack-dominated
-                    budget = 70 - len(parts[home]["paths"])
+                    budget = PART_CAP - len(parts[home]["paths"])
                     if budget <= 0:
                         continue
                     moved_n = 0
@@ -1140,7 +1144,12 @@ def finalize(
             for p in parts:
                 p["size"] = len(p["paths"])
             parts = [p for p in parts if p["size"] > 0]
+    return parts, unit_of
 
+
+def _pass_usage(
+    parts: list[dict], adj: dict[str, dict[str, float]] | None, unit_of: dict[str, list[str]]
+) -> list[dict]:
     # post-split usage pass: the blob split reassigns whole units, so a
     # pure-script file whose every structural tie (either direction,
     # weighted) now lives in exactly one other part follows it there
@@ -1176,7 +1185,7 @@ def finalize(
                     if not w:
                         continue
                     (t, tw) = sorted(w.items(), key=lambda kv: (-kv[1], kv[0]))[0]
-                    if tw >= 1.0 and len(w) == 1 and len(parts[t]["paths"]) <= 66:
+                    if tw >= 1.0 and len(w) == 1 and len(parts[t]["paths"]) <= PART_SOFT_CAP:
                         moves.append((path, pi, t))
             if not moves:
                 break
@@ -1187,7 +1196,12 @@ def finalize(
             for p in parts:
                 p["size"] = len(p["paths"])
             parts = [p for p in parts if p["size"] > 0]
+    return parts
 
+
+def _pass_scene_majority(
+    parts: list[dict], adj: dict[str, dict[str, float]] | None, unit_of: dict[str, list[str]]
+) -> list[dict]:
     # scene structural majority: a scene whose weighted structural ties
     # (both directions, whole welded unit) overwhelmingly point into ONE
     # other part belongs there, embedding similarity notwithstanding
@@ -1198,6 +1212,10 @@ def finalize(
     # NOTE: iterate ALL .tscn paths — pure composition scenes have no
     # attached script and therefore no welded unit.
     if adj:
+        rev: dict[str, dict[str, float]] = defaultdict(dict)
+        for s, d in adj.items():
+            for t2, w2 in d.items():
+                rev[t2][s] = w2
         for _round in range(2):
             part_of4: dict[str, int] = {}
             for pi, p in enumerate(parts):
@@ -1228,7 +1246,7 @@ def finalize(
                 if tot < 10.0:
                     continue
                 (t, tw) = sorted(w2.items(), key=lambda kv: (-kv[1], kv[0]))[0]
-                if tw * 10 >= tot * 6 and own < tw and len(parts[t]["paths"]) <= 66:
+                if tw * 10 >= tot * 6 and own < tw and len(parts[t]["paths"]) <= PART_SOFT_CAP:
                     moves2.append((u, pi, t))
             if not moves2:
                 break
@@ -1241,22 +1259,27 @@ def finalize(
             for p in parts:
                 p["size"] = len(p["paths"])
             parts = [p for p in parts if p["size"] > 0]
+    return parts
 
+
+def _pass_cap_enforce(
+    parts: list[dict], rows: dict[str, int], mat, unit_of: dict[str, list[str]]
+) -> list[dict]:
     # final cap enforcement: the routing passes above can pile files into
     # one part faster than their individual caps account for. Any part
     # over the mega-blob cap gets unit-split at progressively stricter
     # similarity until it actually divides; a pathological part that
     # refuses every cut is chunked deterministically by sorted path.
     for _guard in range(8):
-        bigs = [p for p in parts if p["size"] > 70]
+        bigs = [p for p in parts if p["size"] > PART_CAP]
         if not bigs:
             break
-        parts = [p for p in parts if p["size"] <= 70]
+        parts = [p for p in parts if p["size"] <= PART_CAP]
         for b in sorted(bigs, key=lambda p: -p["size"]):
             done = False
             for s in (0.65, 0.60, 0.55, 0.50, 0.45, 0.40):
                 got = _split_units(b, rows, mat, unit_of, s, depth=MAX_DEPTH)
-                if len(got) > 1 and max(g["size"] for g in got) <= 70:
+                if len(got) > 1 and max(g["size"] for g in got) <= PART_CAP:
                     parts.extend(got)
                     done = True
                     break
@@ -1276,12 +1299,15 @@ def finalize(
             for g in ugroups:
                 ents = [(q, dict(b["paths"]).get(q, "")) for q in g]
                 chunk.extend(ents)
-                if len(chunk) >= 55:
+                if len(chunk) >= CHUNK_MIN:
                     parts.append({"paths": sorted(chunk), "size": len(chunk)})
                     chunk = []
             if chunk:
                 parts.append({"paths": sorted(chunk), "size": len(chunk)})
+    return parts
 
+
+def _pass_stray_sweep(parts: list[dict], unit_of: dict[str, list[str]]) -> list[dict]:
     # final stray sweep: post-enforce composition can leave 1-2 pack files
     # in wrong parts — pull them to the pack's plurality home
     for _sweep in range(2):
@@ -1298,10 +1324,10 @@ def finalize(
             if pack_tot2[k] < 3:
                 continue
             home, hn = sorted(pack_parts2[k].items(), key=lambda kv: (-kv[1], kv[0]))[0]
-            if hn * 5 < pack_tot2[k] * 2 or len(parts[home]["paths"]) >= 70:
+            if hn * 5 < pack_tot2[k] * 2 or len(parts[home]["paths"]) >= PART_CAP:
                 continue
             for pi in sorted(pack_parts2[k]):
-                if pi == home or len(parts[home]["paths"]) >= 70:
+                if pi == home or len(parts[home]["paths"]) >= PART_CAP:
                     continue
                 share = pack_parts2[k].get(pi, 0)
                 n_scenes = sum(1 for q, _ in parts[pi]["paths"] if q.endswith(".tscn"))
@@ -1327,9 +1353,11 @@ def finalize(
         for p in parts:
             p["size"] = len(p["paths"])
         parts = [p for p in parts if p["size"] > 0]
+    return parts
 
+
+def _pass_tiny_merge(parts: list[dict]) -> list[dict]:
     # tiny-part merge: fold dir-labeled parts of <=4 files into the larger
-    # part sharing their dir identity (keeps the cluster count in band)
     # part sharing their dir identity (keeps the cluster count in band)
     for _merge_round in range(2):
         changed = False
@@ -1352,7 +1380,7 @@ def finalize(
                 continue
             best, bn = -1, 0
             for pj, q in enumerate(parts):
-                if pj == pi or not (5 <= len(q["paths"]) <= 66):
+                if pj == pi or not (5 <= len(q["paths"]) <= PART_SOFT_CAP):
                     continue
                 n_shared = seg_count.get((pj, my_seg), 0)
                 if n_shared > bn or (n_shared == bn and n_shared > 0 and best >= 0 and len(q["paths"]) > len(parts[best]["paths"])):
@@ -1373,6 +1401,12 @@ def finalize(
                 p["size"] = len(p["paths"])
         if not changed:
             break
+    return parts
+
+
+def _pass_label(
+    parts: list[dict], rows: dict[str, int], mat, adj: dict[str, dict[str, float]] | None
+) -> list[dict]:
     parts.sort(key=lambda c: (-c["size"], c["paths"][0][0] if c["paths"] else ""))
     for i, c in enumerate(parts):
         c["id"] = i
@@ -1402,6 +1436,40 @@ def finalize(
         used.add(label)
         c["label"], c["confidence"], c["method"] = label, conf, method
     return parts
+
+
+def finalize(
+    raw: list[dict], ids: list[str], mat, split_sim: float = SPLIT_SIM, blob_min: int = BLOB_MIN,
+    adj: dict[str, dict[str, float]] | None = None,
+    units: list[list[str]] | None = None,
+) -> list[dict]:
+    """Split mega-blobs, merge tiny subclusters, label everything.
+
+    raw: [{id, size, paths: [(path, class_name)]}] from the engine.
+    adj: file-level weighted structural adjacency (hub gating + infra
+    routing context); optional for the legacy kNN engine.
+    units: welded scene+script groups from the engine; blob splitting
+    runs on unit centroids so a weld is never divided.
+    Returns same dicts plus label / confidence / method per cluster.
+
+    Pipeline of ordered passes over the parts list (same order as the
+    original monolith; each pass is the verbatim stage):
+    split-units -> pack-split -> merge-small -> pack-consolidate ->
+    usage -> scene-majority -> cap-enforce -> stray-sweep -> tiny-merge
+    -> label.
+    """
+    rows = {p: i for i, p in enumerate(ids)}
+    unit_of: dict[str, list[str]] = {p: list(u) for u in (units or []) for p in u}
+    parts = _pass_split_units(raw, rows, mat, unit_of, split_sim, blob_min)
+    parts = _pass_pack_split(parts, rows, mat)
+    parts = _pass_merge_small(parts, rows, mat)
+    parts, unit_of = _pass_pack_consolidate(parts, unit_of, units)
+    parts = _pass_usage(parts, adj, unit_of)
+    parts = _pass_scene_majority(parts, adj, unit_of)
+    parts = _pass_cap_enforce(parts, rows, mat, unit_of)
+    parts = _pass_stray_sweep(parts, unit_of)
+    parts = _pass_tiny_merge(parts)
+    return _pass_label(parts, rows, mat, adj)
 
 
 def coarse_groups(fine: list[dict], ids: list[str], mat, cut: float = 0.45) -> list[dict]:
