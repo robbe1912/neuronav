@@ -809,9 +809,11 @@ def clusters(
 def export_base() -> dict[str, object]:
     """Dump ids+embeddings+metadata to tracked gz shards. No doc text
     (git has the file contents; import re-attaches from the checkout).
-    Atomic: new shards + manifest land in a tmp dir and are swapped in
-    only after every write succeeded, so an interrupted export never
-    destroys the previous base."""
+    Atomic swap (issue #102): every new file lands via one os.replace
+    (manifest last, the coherence marker) and stale shards are removed
+    only afterward, so a failed run never destroys the previous base —
+    and the gzip header is mtime-pinned, so the same store re-exports
+    byte-identical shards."""
     with _db_lock():
         col = _collection()
         if col.count() == 0:
@@ -841,14 +843,24 @@ def export_base() -> dict[str, object]:
         for i in range(0, len(rows), SHARD_SIZE):
             chunk = rows[i : i + SHARD_SIZE]
             shard = tmp / f"shard-{shards:04d}.jsonl.gz"
-            with gzip.open(shard, "wt", encoding="utf-8", compresslevel=9) as f:
+            # mtime=0 pins the gzip header (no timestamp; the only other
+            # variable field, the shard's own basename, is already stable)
+            with gzip.GzipFile(
+                filename=str(shard), mode="wb", compresslevel=9, mtime=0
+            ) as f:
                 for rid, emb, meta in chunk:
                     f.write(
-                        json.dumps(
-                            {"id": rid, "emb": emb, "meta": meta},
-                            ensure_ascii=False,
-                        )
-                        + "\n"
+                        (
+                            json.dumps(
+                                {"id": rid, "emb": emb, "meta": meta},
+                                ensure_ascii=False,
+                                # chroma hands metadatas back in no
+                                # guaranteed key order — canonicalize or
+                                # the shard bytes wobble between exports
+                                sort_keys=True,
+                            )
+                            + "\n"
+                        ).encode("utf-8")
                     )
             shards += 1
         manifest = {
@@ -862,10 +874,19 @@ def export_base() -> dict[str, object]:
         (tmp / MANIFEST_NAME).write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
         )
+        # swap-in (issue #102): os.replace is the portable atomic
+        # overwrite — Path.rename onto an existing target raises
+        # WinError 183 on Windows, which killed every second export
+        # after the old shards were already gone. All new files land
+        # first, nothing existing is deleted until then.
+        names = sorted(p.name for p in tmp.iterdir())
+        for name in names:
+            if name != MANIFEST_NAME:
+                os.replace(tmp / name, BASE_DIR / name)
+        os.replace(tmp / MANIFEST_NAME, BASE_DIR / MANIFEST_NAME)
         for old in BASE_DIR.glob("shard-*.jsonl.gz"):
-            old.unlink()
-        for f in tmp.iterdir():
-            f.rename(BASE_DIR / f.name)
+            if old.name not in names:
+                old.unlink()
         tmp.rmdir()
         return manifest
 

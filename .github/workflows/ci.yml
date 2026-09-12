@@ -29,3 +29,5 @@ jobs:
         run: python -X utf8 tests/test_searchtext.py
       - name: project-mode (onboarding, discovery precedence, viz-as-addon)
         run: python -X utf8 tests/test_project_mode.py
+      - name: baseindex (export/import shards, second-run idempotence, issue #102)
+        run: python -X utf8 tests/test_baseindex.py
