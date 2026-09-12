@@ -54,8 +54,8 @@ WFUSED_WEIGHTS = (1.0, 0.7)  # (vec, bm25) — Main-pinned weighted fusion vs un
 # neighbor. Winner picked from the deterministic GB_LAMBDAS × GB_RRF_KS
 # sweep (--set sweep) on the golden set, real embeds, double-run —
 # numbers in bench/RESULTS.md.
-GB_LAMBDA = 1.0
-GB_RRF_K = 60.0
+GB_LAMBDA = 0.25  # swept winner: λ 0.25 @ rrf_k 30 (h1 +0.08 vs λ=0, double-run stable)
+GB_RRF_K = 30.0  # every λ ≥ 0.5 lost to plain fusion; GRAPH_BOOST default stays 0.0
 GB_LAMBDAS = (0.0, 0.25, 0.5, 1.0, 2.0)
 GB_RRF_KS = (30.0, 60.0, 120.0)
 
