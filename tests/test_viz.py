@@ -6,9 +6,9 @@ import sys
 import re
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import TimeoutError as PwTimeout, sync_playwright
 
-from _page_harness import CheckLog, launch, open_page, serve
+from _page_harness import CheckLog, launch, open_page, quiesce, require_fresh_bake, serve
 
 ROOT = Path(__file__).resolve().parents[1]
 SHOTS = ROOT / ".tmp" / "shots"
@@ -25,8 +25,56 @@ import nav  # noqa: E402  (the bake lives in the active config's state dir)
 LOG = CheckLog()
 check = LOG.check  # the 157 call sites below keep their bare check(...) form
 
+# [#123] readiness helpers — waits key on observable state (search rows
+# present, map built, page quiescent), never on blanket sleeps.
+
+
+def wait_rows(page, title=None, timeout: int = 4000):
+    """Search rows render async (debounced) — wait for the rows (or the
+    exact path-suffixed row a click targets) instead of sleeping a fixed
+    interval. Stem searches pass no title: row titles are full paths, a
+    stem never suffix-matches."""
+    sel = (f"#searchResults .row[title$='{title}']" if title
+           else "#searchResults .row")
+    page.wait_for_selector(sel, timeout=timeout)
+
+
+def map_ready(page, timeout: int = 4000):
+    """Focus-driven 2D map build done (layout + rects) before any map
+    read — replaces the post-focus blanket sleeps. Degrades loudly when
+    the map never builds: sections own null-guards that SKIP by name, and
+    the executed-check floor turns a wholesale map death into a breach
+    instead of a crash."""
+    try:
+        page.wait_for_function(
+            "() => window.__dbg.mapLayout !== null && "
+            "(window.__dbg.mapRects || []).length > 0", timeout=timeout)
+        return True
+    except PwTimeout:
+        print("note: map layout never readied — map reads below see a "
+              "dead map (precondition gate; the floor settles it)")
+        return False
+
+
+# [#123] executed-check floor: SKIPs stay loud for genuine data-gates,
+# but a run that executes too few checks FAILS — a render regression that
+# destroys a section's precondition used to convert dozens of checks into
+# silent skips while the suite stayed green. FLOOR_MAP rides on the
+# data-level DATA.mwires gate (it survives render breakage); the margins
+# absorb the pose-sensitive sub-branches (wire-point / card-pose scans)
+# that legitimately skip when the camera leaves no probeable target.
+# Pinned to the frozen CI corpus — foreign corpora execute different
+# counts and the breach message says so (tests/AGENTS.md).
+FLOOR_BASE = 80
+FLOOR_MAP = 70
+
 
 def main():
+    # [#89] stale-bake refusal BEFORE anything is served: the harness is
+    # read-only — it measures the active config's bake, never the
+    # template, and a bake older than viz.py would green-light
+    # yesterday's product. Loud refusal, remedy named, no auto-bake.
+    require_fresh_bake(nav.STATE_DIR)
     # bake is per-project now — the shared harness serves the active
     # config's state dir on an ephemeral loopback port (#132)
     httpd, port = serve(nav.STATE_DIR)
@@ -38,6 +86,9 @@ def main():
 
 
 def run_tests(port: int):
+    # [#123] pre-bound here so a closed fn_info gate never raises
+    # NameError - a closed gate reads as None, the floor settles it
+    latch_pin_via_list = None
     with sync_playwright() as pw:
         browser = launch(pw)
         # #98-class console/pageerror capture rides open_page(errors=...)
@@ -180,7 +231,7 @@ def run_tests(port: int):
             highlights in place, a results-row click is that click."""
             page.fill("#search", tok)
             page.dispatch_event("#search", "input")
-            page.wait_for_timeout(600)
+            wait_rows(page, best_path)
             page.evaluate(
                 """(p) => { const rows = [...document.querySelectorAll('#searchResults .row')];
                      // file rows carry title=path; rows bind onpointerdown
@@ -189,7 +240,7 @@ def run_tests(port: int):
                      r.dispatchEvent(new PointerEvent('pointerdown',
                                                       { bubbles: true })); }""",
                 best_path)
-            page.wait_for_timeout(1200)
+            quiesce(page)
             # depth escalation (#33 contract): the slider is respected, and
             # the fn tier renders the wires that exist within depth N. A
             # depth-1 ball can be wire-free; step the slider 1->2->3 until
@@ -209,16 +260,16 @@ def run_tests(port: int):
                 page.evaluate(
                     """(v) => { const el = document.getElementById('depth');
                          el.value = v; el.dispatchEvent(new Event('input')); }""", dv)
-                page.wait_for_timeout(1200)
+                quiesce(page)
                 page.fill("#search", tok)
                 page.dispatch_event("#search", "input")
-                page.wait_for_timeout(400)
+                wait_rows(page, best_path)
                 page.evaluate(
                     """(p) => { const rows = [...document.querySelectorAll('#searchResults .row')];
                          const r = rows.find(x => x.getAttribute('title') === p) || rows[0];
                          r.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); }""",
                     best_path)
-                page.wait_for_timeout(1200)
+                quiesce(page)
 
         # 3z. highlight-only search (issue #33): typing must NOT change the
         # 3D view - no focus, no camera tween, no fn tier from the keyboard.
@@ -226,7 +277,7 @@ def run_tests(port: int):
             "() => window.__dbg.alphaTgt.reduce((s, a) => s + (a > 0.5 ? 1 : 0), 0)")
         page.fill("#search", tok)
         page.dispatch_event("#search", "input")
-        page.wait_for_timeout(600)
+        wait_rows(page)
         inert = page.evaluate(
             """() => { const d = window.__dbg;
                  let hl = 0; const a = d.hlArr || [];
@@ -1370,7 +1421,7 @@ def run_tests(port: int):
         # true boot state; the map pane consumes one press when open).
         page.keyboard.press("Escape")
         page.keyboard.press("Escape")
-        page.wait_for_timeout(400)
+        quiesce(page, 4000)
         check("Escape returns to the overview (focus cleared)",
               page.evaluate("() => window.__dbg.focusFileIdx") < 0
               and page.evaluate("() => window.__dbg.fnMesh") is None,
@@ -1403,13 +1454,13 @@ def run_tests(port: int):
             stem39 = hub39["path"].split("/")[-1].rsplit(".", 1)[0].lower()
             page.fill("#search", stem39)
             page.dispatch_event("#search", "input")
-            page.wait_for_timeout(700)
+            wait_rows(page, hub39["path"])
             page.evaluate(
                 """(p) => { const rows = [...document.querySelectorAll('#searchResults .row')];
                      const r = rows.find(x => x.getAttribute('title') === p) || rows[0];
                      r.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); }""",
                 hub39["path"])
-            page.wait_for_timeout(1500)
+            quiesce(page)
             st39 = page.evaluate(
                 """() => { const d = window.__dbg;
                      return { fi: d.focusFileIdx, inst: d.showInst,
@@ -1429,7 +1480,7 @@ def run_tests(port: int):
             page.evaluate(
                 """() => { const el = document.getElementById('depth');
                      el.value = 2; el.dispatchEvent(new Event('input')); }""")
-            page.wait_for_timeout(600)
+            quiesce(page, 4000)
             noRefight = page.evaluate(
                 "() => ({ inst: window.__dbg.showInst, fi: window.__dbg.focusFileIdx })")
             check("user toggle wins mid-focus (no re-force)",
@@ -1437,10 +1488,10 @@ def run_tests(port: int):
             page.evaluate(
                 """() => { const el = document.getElementById('depth');
                      el.value = 1; el.dispatchEvent(new Event('input')); }""")
-            page.wait_for_timeout(400)
+            quiesce(page, 4000)
             page.keyboard.press("Escape")
             page.keyboard.press("Escape")
-            page.wait_for_timeout(900)
+            quiesce(page, 6000)
             st39b = page.evaluate(
                 """() => ({ fi: window.__dbg.focusFileIdx,
                      inst: window.__dbg.showInst,
@@ -1451,11 +1502,7 @@ def run_tests(port: int):
         # The dead-only cycle below zeroes alphaTgt for a moment; alphaArr
         # eases back slowly, so wait until every node that SHOULD be visible
         # has finished easing — otherwise matrices measure as scale-0 (flaky).
-        page.wait_for_function(
-            """() => { const d = window.__dbg;
-                    for (let i = 0; i < d.nodes.length; i++)
-                      if (d.alphaTgt[i] > 0.5 && d.alpha[i] <= 0.5) return false;
-                    return true; }""", timeout=20000)
+        quiesce(page, timeout=20000)
         churn = page.evaluate(
             """() => { const d = window.__dbg;
                  const h = d.hot;
@@ -1644,7 +1691,7 @@ def run_tests(port: int):
               str(reopened))
         # width choice survives a reload (localStorage)
         page.reload()
-        page.wait_for_timeout(2000)
+        quiesce(page, timeout=20000)
         reloaded = page.evaluate("""() => ({
           w: document.getElementById('mapPane').clientWidth,
           open: !document.getElementById('mapPane').classList.contains('collapsed') });""")
@@ -1655,11 +1702,15 @@ def run_tests(port: int):
         # on DATA.mwires — an index without the named-wire exports skips.
         # The pane is already open at the persisted width from section 7b.
         mw = page.evaluate("() => window.__dbg.mwires || []")
+        # [#123] executed-check floor rides the data-level gate (constants
+        # above): DATA.mwires survives a render regression, so a map-side
+        # breakage lands as an executed shortfall, never a skip-to-green.
+        LOG.floor = FLOOR_BASE + (FLOOR_MAP if mw else 0)
         if not mw:
             print("SKIP map pane — no DATA.mwires in this index")
         else:
             enter_focus_via_row()
-            page.wait_for_timeout(500)   # rAF-coalesced paint
+            map_ready(page)   # [#123] layout + rects before the first read
             minfo = page.evaluate("() => window.__dbg.mapInfo()")
             check("map named wires drawn",
                   bool(minfo) and minfo.get("wires", 0) > 0, str(minfo))
@@ -1859,6 +1910,11 @@ def run_tests(port: int):
                     }
                 }
                 return cands.length ? cands : null; }""")
+            # [#123] never except-NameError into a skip: pre-bind the
+            # map-section helper — the fn_info branch redefines it below;
+            # without fn_info the pin sections take their loud data-gated
+            # SKIP. A NameError raised INSIDE the helper is a failure.
+            latch_pin_via_list = None
             fn_info = None
             for wpt in (wpts or []):
                 page.mouse.click(bb["x"] + wpt["sx"], bb["y"] + wpt["sy"])
@@ -1908,10 +1964,17 @@ def run_tests(port: int):
                 chip_hit = None
                 for cand in (chip_hits or []):
                     page.mouse.click(bb["x"] + cand["sx"], bb["y"] + cand["sy"])
-                    page.wait_for_timeout(300)
-                    if page.locator("#mapList .row").count() >= 2:
-                        chip_hit = cand
-                        break
+                    # [#123] latch condition, not a fixed sleep: the list
+                    # opens when the chip's click lands — retry next chip
+                    # on timeout instead of reading a half-open list.
+                    try:
+                        page.wait_for_function(
+                            "() => document.querySelectorAll"
+                            "('#mapList .row').length >= 2", timeout=1200)
+                    except PwTimeout:
+                        continue
+                    chip_hit = cand
+                    break
                 if chip_hit:
                     rows = page.locator("#mapList .row")
                     if rows.count() >= 2:
@@ -1961,8 +2024,15 @@ def run_tests(port: int):
                         for (const ch of L.chips) {
                             if (!ch.wires || ch.wires.length < 2) continue;
                             if (ch.wires.filter(w => w.ty !== 'var').length < 2) continue;
-                            const sx = (ch.x + ch.w / 2 - d.mapPX) * d.mapZ;
-                            const sy = (ch.y + ch.h / 2 - d.mapPY) * d.mapZ;
+                            // [#123] pick-vs-paint parity: clicks land on
+                            // the PAINTED hit rect (collision-ladder
+                            // displacement, LOD, fade all baked in), not
+                            // the raw layout anchor - a center computed
+                            // from ch.x/ch.w misses a displaced chip
+                            const h = ch.hit;
+                            if (!h) continue;   // hidden chip: unclickable
+                            const sx = h.x + h.w / 2;
+                            const sy = h.y + h.h / 2;
                             if (sx > 20 && sy > 20 &&
                                 sx < pn.clientWidth - 20 &&
                                 sy < pn.clientHeight - 20)
@@ -1972,15 +2042,26 @@ def run_tests(port: int):
                         return out; }""")
                     for cand in (hits or []):
                         page.mouse.click(bb["x"] + cand["sx"], bb["y"] + cand["sy"])
-                        page.wait_for_timeout(300)
-                        # stale rows from a closed list stay in the DOM:
-                        # require the list itself to be open before clicking
-                        disp = page.evaluate(
-                            "() => document.getElementById('mapList').style.display")
+                        # [#123] condition waits, not sleeps: the list must
+                        # OPEN on this click (a stale list from an earlier
+                        # section can linger in the DOM), then the row
+                        # click must latch the pin before it is read.
+                        try:
+                            page.wait_for_function(
+                                "() => document.getElementById('mapList')"
+                                ".style.display === 'block'", timeout=1200)
+                        except PwTimeout:
+                            continue
                         rows = page.locator("#mapList .row")
-                        if disp == "block" and rows.count() >= 2:
+                        if rows.count() >= 2:
                             rows.nth(0).click()
-                            page.wait_for_timeout(200)
+                            try:
+                                page.wait_for_function(
+                                    "() => window.__dbg.wirePin &&"
+                                    " window.__dbg.wirePin.menu === 'list'",
+                                    timeout=1200)
+                            except PwTimeout:
+                                continue
                             return page.evaluate("() => window.__dbg.wirePin")
                     return None
 
@@ -2093,11 +2174,15 @@ def run_tests(port: int):
                 # hides it), which drops the map layout
                 page.fill("#search", tok)
                 page.dispatch_event("#search", "input")
-                page.wait_for_timeout(500)
+                wait_rows(page)
                 page.evaluate("""tok => { const rows = [...document.querySelectorAll('#searchResults .row')];
                     (rows.find(x => x.title.endsWith(tok)) || rows[0])
                     .dispatchEvent(new PointerEvent('pointerdown', {bubbles: true})); }""", tok)
-                page.wait_for_timeout(1200)
+                quiesce(page)
+                # [#123] quiesce covers the 3D scene only — the 2D layout
+                # rebuild is a separate pass; wait for it before reading
+                # spines or the scan aims at the previous focus's geometry
+                map_ready(page)
                 # 2D: click a trunk spine — the pin covers trunk + taps and
                 # opens the bus card (map-side trunk-click parity)
                 trunk_pt = page.evaluate("""() => {
@@ -2174,11 +2259,11 @@ def run_tests(port: int):
                 # radii (_lodServe) so conduit picks resolve.
                 page.fill("#search", tok)
                 page.dispatch_event("#search", "input")
-                page.wait_for_timeout(500)
+                wait_rows(page)
                 page.evaluate("""tok => { const rows = [...document.querySelectorAll('#searchResults .row')];
                     (rows.find(x => x.title.endsWith(tok)) || rows[0])
                     .dispatchEvent(new PointerEvent('pointerdown', {bubbles: true})); }""", tok)
-                page.wait_for_timeout(1200)
+                quiesce(page)
                 if not page.evaluate("() => window.__dbg.lodServe"):
                     # dolly in: serve needs the camera inside 2.2 ball
                     # radii — a focused re-click may not move it
@@ -2216,7 +2301,7 @@ def run_tests(port: int):
                     for k in range(6):
                         page.mouse.move(400 + 18 * (k + 1), 460 + 6 * (k + 1))
                     page.mouse.up()
-                    page.wait_for_timeout(700)
+                    quiesce(page, 4000)
                     tpts = page.evaluate("""() => {
                         const d = window.__dbg;
                         const pn = document.getElementById("mapPane");
@@ -2310,7 +2395,7 @@ def run_tests(port: int):
                     for k in range(6):
                         page.mouse.move(400 + 18 * (k + 1), 460 + 6 * (k + 1))
                     page.mouse.up()
-                    page.wait_for_timeout(700)
+                    quiesce(page, 4000)
                     link_pts = page.evaluate("""() => {
                         const d = window.__dbg;
                         const pn = document.getElementById("mapPane");
@@ -2935,7 +3020,9 @@ def run_tests(port: int):
             # zoomed out and return when zoomed back in (hysteresis) -
             # the LAYOUT never changes: mapLayout.wires count identical
             # at both ends (ONE-layout law survives the tier gate).
-            wires_pre = page.evaluate("() => window.__dbg.mapLayout.wires.length")
+            wires_pre = page.evaluate(
+                "() => window.__dbg.mapLayout"
+                " ? window.__dbg.mapLayout.wires.length : -1")
             page.mouse.move(mcx, mcy)
             for _ in range(20):
                 page.mouse.wheel(0, 120)
@@ -2945,7 +3032,9 @@ def run_tests(port: int):
             page.wait_for_timeout(400)
             ink_off = page.evaluate(
                 """() => ({ ink: window.__dbg.mapInkOn,
-                            wires: window.__dbg.mapLayout.wires.length })""")
+                            wires: window.__dbg.mapLayout
+                                ? window.__dbg.mapLayout.wires.length
+                                : -1 })""")
             check("zoom-out hides fine ink (paint-only tier)",
                   ink_off["ink"] is False, str(ink_off))
             check("ink gate never touches the layout (wires unchanged)",
@@ -3070,7 +3159,6 @@ def run_tests(port: int):
         # affordance. Stateful probe — runs LAST so its focus/camera
         # perturbations land after every other assertion.
         enter_focus_via_row()
-        page.wait_for_timeout(1500)
         trk = page.evaluate(
             """() => { const d = window.__dbg;
                  const el = d.renderer.domElement, r = el.getBoundingClientRect();
@@ -3331,12 +3419,29 @@ def run_tests(port: int):
         # inherits, and the trunk-scan grid above is sensitive to it
         # (bisected: the latch alone is clean, the extra refocus is
         # what the tail saw).
-        page.evaluate("() => document.getElementById('bMap').click()")
-        page.wait_for_timeout(700)
-        try:
-            pinL = latch_pin_via_list()
-        except NameError:
-            pinL = None
+        pinL = None
+        if page.evaluate("() => !!window.__dbg.mapLayout"):
+            # expand only if collapsed: bMap TOGGLES, and an unconditional
+            # click would collapse an open pane and starve the tail
+            if page.evaluate(
+                    "() => document.getElementById('mapPane')"
+                    ".classList.contains('collapsed')"):
+                page.evaluate(
+                    "() => document.getElementById('bMap').click()")
+            try:
+                page.wait_for_function(
+                    "() => !document.getElementById('mapPane')"
+                    ".classList.contains('collapsed')", timeout=4000)
+            except PwTimeout:
+                print("SKIP stale list close - map pane would not expand "
+                      "(precondition gate)")
+            # [#123] no except-NameError skip: the helper is pre-bound
+            # above — a closed data gate reads as None (loud SKIP below),
+            # while a NameError raised INSIDE the helper is a failure.
+            pinL = latch_pin_via_list() if latch_pin_via_list else None
+        else:
+            print("SKIP stale list close - no map layout "
+                  "(shape: index has no DATA.mwires)")
         if pinL and pinL.get("menu") == "list":
             card3 = page.evaluate("""() => {
                 const d = window.__dbg;
@@ -3348,28 +3453,97 @@ def run_tests(port: int):
                     if (rc.i === d.focusFileIdx) continue;
                     const sx = (rc.x + rc.w / 2 - d.mapPX) * d.mapZ + bb.left;
                     const sy = (rc.y + 11 - d.mapPY) * d.mapZ + bb.top;
+                    const wx = (sx - bb.left) / d.mapZ + d.mapPX;
+                    const wy = (sy - bb.top) / d.mapZ + d.mapPY;
+                    // [#123] the pane's own hit test decides what a click
+                    // means, in priority order: the vars chip (branch 0),
+                    // bundle chips, named wires, then TRUNK SPINES - only
+                    // then the header refocus. Exclude every claimant the
+                    // product would resolve ahead of the header.
+                    const vc = d.mapVarsChipRect;
+                    if (vc && sx - bb.left >= vc.x && sx - bb.left <= vc.x + vc.w &&
+                        sy - bb.top >= vc.y && sy - bb.top <= vc.y + vc.h)
+                        continue;
+                    if (d.mapWireAt(wx, wy) !== -1) continue;
+                    if (d.mapChipAt(wx, wy) !== -1) continue;   // painted hit rect
+                    const tol = 10 / d.mapZ;
+                    let onSpine = false;
+                    for (const sp of (d.mapLayout.spines || [])) {
+                        if (onSpine || !sp.pts || sp.pts.length < 2) continue;
+                        for (let q = 1; q < sp.pts.length; q++) {
+                            const ax = sp.pts[q-1][0], ay = sp.pts[q-1][1],
+                                  bx = sp.pts[q][0], by = sp.pts[q][1];
+                            const l2 = (bx-ax)*(bx-ax) + (by-ay)*(by-ay) || 1;
+                            let t = ((wx-ax)*(bx-ax) + (wy-ay)*(by-ay)) / l2;
+                            t = Math.max(0, Math.min(1, t));
+                            if (Math.hypot(wx - (ax + t*(bx-ax)),
+                                           wy - (ay + t*(by-ay))) < tol) {
+                                onSpine = true; break;
+                            }
+                        }
+                    }
+                    if (onSpine) continue;
+                    // overlap law: the handler resolves the TOPMOST-drawn
+                    // rect at the point (reverse iteration) - if another
+                    // box overlaps this header, the click lands in that
+                    // box's row zone and silently toggles the freeze
+                    let top = null;
+                    for (let k2 = d.mapRects.length - 1; k2 >= 0; k2--) {
+                        const r2 = d.mapRects[k2];
+                        if (wx < r2.x || wx > r2.x + r2.w ||
+                            wy < r2.y || wy > r2.y + r2.h) continue;
+                        top = r2; break;
+                    }
+                    if (top !== rc) continue;
                     if (sx > bb.left + 8 && sx < bb.right - 8 &&
                         sy > bb.top + 8 && sy < bb.bottom - 8 &&
                         (sx < lr.x - 8 || sx > lr.x + lr.width + 8 ||
-                         sy < lr.y - 8 || sy > lr.y + lr.height + 8))
+                         sy < lr.y - 8 || sy > lr.y + lr.height + 8) &&
+                        // any overlay (list, wire tip, pin chip) swallows
+                        // the click - the aim must be the pane's own ink,
+                        // same guard as the drift probes
+                        document.elementFromPoint(sx, sy) === pn)
                         return { sx: sx, sy: sy, i: rc.i };
                 }
                 return null; }""")
             if card3:
-                page.mouse.move(card3["sx"] - 12, card3["sy"] - 8)
-                page.mouse.move(card3["sx"], card3["sy"], steps=3)
-                page.mouse.click(card3["sx"], card3["sy"])
-                page.wait_for_timeout(700)
+                # [#123] the scan and the click are two instants: a
+                # transient (hover tip, staggered pin-card reveal) can
+                # cover the aim between them and swallow the input -
+                # events=[] in instrumented runs. Gate on click-time
+                # point ownership and retry a swallowed click; a real
+                # refocus that fails to close the list still fails the
+                # check below (retries only re-attempt the input).
+                foc0 = page.evaluate("() => window.__dbg.focusFileIdx")
+                for _try in range(3):
+                    try:
+                        page.wait_for_function(
+                            """(m) => document.elementFromPoint(m.sx, m.sy)
+                                && document.elementFromPoint(m.sx, m.sy).id
+                                   === 'mapPane'""",
+                            arg=card3, timeout=2000)
+                    except PwTimeout:
+                        pass   # the surface check below fails honestly
+                    page.mouse.click(card3["sx"], card3["sy"])
+                    try:
+                        page.wait_for_function(
+                            "(f) => window.__dbg.focusFileIdx !== f",
+                            arg=foc0, timeout=900)
+                        break   # the 220ms refocus debounce landed
+                    except PwTimeout:
+                        continue   # input swallowed - gate and retry
+                try:
+                    page.wait_for_function(
+                        "() => document.getElementById('mapList')"
+                        ".style.display !== 'block'", timeout=1500)
+                except PwTimeout:
+                    pass   # the surface check below fails honestly
                 listR = page.evaluate(
                     "() => document.getElementById('mapList').style.display")
                 pinR = page.evaluate("() => window.__dbg.wirePin")
                 check("focus rebuild closes the stale bundle list",
                       listR != "block" and pinR is None,
                       f"list {listR}, pin {pinL} -> {pinR} via card {card3['i']}")
-            else:
-                print("SKIP stale list close - no card clear of list")
-        else:
-            print("SKIP stale list close - no list-menu pin")
 
         # [issue #85 owner r1 / groundskeeper] trunk corridors paint in
         # the accent: latch a REAL trunk spine pin - the chip-list pin
@@ -3384,35 +3558,71 @@ def run_tests(port: int):
             for (const sp of L.spines) {
                 if (sp.hub !== "trunk" || !sp.pts || sp.pts.length < 2)
                     continue;
-                const m = sp.pts[Math.floor(sp.pts.length / 2)];
-                const sx = (m[0] - d.mapPX) * d.mapZ + bb.left;
-                const sy = (m[1] - d.mapPY) * d.mapZ + bb.top;
-                if (sx > bb.left + 10 && sx < bb.right - 10 &&
-                    sy > bb.top + 10 && sy < bb.bottom - 10)
+                // [#123] sample quarter points, midpoint first to match
+                // the historical aim: the click lands on whatever ink
+                // the pane's own hit test resolves, so verify the aim
+                // with the product's picker (no named wire, no chip) -
+                // the pin is then the trunk this check is about, at any
+                // camera azimuth.
+                for (const k of [2, 1, 3]) {
+                    const m = sp.pts[Math.min(
+                        Math.floor(sp.pts.length * k / 4),
+                        sp.pts.length - 1)];
+                    const sx = (m[0] - d.mapPX) * d.mapZ + bb.left;
+                    const sy = (m[1] - d.mapPY) * d.mapZ + bb.top;
+                    if (sx < bb.left + 10 || sx > bb.right - 10 ||
+                        sy < bb.top + 10 || sy > bb.bottom - 10)
+                        continue;
+                    const wx = (sx - bb.left) / d.mapZ + d.mapPX;
+                    const wy = (sy - bb.top) / d.mapZ + d.mapPY;
+                    if (d.mapWireAt(wx, wy) !== -1) continue;
+                    if ((L.chips || []).some(c =>
+                        sx > (c.x - d.mapPX) * d.mapZ + bb.left &&
+                        sx < (c.x + c.w - d.mapPX) * d.mapZ + bb.left &&
+                        sy > (c.y - d.mapPY) * d.mapZ + bb.top &&
+                        sy < (c.y + c.h - d.mapPY) * d.mapZ + bb.top))
+                        continue;
                     return { sx: Math.round(sx), sy: Math.round(sy) };
+                }
             }
             return null; }""")
         if tspine:
             page.mouse.click(tspine["sx"], tspine["sy"])
-            page.wait_for_timeout(400)
+            # [#123] wait for the pin the click should latch (or miss
+            # honestly: the surface check below has teeth either way)
+            try:
+                page.wait_for_function(
+                    "() => window.__dbg.wirePin !== null", timeout=1200)
+            except PwTimeout:
+                pass
             pinT = page.evaluate("() => window.__dbg.wirePin")
-            tcol = page.evaluate("""(m) => {
-                const cv = document.getElementById('mapPane');
-                const r2 = cv.getBoundingClientRect();
-                const dpr = window.devicePixelRatio || 1;
-                const cx0 = Math.round((m.sx - r2.left) * dpr);
-                const cy0 = Math.round((m.sy - r2.top) * dpr);
-                const ctx = cv.getContext('2d');
-                let teal = false;
-                for (let dx = -5; dx <= 5 && !teal; dx++)
-                    for (let dy = -5; dy <= 5 && !teal; dy++) {
-                        const p = ctx.getImageData(cx0 + dx, cy0 + dy,
-                            1, 1).data;
-                        if (p[3] < 30) continue;
-                        if (p[1] > p[0] + 40 && p[1] > p[2] + 10)
-                            teal = true;
-                    }
-                return { teal }; }""", tspine)
+            # [#123] the pin latches synchronously with the click, but the
+            # accent PAINT trails it by a frame or two - poll the pixel
+            # postcondition instead of one instantaneous read (the fixed
+            # 400ms sleep it replaces raced the same paint and failed
+            # intermittently). On timeout the check below fails honestly.
+            tcol = None
+            for _poll in range(10):
+                tcol = page.evaluate("""(m) => {
+                    const cv = document.getElementById('mapPane');
+                    const r2 = cv.getBoundingClientRect();
+                    const dpr = window.devicePixelRatio || 1;
+                    const cx0 = Math.round((m.sx - r2.left) * dpr);
+                    const cy0 = Math.round((m.sy - r2.top) * dpr);
+                    const ctx = cv.getContext('2d');
+                    let teal = false;
+                    for (let dx = -5; dx <= 5 && !teal; dx++)
+                        for (let dy = -5; dy <= 5 && !teal; dy++) {
+                            const p = ctx.getImageData(cx0 + dx, cy0 + dy,
+                                1, 1).data;
+                            if (p[3] < 30) continue;
+                            if (p[1] > p[0] + 40 && p[1] > p[2] + 10)
+                                teal = true;
+                        }
+                    return { teal }; }""", tspine)
+                if tcol["teal"]:
+                    break
+                page.wait_for_timeout(100)
             check("pinned trunk corridor paints in the accent",
                   pinT is not None and pinT.get("surface") == "map"
                   and tcol["teal"],
@@ -3465,7 +3675,16 @@ def run_tests(port: int):
                    (hov["hv"] is not None and hov["hv"] >= 0):
                     continue
                 page.mouse.click(c[0], c[1])
-                page.wait_for_timeout(400)
+                # [#123] the latch condition is the wait: a candidate
+                # that does not pin within the window is skipped, not
+                # read half-latched.
+                try:
+                    page.wait_for_function(
+                        "() => window.__dbg.wirePin &&"
+                        " window.__dbg.wirePin.surface === 'ball'",
+                        timeout=1200)
+                except PwTimeout:
+                    continue
                 bp = page.evaluate("() => window.__dbg.wirePin")
                 if bp and bp.get("surface") == "ball":
                     break
@@ -3490,7 +3709,19 @@ def run_tests(port: int):
                 page.mouse.move(card4["sx"] - 12, card4["sy"] - 8)
                 page.mouse.move(card4["sx"], card4["sy"], steps=3)
                 page.mouse.click(card4["sx"], card4["sy"])
-                page.wait_for_timeout(1800)
+                # [#123] the reap is a ~1s product timer — wait it out
+                # instead of a fixed sleep; a timeout lands in the check
+                # below with the pin state in the detail line. The reap
+                # can fire mid-rebuild (refocus nulls the pin before the
+                # camera tween / map rebuild finish) — settle both before
+                # the sections below read geometry.
+                try:
+                    page.wait_for_function(
+                        "() => window.__dbg.wirePin === null", timeout=2500)
+                except PwTimeout:
+                    pass
+                quiesce(page, 4000)
+                map_ready(page)
                 bp2 = page.evaluate("() => window.__dbg.wirePin")
                 check("stale ball pin reaps after refocus",
                       bp2 is None and not pe0,
@@ -3534,7 +3765,13 @@ def run_tests(port: int):
                    (hov["hv"] is not None and hov["hv"] >= 0):
                     continue
                 page.mouse.click(c[0], c[1])
-                page.wait_for_timeout(400)
+                try:
+                    page.wait_for_function(
+                        "() => window.__dbg.wirePin &&"
+                        " window.__dbg.wirePin.kind === 'trunk'",
+                        timeout=1200)
+                except PwTimeout:
+                    continue
                 pk = page.evaluate("() => window.__dbg.wirePin")
                 if pk and pk.get("kind") == "trunk":
                     pinTk = pk
@@ -3622,7 +3859,14 @@ def run_tests(port: int):
                            (hov["hv"] is not None and hov["hv"] >= 0):
                             continue
                         page.mouse.click(c[0], c[1])
-                        page.wait_for_timeout(400)
+                        try:
+                            page.wait_for_function(
+                                "() => window.__dbg.wirePin &&"
+                                " (window.__dbg.wirePin.kind === 'link'"
+                                " || window.__dbg.wirePin.kind === 'wire')",
+                                timeout=1200)
+                        except PwTimeout:
+                            continue
                         # A wire/link pin whose corridor IS the pinned
                         # trunk legitimately re-tints the same pieces
                         # (wire pins resolve their pair -> trunk chain).
@@ -3645,11 +3889,26 @@ def run_tests(port: int):
                     if pinRpl:
                         break
                 if pinRpl:
+                    # [#123] the tint restore trails the pin swap by a
+                    # frame or two — wait for the postcondition itself
+                    # (stock rgb back on the probed piece); on timeout
+                    # fall through and let the check below fail honestly.
+                    try:
+                        page.wait_for_function(
+                            """(t) => { const d = window.__dbg;
+                                 const ca = d.fnBus.instanceColor.array;
+                                 return Math.abs(ca[t.q*3] - t.q0[0]) < 0.02
+                                    && Math.abs(ca[t.q*3+1] - t.q0[1]) < 0.02
+                                    && Math.abs(ca[t.q*3+2] - t.q0[2]) < 0.02; }""",
+                            arg={"q": tkq["q"], "q0": tkq["q0"]},
+                            timeout=2500)
+                    except PwTimeout:
+                        pass
                     tkOff = page.evaluate("""(q) => {
                         const d = window.__dbg;
                         const ca = d.fnBus.instanceColor.array;
                         return [ca[q*3], ca[q*3+1], ca[q*3+2]]; }""",
-                        tkq["q"])
+                        arg=tkq["q"])
                     check("replaced pin restores the corridor tint",
                           all(abs(a - b) < 0.02 for a, b in
                               zip(tkOff, tkq["q0"])),
@@ -3705,8 +3964,12 @@ def run_tests(port: int):
             for k in range(1, 7):
                 page.mouse.move(drift_card["hx"] - 5 + k,
                                 drift_card["hy"] - 4 + k)
-                page.wait_for_timeout(12)
             page.mouse.up()
+            # baseline fixed window: the 220ms refocus debounce plus the
+            # tween land inside it, and the NEXT section's inputs must
+            # land on the settled pose exactly as baseline sequences them
+            # (a shorter readiness wait here shifts every downstream
+            # pixel probe's arriving azimuth).
             page.wait_for_timeout(900)
             camB = page.evaluate(
                 "() => window.__dbg.camera.position.toArray()")
@@ -3820,6 +4083,8 @@ def run_tests(port: int):
                                 hdr2["hy"] + drop * k / 7)
                 page.wait_for_timeout(12)
             page.mouse.up()
+            # baseline fixed window: the 220ms refocus debounce lands
+            # inside it; shorter readiness waits shift downstream probes.
             page.wait_for_timeout(900)
             focB = page.evaluate("() => window.__dbg.focusFileIdx")
             check("sub-slop drift resolves at the press origin "
@@ -3893,15 +4158,33 @@ def run_tests(port: int):
         if not page.locator("#info li").count():
             enter_focus_via_row()  # guarantee a populated #info panel
         tgt0 = page.evaluate("() => window.__dbg.focusFileIdx")
-        spot = None
-        for _ in range(6):
+        # [#123] incidence preconditioning: whether wire ink projects
+        # under an #info row depends on the camera DISTANCE the tail
+        # sections arrive at (zoom notches mid-tween vary it run to run).
+        # Pull the 3D camera back first - the wheel must ride the 3D
+        # canvas (400,300), NOT the map pane (that zooms the 2D map and
+        # perturbs the #113 freeze probes downstream) - then sweep; the
+        # gate below only closes when no angle has ink.
+        page.mouse.move(400, 300)
+        for _zn in range(4):
+            page.mouse.wheel(0, -300)
+            page.wait_for_timeout(60)
+        quiesce(page, 4000)
+        # [#123] bounded sweep, not a fixed orbit count: whether wire ink
+        # projects under an #info row depends on the arriving azimuth,
+        # which earlier sections legitimately vary - sweep a full
+        # revolution so the shape gate only closes when the index truly
+        # has no ink-over-row incidence at any angle
+        for _ in range(16):
             spot = page.evaluate(
                 """() => { const d = window.__dbg;
                      const r = document.getElementById('info')
                                        .getBoundingClientRect();
+                     // [#123] no y-cap: the elementFromPoint closest-li
+                     // check below self-verifies row pixels, so sampling
+                     // the full panel only widens real incidence
                      for (let x = r.x + 12; x < r.right - 12; x += 16)
-                       for (let y = r.y + 12;
-                            y < Math.min(r.bottom - 12, 470); y += 12) {
+                       for (let y = r.y + 12; y < r.bottom - 12; y += 12) {
                          if (!d.pickWireMeta({ clientX: x, clientY: y }))
                            continue;
                          const el = document.elementFromPoint(x, y);
@@ -3917,13 +4200,16 @@ def run_tests(port: int):
             page.mouse.move(800, 450)  # orbit: bring ink under the panel
             page.mouse.down()
             for k in range(8):
-                page.mouse.move(800 + (k - 4) * 42, 450 + (k - 4) * 16,
+                page.mouse.move(800 + (k - 4) * 126, 450 + (k - 4) * 48,
                                 steps=2)
             page.mouse.up()
+            # baseline fixed window: the rescan reads pickWireMeta while
+            # the orbit's residual motion is fully at rest (the ink pass
+            # trails the eases by a frame or two - no readiness signal)
             page.wait_for_timeout(600)
         if spot:
             page.mouse.click(spot["x"], spot["y"])
-            page.wait_for_timeout(900)
+            quiesce(page, 4000)
             hj = page.evaluate(
                 """() => { const t = document.getElementById('wireTip');
                      return { focus: window.__dbg.focusFileIdx,
@@ -3935,10 +4221,11 @@ def run_tests(port: int):
                   f"spot={spot} tgt0={tgt0} hj={hj}")
         else:
             # #97 family: the steal law needs a row pixel with wire ink
-            # under it — a layout where no ink projects under #info in 6
-            # orbits has no subject. Loud skip, never a shape-assumed fail.
+            # under it — a layout where no ink projects under #info in
+            # the sweep has no subject. Loud skip, never a shape-assumed
+            # fail.
             print("SKIP info steal class - no ink-under-row pixel in "
-                  "6 orbits (shape: no wire ink under #info on this index)")
+                  "sweep (shape: no wire ink under #info on this index)")
 
         # [issues #112/#113] focus teardown: the camera tween, hover ink,
         # wire pins and the 2D map's focus-scoped state all die WITH the
@@ -3949,12 +4236,14 @@ def run_tests(port: int):
             document.getElementById('bReset').click();   // boot slate
             if (d.mapPane.canvas.classList.contains('collapsed'))
               document.getElementById('bMap').click(); }""")
-        page.wait_for_timeout(900)
+        quiesce(page, 6000)
 
-        def td_focus(path, wait=900):
+        def td_focus(path, settle=True):
+            """[#123] settle=False leaves the camera tween in flight on
+            purpose — #112-1 samples the tween mid-flight."""
             page.fill("#search", path.split("/")[-1].split(".")[0])
             page.dispatch_event("#search", "input")
-            page.wait_for_timeout(600)
+            wait_rows(page, path)
             page.evaluate(
                 """(p) => { const rows =
                      [...document.querySelectorAll('#searchResults .row')];
@@ -3963,7 +4252,8 @@ def run_tests(port: int):
                      r.dispatchEvent(new PointerEvent('pointerdown',
                                                       { bubbles: true })); }""",
                 path)
-            page.wait_for_timeout(wait)
+            if settle:
+                quiesce(page)
 
         td_nodes = page.evaluate(
             """() => { const d = window.__dbg;
@@ -3977,13 +4267,13 @@ def run_tests(port: int):
         # -- #112-1: Esc mid-tween cancels the tween outright; the camera
         # rests near the overview, never re-lerped onto the dead focus ball.
         boot_p = page.evaluate("() => [...window.__dbg.camera.position]")
-        td_focus(td_nodes["a"], wait=130)   # tween still in flight
+        td_focus(td_nodes["a"], settle=False)   # tween still in flight
         tween_live = page.evaluate("() => !!window.__dbg.camTween")
         to_c = page.evaluate(
             "() => window.__dbg.camTween ? [...window.__dbg.camTween.toC] : null")
         page.keyboard.press("Escape")
         esc_killed = page.evaluate("() => !window.__dbg.camTween")
-        page.wait_for_timeout(900)
+        quiesce(page, 4000)
         fin = page.evaluate("() => [...window.__dbg.camera.position]")
         if tween_live and to_c:
             d_to_c = max(abs(fin[k] - to_c[k]) for k in range(3))
@@ -3997,7 +4287,8 @@ def run_tests(port: int):
 
         # -- #112-2: a user zoom beats the tween (wheel listener parity
         # with the pointerdown cancel).
-        td_focus(td_nodes["a"], wait=130)
+        td_focus(td_nodes["a"], settle=False)  # tween must be in flight
+        page.wait_for_function("() => !!window.__dbg.camTween", timeout=4000)
         to_c2 = page.evaluate(
             "() => window.__dbg.camTween ? [...window.__dbg.camTween.toC] : null")
         spot2 = page.evaluate(
@@ -4033,7 +4324,7 @@ def run_tests(port: int):
                   + ("tween not in flight at sample" if not to_c2
                      else "canvas fully covered"))
         page.keyboard.press("Escape")
-        page.wait_for_timeout(700)
+        quiesce(page, 4000)
 
         # -- #112-3: the white hover stalk dies with its context (Esc
         # teardown + canvas pointerleave), same law as the #58 tip family.
@@ -4061,11 +4352,11 @@ def run_tests(port: int):
 
         td_focus(td_nodes["a"])
         hov1 = td_hover_fnbox()
-        page.wait_for_timeout(500)
+        quiesce(page, 4000)
         stalk1 = page.evaluate(
             "() => !!(window.__dbg.fnStalk && window.__dbg.fnStalk.visible)")
         page.keyboard.press("Escape")
-        page.wait_for_timeout(500)
+        quiesce(page, 4000)
         stalk_esc = page.evaluate(
             "() => !!(window.__dbg.fnStalk && window.__dbg.fnStalk.visible)")
         if hov1:
@@ -4076,13 +4367,13 @@ def run_tests(port: int):
             print("SKIP stalk-Esc - no fn box projects on-screen")
         td_focus(td_nodes["a"])
         hov2 = td_hover_fnbox()
-        page.wait_for_timeout(500)
+        quiesce(page, 4000)
         stalk2 = page.evaluate(
             "() => !!(window.__dbg.fnStalk && window.__dbg.fnStalk.visible)")
         page.evaluate(
             "() => window.__dbg.renderer.domElement.dispatchEvent("
             "new PointerEvent('pointerleave'))")
-        page.wait_for_timeout(300)
+        quiesce(page, 4000)
         stalk_lv = page.evaluate(
             "() => !!(window.__dbg.fnStalk && window.__dbg.fnStalk.visible)")
         if hov2:
@@ -4119,7 +4410,7 @@ def run_tests(port: int):
         td_focus(td_nodes["a"])   # the SAME node refocuses after Esc: the
         # stale mapFrozenIx lands on this very diagram, so no cross-focus
         # box sharing is needed
-        page.wait_for_timeout(400)
+        map_ready(page)
         row_t = page.evaluate(
             """() => { const d = window.__dbg;
                  const bb = document.getElementById('mapPane')
@@ -4159,7 +4450,7 @@ def run_tests(port: int):
                     "() => window.__dbg.mapHover !== undefined"
                     " ? window.__dbg.mapHover : 'n/a'")
                 td_focus(td_nodes["a"])
-                page.wait_for_timeout(900)
+                map_ready(page)
                 lum_f2, lum_p2 = td_box_lum(row_t["i"]), td_box_lum(peer)
                 if -1 not in (lum_f0, lum_p0, lum_f1, lum_p1,
                               lum_f2, lum_p2):
@@ -4184,7 +4475,7 @@ def run_tests(port: int):
         # -- #113-2: the no-focus teardown kills the vars chip rect (no
         # invisible toggle zone under the "focus a node" hint).
         page.keyboard.press("Escape")
-        page.wait_for_timeout(700)
+        quiesce(page, 4000)
         nf = page.evaluate(
             "() => ({ layout: window.__dbg.mapLayout === null,"
             " rect: window.__dbg.mapVarsChipRect })")
@@ -4196,7 +4487,7 @@ def run_tests(port: int):
         page.wait_for_timeout(400)
         vars_flipped = page.evaluate("() => window.__dbg.mapVars")
         td_focus(td_nodes["a"])
-        page.wait_for_timeout(900)
+        map_ready(page)
         vars_after = page.evaluate("() => window.__dbg.mapVars")
         check("dead-zone click cannot flip vars across teardown (#113)",
               vars_flipped is False and vars_after is False,
@@ -4247,10 +4538,11 @@ def run_tests(port: int):
             page.wait_for_timeout(300)
             par = page.evaluate(
                 """() => { const d = window.__dbg;
-                     const vis = d.mapLayout.chips.filter(c => c.hit);
+                     const vis = (d.mapLayout ? d.mapLayout.chips : [])
+                               .filter(c => c.hit);
                      if (!vis.length) return null;
                      const c = vis[0],
-                           ci = d.mapLayout.chips.indexOf(c);
+                           ci = d.mapLayout ? d.mapLayout.chips.indexOf(c) : -1;
                      const wx = (c.hit.x + c.hit.w / 2) / d.mapZ + d.mapPX,
                            wy = (c.hit.y + c.hit.h / 2) / d.mapZ + d.mapPY;
                      return { ci, pick: (d.mapChipAt ? d.mapChipAt(wx, wy) : null),
@@ -4278,13 +4570,14 @@ def run_tests(port: int):
         # -- #113-5: the bundle list re-anchors (or closes) when the map
         # moves under it — live UI never floats over stale geometry.
         page.keyboard.press("Escape")
-        page.wait_for_timeout(500)
+        quiesce(page, 4000)
         td_focus(td_nodes["a"])
-        page.wait_for_timeout(1200)
+        map_ready(page)
         lpick = page.evaluate(
             """() => { const d = window.__dbg;
                  if (!d.mapLayout || !d.mapLayout.chips.length) return null;
-                 const vis = d.mapLayout.chips.filter(c => c.hit);
+                 const vis = (d.mapLayout ? d.mapLayout.chips : [])
+                               .filter(c => c.hit);
                  const c = vis.length ? vis[0] : d.mapLayout.chips[0];
                  return { ci: d.mapLayout.chips.indexOf(c),
                           sx: c.hit ? c.hit.x + c.hit.w / 2
@@ -4337,9 +4630,9 @@ def run_tests(port: int):
         # -- #113-4: Backspace inside a picker filter edits the filter —
         # it must not pop the focus stack beneath the open picker.
         page.keyboard.press("Escape")
-        page.wait_for_timeout(600)
+        quiesce(page, 4000)
         td_focus(td_nodes["a"])
-        page.wait_for_timeout(800)
+        map_ready(page)
         hdr = page.evaluate(
             """() => { const d = window.__dbg;
                  const rc = d.mapRects.find(r => r.i !== d.focusFileIdx)
@@ -4352,7 +4645,7 @@ def run_tests(port: int):
         more = None
         if hdr:
             page.mouse.click(hdr["sx"], hdr["sy"])   # header refocus pushes
-            page.wait_for_timeout(1000)
+            quiesce(page, 6000)
             stack1 = page.evaluate("() => window.__dbg.focusStack.length")
             focus_b = page.evaluate("() => window.__dbg.focusFileIdx")
             more = page.evaluate(
@@ -4393,16 +4686,16 @@ def run_tests(port: int):
         # -- #112-4: resetAll returns EVERY pin to boot — a tip-menu pin
         # and its persistent wire tip used to survive the reset.
         page.keyboard.press("Escape")
-        page.wait_for_timeout(500)
+        quiesce(page, 4000)
         td_focus(td_nodes["a"])
-        page.wait_for_timeout(1100)
+        map_ready(page)
         cands = page.evaluate(
             """() => { const d = window.__dbg;
                  if (!d.mapLayout) return [];
                  const bb = document.getElementById('mapPane')
                    .getBoundingClientRect();
                  const out = [];
-                 for (const sp of d.mapLayout.spines) {
+                 for (const sp of (d.mapLayout ? d.mapLayout.spines : [])) {
                    if (!sp.pts || sp.pts.length < 2) continue;
                    for (const f of [0.5, 0.25, 0.75]) {
                      const k = Math.floor(sp.pts.length * f);
@@ -4435,7 +4728,7 @@ def run_tests(port: int):
                 break
         if pin_t:
             page.evaluate("() => document.getElementById('bReset').click()")
-            page.wait_for_timeout(900)
+            quiesce(page, 4000)
             pin_r = page.evaluate("() => window.__dbg.wirePin")
             tip_r = page.evaluate(
                 "() => document.getElementById('wireTip').style.display"

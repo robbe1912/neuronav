@@ -8954,7 +8954,20 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get routeAudit() { return mapLayout && mapLayout.audit; },
   sphR,
   get focusArcRef() { return focusArcs; },
-  get rfwProbe() { return { fa: !!focusArcs, focusActive, budgetN: budgetLit ? budgetLit.size : null, fi: focusFileIdx }; } };
+  get rfwProbe() { return { fa: !!focusArcs, focusActive, budgetN: budgetLit ? budgetLit.size : null, fi: focusFileIdx }; } ,
+  // [#123] quiescence probe for the page harness: camera tween done,
+  // compaction done, every node alpha and hover-scale at target (the
+  // same 0.003 / 0.004 snap thresholds the tick loop eases with). The
+  // harness waits on this instead of blanket sleeps — reading a
+  // mid-transition frame can pass a check a settled frame would fail.
+  get settled() {
+    if (camTween !== null || compactAnim !== null) return false;
+    for (let i = 0; i < N; i++) {
+      if (Math.abs(alphaTgt[i] - alphaArr[i]) >= 0.003) return false;
+      if (Math.abs((i === hovered ? 1.8 : 1) - hoverScale[i]) >= 0.004) return false;
+    }
+    return true;
+  } };
 tick();
 </script>
 </body>

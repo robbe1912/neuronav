@@ -50,7 +50,7 @@ owner-side `test_chunking` and `test_truthful`.
 | `test_recall` | hybrid recall fusion, ctx hops, degraded mode (real+fake modes) | chromadb import; exact-rank pins need a real-embedded store |
 | `test_embedprov` | embed provider contract (issue #17): provider select/auto-detect, ollama+openai wire adapters, env-vs-config key precedence, keyless no-header, 401 loud, 429 retry, batch chunking, no-pad mismatches, fake-mode isolation, pre-#17 store heal vs provider-drift refusal + raw-provider messages (#159) | stdlib http.server stub on an ephemeral loopback port + chromadb import |
 | `test_project_mode` | onboarding (issue #27): discovery precedence env > project-local > checkout, `onboard.init`/`wire` scaffolds incl. `.neuroignore` (issue #36), init re-run NEVER clobbers a customized config (issue #121), wire BOM-tolerant + loud on malformed MCP jsons + atomic writes (issue #121), `wire --omp` mcpServers fragment shape (issue #130: default/`--omp-name` server names, merge-preserving writes, two-project no-collision, hermetic `NEURONAV_OMP_MCP` reroute), viz add-on degrade | stdlib + chromadb import (fresh subprocesses, fake embeds) |
-| `test_viz` | 103-check Playwright harness over the real baked page; CI mode = frozen corpus (issue #100), local mode = the active config's store (default `config.json` or the self-index) | playwright + chrome + a fresh `graph.html` bake |
+| `test_viz` | 163-outcome Playwright harness over the real baked page; CI mode = frozen corpus (issue #100), local mode = the active config's store (default `config.json` or the self-index); [#89] refuses a bake older than `viz.py` (no auto-bake — regenerate first); [#123] executed-check floor pinned to the CI corpus (`FLOOR_BASE`/`FLOOR_MAP`, data-gated on `DATA.mwires`) + quiescence waits (`__dbg.settled`) instead of blanket sleeps | playwright + chrome + a fresh `graph.html` bake |
 | `test_verifier` | Kythe-style verifier fixtures (issue #66): `//-`-shaped goal comments inlined in fixture sources, asserted against extractor output (FileSym + cpp scan_calls); `@fn dead` is corpus-local liveness | stdlib + tree-sitter/tree-sitter-cpp for the C++ goals — extractor-level only: no config, no index, no chroma |
 | `test_bench` | bench record/golden coherence (issue #104): fingerprint determinism + order-insensitivity, render() refuses mismatched/missing fingerprints naming every stale record, coherent sandbox render e2e | stdlib only — imports bench/run_bench.py's render path against a temp bench dir; no config, no index, no embeds |
 | `test_bakeint` | bake integrity (issues #64/#108): empty/zeroed-store bake refusal naming the store + vector counts + the rescan fix, FAKE-only tiny-store waiver, strict-JSON splice (NaN/Infinity refused with paths), `</script`/`__DATA__`/`__IMPORTMAP__` breakout-token refusal, atomic `os.replace` bake write | chromadb import (self-sets `NEURONAV_EMBED_FAKE=1`; the real-provider refusal legs run in FAKE-scrubbed child processes) |
@@ -60,12 +60,19 @@ owner-side `test_chunking` and `test_truthful`.
 `_page_harness.py` (issue #86 strand R9) is the shared Playwright harness
 the two browser suites ride: `serve()` (no-cache loopback server, ephemeral
 port per issue #132; `reuse=` preserves the suites' historic bind
-difference), `launch()` (real Chrome), `open_page()` (settled 1600x900 page
-with optional console/pageerror capture), `probe_dbg()` (broken-bake probe),
-and the `CheckLog` accumulator with the suites' summary/exit contract.
-Consumed by `tests/test_viz.py` (sys.path) and `tools/qa_readability.py`
-(`tests._page_harness`) — the suites keep their own assertions; harness
-changes may never weaken or drop a check.
+difference; an explicit `port=` arms the serve.py issue #40 exclusive-bind
+refusal — a taken port exits 1 with the per-OS `port_owner_hint()` remedy,
+never a raw traceback, #123), `require_fresh_bake()` (#89 stale-bake
+refusal — test_viz calls it before serving), `launch()` (real Chrome),
+`open_page()` (settled 1600x900 page with optional console/pageerror
+capture; quiesces on `__dbg.settled` when the bake exposes the getter,
+else the historic fixed settle), `quiesce()` (#123 readiness wait),
+`probe_dbg()` (broken-bake probe), and the `CheckLog` accumulator with the
+suites' summary/exit contract plus the #123 executed-check floor
+(`finish()` fails an executed shortfall — suites set `LOG.floor` from the
+data-shape). Consumed by `tests/test_viz.py` (sys.path) and
+`tools/qa_readability.py` (`tests._page_harness`) — the suites keep their
+own assertions; harness changes may never weaken or drop a check.
 
 `probe_scene_placement.py` is a manual probe script, not a suite.
 
@@ -115,8 +122,9 @@ Suites pick their own config; the shell must not pre-export one:
   itself — it never touches a real profile or model server.
 - `test_viz` serves the ACTIVE config's state dir — point
   `NEURONAV_CONFIG` at your scratch store config before running (issue
-  #89 trap; the boot banner shows what you serve). CI runs it against
-  the frozen corpus store built by `tests/vizcorpus_build.py`
+  #89 trap; the boot banner shows what you serve; a bake older than
+  `viz.py` is refused outright — regenerate, never auto-bake). CI runs it
+  against the frozen corpus store built by `tests/vizcorpus_build.py`
   (`--dest <scratch>` → repo-shaped GDScript corpus with real git
   history, fake embeds, own config + `.neuronav`; hermetic — never a
   live store).
@@ -130,7 +138,8 @@ Suites pick their own config; the shell must not pre-export one:
   port; `test_project_mode` still pins 9081-9090 to exercise serve.py's
   port-refusal contract.)
 - Regenerate `graph.html` first — the harness tests the bake, not the
-  template.
+  template. Enforced since #89: the gate refuses a bake whose mtime
+  predates `viz.py` (the refusal names the remedy; never an auto-bake).
 - Config-agnostic: assertions data-gate on index content, so the self-index
   profile and the default target profile both run clean.
 - `test_strata` imports `layout.py` directly — the five pure fns
