@@ -618,9 +618,6 @@ NON_CALLS = {
     "wrapf", "nearest_po2", "det", "_error", "dedent",
 }
 
-# project.godot [autoload] entry: Name = "*res://path/to.gd" (the * marks
-# a scene-backed singleton; the script form is what the graph indexes)
-AUTOLOAD_RE = re.compile(r'^(\w+)\s*=\s*"\*?res://([\w/.-]+\.gd)"')
 # asset scenes sit outside the search index; graph parses them for wiring
 ASSET_SCENE_GLOB = "*.tscn"
 

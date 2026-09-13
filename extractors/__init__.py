@@ -43,7 +43,6 @@ from extractors.gdscript import (  # noqa: F401  (re-export)
     ASSET_SCENE_GLOB,
     ASSIGN_RHS_RE,
     ASSIGN_RHS_SKIP,
-    AUTOLOAD_RE,
     BARE_DISPATCH_STR_RE,
     BARE_HANDLER_RE,
     CALLABLE_TWO_RE,
