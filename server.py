@@ -58,6 +58,7 @@ from mcp.types import ToolAnnotations
 
 import explore as _explore
 import graph
+from extractors import res_to_rel  # noqa: E402
 import nav
 
 mcp = FastMCP("neuronav")
@@ -947,8 +948,9 @@ def context(path: str = "", depth: int = 1, dir: str = "") -> str:
         g = graph.get_graph()
         if not p:
             return _ctx_overview(g)
-        if p.startswith("res://"):
-            p = p[len("res://"):]
+        # res:// is the gdscript project-root scheme — strip via the
+        # registry helper, not a local literal
+        p = res_to_rel(p)
         p = p.replace("\\", "/").lstrip("/")
         if p not in g.files:
             import difflib

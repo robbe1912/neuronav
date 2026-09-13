@@ -709,3 +709,287 @@ def _entry_module(fs: FileSym, ctx):
 
 
 ENTRY_RULES = [_entry_virtuals, _entry_tests, _entry_module]
+
+# ---- uniform shared-surface hooks (langsep) -----------------------------------
+# Bodies mirror the graph.py expressions they replace byte-for-byte.
+
+from extractors.common import DYNAMIC_HINT_RE  # noqa: E402  (kept with the hooks it serves)
+
+DYNAMIC_HINT = DYNAMIC_HINT_RE
+
+
+def is_entry_exempt(name: str) -> bool:
+    """Cpp-only rule (implicit entries); py names never exempt."""
+    return False
+
+
+def unresolved_base_review(name: str) -> bool:
+    """Underscore-rule tail for py: underscore virtuals, stdlib serving
+    machinery (PY_HOOKS) and do_* overrides land in review."""
+    return name.startswith("_") or name in PY_HOOKS or name.startswith("do_")
+
+
+def stand_in_review(fs: FileSym, name: str) -> bool:
+    """Module-scope stand-ins (duck-typed stubs, framework singletons) are
+    consumed through an opaque caller — honest tier is review."""
+    return name in getattr(fs, "dispatch_names", ())
+
+
+def mention_review(name: str, mentions: dict) -> bool:
+    """Cpp-only rule (mention floor)."""
+    return False
+
+
+# ---- python body-scan patterns (companion to the parser above) ----------------
+PY_ATTR_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\(")
+PY_CHAIN_CALL_RE = re.compile(
+    r"(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([a-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\("
+)
+PY_BARE_CALL_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*\(")
+# `name: Type` params and `x = Klass(` locals (capitalized = user
+# classes); hints keep a flat generic subscript (dict[str, Widget]) so
+# subscript access can resolve the value classes inside
+PY_PARAM_TYPED_RE = re.compile(r"[(,]\s*([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*(?:\[[^\]=]+\])?)")
+PY_LOCAL_NEW_RE = re.compile(r"(?<![\w.!=<>])([A-Za-z_]\w*)\s*=(?!=)\s*([A-Z]\w*)\s*\(")
+# with/async-with target bound from a constructor: with Session() as s
+PY_WITH_AS_RE = re.compile(
+    r"(?<![\w.])(?:async\s+)?with\s+([A-Z]\w*)\s*\([^()]*\)\s+as\s+([A-Za-z_]\w*)"
+)
+# annotated local: local: Widget = ... / pairs: dict[str, Widget] = ...
+PY_ANNOT_ASSIGN_RE = re.compile(
+    r"(?<![\w.])([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*(?:\[[^\]=]+\])?)\s*=(?!=)"
+)
+# box[k].method( / self.box[k].method( — subscript access into a hint
+PY_SUBSCRIPT_CALL_RE = re.compile(
+    r"(?<![\w.$])([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\[[^\]]*\]\s*\.\s*([A-Za-z_]\w*)\s*\("
+)
+# local bound from an imported call: extractor = registry_for(...)
+PY_MODULE_ASSIGN_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*=\s*([a-z_]\w*)\s*\(")
+# imported_call(args).method( — registry_for(path.suffix).parse(...)
+PY_RESULT_CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\(([^()]*)\)\s*\.\s*([A-Za-z_]\w*)\s*\(")
+PY_NON_CALLS = PY_CONTROL_KEYWORDS | {
+    "in", "is", "and", "or", "nonlocal", "global", "import", "from",
+    "len", "range", "str", "int", "float", "bool", "list", "dict", "set",
+    "tuple", "isinstance", "issubclass", "type", "sorted", "reversed",
+    "min", "max", "sum", "enumerate", "zip", "open", "getattr", "setattr",
+    "hasattr", "repr", "abs", "any", "all", "filter", "map", "dir", "id",
+    "hash", "iter", "next", "vars", "format", "bytes", "super", "exit",
+    "quit", "help", "input", "round", "divmod", "pow", "chr", "ord", "hex",
+    "oct", "bin", "frozenset", "bytearray", "complex", "object",
+    "staticmethod", "classmethod", "property", "dataclass", "field",
+    "Exception", "ValueError", "TypeError", "RuntimeError", "KeyError",
+    "IndexError", "OSError", "IOError", "StopIteration", "FileNotFoundError",
+    "NotImplementedError",
+}
+_HINT_VALUE_RE = re.compile(r"^[A-Za-z_]\w*\[([^\]]*)\]")
+
+
+def _hint_value_classes(hint: str) -> list[str]:
+    """Value classes inside a flat generic hint's outer subscript:
+    ``dict[str, Widget]`` -> ``['Widget']`` (Union members included)."""
+    m = _HINT_VALUE_RE.match(hint)
+    return re.findall(r"\b[A-Z]\w*", m.group(1)) if m else []
+
+
+# ---- build passes + body scan (langsep: moved from graph.py, ctx=Graph) -------
+from extractors.common import FN_KEY_SEP, fold_continuations, fn_key  # noqa: E402
+
+
+def rebind_reexports_sweep(ctx) -> None:
+    """Package re-export rebinding (#153): `from extractors import X`
+    binds X to the package __init__ file, but X is DEFINED in a
+    submodule the __init__ re-exports — rebind import edge and
+    receiver const to the definer. PROSPECTIVE / defense-in-depth
+    (GK #164 review, teeth-verified): on the current corpus the
+    liveness outcome is already carried by the __init__'s OWN
+    from-imports (the pass below runs over every file, and the
+    fixed parenthesized harvest binds them straight to definers);
+    what this adds is consumer consts that point at definers —
+    bare-call edges land on the real implementation, keeping
+    caller/reverse-edge data honest — plus coverage for alias and
+    chained re-export shapes a consumer may use without the
+    __init__ importing the name itself."""
+    for fs in ctx.files.values():
+        if fs.ext != ".py":
+            continue
+        rebound = set()
+        for target, nm in sorted(fs.from_imports):
+            definer = ctx._resolve_definer(target, nm)
+            rebound.add((definer or target, nm))
+            if definer and definer != target and fs.consts.get(nm) == target:
+                fs.consts[nm] = definer
+        fs.from_imports = rebound
+
+
+def import_liveness_sweep(ctx) -> None:
+    """A PLAIN `import x` binds the namespace - the module may be
+    reached dynamically, so its funcs stay alive as a unit. A
+    `from x import y` selects exactly one name: only that func (if it
+    is one) survives the import; siblings do not."""
+    for fs in ctx.files.values():
+        if fs.ext != ".py":
+            continue
+        for mod in fs.imported_modules:
+            if mod in ctx.files:
+                for other in ctx.files[mod].funcs.values():
+                    ctx.referenced.add(other.key)
+        for mod, nm in fs.from_imports:
+            if mod in ctx.files and nm in ctx.files[mod].funcs:
+                ctx.referenced.add(f"{mod}{FN_KEY_SEP}{nm}")
+
+
+def arg_refs_sweep(ctx) -> None:
+    """Python bare-name argument references (#177): a def passed by
+    reference — `json.loads(..., parse_constant=no_constants)`,
+    `sorted(rows, key=rank)`, `atexit.register(flush)` — has no
+    call site, so the call-regex passes never see it and the dead
+    tier flagged it likely. The extractor harvest is AST-guarded
+    to plain identifier args (strings and attribute refs never
+    land there); same-file defs get an attributed-alive key —
+    precise per-def liveness, never the corpus-wide
+    referenced_names name match, so same-named funcs elsewhere
+    stay honest dead-code material."""
+    for fs in ctx.files.values():
+        if fs.ext != ".py":
+            continue
+        for nm in fs.arg_refs:
+            if nm in fs.funcs:
+                ctx.referenced.add(fs.funcs[nm].key)
+
+
+def harvest_facts(fs: FileSym, ctx) -> None:
+    """Python files contribute no name-literal/init-call facts (the
+    sweep stays registry-uniform; nothing to harvest)."""
+    return None
+
+
+def scan_file(fs: FileSym, ctx) -> None:
+    if fs.ext != ".py":
+        return
+    for fn in fs.funcs.values():
+        _scan_body_py(fs, fn, ctx)
+
+
+def _scan_body_py(fs: FileSym, fn: Func, ctx) -> None:
+    """Python body scan: call edges via typed receivers, class_map
+    classes, and from-import consts (module-file receivers)."""
+    src_key = fn.key
+    scan_text = fold_continuations(fn.body)
+    # receiver types: self-members from the extractor + typed params
+    # + constructor locals in this body
+    var_types = dict(fs.members)
+    var_types.update(fs.module_vars)
+    for pm in PY_PARAM_TYPED_RE.finditer(scan_text):
+        var_types[pm.group(1)] = pm.group(2)
+    for m in PY_ANNOT_ASSIGN_RE.finditer(scan_text):
+        var_types[m.group(1)] = m.group(2)
+    for m in PY_WITH_AS_RE.finditer(scan_text):
+        var_types[m.group(2)] = m.group(1)
+    for m in PY_LOCAL_NEW_RE.finditer(scan_text):
+        var_types[m.group(1)] = m.group(2)
+    # x = imported_name(...): the local becomes a module-object
+    # receiver — resolve x.method( against that module (and the
+    # modules it re-exports, since registries return submodules)
+    for m in PY_MODULE_ASSIGN_RE.finditer(scan_text):
+        mod = fs.consts.get(m.group(2), "")
+        if mod in ctx.files:
+            var_types[m.group(1)] = "module:" + mod
+    # obj.method( — head resolves via class_map (repo classes), typed
+    # receivers, from-import consts (module-file receivers), or
+    # module-object locals bound from an imported call
+    for m in PY_ATTR_CALL_RE.finditer(scan_text):
+        head, meth = m.group(1), m.group(2)
+        if head in ("self", "cls"):
+            if meth in fs.funcs:
+                ctx._emit_call(src_key, fs.path, meth)
+            continue
+        vt = var_types.get(head, "")
+        if vt.startswith("module:"):
+            for dst in _module_method_dsts(vt[len("module:"):], meth, ctx):
+                ctx._emit_call(src_key, dst, meth)
+            continue
+        cls = head if head in ctx.class_map else var_types.get(head, "")
+        if cls and cls in ctx.class_map:
+            dst = ctx.class_map[cls]
+        elif head in fs.consts and fs.consts[head] in ctx.files:
+            dst = fs.consts[head]
+        else:
+            continue
+        if meth in ctx.files[dst].funcs:
+            ctx._emit_call(src_key, dst, meth)
+    # imported_call(args).method( — calling an imported function then
+    # a method on the result (registry_for(suffix).parse(...)): the
+    # const's module chain supplies the candidate defs
+    for m in PY_RESULT_CALL_RE.finditer(scan_text):
+        head, meth = m.group(1), m.group(3)
+        mod = fs.consts.get(head, "")
+        if mod in ctx.files:
+            for dst in _module_method_dsts(mod, meth, ctx):
+                ctx._emit_call(src_key, dst, meth)
+    # two-level chains: self.g.greet( / api.client.run(
+    for m in PY_CHAIN_CALL_RE.finditer(scan_text):
+        head, mid, tail = m.group(1), m.group(2), m.group(3)
+        if head in ("self", "cls"):
+            cls = var_types.get(mid, "")
+            dst = ctx.class_map.get(cls, "")
+        else:
+            dst = ctx._chain_dst(var_types, head, mid)
+        if dst and tail in ctx.files[dst].funcs:
+            ctx._emit_call(src_key, dst, tail)
+    # box[k].method( / self.box[k].method( — subscript access into a
+    # generic hint (dict[str, Widget]): the capitalized names inside
+    # the outer subscript are the receiver candidates
+    for m in PY_SUBSCRIPT_CALL_RE.finditer(scan_text):
+        head, meth = m.group(1), m.group(2)
+        parts = head.split(".")
+        if len(parts) > 1 and parts[0] not in ("self", "cls"):
+            continue
+        hint = var_types.get(parts[-1], "")
+        for vc in _hint_value_classes(hint):
+            dst = ctx.class_map.get(vc, "")
+            if dst and meth in ctx.files[dst].funcs:
+                ctx._emit_call(src_key, dst, meth)
+    # bare name( — same-file funcs, then from-import module funcs
+    for m in PY_BARE_CALL_RE.finditer(scan_text):
+        name = m.group(1)
+        if name in PY_NON_CALLS:
+            continue
+        if name in fs.funcs:
+            ctx._emit_call(src_key, fs.path, name)
+            continue
+        dst = fs.consts.get(name, "")
+        if dst in ctx.files and name in ctx.files[dst].funcs:
+            ctx._emit_call(src_key, dst, name)
+
+
+def _module_method_dsts(mod_rel: str, meth: str, ctx) -> list[str]:
+    """Files that may define `meth` reached through module `mod_rel`:
+    the module itself plus the modules it imports (re-export surface —
+    registries return submodules listed in their imports)."""
+    if mod_rel not in ctx.files:
+        return []
+    cands = [mod_rel]
+    mod_fs = ctx.files[mod_rel]
+    for reexport in mod_fs.consts.values():
+        if reexport in ctx.files and reexport != mod_rel:
+            cands.append(reexport)
+    return sorted({c for c in cands if meth in ctx.files[c].funcs})
+
+
+def is_wiring_only(fs: FileSym) -> bool:
+    """Python files always carry funcs — never wiring-only."""
+    return False
+
+
+def stat_tags(text: str) -> tuple[str, str]:
+    """Python has no class_name/extends header notion — empty tags."""
+    return ("", "")
+
+
+# registry choreography binds (langsep) — see extractors/gdscript.py's
+# _PASS_* block for the rationale (attribute dispatch is invisible to
+# the module scan; the value-ref arm roots these binds).
+_PASS_REBIND = rebind_reexports_sweep
+_PASS_IMPORTS = import_liveness_sweep
+_PASS_ARG_REFS = arg_refs_sweep
+_PASS_FACTS = harvest_facts

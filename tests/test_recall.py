@@ -39,10 +39,12 @@ if nav.count() == 0:
 
 g = graph.get_graph(rebuild=True)
 check("self index populated", nav.count() > 0, f"{nav.count()} files embedded")
-
-lex = recall.BM25F(g.files).scores("_fold_continuations")
+# langsep restatement (8d class): _fold_continuations moved to
+# extractors/common.py as fold_continuations — the defining file moved
+# with the identifier; lexical pin tracks it, intent unchanged.
+lex = recall.BM25F(g.files).scores("fold_continuations")
 check("bm25 exact identifier -> defining file",
-      bool(lex) and lex[0][0] == "graph.py", str(lex[:3]))
+      bool(lex) and lex[0][0] == "extractors/common.py", str(lex[:3]))
 lex = recall.BM25F(g.files).scores("_file_adjacency")
 check("bm25 exact identifier -> recall.py",
       bool(lex) and lex[0][0] == "recall.py", str(lex[:3]))

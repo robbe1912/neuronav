@@ -9,6 +9,8 @@ their divergence IS the language layer, not duplication to flatten.
 
 from __future__ import annotations
 
+import re
+
 from typing import Callable, Iterable, Iterator
 
 from extractors.model import FileSym, Func
@@ -20,6 +22,14 @@ PY_CONTROL_KEYWORDS = frozenset({
     "if", "for", "while", "elif", "return", "assert", "del", "print",
     "lambda", "not", "await", "with", "except", "raise", "yield",
 })
+
+# File-level dynamic-dispatch hints enabling the quoted-ident harvest and
+# the dead-tier "review" gate. Shared spelling: the gd scanner AND the py
+# dead-tier gate consult the same pattern today — divergence would shift
+# tiers silently, so one home (graph.py's original moved here verbatim).
+DYNAMIC_HINT_RE = re.compile(
+    r'\.call\(|\.call_deferred|Callable\(|has_method\(|\.connect\(|\.rpc\(|\.emit\('
+)
 
 
 def scan_indented_block(
@@ -112,3 +122,60 @@ def entry_keys(fs: FileSym, names: Iterable[str]) -> Iterator[str]:
         fn = fs.funcs.get(nm)
         if fn is not None:
             yield fn.key
+
+
+# ---- fn-key grammar (frozen contract) -----------------------------------------
+# Node keys in Graph.edges/reverse/roots/referenced are "path::func" plus
+# three pseudo-node spellings: "path::tscn" (scene file node),
+# "path::SIGNAL:name" (signal node), "path::VAR:member" (member-write
+# node); a bare "*::name" marks name-only references. The grammar is
+# FROZEN — the viz template's fnKey/keyFile logic mirrors it, so any
+# change is a both-sides contract (never one-sided). split_key's "first
+# :: wins" is safe because extractor captures are identifier-shaped
+# (never contain "::"). Home: common.py (language-neutral) since the
+# langsep cutover; graph.py and bake consume via the package surface.
+FN_KEY_SEP = "::"
+TSCN_SUFFIX = "::tscn"
+SIGNAL_PREFIX = "::SIGNAL:"
+VAR_PREFIX = "::VAR:"
+
+# ---- cross-language text mechanics --------------------------------------------
+# Call/member shapes shared by more than one extractor's body scanner.
+QUALIFIED_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*\(")
+# receiver.member access that is NOT a call: member name lowercase-initial
+# (vars), negative lookahead rejects optional-whitespace-then-paren
+MEMBER_ACCESS_RE = re.compile(
+    r"(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([a-z_]\w*)\b(?!\s*\()"
+)
+BARE_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\s*\(")
+# identifier-shaped token anywhere in raw corpus text (issue #20): the
+# dead-tier mention-count pass counts these per file once, comments and
+# string literals included — never a rescan per dead candidate
+MENTION_TOKEN_RE = re.compile(r"[A-Za-z_]\w*")
+
+
+def fn_key(rel: str, name: str) -> str:
+    """Function-node key: repo-relative path + function name."""
+    return f"{rel}{FN_KEY_SEP}{name}"
+
+
+def fold_continuations(body: str) -> str:
+    """Join physical lines whose parens/brackets are still open so a call
+    split across lines becomes one logical line for regex scanning."""
+    out: list[str] = []
+    buf = ""
+    depth = 0
+    for line in body.splitlines():
+        buf = line if not buf else f"{buf} {line.strip()}"
+        depth += (
+            line.count("(") - line.count(")")
+            + line.count("[") - line.count("]")
+            + line.count("{") - line.count("}")
+        )
+        if depth <= 0:
+            out.append(buf)
+            buf = ""
+            depth = 0
+    if buf:
+        out.append(buf)
+    return "\n".join(out)

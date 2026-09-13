@@ -619,3 +619,248 @@ def _entry_gdvirtual(fs: FileSym, ctx) -> Iterable[str]:
 
 
 ENTRY_RULES = [_entry_classdb, _entry_virtuals, _entry_gdvirtual]
+
+# ---- uniform shared-surface hooks (langsep) -----------------------------------
+# Bodies mirror the graph.py expressions they replace byte-for-byte.
+
+DYNAMIC_HINT = CPP_DYNAMIC_RE
+
+
+def is_entry_exempt(name: str) -> bool:
+    """Destructors, overloaded/conversion operators: invoked without a
+    call site — never dead candidates (issue #109)."""
+    return is_implicit_entry(name)
+
+
+def unresolved_base_review(name: str) -> bool:
+    """Underscore-rule tail for cpp."""
+    return name.startswith("_")
+
+
+def stand_in_review(fs: FileSym, name: str) -> bool:
+    """Python-only rule (module-scope stand-ins)."""
+    return False
+
+
+def mention_review(name: str, mentions: dict) -> bool:
+    """Name keeps appearing across the corpus (comments, string dispatch,
+    dropped ambiguous calls): wired somewhere static passes cannot see."""
+    return mentions.get(name, 0) >= CPP_MENTION_FLOOR
+
+
+# ---- build passes + wiring + body scan (langsep: moved from graph.py) ----------
+from extractors.common import fn_key  # noqa: E402
+from extractors.model import FileSym, Func  # noqa: F401,E402  (annotation surface)
+
+MENTION_FLOOR = CPP_MENTION_FLOOR
+
+
+def harvest_facts(fs: FileSym, ctx) -> None:
+    """Name-literal liveness for cpp: quoted identifiers + class-level
+    initializer calls keep same-named funcs alive."""
+    if fs.ext not in CPP_EXTS:
+        return
+    for nm in fs.name_literals:
+        if len(nm) > 3:
+            ctx.referenced_names.add(nm)
+    for nm in fs.init_calls:
+        ctx.referenced_names.add(nm)
+
+
+def scan_file(fs: FileSym, ctx) -> None:
+    if fs.ext not in CPP_EXTS:
+        return
+    _scan_body_cpp(fs, fs.path, ctx)
+
+
+def _scan_body_cpp(fs: FileSym, rel: str, ctx) -> None:
+    """C++ body scan (issue #20): call / callback / instantiation edges.
+
+    Sites come from extractors.cpp.scan_calls (query captures +
+    memnew). Resolution mirrors the registration wiring: file-local
+    funcs first, then the paired class's header via class_map. Sites
+    that resolve to nothing are DROPPED for plain calls — an
+    unresolved call name must never feed referenced_names (the
+    same-name-elsewhere ambiguity guard) — but callback references
+    (&fn / &C::fn) keep the name-alive liveness path: a function
+    reachable ONLY through a function pointer is alive, and the
+    engine's registrars are not ClassDB-shaped.
+    """
+    try:
+        sites = scan_calls(ctx.path_for(rel), rel)
+    except OSError:
+        return
+    if not sites or not fs.funcs:
+        return
+    order = sorted(fs.funcs.values(), key=lambda f: f.line)
+    hdr = ctx.class_map.get(fs.class_name, "") if fs.class_name else ""
+
+    def container(lineno: int) -> str:
+        owner = ""
+        for f in order:
+            if f.line <= lineno:
+                owner = f.key
+            else:
+                break
+        return owner
+
+    for site in sites:
+        name = site["name"]
+        kind = site["kind"]
+        if kind == "new":
+            cls_file = ctx.class_map.get(name, "")
+            if cls_file and cls_file != rel:
+                src = container(site["line"])
+                if src:
+                    ctx._edge(src, cls_file, ty="inst")
+            continue
+        parts = name.split("::")
+        dst = ""
+        if len(parts) == 2:
+            cls_file = ctx.class_map.get(parts[0], "")
+            if cls_file and parts[1] in ctx.files[cls_file].funcs:
+                dst = fn_key(cls_file, parts[1])
+        elif name in fs.funcs:
+            dst = fn_key(rel, name)
+        elif hdr and name in ctx.files[hdr].funcs:
+            dst = fn_key(hdr, name)
+        if dst:
+            src = container(site["line"])
+            if src and src != dst:
+                ctx._edge(src, dst, ty="call")
+        elif kind in ("fref", "frefq"):
+            ctx.referenced_names.add(parts[-1])
+
+
+def wire(ctx) -> None:
+    """C++ wiring (issue #13): .cpp files inherit their class identity
+    from the paired header, then registration macros become edges and
+    the repo-wide GDVIRTUAL override set. Must precede root finding —
+    the gdvirtual entry rule consumes ctx.cpp_gdvirtuals."""
+    ctx.cpp_gdvirtuals = set()
+    _pair_cpp(ctx)
+    _registration_edges(ctx)
+    _wire_aliases(ctx)
+
+
+def _pair_cpp(ctx) -> None:
+    """Give each .cpp its header's class identity (spec §2 pairing).
+
+    Convention: a .cpp's first quoted include is its own header
+    (path-ordered includes in engine code). The header stays the
+    canonical class_map owner; the .cpp only fills in if unclaimed.
+    """
+    for rel in sorted(ctx.files):
+        fs = ctx.files[rel]
+        if fs.ext != ".cpp" or fs.class_name:
+            continue
+        own_stem = rel.rsplit("/", 1)[-1].split(".")[0]
+        pair = ""
+        for inc in sorted(fs.imported_modules):
+            resolved = _resolve_include(ctx, rel, inc)
+            if not resolved or ctx.files[resolved].ext not in (".h", ".hpp"):
+                continue
+            if resolved.rsplit("/", 1)[-1].split(".")[0] == own_stem:
+                pair = resolved
+                break  # exact-stem match wins outright
+            pair = pair or resolved
+        if pair and ctx.files[pair].class_name:
+            fs.class_name = ctx.files[pair].class_name
+            ctx.class_map.setdefault(fs.class_name, pair)
+
+
+def _registration_edges(ctx) -> None:
+    """Registration macros -> call edges + repo-wide GDVIRTUAL set.
+
+    Binds/props live inside a containing function (usually
+    _bind_methods): the owner is resolved by line order, mirroring how
+    the engine runs registration at class-initialization time. Edge
+    targets resolve file-locally first, then via class_map to the
+    class's defining file. Roots come from ENTRY_RULES; these edges
+    carry the call-graph wire (clusters/ PageRank treat ty="call").
+    """
+    for rel in sorted(ctx.files):
+        fs = ctx.files[rel]
+        if fs.ext not in CPP_EXTS:
+            continue
+        try:
+            text = ctx.read_file(rel)
+        except OSError:
+            continue
+        reg = harvest_registration(text)
+        ctx.cpp_gdvirtuals.update(v.name for v in reg["gdvirtuals"])
+        if not fs.funcs or (not reg["binds"] and not reg["props"]):
+            continue
+        order = sorted(fs.funcs.values(), key=lambda f: f.line)
+
+        def container(lineno: int) -> str:
+            owner = ""
+            for f in order:
+                if f.line <= lineno:
+                    owner = f.key
+                else:
+                    break
+            return owner
+
+        def target(cls: str, name: str) -> str:
+            if name in fs.funcs:
+                return fn_key(rel, name)
+            class_file = ctx.class_map.get(cls, "")
+            if class_file and name in ctx.files[class_file].funcs:
+                return fn_key(class_file, name)
+            return ""
+
+        for b in reg["binds"]:
+            dst = target(b.cls, b.method)
+            src = container(b.line)
+            if dst and src:
+                ctx._edge(src, dst, ty="call")
+        for p in reg["props"]:
+            src = container(p.line)
+            if not src:
+                continue
+            for name in (p.setter, p.getter):
+                if not name:
+                    continue
+                dst = target(fs.class_name, name)
+                if dst:
+                    ctx._edge(src, dst, ty="call")
+
+
+def _wire_aliases(ctx) -> None:
+    """typedef/using targets -> alias edges to the aliased class's file
+    (issue #20 T7). Cheap signal: an alias means the type is genuinely
+    used; the edge keeps the defining file visible in the graph."""
+    for rel in sorted(ctx.files):
+        fs = ctx.files[rel]
+        if fs.ext not in CPP_EXTS or not fs.aliases:
+            continue
+        for target in sorted(fs.aliases.values()):
+            cls_file = ctx.class_map.get(target, "")
+            if cls_file and cls_file != rel:
+                ctx._edge(rel, cls_file, ty="alias")
+
+
+def _resolve_include(ctx, src_rel: str, inc: str) -> str:
+    """Repo-relative path for a quoted include of src_rel, or ''."""
+    if inc in ctx.files:
+        return inc
+    parent = src_rel.rsplit("/", 1)[0] if "/" in src_rel else ""
+    cand = f"{parent}/{inc}" if parent else inc
+    return cand if cand in ctx.files else ""
+
+
+def is_wiring_only(fs: FileSym) -> bool:
+    """C++ files always carry funcs — never wiring-only."""
+    return False
+
+
+def stat_tags(text: str) -> tuple[str, str]:
+    """C++ has no class_name/extends header notion — empty tags."""
+    return ("", "")
+
+
+# registry choreography binds (langsep) — see extractors/gdscript.py's
+# _PASS_* block for the rationale.
+_PASS_WIRE = wire
+_PASS_FACTS = harvest_facts
