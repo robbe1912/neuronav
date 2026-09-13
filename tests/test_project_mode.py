@@ -145,7 +145,15 @@ def main() -> None:
                        capture_output=True, text=True, check=True)
         mcp = json.loads((proj / ".mcp.json").read_text(encoding="utf-8"))
         entry = mcp["mcpServers"]["neuronav"]
-        check("wire: .mcp.json pins NEURONAV_CONFIG to the project config", entry["env"]["NEURONAV_CONFIG"] == str(cfg_path))
+        venv_py = ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        # stdio entries run the install's own venv python when present,
+        # otherwise the interpreter that ran onboard.py
+        want_command = str(venv_py) if venv_py.is_file() else sys.executable
+        check("wire: .mcp.json starts the repo venv python -X utf8 server.py",
+              entry["command"] == want_command and
+              entry["args"] == ["-X", "utf8", str(ROOT / "server.py")] and
+              entry["env"]["NEURONAV_CONFIG"] == str(cfg_path),
+              str(entry))
         oc_doc = json.loads(oc.read_text(encoding="utf-8"))
         check("wire: opencode.json merged, not replaced", "other" in oc_doc["mcp"] and oc_doc["mcp"]["neuronav"]["environment"]["NEURONAV_CONFIG"] == str(cfg_path))
         check("wire: install stays read-only", not (ROOT / "config" / "proj.json").exists())
@@ -222,6 +230,47 @@ def main() -> None:
                        env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}, "NEURONAV_EMBED_FAKE": "1"},
                        capture_output=True, text=True, check=True)
         check("wire: recreates a deleted .mcp.json cleanly", mcp_path.is_file())
+
+        # 4d. wire --omp: emits the omp harness mcpServers fragment (issue #130)
+        omp_env = {"NEURONAV_OMP_MCP": str(tmp / "omp-mcp.json")}
+        subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "wire", "--omp"], cwd=proj,
+                       env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"},
+                            "NEURONAV_EMBED_FAKE": "1", **omp_env},
+                       capture_output=True, text=True, check=True)
+        omp_doc = json.loads((tmp / "omp-mcp.json").read_text(encoding="utf-8"))
+        omp_entry = omp_doc["mcpServers"]["neuronav-proj"]
+        check("omp: server name defaults to neuronav-<project>", "neuronav-proj" in omp_doc["mcpServers"], str(sorted(omp_doc["mcpServers"])))
+        check("omp: fragment pins NEURONAV_CONFIG to the project config", omp_entry["env"]["NEURONAV_CONFIG"] == str(cfg_path))
+        check("omp: fragment command = repo venv python, args -X utf8 server.py",
+              omp_entry["command"] == entry["command"] and omp_entry["args"] == ["-X", "utf8", str(ROOT / "server.py")],
+              str(omp_entry))
+        check("omp: install stays read-only (no ~/.omp written)", not (Path.home() / ".omp" / "agent" / "mcp.json").exists())
+
+        # 4e. --omp-name overrides the server name; merge preserves other servers
+        omp_doc["mcpServers"]["pre-existing"] = {"command": "x"}
+        (tmp / "omp-mcp.json").write_text(json.dumps(omp_doc), encoding="utf-8")
+        r = subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "wire", "--omp", "--omp-name", "my-neuronav"],
+                           cwd=proj,
+                           env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"},
+                                "NEURONAV_EMBED_FAKE": "1", **omp_env},
+                           capture_output=True, text=True, check=True)
+        omp_doc2 = json.loads((tmp / "omp-mcp.json").read_text(encoding="utf-8"))
+        check("omp: --omp-name overrides the server name", "my-neuronav" in omp_doc2["mcpServers"], str(sorted(omp_doc2["mcpServers"])))
+        check("omp: unrelated servers preserved on merge", "pre-existing" in omp_doc2["mcpServers"])
+        check("omp: rerun idempotent", json.loads((tmp / "omp-mcp.json").read_text(encoding="utf-8")) == omp_doc2)
+
+        # 4f. two projects: default names never collide in the single omp file
+        p_second = tmp / "omp-two"
+        (p_second / "src").mkdir(parents=True)
+        (p_second / "src" / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+        subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "wire", "--omp", "--project", str(p_second)],
+                       env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"},
+                            "NEURONAV_EMBED_FAKE": "1", **omp_env},
+                       capture_output=True, text=True, check=True)
+        omp_doc3 = json.loads((tmp / "omp-mcp.json").read_text(encoding="utf-8"))
+        check("omp: two projects = two named servers",
+              "my-neuronav" in omp_doc3["mcpServers"] and "neuronav-omp-two" in omp_doc3["mcpServers"],
+              str(sorted(omp_doc3["mcpServers"])))
 
         # 5. one command end-to-end (fake embeds): index + bake in the project
         p2 = make_project(tmp / "second")

@@ -1,7 +1,8 @@
 """neuronav MCP server (stdio): semantic + structural code intelligence.
 
 Works from any clone/worktree: paths resolve relative to the checkout the
-tool lives in. Clients: OpenCode, Claude Code, VS Code, Codex (all stdio MCP).
+tool lives in. Clients: OpenCode, Claude Code, VS Code, Codex, omp
+(`onboard.py wire --omp`, issue #130) — all stdio MCP.
 
 Tools:
 - explore(query, n=4, anchor=""): START HERE for "how does X work" — one call
