@@ -85,8 +85,16 @@ def serve(directory, reuse: bool = False):
 
 
 def launch(pw):
-    """Real system Chrome — channel="chrome" (no browser download)."""
-    return pw.chromium.launch(channel="chrome", headless=True)
+    """Real system Chrome — channel="chrome" (no browser download).
+    Falls back to the Playwright-bundled chromium only when no system
+    Chrome exists (CI runners): same Blink engine, same checks. The
+    banner notes which one answered so gate logs stay honest."""
+    try:
+        return pw.chromium.launch(channel="chrome", headless=True)
+    except Exception:
+        print("[page-harness] system Chrome not found — "
+              "falling back to bundled chromium", flush=True)
+        return pw.chromium.launch(headless=True)
 
 
 def open_page(browser, port: int, errors: list | None = None):

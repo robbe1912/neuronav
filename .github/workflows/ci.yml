@@ -31,3 +31,39 @@ jobs:
         run: python -X utf8 tests/test_project_mode.py
       - name: baseindex (export/import shards, second-run idempotence, issue #102)
         run: python -X utf8 tests/test_baseindex.py
+      - name: mwires (named-wire map rows, map-spec-v2 §0)
+        run: python -X utf8 tests/test_mwires.py
+      - name: recall (vector recall two-pass, fake embeddings)
+        run: python -X utf8 tests/test_recall.py
+      - name: embedprov (embed provider auth + probe)
+        run: python -X utf8 tests/test_embedprov.py
+      - name: repomap (repo map budget, stdlib + numpy)
+        run: python -X utf8 tests/test_repomap.py
+      - name: selfindex (structural self-index checks)
+        run: python -X utf8 tests/test_selfindex.py
+      - name: verifier (tree-sitter verifier, hermetic by construction)
+        run: python -X utf8 tests/test_verifier.py
+      - name: bench (record/golden coherence, issue #104)
+        run: python -X utf8 tests/test_bench.py
+
+  # test_viz on the frozen synthetic corpus (issue #100/#97/#146): bake a
+  # hermetic store (fake embeds, scratch config + state dir) and gate the
+  # ~9.7k-line viz template end-to-end in a real browser. The corpus is
+  # generated from fixed content by tests/vizcorpus_build.py - no target
+  # repo, no live store, deterministic bytes.
+  viz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NEURONAV_EMBED_FAKE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install numpy chromadb httpx "mcp<2" networkx scipy scikit-learn tree-sitter==0.26.0 tree-sitter-cpp==0.23.4 playwright
+      - run: python -m playwright install --with-deps chromium
+      - name: build frozen corpus (git history + fake-embed store + bake)
+        run: python -X utf8 tests/vizcorpus_build.py --dest "$HOME/vizcorpus"
+      - name: test_viz on the frozen corpus
+        run: NEURONAV_CONFIG="$HOME/vizcorpus/config.json" python -X utf8 tests/test_viz.py

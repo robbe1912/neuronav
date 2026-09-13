@@ -28,6 +28,15 @@ def check(name, cond, detail=""):
         FAILS.append(name)
 
 
+# Hermetic bootstrap (GK #166 F1): a fresh checkout — CI — starts with
+# an empty self-index store; nothing else in the suites job populates
+# it. Rescan binds the config above (this repo's own .neuronav under
+# the checkout) and, under FAKE embeds, writes deterministic hash
+# embeddings. Never a live store: the config root is the checkout
+# itself. Skipped when the store already has content.
+if nav.count() == 0:
+    nav.rescan()
+
 g = graph.get_graph(rebuild=True)
 check("self index populated", nav.count() > 0, f"{nav.count()} files embedded")
 
@@ -230,16 +239,27 @@ common = set(base_scores) & set(boost_scores)
 check("boost never lowers an existing score",
       bool(common) and all(boost_scores[f] >= base_scores[f] for f in common))
 
-# 8d. promotion is real: with a strong λ, at least one top-k hit under
-# boost is a 1-hop neighbor of the λ=0 top-1 file — pulled into the
-# rank signal from the graph, not from vec/bm25 lists (src says graph).
+# 8d. promotion is real AND non-vacuous (GK #166 F2): a 1-hop
+# neighbour of the first WIRED λ=0 hit must STRICTLY RANK UP under
+# λ=16 — its boosted rank beats its λ=0 rank (a neighbour outside the
+# λ=0 top-12 entering the boosted top-12 counts as up). With the boost
+# off the two rank maps are identical (8a pins that byte-identity), so
+# the pin fails — it pins the #73 promotion invariant, not lexical
+# accident. Top-0 itself is corpus-composition-sensitive under FAKE
+# embeds (hash near-ties let a lexically-heavy edgeless file top the
+# list — e.g. a generated-content suite file), so anchor on the first
+# λ=0 hit that actually has neighbours; the boost law is about wired
+# files either way.
+wired0 = next((h["file"] for h in z[:12] if adj2.get(h["file"])), None)
+nb0 = adj2.get(wired0, set())
 strong = recall.search("graph signal wiring edges", k=12, graph_boost=16.0)
-top0 = z[0]["file"]
-nb0 = adj2.get(top0, set())
-check("strong lambda pulls a 1-hop neighbor of the top hit",
-      top0 in adj2  # non-vacuous: the corpus top hit is wired
-      and any(h["file"] in nb0 for h in strong[:12]) and strong[0]["file"] != top0,
-      f"top0={top0} nbs={sorted(nb0)[:3]} strong={[h['file'] for h in strong[:3]]}")
+rz = {h["file"]: i for i, h in enumerate(z)}
+ups = [(h["file"], rz.get(h["file"], 99), i) for i, h in enumerate(strong)
+       if h["file"] in nb0 and rz.get(h["file"], 99) > i]
+check("strong lambda strictly lifts a wired 1-hop neighbour",
+      wired0 is not None  # non-vacuous: some λ=0 top-k hit is wired
+      and bool(ups),      # and promotion moved at least one of its neighbours up
+      f"wired0={wired0} ups={ups[:3]} strong={[h['file'] for h in strong[:3]]}")
 
 # 8e. every graph-tagged hit is a genuine 1-hop neighbor of a λ=0
 # top-k source (boost sources are exactly the fused top-k), and λ=0
@@ -250,7 +270,6 @@ bad_g = [h["file"] for h in b1 if h["src"] == "graph"
 check("graph-tagged hits are real neighbors of top-k sources", not bad_g, str(bad_g))
 check("no graph tag without boost",
       all(h["src"] in ("vec", "bm25", "both") for h in z))
-
 # 8f. rrf_k sweep plumbing: k=30 sharpens the unit; still byte-stable
 # and still a no-op at λ=0 relative to itself.
 s30 = recall.search("graph signal wiring edges", k=12, rrf_k=30.0)

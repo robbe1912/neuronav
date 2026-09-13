@@ -8533,6 +8533,11 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnStations() { return fnStationsArr; },
   get fnLod() { return fnLodV ? Object.assign({}, fnLodV) : null; }, get fnJclear() { return fnJclearV; },
   get lodServe() { return _lodServe; },   // serveAll master gate (chain-integrity census)
+  get compactBall() {   // #97 shape probe: what the serve gate actually sees
+    return { R: compactBallR,
+             camDist: camera.position.distanceTo(controls.target),
+             radFi: focusFileIdx >= 0 ? sphR(focusFileIdx) : null,
+             nOthers: compactIdx ? compactIdx.length - 1 : 0 }; },
   get lodPxOf() { return _lod ? _lod.pxOf : null; },   // per-file box ref-px (probe hook)
   get alphaTgt() { return alphaTgt; },   // lit-set oracle (tier unification pin)
   get jDotArrays() { return { of: fnJDotOf, st: fnJDotSt, legs: fnJDotLegs, key: fnJDotKey }; },
