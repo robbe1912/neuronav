@@ -13,16 +13,18 @@ python -m venv .venv
 ollama pull qwen3-embedding:0.6b          # default embedding backend; any OpenAI-compatible /embeddings endpoint also works (config/AGENTS.md)
 ```
 
-Windows is the primary dev platform. CI is the gate: fifteen hermetic
+Windows is the primary dev platform. CI is the gate: twenty hermetic
 suites (`test_strata`, `test_crosslang`, `test_pyhard`, `test_cpphard`,
-`test_autorescan`, `test_searchtext`, `test_project_mode`,
-`test_baseindex`, `test_mwires`, `test_recall`, `test_embedprov`,
-`test_repomap`, `test_selfindex`, `test_verifier`, `test_bench`) run on
-ubuntu with `NEURONAV_EMBED_FAKE=1`, plus a `viz` job that builds the
-frozen synthetic corpus (`tests/vizcorpus_build.py`) and runs the full
-Playwright harness (`test_viz`) against it. The rest (real embeds, the
-external target repo) are local gates; `test_viz` also runs locally on
-the self-index or any scratch store via `NEURONAV_CONFIG`.
+`test_autorescan`, `test_server_stdio`, `test_searchtext`,
+`test_project_mode`, `test_baseindex`, `test_mwires`, `test_clusterinv`,
+`test_recall`, `test_embedprov`, `test_repomap`, `test_selfindex`,
+`test_explore`, `test_verifier`, `test_bench`, `test_bakeint`,
+`test_portability`) run on ubuntu with `NEURONAV_EMBED_FAKE=1`, plus a
+`viz` job that builds the frozen synthetic corpus
+(`tests/vizcorpus_build.py`) and runs the full Playwright harness
+(`test_viz`) against it. The rest (real embeds, the external target repo)
+are local gates; `test_viz` also runs locally on the self-index or any
+scratch store via `NEURONAV_CONFIG`.
 
 ## Layout
 
@@ -34,7 +36,7 @@ the self-index or any scratch store via `NEURONAV_CONFIG`.
 | `clusters.py` | Louvain communities, labels, crosstalk |
 | `explore.py` | one-call agent orientation tool |
 | `onboard.py` | one-command project onboarding (issue #27): init/wire — install stays read-only, cross-platform |
-| `server.py` | FastMCP stdio server (12 tools) |
+| `server.py` | FastMCP stdio server (13 tools) |
 | `viz.py` | optional add-on: data build + embedded three.js template -> `graph.html` |
 | `layout.py` | pure strata/layout math for the viz bake (stdlib + numpy only) |
 | `bake/` | pure per-job transforms for the viz DATA pipeline (g/clusters in, DATA rows out) |

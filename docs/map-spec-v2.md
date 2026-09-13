@@ -30,7 +30,7 @@ Collapsed = 22px box. Expanded = header (click refocus, dblclick toggle) + fn ro
 Expansion resolved BEFORE row wrap. rowH = max(64, tallest-expanded-in-row + 40). freeX radius scales with box widths; exhausted → translucent bezier overlays (alpha 0.35, no lane claims) — honest degradation. Layout cache keyed (focusVersion, expansionSet, paneSize); pan/zoom = pure transform. rAF dirty-flag single draw [F7]. Focus change resets zoom/pan to fit both dims, floor 1.0 [F15,F9].
 
 ## 6. Labels [F2]
-Entry micro-label at arrowhead: 10px, type-colored, +4px offset. Greedy dy-nudge ladder (0,-9,-18,+9,+18,-27…), first-fit, HIDE-IF-NO-FIT (hub-label pattern viz.py:2383). Per-target budget 2; truncate 9 chars + "…" when narrow. Zoom tiers only when E>12: z<0.7 → top-8, z>=1.5 → all in-viewport; E<=12 → ALL.
+Entry micro-label at arrowhead: 10px, type-colored, +4px offset. Greedy dy-nudge ladder (0,-9,-18,+9,+18,-27…), first-fit, HIDE-IF-NO-FIT (hub-label pattern: `placeLabels`/`updateHubs` candidate ladders, first-clear-wins via `labBox`). Per-target budget 2; truncate 9 chars + "…" when narrow. Zoom tiers only when E>12: z<0.7 → top-8, z>=1.5 → all in-viewport; E<=12 → ALL.
 
 ## 7. Bundles [F3]
 Corridor spine carries typed micro-chips ("×18" call / "×5" sig / "×2" var). Chip click → pinned DOM LIST panel: every wire enumerated "A::sfn → B::dfn :line", scrollable. Pinned until ESC/void-click.

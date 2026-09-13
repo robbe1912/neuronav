@@ -22,10 +22,12 @@ neuronav are backed by artifacts in this repo (`bench/RESULTS.md`,
    field-weighted) fused with vector similarity via RRF. Zero-model operation
    is available (`src=bm25`) when no embedding backend is reachable — the
    semantic layer is additive, not a hard dependency. Measured on the
-   25-query golden set (`bench/RESULTS.md`): hit@5 .56→.80, exact-name
-   hit@5 .40→.70, MRR .44→.55 over vector-only (hit@1 at parity within the
-   documented embed jitter); the deterministic two-pass retrieve tops the
-   table at hit@5 .88 / MRR .66. Concept/prose queries
+   25-query golden set (`bench/RESULTS.md`), every attribution against the
+   `both` (shipped-default) row of the current table, baseline = the
+   vector-only `vec` row: hit@5 .56→.80, exact-name hit@5 .40→.70,
+   MRR .44→.55, hit@1 at parity within the documented embed jitter; the
+   deterministic two-pass retrieve tops the table at hit@5 .88 / MRR .66.
+   Concept/prose queries
    ("where is X applied") are the query class pure-symbol tools answer only
    if the agent guesses the right noun.
 2. **Engine-native semantics.** GDScript/`.tscn` scene instancing edges,
@@ -41,8 +43,9 @@ neuronav are backed by artifacts in this repo (`bench/RESULTS.md`,
    perceptual anchoring laws, regression-pinned by Playwright harness) —
    the other local tools are agent-only or offer a flat caller/callee list.
 6. **Per-project state with base shards.** `<project>/.neuronav/` holds the
-   chroma store + prebaked graph; `WithBaseShards` lets a team share
-   embeddings so the model runs once, not per machine.
+   chroma store + prebaked graph; `export_base`/`import_base` (the `nav.py
+   export-base` / `import-base` CLI) let a team share embeddings so the
+   model runs once, not per machine.
 7. **Determinism as a contract.** Byte-stable bakes (regression-pinned);
    same DATA → same layout byte-for-byte.
 
