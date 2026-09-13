@@ -5018,15 +5018,14 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
     chev.lineTo(0.30, -0.42); chev.lineTo(0, 0.10); chev.lineTo(-0.30, -0.42);
     chev.closePath();
     const arrowGeo = new THREE.ShapeGeometry(chev);
-    // toneMapped:false — the renderer's ACES tone mapping crushes a
-    // mid-lightness amber into brown (measured: HSL(0.085,0.92,0.55)
-    // painted ~(170,105,85)); raw color keeps the warm pop
-    // fog:false too — scene fog blended the chevron toward the dark fog
-    // color at hub distance (isolated-pixel census: brightest core only
-    // (200,162,105), a ~0.6-opacity ghost)
+    // fog:false — scene fog blended the chevron toward the dark fog color
+    // at hub distance (isolated-pixel census: brightest core only
+    // (200,162,105), a ~0.6-opacity ghost). toneMapped is left at the
+    // default: the renderer never sets a toneMapping (r160 defaults to
+    // NoToneMapping), so the MeshBasicMaterial flag would be a no-op.
     const arrowMat = new THREE.MeshBasicMaterial({ transparent: true,
       opacity: 1.0, depthWrite: false, side: THREE.DoubleSide,
-      toneMapped: false, fog: false });
+      fog: false });
     fnArrows = new THREE.InstancedMesh(arrowGeo, arrowMat, aPos.length / 3);
     fnArrows.frustumCulled = false;
     fnArrows.renderOrder = 4;   // above tubes AND bollards: cone tips sit at
@@ -5068,8 +5067,7 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
     fnArrowHalo = new THREE.InstancedMesh(
       new THREE.CircleGeometry(0.95, 24),
       new THREE.MeshBasicMaterial({ color: 0x0a0a10, transparent: true,
-        opacity: 0.6, depthTest: false, depthWrite: false, fog: false,
-        toneMapped: false }),
+        opacity: 0.6, depthTest: false, depthWrite: false, fog: false }),
       fnArrowR.length);
     fnArrowHalo.frustumCulled = false;
     fnArrowHalo.renderOrder = 3;
@@ -7485,6 +7483,14 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   if (mr.sig_unresolved)
     foot += "  |  sig " + (mr.sig_resolved || 0) + " ok / " +
             mr.sig_unresolved + " unres";
+  const bd = mr.budget || {};
+  if (bd.wireRowsDropped || bd.hwArcsDropped || bd.fioDropped) {
+    const dropped = [];
+    if (bd.wireRowsDropped) dropped.push(bd.wireRowsDropped + " wire");
+    if (bd.hwArcsDropped) dropped.push(bd.hwArcsDropped + " hw");
+    if (bd.fioDropped) dropped.push(bd.fioDropped + " fio");
+    foot += "  |  budget: " + dropped.join(", ") + " dropped";
+  }
   ctx.fillText(foot, 8, chView - 6);
 }
 // keep the window inside the world: pan/zoom can never strand the layout
