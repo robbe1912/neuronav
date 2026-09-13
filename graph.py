@@ -27,7 +27,6 @@ from collections import Counter, defaultdict, deque
 import nav
 from extractors import (
     ASSET_SCENE_GLOB,
-    AUTOLOAD_RE,
     BUILD_SEQUENCE,
     FN_KEY_SEP,
     FUNC_KEYWORD,
@@ -38,6 +37,7 @@ from extractors import (
     sync_parseable,
     VAR_PREFIX,
     WIRE_SEQUENCE,
+    harvest_autoloads,
     add_class_ctx,
     fn_key,
     registry_for,
@@ -121,7 +121,11 @@ class Graph:
                 self.class_map[fs.class_name] = rel
 
         # autoload singletons are addressable by their project.godot name
-        self.autoloads = self._parse_autoloads()
+        # autoload singletons via the registry harvest (one home shared
+        # with clusters.py's inverse map); script-form only, and only
+        # files the index actually carries
+        amap = harvest_autoloads(nav.ROOT, scripts_only=True)
+        self.autoloads = {n: r for n, r in amap.items() if r in self.files}
         for name, rel in self.autoloads.items():
             self.class_map.setdefault(name, rel)
 
@@ -237,25 +241,6 @@ class Graph:
             if s_rel and s_rel in self.files:
                 rels.append(s_rel)
         return rels
-
-    def _parse_autoloads(self) -> dict[str, str]:
-        """project.godot [autoload] section: singleton name -> rel path."""
-        out: dict[str, str] = {}
-        pg = nav.ROOT / "project.godot"
-        if not pg.is_file():
-            return out
-        in_auto = False
-        for line in nav._read_text(pg).splitlines():
-            if line.strip().startswith("[autoload]"):
-                in_auto = True
-                continue
-            if line.strip().startswith("["):
-                in_auto = False
-            if in_auto:
-                m = AUTOLOAD_RE.match(line.strip())
-                if m and m.group(2) in self.files:
-                    out[m.group(1)] = m.group(2)
-        return out
 
     def _find_roots(self) -> None:
         # entry-point rules are language-owned: each extractor module ships

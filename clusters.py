@@ -29,6 +29,12 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
 import nav
+from extractors import (  # noqa: E402
+    harvest_autoloads,
+    is_scene_path,
+    is_script_path,
+    res_to_rel,
+)
 
 GENERIC_DIRS = {
     "scripts", "src", "core", "code", "main", "game", "utils", "helpers",
@@ -170,7 +176,7 @@ def _weld_units(
     def _scripts(rel: str) -> list[str]:
         out: list[str] = []
         for s in getattr(g.files[rel], "scripts", ()) or ():
-            srel = s[len("res://"):] if s.startswith("res://") else s
+            srel = res_to_rel(s)
             j = id_of.get(srel)
             if j is not None and j not in tests:
                 out.append(srel)
@@ -178,12 +184,12 @@ def _weld_units(
 
     # pass 1: each scene welds to its PRIMARY attached script unconditionally
     for rel, i in sorted(id_of.items()):
-        if not rel.endswith(".tscn") or i in tests or rel not in g.files:
+        if not is_scene_path(rel) or i in tests or rel not in g.files:
             continue
         att = getattr(g.files[rel], "attached_script", None) or ""
         if not att:
             continue
-        aj = att[len("res://"):] if att.startswith("res://") else att
+        aj = res_to_rel(att)
         j = id_of.get(aj)
         if j is not None and j not in tests:
             _union(i, j, None)
@@ -191,7 +197,7 @@ def _weld_units(
     # (a hub component can sit on half the UI scenes) must not transitively
     # glue dozens of scenes into one mega-unit
     for rel, i in sorted(id_of.items()):
-        if not rel.endswith(".tscn") or i in tests or rel not in g.files:
+        if not is_scene_path(rel) or i in tests or rel not in g.files:
             continue
         for srel in _scripts(rel):
             _union(i, id_of[srel], 12)
@@ -208,7 +214,7 @@ def _unit_paths(ids: list[str], members_of: dict[int, list[int]], r: int) -> lis
 
 def _unit_seed(ids: list[str], members_of: dict[int, list[int]], r: int) -> str | None:
     for p in _unit_paths(ids, members_of, r):
-        if p.endswith(".gd"):
+        if is_script_path(p):
             return dir_seed(p)
     ps = _unit_paths(ids, members_of, r)
     return dir_seed(ps[0]) if ps else None
@@ -216,7 +222,7 @@ def _unit_seed(ids: list[str], members_of: dict[int, list[int]], r: int) -> str 
 
 def _is_pure_gd(ids: list[str], members_of: dict[int, list[int]], r: int) -> bool:
     mem = members_of[r]
-    return bool(mem) and all(ids[m].endswith(".gd") for m in mem)
+    return bool(mem) and all(is_script_path(ids[m]) for m in mem)
 
 
 def _sim_graph(
@@ -277,7 +283,7 @@ def _route_infra(
     element packs ended up parked in a third pack's community)."""
     pack_of_scene: dict[str, str] = {}
     for p in idset:
-        if p.endswith(".tscn"):
+        if is_scene_path(p):
             k = _pack_key(_stem(p))
             if k:
                 pack_of_scene[p] = k
@@ -466,7 +472,7 @@ def communities_graph(
     for ci, comm in enumerate(comms):
         for r in comm:
             for p in _unit_paths(ids, members_of, r):
-                if p.endswith(".tscn"):
+                if is_scene_path(p):
                     k = _pack_key(_stem(p))
                     if k:
                         pack_comm.setdefault(k, Counter())[ci] += 1
@@ -481,7 +487,7 @@ def communities_graph(
             ks = {
                 k
                 for p in _unit_paths(ids, members_of, r)
-                if p.endswith(".tscn") and (k := _pack_key(_stem(p)))
+                if is_scene_path(p) and (k := _pack_key(_stem(p)))
             }
             if not ks:
                 continue
@@ -638,7 +644,7 @@ def _stem_prefix_seg(members: list[tuple[str, str]]) -> str | None:
     where Seg is the first camel hump of the second underscore token
     (Art_FireArea_A -> "Fire"); the winning segment must hold >=55% of the
     prefix-matching files. Returns the lowercase segment, or None."""
-    stems = [_stem(p) for p, _ in members if p.endswith(".tscn")]
+    stems = [_stem(p) for p, _ in members if is_scene_path(p)]
     if not stems:
         return None
     cand: list[tuple[str, str]] = []
@@ -661,24 +667,10 @@ def _stem_prefix_seg(members: list[tuple[str, str]]) -> str | None:
 
 
 def _autoload_map() -> dict[str, str]:
-    """rel path -> autoload singleton name (inverse of project.godot)."""
-    pg = nav.ROOT / "project.godot"
-    out: dict[str, str] = {}
-    if not pg.is_file():
-        return out
-    in_auto = False
-    for line in nav._read_text(pg).splitlines():
-        s = line.strip()
-        if s.startswith("[autoload]"):
-            in_auto = True
-            continue
-        if s.startswith("["):
-            in_auto = False
-        if in_auto:
-            m = re.match(r'^(\w+)\s*=\s*"\*?res://([\w/.-]+\.\w+)"', s)
-            if m:
-                out[m.group(2)] = m.group(1)
-    return out
+    """rel path -> autoload singleton name (inverse of project.godot) —
+    the registry's harvest_autoloads is the single home (shared with
+    graph.py's entry map); this is its inverse view."""
+    return {rel: name for name, rel in harvest_autoloads(nav.ROOT).items()}
 
 
 @dataclass
@@ -740,7 +732,7 @@ def label_cluster(
     # every pack in one dir; pack identity is the stem prefix VFX_Fire*.
     # The dir cascade would bottom out at the shared "VFX" segment, so the
     # varying segment is extracted BEFORE the dir rule can flatten it.
-    scene_all = [p for p, _ in members if p.endswith(".tscn")]
+    scene_all = [p for p, _ in members if is_scene_path(p)]
     if len(scene_all) * 2 > len(members):
         seg = _stem_prefix_seg(members)
         if seg:
@@ -900,7 +892,7 @@ def _split_pack_cluster(cluster: dict, rows: dict[str, int], mat) -> list[dict]:
 
     paths = cluster["paths"]
     n = len(paths)
-    scene = [p for p, _ in paths if p.endswith(".tscn")]
+    scene = [p for p, _ in paths if is_scene_path(p)]
     if len(scene) * 2 <= n or n < 2 * SMALL_MIN:
         return [cluster]
     packs: Counter = Counter()
@@ -963,7 +955,7 @@ def _family_unit(path: str, k: str | None, unit_of: dict) -> list[str]:
     return [
         q
         for q in unit_of.get(path, [path])
-        if q == path or not q.endswith(".tscn") or (_pack_key(_stem(q)) or "") == (k or "")
+        if q == path or not is_scene_path(q) or (_pack_key(_stem(q)) or "") == (k or "")
     ]
 
 
@@ -989,7 +981,7 @@ def _split_units(
         return [cluster]
 
     def _dir_of(grp: list[str]) -> str:
-        gd = [q for q in grp if q.endswith(".gd")]
+        gd = [q for q in grp if is_script_path(q)]
         head = (gd or grp)[0]
         d = head.rsplit("/", 1)[0] if "/" in head else ""
         return d
@@ -1077,7 +1069,7 @@ def _pass_pack_consolidate(
         def _part_share(part: dict, pk: str) -> tuple[int, int]:
             tot = share = 0
             for path, _cls in part["paths"]:
-                if path.endswith(".tscn") and _pack_key(_stem(path)) is not None:
+                if is_scene_path(path) and _pack_key(_stem(path)) is not None:
                     tot += 1
                     if _pack_key(_stem(path)) == pk:
                         share += 1
@@ -1092,7 +1084,7 @@ def _pass_pack_consolidate(
             pack_total: Counter = Counter()
             for pi, p in enumerate(parts):
                 for path, _cls in p["paths"]:
-                    k = _pack_key(_stem(path)) if path.endswith(".tscn") else None
+                    k = _pack_key(_stem(path)) if is_scene_path(path) else None
                     if k:
                         pack_parts.setdefault(k, Counter())[pi] += 1
                         pack_total[k] += 1
@@ -1129,7 +1121,7 @@ def _pass_pack_consolidate(
                     for path, _cls in list(parts[pi]["paths"]):
                         if moved_n >= budget:
                             break
-                        if path.endswith(".tscn") and _pack_key(_stem(path)) == k:
+                        if is_scene_path(path) and _pack_key(_stem(path)) == k:
                             u = _family_unit(path, k, unit_of)
                             for up in u:
                                 for pj in list(range(len(parts))):
@@ -1172,7 +1164,7 @@ def _pass_usage(
             moves = []
             for pi, p in enumerate(parts):
                 for path, _cls in p["paths"]:
-                    if not path.endswith(".gd") or path in unit_of:
+                    if not is_script_path(path) or path in unit_of:
                         continue
                     if dir_segments(path):
                         continue  # real dir identity handled by overlays
@@ -1227,7 +1219,7 @@ def _pass_scene_majority(
                     part_of4[path] = pi
             moves2 = []
             for path in sorted(part_of4):
-                if not path.endswith(".tscn"):
+                if not is_scene_path(path):
                     continue
                 u = unit_of.get(path) or [path]
                 if u[0] != path:
@@ -1320,7 +1312,7 @@ def _pass_stray_sweep(parts: list[dict], unit_of: dict[str, list[str]]) -> list[
         pack_tot2: Counter = Counter()
         for pi, p in enumerate(parts):
             for path, _cls in p["paths"]:
-                k = _pack_key(_stem(path)) if path.endswith(".tscn") else None
+                k = _pack_key(_stem(path)) if is_scene_path(path) else None
                 if k:
                     pack_parts2[k][pi] += 1
                     pack_tot2[k] += 1
@@ -1334,11 +1326,11 @@ def _pass_stray_sweep(parts: list[dict], unit_of: dict[str, list[str]]) -> list[
                 if pi == home or len(parts[home]["paths"]) >= PART_CAP:
                     continue
                 share = pack_parts2[k].get(pi, 0)
-                n_scenes = sum(1 for q, _ in parts[pi]["paths"] if q.endswith(".tscn"))
+                n_scenes = sum(1 for q, _ in parts[pi]["paths"] if is_scene_path(q))
                 if n_scenes and share * 2 >= n_scenes:
                     continue  # strayed part is itself pack-dominated
                 for path, _cls in list(parts[pi]["paths"]):
-                    if path.endswith(".tscn") and _pack_key(_stem(path)) == k:
+                    if is_scene_path(path) and _pack_key(_stem(path)) == k:
                         u = _family_unit(path, k, unit_of)
                         for up in u:
                             for pj in range(len(parts)):
