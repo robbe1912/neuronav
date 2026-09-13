@@ -35,7 +35,9 @@ jobs:
       - name: Invoke @openhands on the oldest queued issue
         if: steps.guard.outputs.busy == 'false'
         run: |
-          ISSUE=$(gh issue list --state open --label "agent-queue" --json number --jq 'sort_by(.number) | .[0].number // empty')
+          ISSUE=$(gh issue list --state open --label "agent-queue" --json number --jq 'sort_by(.number) | .[0].number // empty' 2>/dev/null || true)
+          # note: a missing label makes gh exit 1 ("not found") — treated as an
+          # empty queue, not a workflow failure; the label is repo-side config.
           if [ -z "$ISSUE" ]; then
             echo "queue empty"
             exit 0
