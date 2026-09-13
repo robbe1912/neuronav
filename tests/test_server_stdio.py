@@ -66,6 +66,14 @@ for (_s, _d), _tys in _g.edge_types.items():
 # shows a call row on ANY config (config-agnostic, no hardcoded paths)
 TARGET = max(sorted(_call_wires), key=lambda p: _call_wires[p])
 
+# issue #125: most-called fn, derived from the graph like TARGET above —
+# the symbol_graph count checks key on a hub that exists on ANY config.
+HUBFN = max(
+    sorted(_g.reverse),
+    key=lambda k: len(_g.reverse.get(k) or ()),
+    default="",
+).partition("::")[2]
+
 # the stat gate's TTL cache is real (3s) — drift legs wait one window
 # out so the next read tool re-walks (test_autorescan's e2e precedent)
 TTL_WAIT = nav.STAT_TTL_S + 0.5
@@ -327,6 +335,41 @@ def main() -> None:
             "clusters overview" in over and "ext=" in over,
             over.splitlines()[:1],
         )
+
+        # issue #125: context names the file's own API surface (capped
+        # defines rows) instead of leaving the agent to open it blind
+        check("context: defines section lists the file's API (issue #125)",
+              "defines:" in out and "func(s)" in out
+              and any(ln.startswith("defines: ") for ln in out.splitlines()),
+              out.splitlines()[:3])
+
+        # issue #125: symbol_graph rows carry true counts (derived hub —
+        # config-agnostic), and explore's orientation knob rides the wire
+        send({"jsonrpc": "2.0", "id": 10, "method": "tools/call",
+              "params": {"name": "symbol_graph",
+                         "arguments": {"symbol": HUBFN, "depth": 1}}})
+        sg = text_of(recv(10)["result"])
+        check("symbol_graph: rows carry true caller/callee counts (issue #125)",
+              bool(re.search(r"callers: \d+ \(", sg))
+              and bool(re.search(r"callees: \d+ \(", sg)),
+              sg.splitlines()[:3])
+        ex_schema = next(
+            (t.get("inputSchema") or {} for t in tools if t["name"] == "explore"),
+            {},
+        )
+        check("explore: orientation advertised optional boolean (issue #125)",
+              ex_schema.get("properties", {}).get("orientation", {}).get("type")
+              == "boolean"
+              and "orientation" not in ex_schema.get("required", []),
+              json.dumps(ex_schema)[:200])
+        send({"jsonrpc": "2.0", "id": 11, "method": "tools/call",
+              "params": {"name": "explore",
+                         "arguments": {"query": "cluster labeling", "n": 3,
+                                       "orientation": False}}})
+        ex = text_of(recv(11)["result"])
+        check("explore: orientation=False skips the preamble (issue #125)",
+              "== repo map ==" not in ex and "== clusters ==" not in ex,
+              ex[:160])
 
         # repo_map: read-only orientation preamble — bounded output +
         # you-are-here header on every response
@@ -791,6 +834,53 @@ def _drift_scenario() -> None:
         s2 = call(13, "semantic_search", {"query": "drift anchor", "n": 4})
         check("drift: semantic_search byte-stable after churn",
               s1 == s2 and "src=" in s1, s1[:100])
+
+        # issue #125 output shaping on a controlled graph: 12 fresh files
+        # (one hub class whose 14 methods call self.hub(), 11 one-fn
+        # files) pin rescan's capped changed list, symbol_graph's counts /
+        # "+N more" / node-cap marker / closest-match suggestions, and
+        # context's defines rows — hermetic, both legs.
+        (proj / "hub_wire.py").write_text(
+            "class HubBench:\n"
+            + "".join(
+                f"    def m{i:02d}(self):\n        return self.hub()\n"
+                for i in range(14)
+            )
+            + "    def hub(self):\n        return 1\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        for i in range(11):
+            (proj / f"junk_wire_{i:02d}.py").write_text(
+                f"def junk_wire_{i:02d}():\n    return {i}\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+        (proj / "drift_a.py").unlink()
+        out = call(14, "rescan", {})
+        check("drift/125: rescan lists changed paths, capped (10 +N more)",
+              "changed (12): " in out and "+2 more" in out
+              and "hub_wire.py, junk_wire_00.py" in out
+              and "deleted (1): drift_a.py" in out,
+              out.splitlines()[-2:])
+        sg = call(15, "symbol_graph", {"symbol": "hub", "depth": 1})
+        check("drift/125: symbol_graph counts + '+N more' on a 14-caller hub",
+              "hub_wire.py#hub" in sg and "callers: 14 (" in sg
+              and "+6 more" in sg,
+              sg[:160])
+        sg2 = call(16, "symbol_graph", {"symbol": "hub", "depth": 2})
+        check("drift/125: symbol_graph node-cap marker names the true total",
+              "truncated at 13 of 15 nodes" in sg2,
+              sg2[-160:])
+        miss = call(17, "symbol_graph", {"symbol": "HubBenchh", "depth": 1})
+        check("drift/125: total miss suggests closest matches",
+              miss.startswith("no function matching 'HubBenchh'")
+              and "Closest matches: hub" in miss,
+              miss[:160])
+        ctx = call(18, "context", {"path": "hub_wire.py", "depth": 1})
+        check("drift/125: context defines rows in definition order",
+              "defines: 15 func(s) — m00, m01" in ctx,
+              [ln for ln in ctx.splitlines() if ln.startswith("defines")][:2])
     finally:
         srv.kill()
         if FAILS:

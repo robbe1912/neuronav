@@ -89,6 +89,29 @@ def main() -> int:
     check("file shortlist section present", "== file shortlist ==" in out)
     check("symbol section header present", "== symbols ==" in out)
 
+    # orientation=False (issue #125): repeat calls skip the constant
+    # preamble; the freed budget flows to the slices section (monotone
+    # in budget given identical seeds), and the no-hit path drops it too.
+    out4 = s.explore("cluster labeling", n=4, orientation=False)
+    check("orientation=False skips the preamble",
+          "== repo map ==" not in out4 and "== clusters ==" not in out4,
+          out4[:120])
+    check("orientation=False keeps the query-dependent funnel",
+          out4.startswith("== file shortlist ==") and "== symbols ==" in out4,
+          out4[:120])
+    sec = lambda o: o.split("== symbols ==")[1]
+    out4b = s.explore("cluster labeling", n=4)
+    check("orientation=False spends the savings on slices (monotone)",
+          len(sec(out4)) >= len(sec(out4b)),
+          f"{len(sec(out4))} vs {len(sec(out4b))}")
+    check("orientation=True stays the default (preamble present)",
+          out4b.startswith("== repo map =="))
+    out5 = s.explore("zzz_no_such_concept_qq", n=3, orientation=False)
+    check("orientation=False no-hit path drops the preamble too",
+          not out5.startswith("== repo map ==") and "rescan" in out5, out5[:120])
+    check("orientation=False output still budget-capped",
+          len(out4) <= 22000, f"{len(out4)} chars")
+
     # Windowed slices (issue #69): 100-line cap + deterministic continuation
     # anchors. Hermetic core first: a synthetic 250-line file under .tmp
     # (gitignored, on the index exclude list) drives _slice directly — no

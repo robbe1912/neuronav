@@ -14,18 +14,18 @@ other code-graph tools (CodeGraph, aider repo map, SCIP).
 | tool | use |
 |---|---|
 | `repo_map(budget_tokens)` | token-budget repo map, PageRank-ranked — the cheap orientation preamble |
-| `semantic_search(query, n)` | find files by meaning ("rescan and index the repo" -> nav.py), RRF-fused with BM25F |
-| `find_functions(query, n)` | same, per function with line numbers; embedding backend down degrades to a lexical substring fallback tagged `degraded:` (never a raw error) |
+| `semantic_search(query, n)` | find files by meaning ("rescan and index the repo" -> nav.py), RRF-fused with BM25F; scores are RRF rank-fusion values (≈0.03 = a top hit, 1.0 unreachable), not cosine |
+| `find_functions(query, n)` | same, per function with line numbers; scores are embedding cosine 0-1 — a different scale than `semantic_search`'s RRF values; embedding backend down degrades to a lexical substring fallback tagged `degraded:` (never a raw error) |
 | `search_text(pattern, glob, files_only)` | regex text search — grep-class exact-string/literal queries; capped `file:line:text` rows (20 files / 3 lines) with truncation markers + totals |
-| `symbol_graph(symbol, depth)` | callers/callees - refactoring safety |
-| `explore(query, n, anchor)` | one-call orientation: Read-equivalent source slices + callers/callees flow; slices cap at a 100-line window ending in `pass anchor="path:start-end" to continue` — pass that anchor back to page the next window with zero re-orientation |
-| `context(path, depth)` | per-file dossier: cluster, structural+semantic neighbors, hub rank, edge types |
+| `symbol_graph(symbol, depth)` | callers/callees with true counts + `+N more` past 8 names, 13-node cap with a truncation marker; a total miss suggests closest matches — refactoring safety |
+| `explore(query, n, anchor, orientation)` | one-call orientation: Read-equivalent source slices + callers/callees flow; slices cap at a 100-line window ending in `pass anchor="path:start-end" to continue` — pass that anchor back to page the next window with zero re-orientation; `orientation=false` (repeat calls) skips the constant repo-map/cluster-map preamble and spends the budget on slices |
+| `context(path, depth)` | per-file dossier: what it defines (funcs/signals/members, capped), cluster, structural+semantic neighbors, hub rank, edge types |
 | `clusters(k, min_sim)` | subsystem families from embedding geometry |
 | `crosstalk()` | which subsystem clusters are wired together (cross-cluster coupling report) |
 | `dead_code(n)` | unreachable-function candidates, tiered likely/review - candidates, never verdicts |
 | `duplicates(n)` | exact-clone function bodies across all indexed languages — .gd/.py/C++ (dedup targets) |
 | `visualize()` | generate interactive 3D graph.html (open the baked file directly — see [3D visualizer](#3d-visualizer-optional-add-on)) |
-| `rescan()` | incremental re-index (vectors + functions + graph) — the explicit always-sync variant; read tools already auto-rescan on worktree drift |
+| `rescan()` | incremental re-index (vectors + functions + graph) — the explicit always-sync variant; read tools already auto-rescan on worktree drift; appends a capped changed/deleted path list (10 shown, `+N more` past it) when anything moved |
 
 All read-only tools carry `readOnlyHint`; `rescan` is the one mutating tool.
 

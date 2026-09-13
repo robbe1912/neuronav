@@ -251,7 +251,7 @@ def _symbol_slices(
     return "== symbols ==\n" + "\n\n".join(parts)
 
 
-def run(query: str, n: int = 4, anchor: str = "") -> str:
+def run(query: str, n: int = 4, anchor: str = "", orientation: bool = True) -> str:
     if anchor:
         return _continue(anchor)
     n = max(1, min(n, 8))
@@ -270,10 +270,15 @@ def run(query: str, n: int = 4, anchor: str = "") -> str:
     except Exception as exc:
         cs = None
         cs_err = nav.embed_failure_reason(exc)
-    parts = [
-        "== repo map ==\n" + g.repo_map(budget_tokens=PREAMBLE_TOKENS),
-        _cluster_map(cs, cs_err),
-    ]
+    # orientation=False (issue #125): repeat calls skip the constant
+    # preamble (~27% of the hard budget) — the shared clusters pass still
+    # feeds slice labels, and the freed budget flows to the stages below
+    parts: list[str] = []
+    if orientation:
+        parts = [
+            "== repo map ==\n" + g.repo_map(budget_tokens=PREAMBLE_TOKENS),
+            _cluster_map(cs, cs_err),
+        ]
     if not seeds:
         parts.append(
             f"no hits for '{query}'. Next steps: find_functions with a symbol "
