@@ -26,76 +26,27 @@ from collections import Counter, defaultdict, deque
 
 import nav
 from extractors import (
-    ADDON_VIRTUALS,
     ASSET_SCENE_GLOB,
-    ASSIGN_RHS_RE,
-    ASSIGN_RHS_SKIP,
     AUTOLOAD_RE,
-    BARE_CALL_RE,
-    BARE_DISPATCH_STR_RE,
-    BARE_HANDLER_RE,
-    CALLABLE_TWO_RE,
-    AS_CAST_CALL_RE,
-    CHAIN_CALL_RE,
-    CHAIN_VAR_RE,
-    CONNECT_METHOD_RE,
-    CONNECT_RE,
-    CPP_DYNAMIC_RE,
-    CPP_EXTS,
-    CPP_MENTION_FLOOR,
-    DISPATCH_STR_RE,
-    DYNAMIC_HINT_RE,
-    DYNAMIC_METHODS,
-    EMIT_RE,
+    BUILD_SEQUENCE,
     FN_KEY_SEP,
     FUNC_KEYWORD,
-    GUT_ROOTS,
-    MANUAL_BASES,
     MENTION_TOKEN_RE,
-    MEMBER_ACCESS_RE,
-    NON_CALLS,
-    PARAM_TYPED_RE,
-    PATH_EXTENDS_RE,
-    PY_ANNOT_ASSIGN_RE,
-    PY_ATTR_CALL_RE,
-    PY_BARE_CALL_RE,
-    PY_CHAIN_CALL_RE,
-    PY_CONTROL_KEYWORDS,
-    PY_HOOKS,
-    PY_LOCAL_NEW_RE,
-    PY_MODULE_ASSIGN_RE,
-    PY_NON_CALLS,
-    PY_PARAM_TYPED_RE,
-    PY_RESULT_CALL_RE,
-    PY_SUBSCRIPT_CALL_RE,
-    PY_WITH_AS_RE,
-    QUALIFIED_CALL_RE,
-    QUOTED_IDENT_RE,
-    RES_LOAD_RE,
-    SCENE_WIRING_SUFFIXES,
     SIGNAL_PREFIX,
-    STRING_NAME_RE,
-    STRINGNAME_LIT_RE,
-    TRES_SCRIPT_RE,
-    TRES_STRINGNAME_RE,
     TSCN_SUFFIX,
-    TWEEN_ARG_RE,
     UNDERSCORE_SHIELD,
+    sync_parseable,
     VAR_PREFIX,
-    VIRTUALS,
+    WIRE_SEQUENCE,
     add_class_ctx,
-    harvest_registration,
-    is_implicit_entry,
-    parse_gd,
-    parse_tscn,
+    fn_key,
     registry_for,
-    scan_calls,
+    res_to_rel,
 )
-# single import surface: language facts (VIRTUALS etc.), the fn-key
-# grammar spellings, and the per-language body-scan patterns are defined
-# in extractors/ and re-exported by the package __init__ so graph.py
-# never deep-imports an extractor submodule — extractor modules stay
-# free of any graph import (acyclic).
+# single import surface: the build/wire choreography, the frozen fn-key
+# grammar spellings, and per-language hooks are consumed through the
+# package __init__ only — never a deep extractor submodule import — and
+# extractor modules never import graph or nav (acyclic by construction).
 
 # ---- constants ---------------------------------------------------------------
 # Language-owned constants, entry-point rules and body-scan patterns live
@@ -104,9 +55,6 @@ from extractors import (
 # the cAST chunking knobs.
 
 
-def fn_key(rel: str, name: str) -> str:
-    """Function-node key: repo-relative path + function name."""
-    return f"{rel}{FN_KEY_SEP}{name}"
 
 
 def split_key(key: str) -> str:
@@ -129,38 +77,6 @@ DEAD_SHARE_THRESHOLD = 0.4
 # here so graph.Func / graph.FileSym keep working for importers.
 
 
-def _fold_continuations(body: str) -> str:
-    """Join physical lines whose parens/brackets are still open so a call
-    split across lines becomes one logical line for regex scanning."""
-    out: list[str] = []
-    buf = ""
-    depth = 0
-    for line in body.splitlines():
-        buf = line if not buf else f"{buf} {line.strip()}"
-        depth += (
-            line.count("(") - line.count(")")
-            + line.count("[") - line.count("]")
-            + line.count("{") - line.count("}")
-        )
-        if depth <= 0:
-            out.append(buf)
-            buf = ""
-            depth = 0
-    if buf:
-        out.append(buf)
-    return "\n".join(out)
-
-
-_HINT_VALUE_RE = re.compile(r"^[A-Za-z_]\w*\[([^\]]*)\]")
-
-
-def _hint_value_classes(hint: str) -> list[str]:
-    """Value classes inside a flat generic hint's outer subscript:
-    ``dict[str, Widget]`` -> ``['Widget']`` (Union members included)."""
-    m = _HINT_VALUE_RE.match(hint)
-    return re.findall(r"\b[A-Z]\w*", m.group(1)) if m else []
-
-
 class Graph:
     """Whole-checkout structural graph. Build once per process (~seconds)."""
 
@@ -176,16 +92,12 @@ class Graph:
         self.edge_types: dict[tuple[str, str], set[str]] = defaultdict(set)
         self.built_at_lines: int = 0
         self._mentions: Counter | None = None  # lazy corpus mention counts (issue #20)
-
-    # -- parsing ---------------------------------------------------------------
-    # language parsing is delegated to extractors/ via the suffix registry;
-    # these wrappers keep the historical method names for internal callers
-
-    def _parse_gd(self, path: Path, rel: str) -> FileSym:
-        return parse_gd(path, rel)
-
-    def _parse_tscn(self, path: Path, rel: str) -> FileSym:
-        return parse_tscn(path, rel)
+        # hook accumulators (langsep): filled by the registry's build
+        # sequence steps; declared here so the ctx protocol is total
+        self._subclasses: dict[str, set[str]] = defaultdict(set)
+        self._dyn_files: set[str] = set()
+        self.tres_scripts: set[str] = set()
+        self.cpp_gdvirtuals: set[str] = set()
 
     # -- build -------------------------------------------------------------------
 
@@ -220,443 +132,23 @@ class Graph:
             if rel not in self.files:
                 self.files[rel] = registry_for(path.suffix).parse(path, rel)
 
-        # .tres/.res reference scripts via ext_resource — data-constructed
-        # classes (custom resources) whose funcs never appear in .gd
-        # callers. Root-wide but pruned (issue #117): nav's walk honors the
-        # config's exclude contract + the standard cache floor — rglob
-        # traversed .venv/node_modules/.tmp/.neuronav and read every match
-        # on every server start and content-changing rescan.
-        self.tres_scripts: set[str] = set()
-        for path in nav.iter_root_files(SCENE_WIRING_SUFFIXES):
-            try:
-                text = nav._read_text(path)
-            except OSError:
-                continue
-            for m in TRES_SCRIPT_RE.finditer(text):
-                rel2 = m.group(1).removeprefix("res://")
-                if rel2 in self.files:
-                    self.tres_scripts.add(rel2)
-            # StringName values route dynamic dispatch (LimboAI BT tasks
-            # export method names): keep matching funcs alive repo-wide
-            for m in TRES_STRINGNAME_RE.finditer(text):
-                self.referenced_names.add(m.group(1))
-
-        # transitive subclass map: base class_name -> files below it — a
-        # call resolved to a base may dispatch to any override
-        self._subclasses: dict[str, set[str]] = defaultdict(set)
-        for rel, fs in self.files.items():
-            if fs.ext != ".gd":
-                continue
-            base = fs.extends
-            seen: set[str] = set()
-            while base and base not in seen and base in self.class_map:
-                seen.add(base)
-                self._subclasses[base].add(rel)
-                base = self.files[self.class_map[base]].extends
-            # path-form extends (often inner helper classes): register the
-            # whole file under the base file's class_name so override
-            # completion can reach it
-            try:
-                raw = nav._read_text(nav.ROOT / rel)
-            except OSError:
-                raw = ""
-            for m in PATH_EXTENDS_RE.finditer(raw):
-                base_rel = m.group(1).removeprefix("res://")
-                base_cls = self.files.get(base_rel, None)
-                if base_cls is not None:
-                    # register under the rel path always, class_name when
-                    # the base declares one — _emit_call looks up both
-                    self._subclasses[base_rel].add(rel)
-                    if base_cls.class_name:
-                        self._subclasses[base_cls.class_name].add(rel)
-
-        # files using dynamic dispatch: quoted identifier strings in their
-        # bodies are candidate method names; parse-time StringName defaults
-        # (BT exports) join the same referenced-name pool
-        self._dyn_files: set[str] = set()
-        for rel, fs in self.files.items():
-            if fs.ext != ".gd" and fs.ext not in CPP_EXTS:
-                continue
-            for nm in fs.name_literals:
-                if len(nm) > 3:
-                    self.referenced_names.add(nm)
-            # class-level initializer calls run at instantiation — alive
-            for nm in fs.init_calls:
-                self.referenced_names.add(nm)
-            if not fs.funcs:
-                continue
-            joined = "\n".join(f.body for f in fs.funcs.values())
-            if fs.ext == ".gd" and DYNAMIC_HINT_RE.search(joined):
-                self._dyn_files.add(rel)
-
-        # package re-export rebinding (#153): `from extractors import X`
-        # binds X to the package __init__ file, but X is DEFINED in a
-        # submodule the __init__ re-exports — rebind import edge and
-        # receiver const to the definer. PROSPECTIVE / defense-in-depth
-        # (GK #164 review, teeth-verified): on the current corpus the
-        # liveness outcome is already carried by the __init__'s OWN
-        # from-imports (the pass below runs over every file, and the
-        # fixed parenthesized harvest binds them straight to definers);
-        # what this adds is consumer consts that point at definers —
-        # bare-call edges land on the real implementation, keeping
-        # caller/reverse-edge data honest — plus coverage for alias and
-        # chained re-export shapes a consumer may use without the
-        # __init__ importing the name itself.
-        for rel, fs in self.files.items():
-            if fs.ext != ".py":
-                continue
-            rebound = set()
-            for target, nm in sorted(fs.from_imports):
-                definer = self._resolve_definer(target, nm)
-                rebound.add((definer or target, nm))
-                if definer and definer != target and fs.consts.get(nm) == target:
-                    fs.consts[nm] = definer
-            fs.from_imports = rebound
-
-        # python import liveness: a PLAIN `import x` binds the namespace -
-        # the module may be reached dynamically, so its funcs stay alive
-        # as a unit. A `from x import y` selects exactly one name: only
-        # that func (if it is one) survives the import; siblings do not.
-        for rel, fs in self.files.items():
-            if fs.ext != ".py":
-                continue
-            for mod in fs.imported_modules:
-                if mod in self.files:
-                    for other in self.files[mod].funcs.values():
-                        self.referenced.add(other.key)
-            for mod, nm in fs.from_imports:
-                if mod in self.files and nm in self.files[mod].funcs:
-                    self.referenced.add(f"{mod}::{nm}")
-
-        # python bare-name argument references (#177): a def passed by
-        # reference — `json.loads(..., parse_constant=no_constants)`,
-        # `sorted(rows, key=rank)`, `atexit.register(flush)` — has no
-        # call site, so the call-regex passes never see it and the dead
-        # tier flagged it likely. The extractor harvest is AST-guarded
-        # to plain identifier args (strings and attribute refs never
-        # land there); same-file defs get an attributed-alive key —
-        # precise per-def liveness, never the corpus-wide
-        # referenced_names name match, so same-named funcs elsewhere
-        # stay honest dead-code material.
-        for rel, fs in self.files.items():
-            if fs.ext != ".py":
-                continue
-            for nm in fs.arg_refs:
-                if nm in fs.funcs:
-                    self.referenced.add(fs.funcs[nm].key)
+        # language choreography (langsep): every language-conditioned
+        # pass — scene-wiring harvest, inheritance, name-literal facts,
+        # python re-export/import passes — ships with its extractor; the
+        # registry sequences them and graph runs them blind
+        for step in BUILD_SEQUENCE:
+            step(self)
 
         for rel, fs in self.files.items():
-            if fs.ext == ".gd":
-                for fn in fs.funcs.values():
-                    self._scan_body(fs, fn)
-            elif fs.ext == ".py":
-                for fn in fs.funcs.values():
-                    self._scan_body_py(fs, fn)
-            elif fs.ext in CPP_EXTS:
-                self._scan_body_cpp(fs, rel)
+            extractor = registry_for(fs.ext)
+            if extractor is not None:
+                extractor.scan_file(fs, self)
 
-        self._wire_tscn()
-        # C++ wiring (issue #13): .cpp files inherit their class identity
-        # from the paired header, then registration macros become edges and
-        # the repo-wide GDVIRTUAL override set. Must precede _find_roots —
-        # the gdvirtual entry rule consumes ctx.cpp_gdvirtuals.
-        self.cpp_gdvirtuals: set[str] = set()
-        self._pair_cpp()
-        self._wire_cpp()
-        self._wire_aliases()
+        for step in WIRE_SEQUENCE:
+            step(self)
         self._find_roots()
         self._reachable()
         return self
-
-    def _scan_body(self, fs: FileSym, fn: Func) -> None:
-        # multi-line call arguments defeat line-based regex passes: fold
-        # continuation lines (unbalanced parens/brackets) into single
-        # logical lines before scanning; fn.body stays raw for display
-        scan_text = _fold_continuations(fn.body)
-        # first-order type inference: member vars + typed params/locals in this body
-        var_types = dict(fs.members)
-        for pm in PARAM_TYPED_RE.finditer(scan_text):
-            var_types[pm.group(1)] = pm.group(2)
-        self._scan_calls(fs, fn, scan_text, var_types)
-        self._scan_liveness(fs, fn, scan_text)
-        self._scan_chains(fs, fn, scan_text, var_types)
-        self._scan_signals(fs, fn, scan_text)
-
-    def _scan_calls(self, fs: FileSym, fn: Func, scan_text: str, var_types: dict) -> None:
-        """Typed-receiver call edges and member-var cross-references."""
-        src_key = fn.key
-        for m in QUALIFIED_CALL_RE.finditer(scan_text):
-            head, fname = m.group(1), m.group(2)
-            cls = head if head in self.class_map else var_types.get(head)
-            if cls and cls in self.class_map:
-                dst = self.class_map[cls]
-                if fname in self.files[dst].funcs:
-                    self._emit_call(src_key, dst, fname)
-            elif head in fs.consts and fs.consts[head] in self.files:
-                dst = fs.consts[head]
-                if fname in self.files[dst].funcs:
-                    self._emit_call(src_key, dst, fname)
-            else:
-                # receiver type unknown (factory returns, variants) — the call may
-                # dispatch to any same-named func; mark name alive, no edge.
-                # dispatch intermediaries (.rpc()/.call_deferred()/.bind()) point
-                # at the RECEIVER, not at rpc/call_deferred themselves
-                if fname in DYNAMIC_METHODS:
-                    # builtin-shadowing user funcs (e.g. a user `bind`) are
-                    # valid targets of the same dispatch — keep the name
-                    # alive alongside the receiver head
-                    self.referenced_names.add(head)
-                self.referenced_names.add(fname)
-        # member-var cross-references: receiver.member where the receiver
-        # resolves to a known class (same chain as calls above) and that
-        # file actually declares the member — edges land on VAR: pseudo-nodes
-        for m in MEMBER_ACCESS_RE.finditer(scan_text):
-            head, member = m.group(1), m.group(2)
-            cls = head if head in self.class_map else var_types.get(head)
-            if cls and cls in self.class_map:
-                dst = self.class_map[cls]
-            elif head in fs.consts and fs.consts[head] in self.files:
-                dst = fs.consts[head]
-            else:
-                continue
-            if member in self.files[dst].members:
-                self._edge(src_key, dst + VAR_PREFIX + member, ty="var")
-            elif member in self.files[dst].funcs:
-                # property-assignment form: obj.method = x targets the
-                # func (setter-style) without a call paren
-                self._emit_call(src_key, dst, member)
-
-    def _scan_liveness(self, fs: FileSym, fn: Func, scan_text: str) -> None:
-        """Name-keeping harvest: dynamically loaded scripts, dynamic-
-        dispatch string refs, callback-convention identifiers. No edges —
-        these only keep funcs out of dead-code tiers."""
-        src_key = fn.key
-        # dynamically loaded scripts: any "res://....gd" string literal in
-        # the body keeps every func of that file alive
-        for m in RES_LOAD_RE.finditer(scan_text):
-            loaded = m.group(1)
-            if loaded in self.files:
-                for other in self.files[loaded].funcs.values():
-                    self.referenced.add(other.key)
-        # dynamic-dispatch harvest: method names passed to .call()/.rpc()/
-        # has_method(), StringName literals, Callable(obj, "m") — receivers
-        # are runtime-typed, so mark the names alive instead of an edge
-        for m in DISPATCH_STR_RE.finditer(scan_text):
-            nm = m.group(1)
-            if len(nm) > 3:
-                self.referenced_names.add(nm)
-        for m in BARE_DISPATCH_STR_RE.finditer(scan_text):
-            nm = m.group(1)
-            if len(nm) > 3:
-                self.referenced_names.add(nm)
-        for m in STRINGNAME_LIT_RE.finditer(scan_text):
-            self.referenced_names.add(m.group(1))
-        if fs.path in self._dyn_files:
-            for m in QUOTED_IDENT_RE.finditer(scan_text):
-                self.referenced_names.add(m.group(1))
-        for m in CALLABLE_TWO_RE.finditer(scan_text):
-            nm = m.group(1) or m.group(2)
-            if nm and len(nm) > 3:
-                self.referenced_names.add(nm)
-        # tween binders + bare callback-convention identifiers (array
-        # elements, deferred refs): method refs without call parens
-        for m in TWEEN_ARG_RE.finditer(scan_text):
-            self.referenced_names.add(m.group(1))
-        for m in BARE_HANDLER_RE.finditer(scan_text):
-            self.referenced_names.add(m.group(0))
-        # bare method-ref as full assignment RHS (property-assignment
-        # wiring): `hub.cb = _connect_signal_handler` — scanned
-        # on the RAW body because the $ anchor needs real line ends
-        for m in ASSIGN_RHS_RE.finditer(fn.body):
-            nm = m.group(1)
-            if nm not in ASSIGN_RHS_SKIP:
-                self.referenced_names.add(nm)
-
-    def _scan_chains(self, fs: FileSym, fn: Func, scan_text: str, var_types: dict) -> None:
-        """Two-level typed chains, casts, and bare/inherited calls."""
-        src_key = fn.key
-        # two-level typed chains: ctx.teams.team_ids(...) — resolve head to
-        # its class, hop through a declared member, then emit
-        for m in CHAIN_CALL_RE.finditer(scan_text):
-            head, mid, tail = m.group(1), m.group(2), m.group(3)
-            dst = self._chain_dst(var_types, head, mid)
-            if dst and tail in self.files[dst].funcs:
-                self._emit_call(src_key, dst, tail)
-            else:
-                # unresolvable receiver chain (duck-typed containers):
-                # same name-alive fallback as single-hop unknown receivers
-                self.referenced_names.add(tail)
-        for m in CHAIN_VAR_RE.finditer(scan_text):
-            head, mid, tail = m.groups()
-            dst = self._chain_dst(var_types, head, mid)
-            if dst and tail in self.files[dst].members:
-                self._edge(src_key, dst + VAR_PREFIX + tail, ty="var")
-            elif dst and tail in self.files[dst].funcs:
-                self._emit_call(src_key, dst, tail)
-        for m in AS_CAST_CALL_RE.finditer(scan_text):
-            cls, fname = m.group(1), m.group(2)
-            if cls in self.class_map:
-                dst = self.class_map[cls]
-                if fname in self.files[dst].funcs:
-                    self._emit_call(src_key, dst, fname)
-            else:
-                self.referenced_names.add(fname)
-        for m in BARE_CALL_RE.finditer(scan_text):
-            name = m.group(1)
-            if name in NON_CALLS:
-                continue
-            if name in fs.funcs:
-                # _emit_call mirrors the same-file edge onto subclass
-                # overrides (incl. path-form extends files below)
-                self._emit_call(src_key, fs.path, name)
-            else:
-                # inherited method call: resolve up the extends chain
-                # (_emit_call mirrors onto sibling overrides); base calls
-                # a func it does not define -> every subclass override
-                anc = self._ancestor_def(fs, name)
-                if anc:
-                    self._emit_call(src_key, anc, name)
-                if fs.class_name and fs.class_name in self._subclasses:
-                    for sub in self._subclasses[fs.class_name]:
-                        if name in self.files[sub].funcs:
-                            self._edge(src_key, fn_key(sub, name))
-
-    def _scan_signals(self, fs: FileSym, fn: Func, scan_text: str) -> None:
-        """Signal emits -> signal nodes; connect/Callable string refs -> handlers."""
-        src_key = fn.key
-        # signal emits -> signal nodes; connect/Callable string refs -> handlers
-        for m in EMIT_RE.finditer(scan_text):
-            sig = m.group(1) or m.group(2)
-            if sig in fs.signals:
-                self._edge(src_key, fs.path + SIGNAL_PREFIX + sig, ty="signal")
-        if CONNECT_RE.search(scan_text):
-            for m in STRING_NAME_RE.finditer(scan_text):
-                ref = m.group(1)
-                if ref in fs.funcs:
-                    self._edge(src_key, fn_key(fs.path, ref), ty="signal")
-                    # handlers fire on signal emit — entry points, traverse
-                    self.roots.add(fn_key(fs.path, ref))
-                # cross-file: _on_* handlers commonly target other scripts
-                elif ref.startswith("_on_"):
-                    self.referenced.add(f"*::{ref}")
-            # direct method references (no quotes):
-            #   sig.connect(_handler) / is_connected(_handler) / disconnect(...)
-            for m in CONNECT_METHOD_RE.finditer(scan_text):
-                ref = m.group(1)
-                if ref in fs.funcs:
-                    self._edge(src_key, fn_key(fs.path, ref), ty="signal")
-                    self.roots.add(fn_key(fs.path, ref))
-                else:
-                    # inherited handler: resolve up the extends chain
-                    anc = self._ancestor_def(fs, ref)
-                    if anc and ref in self.files[anc].funcs:
-                        key = fn_key(anc, ref)
-                        self._edge(src_key, key, ty="signal")
-                        self.roots.add(key)
-
-    def _scan_body_py(self, fs: FileSym, fn: Func) -> None:
-        """Python body scan: call edges via typed receivers, class_map
-        classes, and from-import consts (module-file receivers)."""
-        src_key = fn.key
-        scan_text = _fold_continuations(fn.body)
-        # receiver types: self-members from the extractor + typed params
-        # + constructor locals in this body
-        var_types = dict(fs.members)
-        var_types.update(fs.module_vars)
-        for pm in PY_PARAM_TYPED_RE.finditer(scan_text):
-            var_types[pm.group(1)] = pm.group(2)
-        for m in PY_ANNOT_ASSIGN_RE.finditer(scan_text):
-            var_types[m.group(1)] = m.group(2)
-        for m in PY_WITH_AS_RE.finditer(scan_text):
-            var_types[m.group(2)] = m.group(1)
-        for m in PY_LOCAL_NEW_RE.finditer(scan_text):
-            var_types[m.group(1)] = m.group(2)
-        # x = imported_name(...): the local becomes a module-object
-        # receiver — resolve x.method( against that module (and the
-        # modules it re-exports, since registries return submodules)
-        for m in PY_MODULE_ASSIGN_RE.finditer(scan_text):
-            mod = fs.consts.get(m.group(2), "")
-            if mod in self.files:
-                var_types[m.group(1)] = "module:" + mod
-        # obj.method( — head resolves via class_map (repo classes), typed
-        # receivers, from-import consts (module-file receivers), or
-        # module-object locals bound from an imported call
-        for m in PY_ATTR_CALL_RE.finditer(scan_text):
-            head, meth = m.group(1), m.group(2)
-            if head in ("self", "cls"):
-                if meth in fs.funcs:
-                    self._emit_call(src_key, fs.path, meth)
-                continue
-            vt = var_types.get(head, "")
-            if vt.startswith("module:"):
-                for dst in self._module_method_dsts(vt[len("module:"):], meth):
-                    self._emit_call(src_key, dst, meth)
-                continue
-            cls = head if head in self.class_map else var_types.get(head, "")
-            if cls and cls in self.class_map:
-                dst = self.class_map[cls]
-            elif head in fs.consts and fs.consts[head] in self.files:
-                dst = fs.consts[head]
-            else:
-                continue
-            if meth in self.files[dst].funcs:
-                self._emit_call(src_key, dst, meth)
-        # imported_call(args).method( — calling an imported function then
-        # a method on the result (registry_for(suffix).parse(...)): the
-        # const's module chain supplies the candidate defs
-        for m in PY_RESULT_CALL_RE.finditer(scan_text):
-            head, meth = m.group(1), m.group(3)
-            mod = fs.consts.get(head, "")
-            if mod in self.files:
-                for dst in self._module_method_dsts(mod, meth):
-                    self._emit_call(src_key, dst, meth)
-        # two-level chains: self.g.greet( / api.client.run(
-        for m in PY_CHAIN_CALL_RE.finditer(scan_text):
-            head, mid, tail = m.group(1), m.group(2), m.group(3)
-            if head in ("self", "cls"):
-                cls = var_types.get(mid, "")
-                dst = self.class_map.get(cls, "")
-            else:
-                dst = self._chain_dst(var_types, head, mid)
-            if dst and tail in self.files[dst].funcs:
-                self._emit_call(src_key, dst, tail)
-        # box[k].method( / self.box[k].method( — subscript access into a
-        # generic hint (dict[str, Widget]): the capitalized names inside
-        # the outer subscript are the receiver candidates
-        for m in PY_SUBSCRIPT_CALL_RE.finditer(scan_text):
-            head, meth = m.group(1), m.group(2)
-            parts = head.split(".")
-            if len(parts) > 1 and parts[0] not in ("self", "cls"):
-                continue
-            hint = var_types.get(parts[-1], "")
-            for vc in _hint_value_classes(hint):
-                dst = self.class_map.get(vc, "")
-                if dst and meth in self.files[dst].funcs:
-                    self._emit_call(src_key, dst, meth)
-        # bare name( — same-file funcs, then from-import module funcs
-        for m in PY_BARE_CALL_RE.finditer(scan_text):
-            name = m.group(1)
-            if name in PY_NON_CALLS:
-                continue
-            if name in fs.funcs:
-                self._emit_call(src_key, fs.path, name)
-                continue
-            dst = fs.consts.get(name, "")
-            if dst in self.files and name in self.files[dst].funcs:
-                self._emit_call(src_key, dst, name)
-
-    def _module_method_dsts(self, mod_rel: str, meth: str) -> list[str]:
-        """Files that may define `meth` reached through module `mod_rel`:
-        the module itself plus the modules it imports (re-export surface —
-        registries return submodules listed in their imports)."""
-        if mod_rel not in self.files:
-            return []
-        cands = [mod_rel]
-        mod_fs = self.files[mod_rel]
-        for reexport in mod_fs.consts.values():
-            if reexport in self.files and reexport != mod_rel:
-                cands.append(reexport)
-        return sorted({c for c in cands if meth in self.files[c].funcs})
 
     def _resolve_definer(self, target: str, nm: str, seen: frozenset[str] = frozenset()) -> str:
         """Rel path of the file that DEFINES `nm` imported from `target`:
@@ -716,6 +208,20 @@ class Graph:
         self.reverse[dst].add(src)
         self.edge_types[(src, dst)].add(ty)
 
+    # -- ctx protocol for extractor hooks (langsep) ------------------------------
+    # extractor modules never import nav (registry stays acyclic): raw
+    # file access for their build/wire/scan hooks routes through these
+    # thin wrappers so the walk/read contracts (config excludes, #117
+    # race guards) stay single-sourced in nav.
+    def read_file(self, rel: str) -> str:
+        return nav._read_text(nav.ROOT / rel)
+
+    def path_for(self, rel: str) -> Path:
+        return nav.ROOT / rel
+
+    def walk_root_files(self, suffixes):
+        return nav.iter_root_files(suffixes)
+
     def script_rels(self, fs: FileSym) -> list[str]:
         """Indexed scripts for a scene, in resolution order: ext_resource
         scripts first (file order), the attached script only when none of
@@ -724,197 +230,13 @@ class Graph:
         rels = [
             s_rel
             for s in fs.scripts
-            if (s_rel := self._res_to_rel(s)) and s_rel in self.files
+            if (s_rel := res_to_rel(s)) and s_rel in self.files
         ]
         if not rels and fs.attached_script:
-            s_rel = self._res_to_rel(fs.attached_script)
+            s_rel = res_to_rel(fs.attached_script)
             if s_rel and s_rel in self.files:
                 rels.append(s_rel)
         return rels
-
-    def _wire_tscn(self) -> None:
-        for rel, fs in self.files.items():
-            if fs.ext != ".tscn":
-                continue
-            # multi-script scenes: a handler may live on ANY of the scene's
-            # script ext_resources, not just the first attached one
-            for script_rel in self.script_rels(fs):
-                for _, handler in fs.connections:
-                    if handler in self.files[script_rel].funcs:
-                        key = fn_key(script_rel, handler)
-                        self.roots.add(key)
-                        self._edge(rel + TSCN_SUFFIX, key, ty="signal")
-                self._edge(rel + TSCN_SUFFIX, script_rel + TSCN_SUFFIX, ty="attach")
-            for inst in fs.instances:
-                inst_rel = self._res_to_rel(inst)
-                if inst_rel and inst_rel in self.files:
-                    self._edge(rel + TSCN_SUFFIX, inst_rel + TSCN_SUFFIX, ty="inst")
-
-    def _res_to_rel(self, res_path: str) -> str:
-        if not res_path:
-            return ""
-        return res_path.removeprefix("res://")
-
-    def _resolve_include(self, src_rel: str, inc: str) -> str:
-        """Repo-relative path for a quoted include of src_rel, or ''."""
-        if inc in self.files:
-            return inc
-        parent = src_rel.rsplit("/", 1)[0] if "/" in src_rel else ""
-        cand = f"{parent}/{inc}" if parent else inc
-        return cand if cand in self.files else ""
-
-    def _pair_cpp(self) -> None:
-        """Give each .cpp its header's class identity (spec §2 pairing).
-
-        Convention: a .cpp's first quoted include is its own header
-        (path-ordered includes in engine code). The header stays the
-        canonical class_map owner; the .cpp only fills in if unclaimed.
-        """
-        for rel in sorted(self.files):
-            fs = self.files[rel]
-            if fs.ext != ".cpp" or fs.class_name:
-                continue
-            own_stem = rel.rsplit("/", 1)[-1].split(".")[0]
-            pair = ""
-            for inc in sorted(fs.imported_modules):
-                resolved = self._resolve_include(rel, inc)
-                if not resolved or self.files[resolved].ext not in (".h", ".hpp"):
-                    continue
-                if resolved.rsplit("/", 1)[-1].split(".")[0] == own_stem:
-                    pair = resolved
-                    break  # exact-stem match wins outright
-                pair = pair or resolved
-            if pair and self.files[pair].class_name:
-                fs.class_name = self.files[pair].class_name
-                self.class_map.setdefault(fs.class_name, pair)
-
-    def _wire_cpp(self) -> None:
-        """Registration macros -> call edges + repo-wide GDVIRTUAL set.
-
-        Binds/props live inside a containing function (usually
-        _bind_methods): the owner is resolved by line order, mirroring how
-        the engine runs registration at class-initialization time. Edge
-        targets resolve file-locally first, then via class_map to the
-        class's defining file. Roots come from ENTRY_RULES; these edges
-        carry the call-graph wire (clusters/ PagerRank treat ty="call").
-        """
-        for rel in sorted(self.files):
-            fs = self.files[rel]
-            if fs.ext not in CPP_EXTS:
-                continue
-            try:
-                text = nav._read_text(nav.ROOT / rel)
-            except OSError:
-                continue
-            reg = harvest_registration(text)
-            self.cpp_gdvirtuals.update(v.name for v in reg["gdvirtuals"])
-            if not fs.funcs or (not reg["binds"] and not reg["props"]):
-                continue
-            order = sorted(fs.funcs.values(), key=lambda f: f.line)
-
-            def container(lineno: int) -> str:
-                owner = ""
-                for f in order:
-                    if f.line <= lineno:
-                        owner = f.key
-                    else:
-                        break
-                return owner
-
-            def target(cls: str, name: str) -> str:
-                if name in fs.funcs:
-                    return fn_key(rel, name)
-                class_file = self.class_map.get(cls, "")
-                if class_file and name in self.files[class_file].funcs:
-                    return fn_key(class_file, name)
-                return ""
-
-            for b in reg["binds"]:
-                dst = target(b.cls, b.method)
-                src = container(b.line)
-                if dst and src:
-                    self._edge(src, dst, ty="call")
-            for p in reg["props"]:
-                src = container(p.line)
-                if not src:
-                    continue
-                for name in (p.setter, p.getter):
-                    if not name:
-                        continue
-                    dst = target(fs.class_name, name)
-                    if dst:
-                        self._edge(src, dst, ty="call")
-
-    def _scan_body_cpp(self, fs: FileSym, rel: str) -> None:
-        """C++ body scan (issue #20): call / callback / instantiation edges.
-
-        Sites come from extractors.cpp.scan_calls (query captures +
-        memnew). Resolution mirrors the registration wiring: file-local
-        funcs first, then the paired class's header via class_map. Sites
-        that resolve to nothing are DROPPED for plain calls — an
-        unresolved call name must never feed referenced_names (the
-        same-name-elsewhere ambiguity guard) — but callback references
-        (&fn / &C::fn) keep the name-aliteral liveness path: a function
-        reachable ONLY through a function pointer is alive, and the
-        engine's registrars are not ClassDB-shaped.
-        """
-        try:
-            sites = scan_calls(nav.ROOT / rel, rel)
-        except OSError:
-            return
-        if not sites or not fs.funcs:
-            return
-        order = sorted(fs.funcs.values(), key=lambda f: f.line)
-        hdr = self.class_map.get(fs.class_name, "") if fs.class_name else ""
-
-        def container(lineno: int) -> str:
-            owner = ""
-            for f in order:
-                if f.line <= lineno:
-                    owner = f.key
-                else:
-                    break
-            return owner
-
-        for site in sites:
-            name = site["name"]
-            kind = site["kind"]
-            if kind == "new":
-                cls_file = self.class_map.get(name, "")
-                if cls_file and cls_file != rel:
-                    src = container(site["line"])
-                    if src:
-                        self._edge(src, cls_file, ty="inst")
-                continue
-            parts = name.split("::")
-            dst = ""
-            if len(parts) == 2:
-                cls_file = self.class_map.get(parts[0], "")
-                if cls_file and parts[1] in self.files[cls_file].funcs:
-                    dst = fn_key(cls_file, parts[1])
-            elif name in fs.funcs:
-                dst = fn_key(rel, name)
-            elif hdr and name in self.files[hdr].funcs:
-                dst = fn_key(hdr, name)
-            if dst:
-                src = container(site["line"])
-                if src and src != dst:
-                    self._edge(src, dst, ty="call")
-            elif kind in ("fref", "frefq"):
-                self.referenced_names.add(parts[-1])
-
-    def _wire_aliases(self) -> None:
-        """typedef/using targets -> alias edges to the aliased class's file
-        (issue #20 T7). Cheap signal: an alias means the type is genuinely
-        used; the edge keeps the defining file visible in the graph."""
-        for rel in sorted(self.files):
-            fs = self.files[rel]
-            if fs.ext not in CPP_EXTS or not fs.aliases:
-                continue
-            for target in sorted(fs.aliases.values()):
-                cls_file = self.class_map.get(target, "")
-                if cls_file and cls_file != rel:
-                    self._edge(rel, cls_file, ty="alias")
 
     def _parse_autoloads(self) -> dict[str, str]:
         """project.godot [autoload] section: singleton name -> rel path."""
@@ -950,7 +272,7 @@ class Graph:
         # alive but have no static edge — root them so their callees survive
         if self.referenced_names:
             for rel, fs in self.files.items():
-                if fs.ext not in (".gd", ".py") and fs.ext not in CPP_EXTS:
+                if registry_for(fs.ext) is None:
                     continue
                 for name, fn in fs.funcs.items():
                     if name in self.referenced_names:
@@ -996,22 +318,22 @@ class Graph:
         # -> O(referenced), issue #43). Membership-only set: it never
         # iterates into an output path, so determinism is unchanged.
         wildcard_names = {
-            r.split("::")[-1] for r in self.referenced if r.startswith("*::")
+            r.split(FN_KEY_SEP)[-1] for r in self.referenced if r.startswith("*" + FN_KEY_SEP)
         }
         # mention-count corroboration (issue #20): one cached tokenizing
         # pass over raw corpus text, never a scan per candidate. Only C++
         # candidates consume it, so corpora without C++ files skip the pass.
         mentions = (
             self._mention_counts()
-            if any(f.ext in CPP_EXTS for f in self.files.values())
+            if any(getattr(registry_for(f.ext), "MENTION_FLOOR", 0) for f in self.files.values())
             else {}
         )
         for rel, fs in self.files.items():
-            if fs.ext not in (".gd", ".py") and fs.ext not in CPP_EXTS:
+            mod = registry_for(fs.ext)
+            if mod is None:
                 continue
             joined = "\n".join(fs.funcs[f].body for f in fs.funcs) if fs.funcs else ""
-            dyn_re = CPP_DYNAMIC_RE if fs.ext in CPP_EXTS else DYNAMIC_HINT_RE
-            file_is_dynamic = bool(dyn_re.search(joined))
+            file_is_dynamic = bool(mod.DYNAMIC_HINT.search(joined))
             for name, fn in fs.funcs.items():
                 if fn.key in self.reachable:
                     continue
@@ -1029,23 +351,19 @@ class Graph:
                 # these names anyway: MENTION_TOKEN_RE tokenizes ~DtorOp
                 # to 'DtorOp' and 'operator bool' to 'operator', so the
                 # raw-name lookups miss by construction.
-                if fs.ext in CPP_EXTS and is_implicit_entry(name):
+                if mod.is_entry_exempt(name):
                     continue
                 tier = "review" if file_is_dynamic else "likely"
                 # functions on classes extending bases we cannot resolve (engine
-                # natives not in VIRTUALS, C++ addons) may be dispatched natively
+                # natives not in the shield, C++ addons) may be dispatched
+                # natively; the VIRTUALS shield is corpus-wide (UNDERSCORE_SHIELD)
+                # and language tails live behind unresolved_base_review
                 if (
                     tier == "likely"
                     and fs.extends
                     and fs.extends not in self.class_map
-                    and name not in VIRTUALS
-                    and (
-                        name.startswith("_")
-                        # python: stdlib serving machinery (http.server et al)
-                        # invokes handler overrides reflectively — PY_HOOKS is
-                        # the python analogue of the .gd underscore-virtual rule
-                        or (fs.ext == ".py" and (name in PY_HOOKS or name.startswith("do_")))
-                    )
+                    and name not in UNDERSCORE_SHIELD
+                    and mod.unresolved_base_review(name)
                 ):
                     tier = "review"
                 # python classes referenced at module scope (stand-ins
@@ -1053,7 +371,7 @@ class Graph:
                 # framework singletons) have their methods invoked through
                 # an opaque consumer: the honest tier is review, mirroring
                 # PY_HOOKS (#153 family)
-                if tier == "likely" and fs.ext == ".py" and name in fs.dispatch_names:
+                if tier == "likely" and mod.stand_in_review(fs, name):
                     tier = "review"
                 # mention-count corroboration (issue #20): a cpp name that
                 # keeps appearing across the corpus — unresolved same-name
@@ -1061,11 +379,7 @@ class Graph:
                 # dispatch tables — is wired somewhere the static pass
                 # cannot see, so 'likely' overclaims its deadness. Names
                 # mentioned only at their own definition stay 'likely'.
-                if (
-                    tier == "likely"
-                    and fs.ext in CPP_EXTS
-                    and mentions.get(name, 0) >= CPP_MENTION_FLOOR
-                ):
+                if tier == "likely" and mod.mention_review(name, mentions):
                     tier = "review"
                 dead.append({"path": rel, "func": name, "line": fn.line, "tier": tier})
         dead.sort(key=lambda d: (d["tier"], d["path"], d["line"]))
@@ -1547,7 +861,7 @@ def _is_micro(fn: Func, scale: float = 1.0) -> bool:
     if not lines:
         return False
     nb = _fn_body_start(fn)
-    if not lines[0].strip().endswith(":") and not lines[0].lstrip().startswith("func "):
+    if not lines[0].strip().endswith(":") and not lines[0].lstrip().startswith(FUNC_KEYWORD):
         body = fn.body  # raw fragment: no signature line to strip
     else:
         body = "\n".join(lines[nb:]) if nb < len(lines) else ""
@@ -1691,14 +1005,11 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
         suffix = path.suffix
         # scenes have no funcs; only languages with an extractor are
         # parseable — a file that left parseable space is purged, not kept
-        if not path.is_file() or suffix not in nav.EXTS or suffix == ".tscn":
+        if not path.is_file() or not sync_parseable(suffix):
             if populated:
                 purge_rels.append(rel)
             continue
-        if suffix == ".gd":
-            fs = parser._parse_gd(path, rel)
-        else:
-            fs = registry_for(suffix).parse(path, rel)
+        fs = registry_for(suffix).parse(path, rel)
         if cast > 0.0:
             _chunk_plan(fs, fs.funcs, cast)  # cAST micro-fn merge (knob on)
         current: set[str] = set()

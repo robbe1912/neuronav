@@ -5,6 +5,14 @@
 import json
 
 from bake.budget import _cap_rows
+from extractors import (  # noqa: E402
+    FN_KEY_SEP,
+    SIGNAL_PREFIX,
+    TSCN_SUFFIX,
+    VAR_PREFIX,
+    is_wiring_only,
+    registry_for,
+)
 
 def _emit_wire_rows(g, idx):
     """J5: fedges + call/var mwires — ONE iteration emits BOTH exports
@@ -17,9 +25,9 @@ def _emit_wire_rows(g, idx):
     fedges: list[list] = []
     mwires: list[list] = []
     for src_key, dsts in g.edges.items():
-        if src_key.endswith("::tscn"):  # pseudo source, fn would be "tscn"
+        if src_key.endswith(TSCN_SUFFIX):  # pseudo source, fn would be "tscn"
             continue
-        if "::" not in src_key:
+        if FN_KEY_SEP not in src_key:
             # file-level source (cpp v1.1 header-scope refs) — no fn to
             # attribute; its file adjacency already rides the links layer
             continue
@@ -29,21 +37,21 @@ def _emit_wire_rows(g, idx):
         src_fs = g.files.get(s_path)
         s_line = src_fs.funcs[s_fn].line if src_fs and s_fn in src_fs.funcs else 0
         for dst_key in dsts:
-            if "::VAR:" in dst_key:
+            if VAR_PREFIX in dst_key:
                 # member wire — dst file owns the member; intra-file
                 # skipped like calls (intra-file wires: spec §11 parking lot)
-                d_path, member = dst_key.split("::VAR:", 1)
+                d_path, member = dst_key.split(VAR_PREFIX, 1)
                 if d_path in idx and d_path != s_path:
                     mwires.append(
                         ["var", idx[s_path], s_fn, idx[d_path], member, s_line, None]
                     )
                 continue
             if (
-                dst_key.endswith("::tscn")
-                or "::SIGNAL:" in dst_key
+                dst_key.endswith(TSCN_SUFFIX)
+                or SIGNAL_PREFIX in dst_key
             ):
                 continue
-            if "::" not in dst_key:
+            if FN_KEY_SEP not in dst_key:
                 # fn -> whole-file edge (cpp v1.1 template/instantiation
                 # refs resolve to the target's file, not a fn): file-level
                 # ink comes from the links layer; the fn layer skips it
@@ -76,7 +84,7 @@ def _signal_wires(g, idx):
     sig_resolved = 0
     sig_unresolved = 0
     for rel, fs in g.files.items():
-        if fs.ext != ".tscn" or rel not in idx:
+        if not registry_for(fs.ext).is_wiring_only(fs) or rel not in idx:
             continue
         script_rels = g.script_rels(fs)
         for sig_name, handler in fs.connections:

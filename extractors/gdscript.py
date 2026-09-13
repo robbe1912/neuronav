@@ -619,3 +619,310 @@ NON_CALLS = {
 AUTOLOAD_RE = re.compile(r'^(\w+)\s*=\s*"\*?res://([\w/.-]+\.gd)"')
 # asset scenes sit outside the search index; graph parses them for wiring
 ASSET_SCENE_GLOB = "*.tscn"
+
+
+# ---- build passes + body scan (langsep: moved from graph.py, ctx=Graph) -------
+from extractors.common import (  # noqa: E402
+    BARE_CALL_RE,
+    FN_KEY_SEP,
+    MEMBER_ACCESS_RE,
+    QUALIFIED_CALL_RE,
+    SIGNAL_PREFIX,
+    TSCN_SUFFIX,
+    VAR_PREFIX,
+    fold_continuations,
+    fn_key,
+)
+
+
+def build_inheritance(ctx) -> None:
+    """Transitive subclass map: base class_name -> files below it — a
+    call resolved to a base may dispatch to any override."""
+    for rel, fs in ctx.files.items():
+        if fs.ext != ".gd":
+            continue
+        base = fs.extends
+        seen: set[str] = set()
+        while base and base not in seen and base in ctx.class_map:
+            seen.add(base)
+            ctx._subclasses[base].add(rel)
+            base = ctx.files[ctx.class_map[base]].extends
+        # path-form extends (often inner helper classes): register the
+        # whole file under the base file's class_name so override
+        # completion can reach it
+        try:
+            raw = ctx.read_file(rel)
+        except OSError:
+            raw = ""
+        for m in PATH_EXTENDS_RE.finditer(raw):
+            base_rel = res_to_rel(m.group(1))
+            base_cls = ctx.files.get(base_rel, None)
+            if base_cls is not None:
+                # register under the rel path always, class_name when
+                # the base declares one — the emitter looks up both
+                ctx._subclasses[base_rel].add(rel)
+                if base_cls.class_name:
+                    ctx._subclasses[base_cls.class_name].add(rel)
+
+
+def harvest_facts(fs: FileSym, ctx) -> None:
+    """Name-literal liveness + dynamic-dispatch file gating for .gd."""
+    if fs.ext != ".gd":
+        return
+    for nm in fs.name_literals:
+        if len(nm) > 3:
+            ctx.referenced_names.add(nm)
+    # class-level initializer calls run at instantiation — alive
+    for nm in fs.init_calls:
+        ctx.referenced_names.add(nm)
+    if not fs.funcs:
+        return
+    joined = "\n".join(f.body for f in fs.funcs.values())
+    if DYNAMIC_HINT_RE.search(joined):
+        ctx._dyn_files.add(fs.path)
+
+
+def scan_file(fs: FileSym, ctx) -> None:
+    if fs.ext != ".gd":
+        return
+    for fn in fs.funcs.values():
+        _scan_body(fs, fn, ctx)
+
+
+def _scan_body(fs: FileSym, fn: Func, ctx) -> None:
+    # multi-line call arguments defeat line-based regex passes: fold
+    # continuation lines (unbalanced parens/brackets) into single
+    # logical lines before scanning; fn.body stays raw for display
+    scan_text = fold_continuations(fn.body)
+    # first-order type inference: member vars + typed params/locals in this body
+    var_types = dict(fs.members)
+    for pm in PARAM_TYPED_RE.finditer(scan_text):
+        var_types[pm.group(1)] = pm.group(2)
+    _scan_calls(fs, fn, scan_text, var_types, ctx)
+    _scan_liveness(fs, fn, scan_text, ctx)
+    _scan_chains(fs, fn, scan_text, var_types, ctx)
+    _scan_signals(fs, fn, scan_text, ctx)
+
+
+def _scan_calls(fs: FileSym, fn: Func, scan_text: str, var_types: dict, ctx) -> None:
+    """Typed-receiver call edges and member-var cross-references."""
+    src_key = fn.key
+    for m in QUALIFIED_CALL_RE.finditer(scan_text):
+        head, fname = m.group(1), m.group(2)
+        cls = head if head in ctx.class_map else var_types.get(head)
+        if cls and cls in ctx.class_map:
+            dst = ctx.class_map[cls]
+            if fname in ctx.files[dst].funcs:
+                ctx._emit_call(src_key, dst, fname)
+        elif head in fs.consts and fs.consts[head] in ctx.files:
+            dst = fs.consts[head]
+            if fname in ctx.files[dst].funcs:
+                ctx._emit_call(src_key, dst, fname)
+        else:
+            # receiver type unknown (factory returns, variants) — the call may
+            # dispatch to any same-named func; mark name alive, no edge.
+            # dispatch intermediaries (.rpc()/.call_deferred()/.bind()) point
+            # at the RECEIVER, not at rpc/call_deferred themselves
+            if fname in DYNAMIC_METHODS:
+                # builtin-shadowing user funcs (e.g. a user `bind`) are
+                # valid targets of the same dispatch — keep the name
+                # alive alongside the receiver head
+                ctx.referenced_names.add(head)
+            ctx.referenced_names.add(fname)
+    # member-var cross-references: receiver.member where the receiver
+    # resolves to a known class (same chain as calls above) and that
+    # file actually declares the member — edges land on VAR: pseudo-nodes
+    for m in MEMBER_ACCESS_RE.finditer(scan_text):
+        head, member = m.group(1), m.group(2)
+        cls = head if head in ctx.class_map else var_types.get(head)
+        if cls and cls in ctx.class_map:
+            dst = ctx.class_map[cls]
+        elif head in fs.consts and fs.consts[head] in ctx.files:
+            dst = fs.consts[head]
+        else:
+            continue
+        if member in ctx.files[dst].members:
+            ctx._edge(src_key, dst + VAR_PREFIX + member, ty="var")
+        elif member in ctx.files[dst].funcs:
+            # property-assignment form: obj.method = x targets the
+            # func (setter-style) without a call paren
+            ctx._emit_call(src_key, dst, member)
+
+
+def _scan_liveness(fs: FileSym, fn: Func, scan_text: str, ctx) -> None:
+    """Name-keeping harvest: dynamically loaded scripts, dynamic-
+    dispatch string refs, callback-convention identifiers. No edges —
+    these only keep funcs out of dead-code tiers."""
+    src_key = fn.key
+    # dynamically loaded scripts: any "res://....gd" string literal in
+    # the body keeps every func of that file alive
+    for m in RES_LOAD_RE.finditer(scan_text):
+        loaded = m.group(1)
+        if loaded in ctx.files:
+            for other in ctx.files[loaded].funcs.values():
+                ctx.referenced.add(other.key)
+    # dynamic-dispatch harvest: method names passed to .call()/.rpc()/
+    # has_method(), StringName literals, Callable(obj, "m") — receivers
+    # are runtime-typed, so mark the names alive instead of an edge
+    for m in DISPATCH_STR_RE.finditer(scan_text):
+        nm = m.group(1)
+        if len(nm) > 3:
+            ctx.referenced_names.add(nm)
+    for m in BARE_DISPATCH_STR_RE.finditer(scan_text):
+        nm = m.group(1)
+        if len(nm) > 3:
+            ctx.referenced_names.add(nm)
+    for m in STRINGNAME_LIT_RE.finditer(scan_text):
+        ctx.referenced_names.add(m.group(1))
+    if fs.path in ctx._dyn_files:
+        for m in QUOTED_IDENT_RE.finditer(scan_text):
+            ctx.referenced_names.add(m.group(1))
+    for m in CALLABLE_TWO_RE.finditer(scan_text):
+        nm = m.group(1) or m.group(2)
+        if nm and len(nm) > 3:
+            ctx.referenced_names.add(nm)
+    # tween binders + bare callback-convention identifiers (array
+    # elements, deferred refs): method refs without call parens
+    for m in TWEEN_ARG_RE.finditer(scan_text):
+        ctx.referenced_names.add(m.group(1))
+    for m in BARE_HANDLER_RE.finditer(scan_text):
+        ctx.referenced_names.add(m.group(0))
+    # bare method-ref as full assignment RHS (property-assignment
+    # wiring): `hub.cb = _connect_signal_handler` — scanned
+    # on the RAW body because the $ anchor needs real line ends
+    for m in ASSIGN_RHS_RE.finditer(fn.body):
+        nm = m.group(1)
+        if nm not in ASSIGN_RHS_SKIP:
+            ctx.referenced_names.add(nm)
+
+
+def _scan_chains(fs: FileSym, fn: Func, scan_text: str, var_types: dict, ctx) -> None:
+    """Two-level typed chains, casts, and bare/inherited calls."""
+    src_key = fn.key
+    # two-level typed chains: ctx.teams.team_ids(...) — resolve head to
+    # its class, hop through a declared member, then emit
+    for m in CHAIN_CALL_RE.finditer(scan_text):
+        head, mid, tail = m.group(1), m.group(2), m.group(3)
+        dst = ctx._chain_dst(var_types, head, mid)
+        if dst and tail in ctx.files[dst].funcs:
+            ctx._emit_call(src_key, dst, tail)
+        else:
+            # unresolvable receiver chain (duck-typed containers):
+            # same name-alive fallback as single-hop unknown receivers
+            ctx.referenced_names.add(tail)
+    for m in CHAIN_VAR_RE.finditer(scan_text):
+        head, mid, tail = m.groups()
+        dst = ctx._chain_dst(var_types, head, mid)
+        if dst and tail in ctx.files[dst].members:
+            ctx._edge(src_key, dst + VAR_PREFIX + tail, ty="var")
+        elif dst and tail in ctx.files[dst].funcs:
+            ctx._emit_call(src_key, dst, tail)
+    for m in AS_CAST_CALL_RE.finditer(scan_text):
+        cls, fname = m.group(1), m.group(2)
+        if cls in ctx.class_map:
+            dst = ctx.class_map[cls]
+            if fname in ctx.files[dst].funcs:
+                ctx._emit_call(src_key, dst, fname)
+        else:
+            ctx.referenced_names.add(fname)
+    for m in BARE_CALL_RE.finditer(scan_text):
+        name = m.group(1)
+        if name in NON_CALLS:
+            continue
+        if name in fs.funcs:
+            # the emitter mirrors the same-file edge onto subclass
+            # overrides (incl. path-form extends files below)
+            ctx._emit_call(src_key, fs.path, name)
+        else:
+            # inherited method call: resolve up the extends chain
+            # (the emitter mirrors onto sibling overrides); base calls
+            # a func it does not declare -> every subclass override
+            anc = ctx._ancestor_def(fs, name)
+            if anc:
+                ctx._emit_call(src_key, anc, name)
+            if fs.class_name and fs.class_name in ctx._subclasses:
+                for sub in ctx._subclasses[fs.class_name]:
+                    if name in ctx.files[sub].funcs:
+                        ctx._edge(src_key, fn_key(sub, name))
+
+
+def _scan_signals(fs: FileSym, fn: Func, scan_text: str, ctx) -> None:
+    """Signal emits -> signal nodes; connect/Callable string refs -> handlers."""
+    src_key = fn.key
+    # signal emits -> signal nodes; connect/Callable string refs -> handlers
+    for m in EMIT_RE.finditer(scan_text):
+        sig = m.group(1) or m.group(2)
+        if sig in fs.signals:
+            ctx._edge(src_key, fs.path + SIGNAL_PREFIX + sig, ty="signal")
+    if CONNECT_RE.search(scan_text):
+        for m in STRING_NAME_RE.finditer(scan_text):
+            ref = m.group(1)
+            if ref in fs.funcs:
+                ctx._edge(src_key, fn_key(fs.path, ref), ty="signal")
+                # handlers fire on signal emit — entry points, traverse
+                ctx.roots.add(fn_key(fs.path, ref))
+            # cross-file: _on_* handlers commonly target other scripts
+            elif ref.startswith("_on_"):
+                ctx.referenced.add("*" + FN_KEY_SEP + ref)
+        # direct method references (no quotes):
+        #   sig.connect(_handler) / is_connected(_handler) / disconnect(...)
+        for m in CONNECT_METHOD_RE.finditer(scan_text):
+            ref = m.group(1)
+            if ref in fs.funcs:
+                ctx._edge(src_key, fn_key(fs.path, ref), ty="signal")
+                ctx.roots.add(fn_key(fs.path, ref))
+            else:
+                # inherited handler: resolve up the extends chain
+                anc = ctx._ancestor_def(fs, ref)
+                if anc and ref in ctx.files[anc].funcs:
+                    key = fn_key(anc, ref)
+                    ctx._edge(src_key, key, ty="signal")
+                    ctx.roots.add(key)
+
+
+def wire_tscn(ctx) -> None:
+    """Scene wiring: [connection] handlers as roots + attach/inst edges."""
+    for rel, fs in ctx.files.items():
+        if fs.ext != ".tscn":
+            continue
+        # multi-script scenes: a handler may live on ANY of the scene's
+        # script ext_resources, not just the first attached one
+        for script_rel in ctx.script_rels(fs):
+            for _, handler in fs.connections:
+                if handler in ctx.files[script_rel].funcs:
+                    key = fn_key(script_rel, handler)
+                    ctx.roots.add(key)
+                    ctx._edge(rel + TSCN_SUFFIX, key, ty="signal")
+            ctx._edge(rel + TSCN_SUFFIX, script_rel + TSCN_SUFFIX, ty="attach")
+        for inst in fs.instances:
+            inst_rel = res_to_rel(inst)
+            if inst_rel and inst_rel in ctx.files:
+                ctx._edge(rel + TSCN_SUFFIX, inst_rel + TSCN_SUFFIX, ty="inst")
+
+
+def harvest_scene_wiring(ctx) -> None:
+    """.tres/.res reference scripts via ext_resource — data-constructed
+    classes (custom resources) whose funcs never appear in .gd callers —
+    and StringName values route dynamic dispatch (LimboAI BT tasks
+    export method names). Root-wide but pruned (issue #117): the walk
+    comes through ctx so it honors the config's exclude contract + the
+    standard cache floor."""
+    ctx.tres_scripts = set()
+    for path in ctx.walk_root_files(SCENE_WIRING_SUFFIXES):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for m in TRES_SCRIPT_RE.finditer(text):
+            rel2 = res_to_rel(m.group(1))
+            if rel2 in ctx.files:
+                ctx.tres_scripts.add(rel2)
+        for m in TRES_STRINGNAME_RE.finditer(text):
+            ctx.referenced_names.add(m.group(1))
+
+
+def is_wiring_only(fs: FileSym) -> bool:
+    """True when the file exists in the graph only as scene wiring (no
+    funcs to scan; sync reparses skip it; bake pair passes route around
+    it). Scene files, not scripts."""
+    return fs.ext == ".tscn"

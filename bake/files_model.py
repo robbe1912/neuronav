@@ -5,6 +5,15 @@
 from collections import defaultdict
 from pathlib import Path
 
+from extractors import (  # noqa: E402
+    FN_KEY_SEP,
+    TSCN_SUFFIX,
+    counts_dead_share,
+    is_wiring_only,
+    registry_for,
+    res_to_rel,
+)
+
 def _attach(clusters):
     """J1: cluster attach — file -> cluster id + cid -> human label."""
     # file -> cluster id
@@ -31,7 +40,7 @@ def _dead_flags(g, tier_weights, share_threshold):
     dead_likely: set[str] = set()
     func_counts: dict[str, int] = {}
     for rel, fs in g.files.items():
-        if fs.ext == ".gd":
+        if counts_dead_share(fs):
             func_counts[rel] = len(fs.funcs)
     for cand in dead["candidates"]:
         tier = cand["tier"]
@@ -80,9 +89,9 @@ def _build_links(g, idx):
     # edges: aggregate typed func-level/scene edges to file level.
     # types: call | signal | inst (scene contains instance) | attach (scene→script)
     def kfile(k: str) -> str:
-        if k.endswith("::tscn"):
-            return k[: -len("::tscn")]
-        return k.split("::")[0]
+        if k.endswith(TSCN_SUFFIX):
+            return k[: -len(TSCN_SUFFIX)]
+        return k.split(FN_KEY_SEP)[0]
 
     pair_types: dict[tuple[int, int], dict[str, int]] = defaultdict(
         lambda: defaultdict(int)
@@ -101,15 +110,15 @@ def _build_links(g, idx):
         add_typed(src_key, dst_key, edge_tys)
 
     for rel, fs in g.files.items():
-        if fs.ext != ".tscn":
+        if not registry_for(fs.ext).is_wiring_only(fs):
             continue
         att = fs.attached_script
         if att:
-            t = att.removeprefix("res://")
+            t = res_to_rel(att)
             if rel in idx and t in idx and rel != t:
                 pair_types[(idx[rel], idx[t])]["attach"] += 1
         for inst in fs.instances:
-            t = inst.removeprefix("res://")
+            t = res_to_rel(inst)
             if rel in idx and t in idx and rel != t:
                 pair_types[(idx[rel], idx[t])]["inst"] += 1
 

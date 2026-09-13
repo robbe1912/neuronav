@@ -45,6 +45,7 @@ import httpx
 # alive in the self-index; recall.py binds nav/graph lazily inside its
 # functions, so `nav.py --config <profile> ...` still switches profiles.
 import recall
+from extractors import WALK_EXTS, registry_for  # noqa: E402
 
 TOOL_DIR = Path(__file__).resolve().parent
 
@@ -95,7 +96,7 @@ def _apply_config(path: Path | None) -> None:
     # legacy install-config default keeps the original target-repo shape
     _walk_all = path is None or (path.parent.name == ".neuronav")
     INCLUDE_DIRS = tuple(cfg.get("include_dirs", WALK_DEFAULTS["include_dirs"] if _walk_all else ("scripts", "scenes", "VFX", "ai", "tests", "tools")))
-    EXTS = set(cfg.get("extensions", sorted(_REGISTERED) if _walk_all else (".gd", ".tscn")))
+    EXTS = set(cfg.get("extensions", sorted(_REGISTERED) if _walk_all else WALK_EXTS))
     EXCLUDE_DIRS = frozenset(cfg.get("exclude_dirs", WALK_DEFAULTS["exclude_dirs"] if _walk_all else (".git", "__pycache__")))
     EXCLUDE_DIRS |= _neuroignore(path)
     EMBED_URL = str(cfg.get("embed_url", "http://127.0.0.1:11434/api/embed"))
@@ -584,21 +585,6 @@ def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
-def _class_name(text: str) -> str:
-    for line in text.splitlines():
-        s = line.strip()
-        if s.startswith("class_name "):
-            return s.split(None, 1)[1].split()[0]
-    return ""
-
-
-def _extends(text: str) -> str:
-    for line in text.splitlines():
-        s = line.strip()
-        if s.startswith("extends "):
-            return s.split(None, 1)[1].split()[0]
-    return ""
-
 
 def _db_lock() -> "FileLock":
     """Advisory cross-process writer lock (server, CLI, viz all write via
@@ -887,11 +873,16 @@ def _rescan_locked() -> dict[str, int]:
         text = _read_text(path)
         pending_ids.append(fid)
         pending_docs.append(text)
+        # class_name/extends sniffing is gdscript territory — the
+        # registry's stat_tags hook answers for whichever language owns
+        # the suffix ("" for languages without the notion)
+        mod = registry_for(path.suffix)
+        cls, ext = mod.stat_tags(text) if mod is not None else ("", "")
         meta: dict[str, object] = {
             "sha": digest,
             "ext": path.suffix,
-            "class_name": _class_name(text),
-            "extends": _extends(text),
+            "class_name": cls,
+            "extends": ext,
         }
         if st is not None:
             meta["mtime_ns"], meta["size"] = st

@@ -152,3 +152,30 @@ BARE_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\s*\(")
 # dead-tier mention-count pass counts these per file once, comments and
 # string literals included — never a rescan per dead candidate
 MENTION_TOKEN_RE = re.compile(r"[A-Za-z_]\w*")
+
+
+def fn_key(rel: str, name: str) -> str:
+    """Function-node key: repo-relative path + function name."""
+    return f"{rel}{FN_KEY_SEP}{name}"
+
+
+def fold_continuations(body: str) -> str:
+    """Join physical lines whose parens/brackets are still open so a call
+    split across lines becomes one logical line for regex scanning."""
+    out: list[str] = []
+    buf = ""
+    depth = 0
+    for line in body.splitlines():
+        buf = line if not buf else f"{buf} {line.strip()}"
+        depth += (
+            line.count("(") - line.count(")")
+            + line.count("[") - line.count("]")
+            + line.count("{") - line.count("}")
+        )
+        if depth <= 0:
+            out.append(buf)
+            buf = ""
+            depth = 0
+    if buf:
+        out.append(buf)
+    return "\n".join(out)

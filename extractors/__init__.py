@@ -20,6 +20,8 @@ from extractors.common import (  # noqa: F401  (re-export)
     BARE_CALL_RE,
     DYNAMIC_HINT_RE,
     FN_KEY_SEP,
+    fold_continuations,
+    fn_key,
     MENTION_TOKEN_RE,
     MEMBER_ACCESS_RE,
     PY_CONTROL_KEYWORDS,
@@ -46,15 +48,21 @@ from extractors.gdscript import (  # noqa: F401  (re-export)
     BARE_HANDLER_RE,
     CALLABLE_TWO_RE,
     AS_CAST_CALL_RE,
+    ASSIGN_RHS_RE,
+    ASSIGN_RHS_SKIP,
+    CALLABLE_TWO_RE,
+    AS_CAST_CALL_RE,
     CHAIN_CALL_RE,
     CHAIN_VAR_RE,
     CONNECT_METHOD_RE,
     CONNECT_RE,
+    counts_dead_share,
     DISPATCH_STR_RE,
     DYNAMIC_METHODS,
     EMIT_RE,
     FUNC_KEYWORD,
     GUT_ROOTS,
+    is_wiring_only,
     MANUAL_BASES,
     NON_CALLS,
     PARAM_TYPED_RE,
@@ -104,6 +112,40 @@ EXTENSIONS: dict[str, object] = {
 }
 
 
+def sync_parseable(suffix: str) -> bool:
+    """True when sync_functions may parse the suffix into funcs: an
+    extractor exists AND the file is not wiring-only scene data."""
+    return EXTENSIONS.get(suffix.lower()) is not None and suffix not in WIRING_ONLY_SUFFIXES
+
+
 def registry_for(suffix: str):
     """Extractor module handling this file suffix, or None."""
     return EXTENSIONS.get(suffix.lower())
+
+
+# ---- build choreography (langsep) ----------------------------------------------
+# Ordered build/wire steps composed from per-language hooks; graph.build()
+# runs them blind — adding a language means a new extractor module +
+# registry entry, zero graph.py diff. Steps loop ctx.files themselves and
+# guard their own suffixes; ctx is the Graph (files/class_map/referenced/
+# referenced_names/roots/_dyn_files/_subclasses/_edge/_emit_call/...).
+def _facts_sweep(ctx) -> None:
+    for fs in ctx.files.values():
+        mod = registry_for(fs.ext)
+        if mod is not None:
+            mod.harvest_facts(fs, ctx)
+
+
+BUILD_SEQUENCE = (
+    gdscript.harvest_scene_wiring,
+    gdscript.build_inheritance,
+    _facts_sweep,
+    python.rebind_reexports_sweep,
+    python.import_liveness_sweep,
+    python.arg_refs_sweep,
+)
+
+WIRE_SEQUENCE = (
+    gdscript.wire_tscn,
+    cpp.wire,
+)

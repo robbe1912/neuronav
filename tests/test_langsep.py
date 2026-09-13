@@ -76,6 +76,12 @@ for _ln in (173, 181, 186, 194, 211, 219, 280, 469, 484, 641, 743, 903, 966,
             992, 1080, 1095, 1132, 1175, 1230, 1323, 1337, 1341):
     ALLOWED[("clusters.py", _ln)] = "PR2: clusters refactor queued this wave"
 ALLOWED[("viz.py", 2838)] = "V-1: queued behind #123/#89 (data-flag contract)"
+# config/parametric walk filters — EXTS is the user's config include-set
+# and `suffixes` arrives as a caller argument (registry datum at the call
+# site); neither is a language truth hard-coded in nav
+ALLOWED[("nav.py", 467)] = "config walk filter (EXTS = user config)"
+ALLOWED[("nav.py", 497)] = "parametric walk filter (caller-supplied suffixes)"
+ALLOWED[("nav.py", 527)] = "config walk filter (EXTS = user config)"
 
 
 def detectors(line: str) -> list[str]:
