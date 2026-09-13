@@ -60,7 +60,7 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `config/` | named config profiles; `config.json` (root, gitignored) is the default |
 | `vendor/three-0.160.0/` | vendored three.js core + 4 addons, embedded at build (see below) |
 | `bench/` | recall benchmark: golden set, `run_bench.py`, committed results (`RESULTS.md`) — the numbers `docs/comparison.md` cites |
-| `tests/` | 25 self-contained suites + committed fixtures (see tests/AGENTS.md) |
+| `tests/` | 26 self-contained suites + committed fixtures (see tests/AGENTS.md) |
 | `docs/map-spec-v2.md` | spec the named-wire map layer implements |
 
 ## viz.py template laws
@@ -145,6 +145,7 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_bench` | bench record/golden coherence (issue #104): golden fingerprint determinism, render fails loud naming stale records, coherent sandbox render e2e | stdlib (bench/run_bench.py render path only; no config, no index, no embeds) |
 | `test_bakeint` | bake integrity (issues #64/#108): empty/zeroed-store bake refusal, strict-JSON splice, breakout-token refusal, atomic write | chromadb import (hermetic scratch corpus, `NEURONAV_EMBED_FAKE=1`) |
 | `test_portability` | BOM-tolerant config reads (issue #119): BOM'd config.json / .neuroignore / base manifest / server foreign config all read via utf-8-sig; git subprocess decode under an ASCII locale; nav CLI stdout reconfigure under an ascii console | stdlib + chromadb import (hermetic temp config, fake embeds, own scratch git repo) |
+| `test_walkguard` | rescan walk + write robustness (issue #117): parse isolation, .tres wiring walk via registry suffixes + pruned traversal, dedupe, write-locked sync | chromadb import (hermetic scratch corpus + FAKE embeds) |
 
 Playwright harness gotchas: launch `channel="chrome"`; it serves `graph.html`
 on an ephemeral loopback port (issue #132) — viz gates may run concurrently,
