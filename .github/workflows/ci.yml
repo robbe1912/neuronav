@@ -74,6 +74,13 @@ jobs:
         run: python -X utf8 tests/test_bytelaws.py
       - name: walkguard (rescan walk + write robustness, issue #117)
         run: python -X utf8 tests/test_walkguard.py
+      # issue #120/#124: serve.py bake-only surface + qa gate smoke. Leg B
+      # (playwright battery) skips here via the flag — the viz job below
+      # re-runs this suite with the browser available.
+      - name: qa smoke leg A (serve.py allowlist, issues #120/#124-3)
+        run: python -X utf8 tests/test_qa_smoke.py
+        env:
+          NEURONAV_QA_SMOKE_NO_BROWSER: "1"
 
   # test_viz on the frozen synthetic corpus (issue #100/#97/#146): bake a
   # hermetic store (fake embeds, scratch config + state dir) and gate the
@@ -82,7 +89,7 @@ jobs:
   # repo, no live store, deterministic bytes.
   viz:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: read
     env:
@@ -98,3 +105,5 @@ jobs:
         run: python -X utf8 tests/vizcorpus_build.py --dest "$HOME/vizcorpus"
       - name: test_viz on the frozen corpus
         run: NEURONAV_CONFIG="$HOME/vizcorpus/config.json" python -X utf8 tests/test_viz.py
+      - name: qa smoke leg B (declutter battery over a hermetic bake)
+        run: python -X utf8 tests/test_qa_smoke.py
