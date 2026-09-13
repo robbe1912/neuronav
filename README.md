@@ -113,6 +113,22 @@ project-local config. The stdio entries use the neuronav install's own
 `.venv` python (`-X utf8 server.py`) — the running interpreter is the
 fallback when a venv is absent.
 
+### Global wire (one universal entry per harness)
+
+```bash
+python /path/to/neuronav/onboard.py global-wire
+```
+
+Writes a single `neuronav` server entry — no `NEURONAV_CONFIG` pin — into
+the user-level config of **omp** (`~/.omp/agent/mcp.json`), **opencode**
+(`~/.config/opencode/opencode.json`), **kilocode** (VS Code globalStorage
+`mcp_settings.json`) and **zcode** (`~/.zcode/cli/config.json`). Every tool
+call routes per-call via its `dir` parameter (universal mount, issue #131),
+so one entry serves every repo; per-project `neuronav-<project>` pins from
+`wire --omp` coexist untouched. Merge-only by server name, idempotent,
+harness paths overridable via `NEURONAV_{OMP,OPENCODE,KILO,ZCODE}_MCP` for
+testing.
+
 ### omp harness (user-level mcpServers)
 
 `wire --omp` additionally emits the same entry into the omp harness user
@@ -230,7 +246,10 @@ MCP tool appends the openable `file://` path to its result; `onboard.py
 init|wire --index` prints the per-OS open command (`start` on Windows,
 `open` on macOS, `xdg-open` on Linux). `tools/serve.py` remains for
 headless dev rigs only — it adds no-cache HTTP semantics for browser
-automation, not a production viewer; nothing auto-launches from the MCP
+automation, not a production viewer; it serves exactly `/graph.html`
+(nothing else in the state dir) and refuses non-loopback `Host` headers,
+so the chroma store / embedding shards beside the bake are never exposed;
+nothing auto-launches from the MCP
 server.
 Hover = 1-hop greyout, focus mode with animated call direction, live
 search with highlighted matches + click-to-focus on hubs and function

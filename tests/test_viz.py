@@ -4417,17 +4417,6 @@ def run_tests(port: int):
         # with the pointerdown cancel).
         td_focus(td_nodes["a"], settle=False)  # tween must be in flight
         page.wait_for_function("() => !!window.__dbg.camTween", timeout=4000)
-        to_c2 = page.evaluate(
-            "() => window.__dbg.camTween ? [...window.__dbg.camTween.toC] : null")
-        spot2 = page.evaluate(
-            """() => { const cv = window.__dbg.renderer.domElement,
-                     r = cv.getBoundingClientRect();
-                 for (const [fx, fy] of [[0.5, 0.5], [0.4, 0.4], [0.6, 0.6],
-                                         [0.3, 0.5], [0.5, 0.3]]) {
-                   const x = r.left + r.width * fx, y = r.top + r.height * fy;
-                   if (document.elementFromPoint(x, y) === cv) return [x, y];
-                 }
-                 return null; }""")
         # the enumerated bug is that the wheel never cancels the tween (only
         # canvas pointerdown did). assert the cancel itself, gated on the
         # tween being verifiably in flight when the wheel lands: a slow box
@@ -4436,21 +4425,100 @@ def run_tests(port: int):
         # close to the target, so pose-escape distance is timing-fragile.
         # base behavior with a live tween keeps lerping: camTween survives
         # the wheel, which is the red.
-        if to_c2 and spot2:
+        # [union-red 9e8d056, CI-only] the .flab focus labels are
+        # pointer-events:auto DOM laid over the canvas and REPOSITIONED
+        # EVERY FRAME through the moving tween camera (updateFocusLabels
+        # reprojects their 3D anchors), so a label can slide over the probe
+        # point between the ownership scan and wheel delivery: the wheel
+        # then targets the label div, the canvas cancel listener never
+        # fires, camTween survives to convergence and dist_to_tween_pose
+        # reads 0 (the un-killed tween simply lands). Local rigs stayed
+        # green on frame phase. Ownership must therefore be proven AT
+        # DELIVERY, not at scan time: a capture-phase wheel probe records
+        # the true event target with zero timing skew, and an attempt only
+        # counts when it proves the canvas received the wheel while the
+        # tween was still well inside its 400ms window (<350ms, so the
+        # kill cannot be confused with natural expiry). A canvas-proven
+        # delivery that leaves camTween alive is the product red; an
+        # intercepted attempt retries — labels move every frame, so the
+        # rescan re-picks a clear point. Persistent interception is a loud
+        # SKIP (shape-guard), never a silent pass or a phantom red.
+        _spot_js = """() => { const cv = window.__dbg.renderer.domElement,
+                     r = cv.getBoundingClientRect();
+                 for (const [fx, fy] of [[0.5, 0.5], [0.4, 0.4], [0.6, 0.6],
+                                         [0.3, 0.5], [0.5, 0.3]]) {
+                   const x = r.left + r.width * fx, y = r.top + r.height * fy;
+                   if (document.elementFromPoint(x, y) === cv) return [x, y];
+                 }
+                 return null; }"""
+        probe2 = None
+        _any_spot = False
+        _n_intercepted = 0
+        _n_aged = 0
+        for _attempt in range(4):
+            if _attempt:
+                # fresh tween EVERY attempt: an intercepted wheel burns
+                # wall-clock without killing the tween, so retrying on a
+                # decaying one would SKIP-by-age without the listener
+                # ever being exercised (GK gate condition).
+                td_focus(td_nodes["a"], settle=False)
+                page.wait_for_function(
+                    "() => !!window.__dbg.camTween", timeout=4000)
+            spot2 = page.evaluate(_spot_js)
+            if not spot2:
+                continue          # canvas fully covered this frame: rescan
+            _any_spot = True
             page.mouse.move(spot2[0], spot2[1])
+            # one round trip: sample the live tween AND arm the capture
+            # probe (CI round trips cost ~100ms each; every extra op
+            # between arming and the wheel ages the attempt).
+            armed = page.evaluate(
+                """() => { const t = window.__dbg.camTween;
+                     if (!t) return null;
+                     window.__wt = null;
+                     window.addEventListener('wheel',
+                       e => { window.__wt =
+                           e.target === window.__dbg.renderer.domElement; },
+                       { capture: true, once: true });
+                     return { t0: t.t0, toC: [...t.toC] }; }""")
+            if not armed:
+                continue          # tween died mid-arm: re-arm next round
             page.mouse.wheel(0, -600)
-            wheel_killed = page.evaluate("() => !window.__dbg.camTween")
+            got = page.evaluate(
+                """() => ({ onCanvas: window.__wt === true,
+                            alive: !!window.__dbg.camTween,
+                            now: performance.now() })""")
+            age_ms = got["now"] - armed["t0"]
+            # the read is honest while it still precedes natural expiry:
+            # the tween dies at t0+400, so a camTween observed null with
+            # now-t0 < 400 was killed inside its window (only Esc /
+            # canvas pointerdown / the wheel listener null it mid-life,
+            # and this probe issues none of the first two).
+            if got["onCanvas"] and age_ms < 400:
+                probe2 = {"toC": armed["toC"],
+                          "age": age_ms,
+                          "killed": not got["alive"]}
+                break
+            if got["onCanvas"]:
+                _n_aged += 1        # proven on canvas but tween window spent
+            else:
+                _n_intercepted += 1  # a moving label took the delivery
+        if probe2:
             page.wait_for_timeout(900)
             fin2 = page.evaluate("() => [...window.__dbg.camera.position]")
-            d2 = max(abs(fin2[k] - to_c2[k]) for k in range(3))
+            d2 = max(abs(fin2[k] - probe2["toC"][k]) for k in range(3))
             check("wheel zoom mid-tween beats the tween (#112)",
-                  wheel_killed,
-                  f"wheel_killed={wheel_killed} (tween live pre-wheel) "
+                  probe2["killed"],
+                  f"wheel_killed={probe2['killed']} "
+                  f"(canvas-proven delivery, tween age {probe2['age']:.0f}ms "
+                  f"of 400) "
                   f"dist_to_tween_pose={d2:.0f}")
         else:
-            print("SKIP wheel-mid-tween - "
-                  + ("tween not in flight at sample" if not to_c2
-                     else "canvas fully covered"))
+            print("SKIP wheel-mid-tween (#112) - "
+                  + ("canvas fully covered" if not _any_spot
+                     else f"wheel delivery never proven on canvas "
+                          f"(intercepted {_n_intercepted}, "
+                          f"aged-out {_n_aged} of 4 attempts)"))
         page.keyboard.press("Escape")
         quiesce(page, 4000)
 

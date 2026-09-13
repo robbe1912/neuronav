@@ -228,6 +228,101 @@ def _emit_omp(name: str, entry: dict, path: Path) -> None:
     path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
+
+def _universal_entry() -> dict:
+    """The universal-mount stdio entry (issue #131): same venv-python +
+    server.py command as the project entry, but NO NEURONAV_CONFIG pin —
+    every tool call routes per-call via its dir param, so one global
+    entry per harness serves every repo."""
+    e = _entry(Path())  # command/args shape only; the env pin is dropped
+    e.pop("env", None)
+    return e
+
+
+_OPENCODE_MCP_ENV = "NEURONAV_OPENCODE_MCP"
+_KILO_MCP_ENV = "NEURONAV_KILO_MCP"
+_ZCODE_MCP_ENV = "NEURONAV_ZCODE_MCP"
+
+
+def _opencode_user_path() -> Path:
+    env = os.environ.get(_OPENCODE_MCP_ENV)
+    return Path(env).expanduser() if env else Path.home() / ".config" / "opencode" / "opencode.json"
+
+
+def _kilo_mcp_path() -> Path:
+    """kilocode (VS Code ext) user MCP settings — Cline-family shape."""
+    env = os.environ.get(_KILO_MCP_ENV)
+    if env:
+        return Path(env).expanduser()
+    gs = Path.home() / "AppData" / "Roaming" / "Code" / "User" / "globalStorage" / "saoudrizwan.claude-dev"
+    return gs / "mcp_settings.json"
+
+
+def _zcode_mcp_path() -> Path:
+    env = os.environ.get(_ZCODE_MCP_ENV)
+    return Path(env).expanduser() if env else Path.home() / ".zcode" / "cli" / "config.json"
+
+
+def global_wire(name: str = "neuronav") -> dict[str, Path]:
+    """Emit ONE universal-mount entry (no config pin, per-call dir
+    routing, issue #131) into every harness user config: omp
+    (mcpServers), opencode (mcp), kilocode (mcpServers, Cline shape),
+    zcode (mcp.servers). Merge-only by server name — existing entries
+    (including per-project neuronav-<x> pins) are preserved untouched.
+    Harness paths are env-overridable for hermetic tests. Returns the
+    paths written. Idempotent: same entry bytes on re-run."""
+    u = _universal_entry()
+    written: dict[str, Path] = {}
+
+    # omp: mcpServers.neuronav (merge with existing neuronav-<x> entries)
+    omp = _omp_mcp_path()
+    omp.parent.mkdir(parents=True, exist_ok=True)
+    doc = json.loads(omp.read_text(encoding="utf-8-sig")) if omp.is_file() else {}
+    doc.setdefault("mcpServers", {})[name] = u
+    _write_json_atomic(omp, doc)
+    written["omp"] = omp
+
+    # opencode user: mcp.<name> — their local-server shape (command list)
+    oc = _opencode_user_path()
+    oc.parent.mkdir(parents=True, exist_ok=True)
+    doc = _read_merge_json(oc, "mcp") if oc.is_file() else {}
+    doc.setdefault("mcp", {})[name] = {
+        "type": "local",
+        "command": [u["command"], *u["args"]],
+        "enabled": True,
+    }
+    _write_json_atomic(oc, doc)
+    written["opencode"] = oc
+
+
+    # kilocode: Cline-family mcpServers (stdio shape, autoApprove left to
+    # the user — wiring never widens permissions)
+    ki = _kilo_mcp_path()
+    ki.parent.mkdir(parents=True, exist_ok=True)
+    doc = _read_merge_json(ki, "mcpServers") if ki.is_file() else {}
+    doc.setdefault("mcpServers", {})[name] = {
+        "type": "stdio",
+        "command": u["command"],
+        "args": u["args"],
+        "disabled": False,
+    }
+    _write_json_atomic(ki, doc)
+    written["kilocode"] = ki
+
+    # zcode: mcp.servers.<name> (local stdio shape)
+    zc = _zcode_mcp_path()
+    zc.parent.mkdir(parents=True, exist_ok=True)
+    doc = _read_merge_json(zc, "mcp") if zc.is_file() else {}
+    doc.setdefault("mcp", {}).setdefault("servers", {})[name] = {
+        "type": "local",
+        "command": u["command"],
+        "args": u["args"],
+    }
+    _write_json_atomic(zc, doc)
+    written["zcode"] = zc
+    return written
+
+
 def _index() -> None:
     """rescan + (optional) viz bake, with the add-on absent being fine."""
     import nav
@@ -294,6 +389,11 @@ if __name__ == "__main__":
             print("hint: add --omp to also emit an omp mcpServers fragment (issue #130)")
         if do_index and (target / ".neuronav" / "graph.html").is_file():
             print(f"viewer:         {open_viewer(target)}")
+    elif cmd == "global-wire":
+        for harness, path in global_wire().items():
+            print(f"{harness:<9} {path}")
+        print("universal entry \"neuronav\" (per-call dir routing, no config pin)")
+        print("restart harness sessions to pick it up")
     else:
-        print("usage: onboard.py [init|wire] [--project PATH] [--index] [--omp [--omp-name NAME]]", file=sys.stderr)
+        print("usage: onboard.py [init|wire|global-wire] [--project PATH] [--index] [--omp [--omp-name NAME]]", file=sys.stderr)
         sys.exit(2)
