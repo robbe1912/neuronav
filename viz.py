@@ -6645,7 +6645,12 @@ function mapRender() {
     // Staircase is the fallback when every column pierces a box.
     // Wide lane pad (no two trunks parallel inside 12px), channel floor
     // seeded below the stroke half-width so it never bleeds onto box tops.
-    const lanePad = Math.max(9, 9 / mapZ), yPad = 3 + Math.ceil(wTr / 2);
+    // mapZ can never seed layout decisions: the layout is zoom-independent by
+    // contract (the oracle caches by sig+expand+size, and a rebuild at a
+    // non-fit zoom would otherwise change lane spacing between sessions).
+    // The old zoom-scaled pad leaked view state into the layout; the fixed
+    // world-space 12px matches the "trunks scan at 12px" rule in freeX.
+    const lanePad = 12, yPad = 3 + Math.ceil(wTr / 2);
     let tr = null;
     if (dir !== "same") {
       const bi = dir === "down" ? A.row : A.row - 1;      // exit-side band
