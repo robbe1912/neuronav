@@ -12,6 +12,16 @@ uses a local `check(name, cond)` helper (PASS/FAIL lines + failure count).
 CI (`.github/workflows/ci.yml`) runs sixteen hermetic suites on ubuntu
 with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
 `test_pyhard`, `test_cpphard`, `test_autorescan`, `test_searchtext`,
+<<<<<<< HEAD
+`test_project_mode`, `test_baseindex`, `test_mwires`,
+`test_clusterinv`, `test_recall`, `test_embedprov`, `test_repomap`,
+`test_selfindex`, `test_verifier`, `test_bench`) plus a `viz` job that builds the frozen synthetic corpus
+(`tests/vizcorpus_build.py`) and runs `test_viz` against its hermetic
+store in a real browser (issue #100). The rest are local gates that need
+material CI cannot provide: `test_target_regression` (a populated target
+repo in the default config), `test_server_stdio` (ditto, stdio e2e),
+`test_explore` (a populated semantic self-index store).
+=======
 `test_project_mode`, `test_baseindex`, `test_mwires`, `test_recall`,
 `test_embedprov`, `test_repomap`, `test_selfindex`, `test_verifier`,
 `test_bench`, `test_bakeint`) plus a `viz` job that builds the frozen
@@ -20,6 +30,7 @@ its hermetic store in a real browser (issue #100). The rest are local
 gates that need material CI cannot provide: `test_target_regression` (a
 populated target repo in the default config), `test_server_stdio` (ditto,
 stdio e2e), `test_explore` (a populated semantic self-index store).
+>>>>>>> origin/main
 
 ## Suites
 
@@ -38,6 +49,7 @@ stdio e2e), `test_explore` (a populated semantic self-index store).
 | `test_baseindex` | export/import-base shards (issue #102): second-run idempotence (WinError 183), per-phase non-destruction (mid-write debris outside base, commit rollback, cleanup self-heal), byte determinism, stale-shard cleanup, fresh-store roundtrip | chromadb import (hermetic temp target, `NEURONAV_EMBED_FAKE=1`) |
 | `test_repomap` | repo_map budget bound, byte determinism, rank ordering, god-hub saturation on synthetic graphs | stdlib + numpy (no index, no embeddings) |
 | `test_mwires` | named-wire map exports (`mwires`/`fns`/`meta` contract, map-spec-v2 §0) | chromadb import only (self-sets `NEURONAV_EMBED_FAKE=1`) |
+| `test_clusterinv` | cluster partition invariant + crosstalk parity (issue #114): finalize's family moves vs full-weld regroups can double-assign a file — repaired by weld plurality (last pass, identity on healthy input); crosstalk counts only wiring the clusterer's structural graph sees (tests/ endpoints tallied separately, no cluster number) | numpy + chromadb import only (crafted shapes + stub graph, self-sets `NEURONAV_EMBED_FAKE=1`) |
 | `test_recall` | hybrid recall fusion, ctx hops, degraded mode (real+fake modes) | chromadb import; exact-rank pins need a real-embedded store |
 | `test_embedprov` | embed provider contract (issue #17): provider select/auto-detect, ollama+openai wire adapters, env-vs-config key precedence, keyless no-header, 401 loud, 429 retry, batch chunking, no-pad mismatches, fake-mode isolation, pre-#17 store heal vs provider-drift refusal + raw-provider messages (#159) | stdlib http.server stub on an ephemeral loopback port + chromadb import |
 | `test_project_mode` | onboarding (issue #27): discovery precedence env > project-local > checkout, `onboard.init`/`wire` scaffolds incl. `.neuroignore` (issue #36), viz add-on degrade | stdlib + chromadb import (fresh subprocesses, fake embeds) |
