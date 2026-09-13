@@ -1170,7 +1170,7 @@ class Graph:
         frontier = set(keys)
         for _ in range(depth):
             nxt: set[str] = set()
-            for key in frontier:
+            for key in sorted(frontier):
                 if key in seen_keys:
                     continue
                 seen_keys.add(key)

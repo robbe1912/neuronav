@@ -812,7 +812,10 @@ def _rescan_locked() -> dict[str, int]:
     if refresh_ids:
         col.update(ids=refresh_ids, metadatas=refresh_meta)
 
-    deleted = [fid for fid in existing if fid not in seen]
+    # issue #118: `existing` iterates in chroma insertion order (store
+    # history) — sort so the purge list, like the store's data, is a
+    # function of what is deleted, not of how the store grew
+    deleted = sorted(fid for fid in existing if fid not in seen)
     if deleted:
         col.delete(ids=deleted)
         stats["deleted"] = len(deleted)
@@ -869,9 +872,20 @@ def clusters(
     if col.count() == 0:
         return []
     got = col.get(include=["metadatas", "embeddings"])
-    ids = list(got["ids"])
-    embs = got.get("embeddings")
-    metas = list(got.get("metadatas") or [])
+    # issue #118: chroma returns ids in insertion order — a function of
+    # store HISTORY, not data (a fresh store and a grown one over the
+    # same files disagree). Sort every column by id so union-find roots,
+    rows = sorted(
+        zip(
+            got["ids"],
+            got.get("embeddings") if got.get("embeddings") is not None else [],
+            got.get("metadatas") or [],
+        ),
+        key=lambda r: r[0],
+    )
+    ids = [r[0] for r in rows]
+    embs = [r[1] for r in rows]
+    metas = [r[2] for r in rows]
     mat = np.array([e.tolist() if hasattr(e, "tolist") else e for e in embs], dtype=np.float32)
     norms = np.linalg.norm(mat, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
@@ -981,7 +995,8 @@ def export_base() -> dict[str, object]:
         }
         # manifest last: it exists only once every shard row is on disk
         (staging / MANIFEST_NAME).write_text(
-            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8",
+            newline="\n",  # issue #118: tracked file — pin LF cross-platform
         )
         # validate the generation is complete BEFORE touching the live
         # base — exactly the shards the manifest claims, all non-empty
