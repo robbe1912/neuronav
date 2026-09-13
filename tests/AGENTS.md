@@ -1,6 +1,6 @@
 # AGENTS.md — tests/
 
-Twenty-six self-contained suites. Each is a standalone script — no pytest — run in
+Twenty-seven self-contained suites. Each is a standalone script — no pytest — run in
 its own process:
 
 ```
@@ -9,13 +9,14 @@ its own process:
 
 Exit 0 = all pass. Each suite bootstraps `sys.path` to the repo root and
 uses a local `check(name, cond)` helper (PASS/FAIL lines + failure count).
-CI (`.github/workflows/ci.yml`) runs twenty-two hermetic suites on ubuntu
+CI (`.github/workflows/ci.yml`) runs twenty-three hermetic suites on ubuntu
 with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
 `test_pyhard`, `test_cpphard`, `test_autorescan`, `test_server_stdio`,
 `test_searchtext`, `test_project_mode`, `test_baseindex`, `test_mwires`,
 `test_clusterinv`, `test_recall`, `test_embedprov`, `test_repomap`,
 `test_selfindex`, `test_explore`, `test_verifier`, `test_bench`,
-`test_bakeint`, `test_portability`, `test_bytelaws`, `test_walkguard`) plus a `viz` job that builds the
+`test_bakeint`, `test_portability`, `test_bytelaws`, `test_walkguard`,
+`test_langsep`) plus a `viz` job that builds the
 frozen synthetic corpus (`tests/vizcorpus_build.py`) and runs `test_viz`
 against its hermetic store in a real browser (issue #100). The two e2e
 suites need NO committed store in CI (issue #180): on a fresh checkout
