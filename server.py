@@ -176,7 +176,8 @@ def _fmt(hits: list[dict]) -> str:
         return "no results (index empty — call rescan first)"
     lines: list[str] = []
     if hits[0].get("degraded"):
-        lines.append("degraded: BM25F-only (vector index unavailable)")
+        why = hits[0].get("degraded_reason") or "vector index unavailable"
+        lines.append(f"degraded: BM25F-only ({why})")
     for h in hits:
         label = h.get("class_name") or h.get("extends") or h.get("ext") or ""
         tag = f"  [{label}]" if label else ""
@@ -285,7 +286,24 @@ def find_functions(query: str, n: int = 6, dir: str = "") -> str:
             return prelude
         _auto_rescan()
         n = max(1, min(n, 15))
-        hits = graph.find_functions(query, n)
+        try:
+            hits = graph.find_functions(query, n)
+        except Exception as exc:
+            # issue #116: backend-down is recoverable — serve explore's
+            # same-shape lexical fallback tagged degraded (never a raw
+            # MCP error, which is worse when a degraded explore answer
+            # has just recommended exactly this tool)
+            why = nav.embed_failure_reason(exc)
+            hits = _explore._lexical_fallback(query, n)
+            if not hits:
+                return f"degraded: {why} — no lexical match for {query!r} either"
+            return "\n".join(
+                [f"degraded: {why} — lexical fallback (substring, not semantic):"]
+                + [
+                    f"{h['score']:0.3f}  {h['path']}#{h['func']}:{h['line']}"
+                    for h in hits
+                ]
+            )
         if not hits:
             return "no function index — call rescan first"
         return "\n".join(
@@ -430,7 +448,11 @@ def dead_code(n: int = 40, dir: str = "") -> str:
 
 @mcp.tool(annotations=READONLY)
 def duplicates(n: int = 20, dir: str = "") -> str:
-    """Duplicated function bodies (exact, whitespace/comment-normalized).
+    """Duplicated function bodies (exact, whitespace/comment-normalized),
+    across ALL indexed languages (.gd, .py, C++ sources/headers) —
+    issue #116: the scan is not GDScript-only, so a Python or C++ repo
+    no longer gets a false clean bill. `#` comments strip in the
+    normalization (gd/py); C++ `//` comments compare as body text.
 
     Simplification targets: same logic living twice. Groups with 3+ members
     first. Cross-file groups are refactoring gold (extract shared helper);
@@ -445,9 +467,11 @@ def duplicates(n: int = 20, dir: str = "") -> str:
             return prelude
         _auto_rescan()
         n = max(1, min(n, 50))
-        groups = graph.get_graph().exact_duplicates(limit=n)
+        g = graph.get_graph()
+        groups = g.exact_duplicates(limit=n)
         if not groups:
-            return "no exact duplicates found"
+            scanned = sum(1 for fs in g.files.values() if fs.funcs)
+            return f"no exact duplicates found ({scanned} files with functions scanned)"
         lines = [f"{len(groups)} duplicate group(s):", ""]
         for g in groups:
             lines.append(f"group {g['hash']} ({len(g['members'])} copies):")
@@ -539,14 +563,18 @@ def _ctx_types(counts: dict[str, int]) -> str:
     return ", ".join(f"{t} x{n}" for t, n in sorted(counts.items(), key=lambda kv: -kv[1]))
 
 
-def _ctx_semantic(path: str, k: int = 6) -> list[tuple[float, str]]:
+def _ctx_semantic(path: str, k: int = 6) -> tuple[list[tuple[float, str]], str | None]:
     """Nearest files by embedding cosine — query with the file's own
-    stored vector (no embed call, no new deps)."""
+    stored vector (no embed call, no new deps). Returns (rows, reason):
+    reason is None on success — rows may then legitimately be empty when
+    the file was never embedded — and carries the truthful backend
+    failure otherwise (issue #116: an embed model mismatch must not
+    masquerade as 'file not embedded — rescan first')."""
     try:
         col = nav._collection()
         got = col.get(ids=[path], include=["embeddings"])
         if not got["ids"]:
-            return []
+            return [], None
         res = col.query(
             query_embeddings=[got["embeddings"][0]],
             n_results=k + 1,
@@ -556,9 +584,9 @@ def _ctx_semantic(path: str, k: int = 6) -> list[tuple[float, str]]:
             (round(1.0 - float(d), 3), fid)
             for fid, d in zip(res["ids"][0], res["distances"][0])
             if fid != path
-        ][:k]
-    except Exception:
-        return []
+        ][:k], None
+    except Exception as exc:
+        return [], nav.embed_failure_reason(exc)
 
 
 def _ctx_overview(g) -> str:
@@ -663,10 +691,13 @@ def _render_neighbors(p: str, adj: dict, indeg: dict[str, int], depth: int) -> l
 
 
 def _render_semantic(p: str) -> list[str]:
-    """Embedding-cosine neighbor block (empty -> rescan hint)."""
+    """Embedding-cosine neighbor block (empty -> rescan hint; backend
+    failure -> degraded line with the true reason)."""
     lines = ["semantic neighbors (cosine):"]
-    sem = _ctx_semantic(p)
-    if not sem:
+    sem, err = _ctx_semantic(p)
+    if err:
+        lines.append(f"  degraded: {err}")
+    elif not sem:
         lines.append("  n/a (file not embedded — rescan first)")
     else:
         for s, fid in sem:
