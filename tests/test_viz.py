@@ -2426,6 +2426,201 @@ def run_tests(port: int):
                 # re-enter focus (same helper the suite uses: includes the
                 # conditional depth escalation a depth-1 re-focus needs)
                 enter_focus_via_row()
+                # ---- [issue #87] fn-hover dead zone over wire ink ----
+                # The hover raycast keeps an 18px forgiveness ball around
+                # every fn-box center; the capture-phase wire-claim gate
+                # used to defer to ANY active fn hover, so wire ink under
+                # that invisible band was unclickable - the press opened
+                # the fn panel instead of latching the wire (MapSkeptic
+                # phase B #13: click 8px off a box center, picker resolves
+                # the wire, no pin, no tip). Ink is the rarer, more
+                # intentional aim: a press the picker resolves on ink must
+                # claim the wire even inside a hover ball.
+                def dead87_scan():
+                    boxes = page.evaluate("""() => {
+                        const d = window.__dbg;
+                        const el = d.renderer.domElement;
+                        const cr = el.getBoundingClientRect();
+                        const mi = d.camera.matrixWorldInverse.elements,
+                              pj = d.camera.projectionMatrix.elements;
+                        // THREE is module-scoped in the bake - project
+                        // fn-box centers by hand (column-major rows)
+                        const proj = (x, y, z) => {
+                          const cx = mi[0]*x+mi[4]*y+mi[8]*z+mi[12],
+                                cy = mi[1]*x+mi[5]*y+mi[9]*z+mi[13],
+                                cz = mi[2]*x+mi[6]*y+mi[10]*z+mi[14],
+                                cw = mi[3]*x+mi[7]*y+mi[11]*z+mi[15];
+                          const nx = pj[0]*cx+pj[4]*cy+pj[8]*cz+pj[12],
+                                ny = pj[1]*cx+pj[5]*cy+pj[9]*cz+pj[13],
+                                nz = pj[2]*cx+pj[6]*cy+pj[10]*cz+pj[14],
+                                nw = pj[3]*cx+pj[7]*cy+pj[11]*cz+pj[15];
+                          return [nx/nw, ny/nw, nz/nw];
+                        };
+                        const out = [];
+                        for (let i = 0;
+                             i < d.fnMeta.length && out.length < 40; i++) {
+                            const fm = d.fnMeta[i];
+                            if (!fm || (fm.agg && !fm.count)) continue;
+                            if (d.alphaTgt[fm.file] <= 0.5) continue;
+                            const nd = proj(fm.p[0], fm.p[1], fm.p[2]);
+                            if (nd[2] > 1) continue;
+                            out.push({
+                                sx: Math.round((nd[0]*0.5+0.5)*cr.width
+                                               + cr.left),
+                                sy: Math.round((-nd[1]*0.5+0.5)*cr.height
+                                               + cr.top),
+                                p: fm.p, z: nd[2],
+                                s: fm.count ? 6 : 4});
+                        }
+                        return out; }""")
+                    # graded ring probes (6-10px offsets from the box
+                    # center, inside the 18px ball): a probe is a
+                    # dead-zone pixel when the fn tooltip is up (spaced
+                    # " :: " is fn/file hover text; wire tips use
+                    # unspaced label::x) AND the wire picker resolves
+                    # ink on the canvas there. On the head bake
+                    # (__dbg.pickWireZ readable), additionally require
+                    # the ink to sit clearly in front of EVERY box whose
+                    # projected silhouette contains the pixel (a
+                    # superset of the ray-threaded hovered box) - the
+                    # exact class the depth-gated fix flips. On a base
+                    # bake the getter is absent and any ink-under-hover
+                    # pixel is dead - the base gate ate them all.
+                    offs = [(0, 6), (6, 0), (-6, 0), (0, -6), (8, 8),
+                            (-8, -8), (8, -8), (-8, 8), (-8, 0), (10, 0)]
+                    for b in boxes:
+                        for ox, oy in offs:
+                            px, py = b["sx"] + ox, b["sy"] + oy
+                            page.mouse.move(px, py)
+                            page.wait_for_timeout(40)
+                            tip = page.evaluate(
+                                "() => { const t ="
+                                " document.getElementById('tip');"
+                                " return t && t.style.display !== 'none'"
+                                " ? t.textContent : ''; }")
+                            if " :: " not in tip:
+                                continue
+                            hit = page.evaluate(
+                                """(q) => {
+                                const p = q.p, boxes = q.boxes;
+                                const d = window.__dbg;
+                                const el = d.renderer.domElement;
+                                if (document.elementFromPoint(p[0], p[1])
+                                    !== el) return null;
+                                const m = d.pickWireMeta({clientX: p[0],
+                                                          clientY: p[1]});
+                                if (!m) return null;
+                                if (d.pickWireZ === undefined)
+                                  return {x: p[0], y: p[1],
+                                          kind: m.kind};   // base bake
+                                // head: ink clearly nearer than every
+                                // box silhouette containing the pixel
+                                // (margin absorbs float noise vs the
+                                // handler's own THREE projection)
+                                const mi =
+                                  d.camera.matrixWorldInverse.elements,
+                                      pj =
+                                  d.camera.projectionMatrix.elements;
+                                const proj = (x, y, z) => {
+                                  const cx = mi[0]*x+mi[4]*y+mi[8]*z
+                                             +mi[12],
+                                        cy = mi[1]*x+mi[5]*y+mi[9]*z
+                                             +mi[13],
+                                        cz = mi[2]*x+mi[6]*y+mi[10]*z
+                                             +mi[14],
+                                        cw = mi[3]*x+mi[7]*y+mi[11]*z
+                                             +mi[15];
+                                  const nx = pj[0]*cx+pj[4]*cy+pj[8]*cz
+                                             +pj[12],
+                                        ny = pj[1]*cx+pj[5]*cy+pj[9]*cz
+                                             +pj[13],
+                                        nz = pj[2]*cx+pj[6]*cy+pj[10]*cz
+                                             +pj[14],
+                                        nw = pj[3]*cx+pj[7]*cy+pj[11]*cz
+                                             +pj[15];
+                                  return [nx/nw, ny/nw, nz/nw];
+                                };
+                                // compare in NDC (bbox corners are NDC;
+                                // the probe arrives in screen px)
+                                const cr2 = el.getBoundingClientRect();
+                                const nx2 = ((p[0]-cr2.left)/cr2.width)
+                                            *2 - 1,
+                                      ny2 = -(((p[1]-cr2.top)
+                                               /cr2.height)*2 - 1);
+                                let minBz = Infinity;
+                                for (const bx of boxes) {
+                                  let x0 = 1e9, x1 = -1e9,
+                                      y0 = 1e9, y1 = -1e9;
+                                  for (let c = 0; c < 8; c++) {
+                                    const v = proj(
+                                      bx.p[0] + ((c&1) ? bx.s/2 : -bx.s/2),
+                                      bx.p[1] + ((c&2) ? bx.s/2 : -bx.s/2),
+                                      bx.p[2] + ((c&4) ? bx.s/2 : -bx.s/2));
+                                    x0 = Math.min(x0, v[0]);
+                                    x1 = Math.max(x1, v[0]);
+                                    y0 = Math.min(y0, v[1]);
+                                    y1 = Math.max(y1, v[1]);
+                                  }
+                                  if (nx2 >= x0 - 0.005 &&
+                                      nx2 <= x1 + 0.005 &&
+                                      ny2 >= y0 - 0.005 &&
+                                      ny2 <= y1 + 0.005)
+                                    minBz = Math.min(minBz, bx.z);
+                                }
+                                if (!(d.pickWireZ < minBz - 0.002))
+                                  return null;
+                                return {x: p[0], y: p[1],
+                                        kind: m.kind}; }""",
+                                {"p": [px, py], "boxes": boxes})
+                            if hit:
+                                return hit
+                    return None
+                dead87 = dead87_scan()
+                if not dead87:
+                    # camera-adjacent intermittence (MapSkeptic: dead
+                    # after an orbit precursor, fine on a fresh pose) -
+                    # one bounded orbit, then rescan, mirrors the
+                    # trunk/link batteries' retry
+                    page.mouse.move(400, 460)
+                    page.mouse.down()
+                    for k in range(1, 7):
+                        page.mouse.move(400 + 3 * k, 460 + k)
+                        page.wait_for_timeout(40)
+                    page.mouse.up()
+                    page.wait_for_timeout(700)
+                    dead87 = dead87_scan()
+                if dead87:
+                    camA87 = page.evaluate(
+                        "() => window.__dbg.camera.position.toArray()")
+                    focA87 = page.evaluate(
+                        "() => window.__dbg.focusFileIdx")
+                    page.mouse.click(dead87["x"], dead87["y"])
+                    page.wait_for_timeout(400)
+                    pin87 = page.evaluate("() => window.__dbg.wirePin")
+                    camB87 = page.evaluate(
+                        "() => window.__dbg.camera.position.toArray()")
+                    focB87 = page.evaluate(
+                        "() => window.__dbg.focusFileIdx")
+                    dcam87 = max(abs(a - b)
+                                 for a, b in zip(camA87, camB87))
+                    check("wire ink near fn boxes pins (#87 dead zone)",
+                          pin87 and pin87["surface"] == "ball"
+                          and focB87 == focA87 and dcam87 < 0.5,
+                          f"{dead87} -> {pin87}, cam delta {dcam87:.2f}")
+                    if pin87:
+                        # only release a pin that latched - a stray Esc
+                        # with no pin falls through the chain to
+                        # clearFocus and would drop the map layout out
+                        # from under the rest of the suite
+                        page.keyboard.press("Escape")
+                        page.wait_for_timeout(250)
+                        check("esc releases the dead-zone pin "
+                              "(existing chain)",
+                              not page.evaluate(
+                                  "() => window.__dbg.wirePin"),
+                              "pin cleared")
+                else:
+                    print("SKIP #87 dead zone - no ink under a hover band")
 
                 # ---- [issue #84] real-hand interaction battery ----
                 # jitter: a sub-10px drift press on wire ink is a PICK at
@@ -3550,6 +3745,145 @@ def run_tests(port: int):
                   focC == focB, f"{focB} stays {focC}")
         else:
             print("SKIP drifted card click - no second card on screen")
+        # [issue #90] the two rungs the #85 battery left unpinned (GK
+        # addendum 6: the negative rung pressed the already-focused
+        # card, so no slop threshold could ever fail it, and both
+        # drifted-card rungs used same-card press/release, so
+        # release-point resolution passed unnoticed).
+        # (a) >=12px total travel NEVER resolves as a click: press an
+        # unfocused card header, drift 14.1px, release - focus must
+        # stay put AND the pan must stick (a click-at-press-origin
+        # would refocus the card and the slop-restore would undo the
+        # pan, so both clauses have teeth).
+        # (b) press-ORIGIN resolution: press an unfocused card header
+        # mid-band, drift 10px straight down so the release EXITS the
+        # 22wu header band onto the same card's rows, release - the
+        # click must resolve at the press origin (refocus the pressed
+        # card), never at the release point (a row freeze toggles and
+        # focuses nothing). Reverting the 1e24980 origin rule fails
+        # this rung.
+        hdr2 = None  # press header helper: live coords for a card index
+
+        def hdr_of(i):
+            return page.evaluate("""(i) => {
+                const d = window.__dbg;
+                const bb = document.getElementById('mapPane')
+                    .getBoundingClientRect();
+                const rc = d.mapRects.find(r => r.i === i);
+                if (!rc) return null;
+                const hx = (rc.x + rc.w / 2 - d.mapPX) * d.mapZ + bb.left;
+                const hy = (rc.y + 11 - d.mapPY) * d.mapZ + bb.top;
+                if (document.elementFromPoint(hx, hy) !==
+                    document.getElementById('mapPane')) return null;
+                return { hx: hx, hy: hy, z: d.mapZ }; }""", i)
+
+        def cards2():
+            # unfocused, in-pane card headers with the 5ab62d4 guard
+            return page.evaluate("""() => {
+                const d = window.__dbg;
+                const bb = document.getElementById('mapPane')
+                    .getBoundingClientRect();
+                const out = [];
+                for (const rc of d.mapRects) {
+                    if (rc.i === d.focusFileIdx || !rc.w || !rc.h)
+                        continue;
+                    const hx = (rc.x + rc.w / 2 - d.mapPX) * d.mapZ
+                               + bb.left;
+                    const hy = (rc.y + 11 - d.mapPY) * d.mapZ + bb.top;
+                    if (hx > bb.left + 40 && hx < bb.right - 40 &&
+                        hy > bb.top + 40 && hy < bb.bottom - 40 &&
+                        document.elementFromPoint(hx, hy) ===
+                            document.getElementById('mapPane'))
+                        out.push({ i: rc.i,
+                                   rows: (rc.rows || []).length > 0 });
+                    if (out.length >= 4) break;
+                }
+                return out; }""")
+
+        cands = cards2()
+        # ---- rung (b) first, at ambient zoom: sub-slop drift down so
+        # the release EXITS the 22wu header band. The drift is sized
+        # from the live mapZ: > 11wu below the press (band bottom is
+        # 22wu, press sits at 11wu) yet < 12px total travel (float
+        # steps - at fit zoom the window between the two bounds is a
+        # fraction of a pixel wide).
+        if cands:
+            cardB = next((c for c in cands if c["rows"]), cands[0])
+            hdr2 = hdr_of(cardB["i"])
+        if hdr2:
+            drop = min(11.0 * hdr2["z"] + 0.6, 11.9)
+            focA = page.evaluate("() => window.__dbg.focusFileIdx")
+            page.mouse.move(hdr2["hx"], hdr2["hy"])
+            page.mouse.down()
+            for k in range(1, 8):
+                page.mouse.move(hdr2["hx"],
+                                hdr2["hy"] + drop * k / 7)
+                page.wait_for_timeout(12)
+            page.mouse.up()
+            page.wait_for_timeout(900)
+            focB = page.evaluate("() => window.__dbg.focusFileIdx")
+            check("sub-slop drift resolves at the press origin "
+                  "(#90 rung b)",
+                  focB == cardB["i"],
+                  f"pressed {cardB['i']}, focus {focB}, "
+                  f"drop {drop:.1f}px at z {hdr2['z']:.2f}")
+        else:
+            print("SKIP #90 rung b - no unfocused card header on screen")
+        # ---- rung (a): >=12px travel NEVER resolves as a click. Pan
+        # slack needs the content LARGER than the pane - at fit zoom
+        # (and zoomed out) mapClampView re-centers every drag back to
+        # the fit (skeptic verdict on 1e24980: the 12.7px rung was
+        # unobservable for exactly this reason), so zoom IN three
+        # notches at the pane centre first, then re-derive candidates
+        # from the live pan.
+        bb0 = page.evaluate(
+            "() => { const r = document.getElementById('mapPane')"
+            ".getBoundingClientRect();"
+            " return {x: (r.left + r.right) / 2,"
+            " y: (r.top + r.bottom) / 2}; }")
+        page.mouse.move(bb0["x"], bb0["y"])
+        focC = page.evaluate("() => window.__dbg.focusFileIdx")
+        maxpan = 0.0
+        attempted = False
+        # zoom in progressively; retry until a drag finds pan slack
+        # (a zoom level whose content exceeds the pane). Focus must
+        # stay put through EVERY attempt - a past-slop drag is a pan,
+        # never a click, wherever it lands.
+        for notch in range(1, 6):
+            page.mouse.wheel(0, -300)
+            page.wait_for_timeout(120)
+            page.wait_for_timeout(130)
+            cands = cards2()
+            hdrA = hdr_of(cands[0]["i"]) if cands else None
+            if not hdrA:
+                continue
+            attempted = True
+            panA = page.evaluate(
+                "() => [window.__dbg.mapPX, window.__dbg.mapPY]")
+            # 10 diagonal (+1,+1) moves = 14.1px total travel
+            page.mouse.move(hdrA["hx"] - 7, hdrA["hy"] - 7)
+            page.mouse.down()
+            for k in range(1, 11):
+                page.mouse.move(hdrA["hx"] - 7 + k, hdrA["hy"] - 7 + k)
+                page.wait_for_timeout(12)
+            page.mouse.up()
+            page.wait_for_timeout(700)
+            panB = page.evaluate(
+                "() => [window.__dbg.mapPX, window.__dbg.mapPY]")
+            maxpan = max(maxpan,
+                         max(abs(a - b) for a, b in zip(panA, panB)))
+            if maxpan > 1:
+                break
+        focD = page.evaluate("() => window.__dbg.focusFileIdx")
+        if attempted:
+            # teeth: a sabotaged slop threshold turns this drag into a
+            # press-origin click (focus jumps) AND restores the pan -
+            # both clauses fail together
+            check("past-slop travel pans, never clicks (#90 rung a)",
+                  focD == focC and maxpan > 1,
+                  f"focus {focC} stays {focD}, pan moved {maxpan:.1f}wu")
+        else:
+            print("SKIP #90 rung a - no unfocused card header on screen")
         # [issue #111 steal class — #81 family at real coordinates] wire
         # ink that projects under an #info row must not claim the click:
         # find a row pixel where the picker sees ink (bounded orbit

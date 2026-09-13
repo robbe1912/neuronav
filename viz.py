@@ -8382,11 +8382,26 @@ document.addEventListener("click", e => {
   if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
   const wHit = pickWireMeta(e);
   if (!wHit) return;
-  // fn-box faces are small precise targets and wires TERMINATE at them —
-  // the box wins outright. Only file spheres defer to nearer wires: the
-  // hub sphere's projected disk covers lifted bus arcs (hover raycast is
-  // sphere-only and can't see the arc in front), so depth decides there.
-  if (hoveredFn >= 0) return;
+  // [issue #87] depth decides between wire ink and the fn-hover band.
+  // The hover raycast sets hoveredFn for any box the ray physically
+  // threads — including dim background boxes under lifted corridor ink
+  // — and this handler used to return on hoveredFn alone, stranding
+  // every wire pixel behind a threaded box (the ~18px dead zone:
+  // camera-density dependent, no pin, no tip). Same law as the file
+  // spheres below: ink STRICTLY NEARER than the hovered box claims the
+  // press; the box keeps its own face — terminal ink lands at the box's
+  // depth (ties resolve to the box), and presses with no ink here at
+  // all fall through to the canvas click handler's hoveredFn branch
+  // (showFnInfo / openFnPicker) and its .flab label.
+  if (hoveredFn >= 0) {
+    const fm2 = fnMeta[hoveredFn];
+    const bz = new THREE.Vector3(fm2.p[0], fm2.p[1], fm2.p[2])
+      .project(camera).z;
+    if (pickWireZ >= bz) return;
+  }
+  // the hub sphere's projected disk covers lifted bus arcs (hover
+  // raycast is sphere-only and can't see the arc in front), so depth
+  // decides there too.
   if (hovered >= 0) {
     const np = [pos[hovered * 3], pos[hovered * 3 + 1], pos[hovered * 3 + 2]];
     const nz = new THREE.Vector3(np[0], np[1], np[2]).project(camera).z;
@@ -8827,6 +8842,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get mapPY() { return mapPY; }, mapClampView,
   get mapInkOn() { return mapInkOn; },
   get mapCenterReq() { return mapCenterReq; }, get mapPulse() { return mapPulse; },
+  get pickWireZ() { return pickWireZ; },   // [issue #87] ink depth at last pick
   get paneW() { return paneW; }, setMapVisible, divider,
   get glW() { return glW(); },
   get bucketMesh() { return bucketMesh; }, raycaster, linkFiltered, typeVisible,
