@@ -4,14 +4,22 @@ on:
     branches: [main]
   pull_request:
 
+# superseded pushes burn a ~5min viz job each — cancel per-ref
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   suites:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     env:
       NEURONAV_EMBED_FAKE: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - run: pip install numpy chromadb httpx "mcp<2" networkx scipy scikit-learn tree-sitter==0.26.0 tree-sitter-cpp==0.23.4
@@ -25,6 +33,13 @@ jobs:
         run: python -X utf8 tests/test_cpphard.py
       - name: autorescan (stat-gate freshness, watcher, stdio e2e)
         run: python -X utf8 tests/test_autorescan.py
+      # issue #180: stdio E2E without any committed store — the suite
+      # self-bootstraps the self-index under FAKE embeds when the
+      # checkout has no config (count==0 rescan, the #166 precedent),
+      # then drives drift/stat-gate/routed-freshness/recall-knob/degraded
+      # scenarios over real pipes on hermetic scratch trees.
+      - name: server-stdio (MCP e2e drift, stat-gate, routed freshness, recall knobs, degraded shapes — issue #180)
+        run: python -X utf8 tests/test_server_stdio.py
       - name: searchtext (capped regex text search tool, issue #68)
         run: python -X utf8 tests/test_searchtext.py
       - name: project-mode (onboarding, discovery precedence, viz-as-addon)
@@ -43,6 +58,10 @@ jobs:
         run: python -X utf8 tests/test_repomap.py
       - name: selfindex (structural self-index checks)
         run: python -X utf8 tests/test_selfindex.py
+      # issue #180: the explore funnel against the self-index store —
+      # same hermetic bootstrap as above when the store is empty.
+      - name: explore (funnel e2e on the hermetic selfindex — issue #180)
+        run: python -X utf8 tests/test_explore.py
       - name: verifier (tree-sitter verifier, hermetic by construction)
         run: python -X utf8 tests/test_verifier.py
       - name: bench (record/golden coherence, issue #104)
@@ -60,11 +79,13 @@ jobs:
   viz:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
     env:
       NEURONAV_EMBED_FAKE: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - run: pip install numpy chromadb httpx "mcp<2" networkx scipy scikit-learn tree-sitter==0.26.0 tree-sitter-cpp==0.23.4 playwright

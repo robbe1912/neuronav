@@ -18,6 +18,20 @@ os.environ.setdefault(
 
 import server  # noqa: E402  (binds neuronav config via NEURONAV_CONFIG)
 
+# Hermetic bootstrap (issue #180, the #166 F1 precedent from
+# test_recall): a fresh checkout — CI — starts with an empty self-index
+# store. Under FAKE embeds one rescan self-populates it and the fn
+# index syncs (deterministic hash vectors over this repo); owner runs
+# keep the real-embedded store untouched (the bootstrap is FAKE-gated).
+if os.environ.get("NEURONAV_EMBED_FAKE") == "1":
+    import graph  # noqa: E402
+    import nav  # noqa: E402
+
+    if nav.count() == 0:
+        nav.rescan()
+    if nav.fns_collection().count() == 0:
+        graph.sync_functions([], [])  # empty fn col + no changes -> first build
+
 FAILURES: list[str] = []
 
 

@@ -120,6 +120,38 @@ def _validate_foreign_config(cfg_path: Path, target: Path) -> dict:
     return cfg
 
 
+def _heal_routed_drift() -> None:
+    """Routed-scope freshness gate (issue #180): boot calls get
+    _auto_rescan, but a dir onboarded once was served silently stale on
+    every later routed call — its freshness path was only the explicit
+    rescan(dir=...). config_scope already caches the stat-fingerprint
+    slots per config, so the same TTL-cached gate extends here for free:
+    dirty -> incremental rescan + graph/fns sync + re-baseline (self-
+    heal, transparent to the call); embed-backend failure -> loud stderr
+    note and an answer from the current index (the issue #19 contract —
+    never a crashed call, never silent staleness)."""
+    try:
+        if not nav.stat_scan():
+            return
+        stats = nav.rescan()
+        if stats["added"] or stats["updated"] or stats["deleted"]:
+            _sync_chain(stats)
+            print(
+                f"neuronav: routed drift healed: files {stats['added']}/{stats['updated']}/"
+                f"{stats['unchanged']}/{stats['deleted']} (a/u/u/d) in "
+                f"{nav.ROOT.as_posix()}",
+                file=sys.stderr,
+            )
+        nav.stat_mark_synced()
+    except Exception as e:
+        print(
+            f"neuronav: routed drift heal FAILED ({e}); answering from the "
+            f"current index — call rescan(dir=\"{nav.ROOT.as_posix()}\") once "
+            "the embedding backend is back",
+            file=sys.stderr,
+        )
+
+
 def _first_contact() -> str | None:
     """Build the active scope's fresh store: tracked base shards first
     (import_base skips cleanly when absent), then the incremental rescan
@@ -127,6 +159,7 @@ def _first_contact() -> str | None:
     else a rescan()-format summary so a long build reports progress the
     same way an explicit rescan does."""
     if nav._collection().count():
+        _heal_routed_drift()
         return None
     nav.import_base()
     t0 = time.perf_counter()
@@ -184,8 +217,13 @@ def _fmt(hits: list[dict]) -> str:
     for h in hits:
         label = h.get("class_name") or h.get("extends") or h.get("ext") or ""
         tag = f"  [{label}]" if label else ""
+        # issue #74 two-pass hits carry their marker to the wire (off by
+        # default, so default rows stay byte-identical)
+        tp = "  2pass" if h.get("two_pass") else ""
         ctx = ", ".join(h.get("ctx") or [])
-        lines.append(f"{h['score']:0.4f}  {h['file']}  src={h['src']}  ctx=[{ctx}]{tag}")
+        lines.append(
+            f"{h['score']:0.4f}  {h['file']}  src={h['src']}  ctx=[{ctx}]{tag}{tp}"
+        )
     return "\n".join(lines)
 
 
@@ -250,7 +288,13 @@ def repo_map(budget_tokens: int = 2048, dir: str = "") -> str:
 
 
 @mcp.tool(annotations=READONLY)
-def semantic_search(query: str, n: int = 8, dir: str = "") -> str:
+def semantic_search(
+    query: str,
+    n: int = 8,
+    dir: str = "",
+    two_pass: bool = False,
+    graph_boost: float = 0.0,
+) -> str:
     """Find files in this repo by meaning, not keywords.
 
     Hybrid recall: vector similarity fused with lexical BM25F ranks —
@@ -258,6 +302,12 @@ def semantic_search(query: str, n: int = 8, dir: str = "") -> str:
     structural neighbors worth a look while you are there. Use before
     grep when hunting a concept: input handling, timed effects, save
     system, netcode, AI behavior, item storage.
+
+    two_pass=True runs the RepoCoder second retrieve (issue #74: pass-1
+    hits donate identifiers to one re-embedded augmented query; engaged
+    rows are tagged 2pass). graph_boost>0 turns on the 1-hop
+    graph-neighbor rank promotion (issue #73, default off); negative
+    values are rejected loudly.
 
     dir="" serves the boot config's repo; any other path routes this one
     call to that checkout (issue #131 — a fresh dir onboards on first
@@ -268,7 +318,9 @@ def semantic_search(query: str, n: int = 8, dir: str = "") -> str:
             return prelude
         _auto_rescan()
         n = max(1, min(n, 25))
-        return _here(graph.get_graph()) + "\n" + _fmt(nav.search(query, n))
+        return _here(graph.get_graph()) + "\n" + _fmt(
+            nav.search(query, n, two_pass=two_pass, graph_boost=graph_boost)
+        )
 
 
 @mcp.tool(annotations=READONLY)
