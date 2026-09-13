@@ -9,12 +9,13 @@ its own process:
 
 Exit 0 = all pass. Each suite bootstraps `sys.path` to the repo root and
 uses a local `check(name, cond)` helper (PASS/FAIL lines + failure count).
-CI (`.github/workflows/ci.yml`) runs sixteen hermetic suites on ubuntu
+CI (`.github/workflows/ci.yml`) runs eighteen hermetic suites on ubuntu
 with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
 `test_pyhard`, `test_cpphard`, `test_autorescan`, `test_searchtext`,
 `test_project_mode`, `test_baseindex`, `test_mwires`,
 `test_clusterinv`, `test_recall`, `test_embedprov`, `test_repomap`,
-`test_selfindex`, `test_verifier`, `test_bench`, `test_bakeint`) plus a `viz` job that builds the frozen synthetic corpus
+`test_selfindex`, `test_verifier`, `test_bench`, `test_bakeint`,
+`test_portability`) plus a `viz` job that builds the frozen synthetic corpus
 (`tests/vizcorpus_build.py`) and runs `test_viz` against its hermetic
 store in a real browser (issue #100). The rest are local gates that need
 material CI cannot provide: `test_target_regression` (a populated target
@@ -46,6 +47,7 @@ repo in the default config), `test_server_stdio` (ditto, stdio e2e),
 | `test_verifier` | Kythe-style verifier fixtures (issue #66): `//-`-shaped goal comments inlined in fixture sources, asserted against extractor output (FileSym + cpp scan_calls); `@fn dead` is corpus-local liveness | stdlib + tree-sitter/tree-sitter-cpp for the C++ goals — extractor-level only: no config, no index, no chroma |
 | `test_bench` | bench record/golden coherence (issue #104): fingerprint determinism + order-insensitivity, render() refuses mismatched/missing fingerprints naming every stale record, coherent sandbox render e2e | stdlib only — imports bench/run_bench.py's render path against a temp bench dir; no config, no index, no embeds |
 | `test_bakeint` | bake integrity (issues #64/#108): empty/zeroed-store bake refusal naming the store + vector counts + the rescan fix, FAKE-only tiny-store waiver, strict-JSON splice (NaN/Infinity refused with paths), `</script`/`__DATA__`/`__IMPORTMAP__` breakout-token refusal, atomic `os.replace` bake write | chromadb import (self-sets `NEURONAV_EMBED_FAKE=1`; the real-provider refusal legs run in FAKE-scrubbed child processes) |
+| `test_portability` | BOM-tolerant config reads (issue #119): BOM'd config.json / .neuroignore / base manifest / server `_validate_foreign_config` all read via `utf-8-sig`; git subprocess decode (`bake.gitinfo` head/churn) stays UTF-8 under an ASCII locale; nav CLI reconfigures stdout under an ascii console | stdlib + chromadb import (hermetic temp config, fake embeds, own scratch git repo) |
 
 `_page_harness.py` (issue #86 strand R9) is the shared Playwright harness
 the two browser suites ride: `serve()` (no-cache loopback server, ephemeral
