@@ -738,3 +738,54 @@ def stand_in_review(fs: FileSym, name: str) -> bool:
 def mention_review(name: str, mentions: dict) -> bool:
     """Cpp-only rule (mention floor)."""
     return False
+
+
+# ---- python body-scan patterns (companion to the parser above) ----------------
+PY_ATTR_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\(")
+PY_CHAIN_CALL_RE = re.compile(
+    r"(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([a-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\("
+)
+PY_BARE_CALL_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*\(")
+# `name: Type` params and `x = Klass(` locals (capitalized = user
+# classes); hints keep a flat generic subscript (dict[str, Widget]) so
+# subscript access can resolve the value classes inside
+PY_PARAM_TYPED_RE = re.compile(r"[(,]\s*([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*(?:\[[^\]=]+\])?)")
+PY_LOCAL_NEW_RE = re.compile(r"(?<![\w.!=<>])([A-Za-z_]\w*)\s*=(?!=)\s*([A-Z]\w*)\s*\(")
+# with/async-with target bound from a constructor: with Session() as s
+PY_WITH_AS_RE = re.compile(
+    r"(?<![\w.])(?:async\s+)?with\s+([A-Z]\w*)\s*\([^()]*\)\s+as\s+([A-Za-z_]\w*)"
+)
+# annotated local: local: Widget = ... / pairs: dict[str, Widget] = ...
+PY_ANNOT_ASSIGN_RE = re.compile(
+    r"(?<![\w.])([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*(?:\[[^\]=]+\])?)\s*=(?!=)"
+)
+# box[k].method( / self.box[k].method( — subscript access into a hint
+PY_SUBSCRIPT_CALL_RE = re.compile(
+    r"(?<![\w.$])([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\[[^\]]*\]\s*\.\s*([A-Za-z_]\w*)\s*\("
+)
+# local bound from an imported call: extractor = registry_for(...)
+PY_MODULE_ASSIGN_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*=\s*([a-z_]\w*)\s*\(")
+# imported_call(args).method( — registry_for(path.suffix).parse(...)
+PY_RESULT_CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\(([^()]*)\)\s*\.\s*([A-Za-z_]\w*)\s*\(")
+PY_NON_CALLS = PY_CONTROL_KEYWORDS | {
+    "in", "is", "and", "or", "nonlocal", "global", "import", "from",
+    "len", "range", "str", "int", "float", "bool", "list", "dict", "set",
+    "tuple", "isinstance", "issubclass", "type", "sorted", "reversed",
+    "min", "max", "sum", "enumerate", "zip", "open", "getattr", "setattr",
+    "hasattr", "repr", "abs", "any", "all", "filter", "map", "dir", "id",
+    "hash", "iter", "next", "vars", "format", "bytes", "super", "exit",
+    "quit", "help", "input", "round", "divmod", "pow", "chr", "ord", "hex",
+    "oct", "bin", "frozenset", "bytearray", "complex", "object",
+    "staticmethod", "classmethod", "property", "dataclass", "field",
+    "Exception", "ValueError", "TypeError", "RuntimeError", "KeyError",
+    "IndexError", "OSError", "IOError", "StopIteration", "FileNotFoundError",
+    "NotImplementedError",
+}
+_HINT_VALUE_RE = re.compile(r"^[A-Za-z_]\w*\[([^\]]*)\]")
+
+
+def _hint_value_classes(hint: str) -> list[str]:
+    """Value classes inside a flat generic hint's outer subscript:
+    ``dict[str, Widget]`` -> ``['Widget']`` (Union members included)."""
+    m = _HINT_VALUE_RE.match(hint)
+    return re.findall(r"\b[A-Z]\w*", m.group(1)) if m else []

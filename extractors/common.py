@@ -122,3 +122,33 @@ def entry_keys(fs: FileSym, names: Iterable[str]) -> Iterator[str]:
         fn = fs.funcs.get(nm)
         if fn is not None:
             yield fn.key
+
+
+# ---- fn-key grammar (frozen contract) -----------------------------------------
+# Node keys in Graph.edges/reverse/roots/referenced are "path::func" plus
+# three pseudo-node spellings: "path::tscn" (scene file node),
+# "path::SIGNAL:name" (signal node), "path::VAR:member" (member-write
+# node); a bare "*::name" marks name-only references. The grammar is
+# FROZEN — the viz template's fnKey/keyFile logic mirrors it, so any
+# change is a both-sides contract (never one-sided). split_key's "first
+# :: wins" is safe because extractor captures are identifier-shaped
+# (never contain "::"). Home: common.py (language-neutral) since the
+# langsep cutover; graph.py and bake consume via the package surface.
+FN_KEY_SEP = "::"
+TSCN_SUFFIX = "::tscn"
+SIGNAL_PREFIX = "::SIGNAL:"
+VAR_PREFIX = "::VAR:"
+
+# ---- cross-language text mechanics --------------------------------------------
+# Call/member shapes shared by more than one extractor's body scanner.
+QUALIFIED_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*\(")
+# receiver.member access that is NOT a call: member name lowercase-initial
+# (vars), negative lookahead rejects optional-whitespace-then-paren
+MEMBER_ACCESS_RE = re.compile(
+    r"(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([a-z_]\w*)\b(?!\s*\()"
+)
+BARE_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\s*\(")
+# identifier-shaped token anywhere in raw corpus text (issue #20): the
+# dead-tier mention-count pass counts these per file once, comments and
+# string literals included — never a rescan per dead candidate
+MENTION_TOKEN_RE = re.compile(r"[A-Za-z_]\w*")

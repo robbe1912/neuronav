@@ -27,14 +27,61 @@ from collections import Counter, defaultdict, deque
 import nav
 from extractors import (
     ADDON_VIRTUALS,
+    ASSET_SCENE_GLOB,
+    ASSIGN_RHS_RE,
+    ASSIGN_RHS_SKIP,
+    AUTOLOAD_RE,
+    BARE_CALL_RE,
+    BARE_DISPATCH_STR_RE,
+    BARE_HANDLER_RE,
+    CALLABLE_TWO_RE,
+    AS_CAST_CALL_RE,
+    CHAIN_CALL_RE,
+    CHAIN_VAR_RE,
+    CONNECT_METHOD_RE,
+    CONNECT_RE,
     CPP_DYNAMIC_RE,
     CPP_EXTS,
     CPP_MENTION_FLOOR,
+    DISPATCH_STR_RE,
+    DYNAMIC_HINT_RE,
+    DYNAMIC_METHODS,
+    EMIT_RE,
+    FN_KEY_SEP,
+    FUNC_KEYWORD,
     GUT_ROOTS,
     MANUAL_BASES,
+    MENTION_TOKEN_RE,
+    MEMBER_ACCESS_RE,
+    NON_CALLS,
+    PARAM_TYPED_RE,
+    PATH_EXTENDS_RE,
+    PY_ANNOT_ASSIGN_RE,
+    PY_ATTR_CALL_RE,
+    PY_BARE_CALL_RE,
+    PY_CHAIN_CALL_RE,
     PY_CONTROL_KEYWORDS,
     PY_HOOKS,
+    PY_LOCAL_NEW_RE,
+    PY_MODULE_ASSIGN_RE,
+    PY_NON_CALLS,
+    PY_PARAM_TYPED_RE,
+    PY_RESULT_CALL_RE,
+    PY_SUBSCRIPT_CALL_RE,
+    PY_WITH_AS_RE,
+    QUALIFIED_CALL_RE,
+    QUOTED_IDENT_RE,
+    RES_LOAD_RE,
     SCENE_WIRING_SUFFIXES,
+    SIGNAL_PREFIX,
+    STRING_NAME_RE,
+    STRINGNAME_LIT_RE,
+    TRES_SCRIPT_RE,
+    TRES_STRINGNAME_RE,
+    TSCN_SUFFIX,
+    TWEEN_ARG_RE,
+    UNDERSCORE_SHIELD,
+    VAR_PREFIX,
     VIRTUALS,
     add_class_ctx,
     harvest_registration,
@@ -44,44 +91,17 @@ from extractors import (
     registry_for,
     scan_calls,
 )
-# single import surface: language facts (VIRTUALS etc.) and the cAST model
-# primitives (add_class_ctx, issue #76) are re-exported by the extractors
-# package so graph.py never deep-imports an extractor submodule — extractor
-# modules stay free of any graph import (acyclic).
+# single import surface: language facts (VIRTUALS etc.), the fn-key
+# grammar spellings, and the per-language body-scan patterns are defined
+# in extractors/ and re-exported by the package __init__ so graph.py
+# never deep-imports an extractor submodule — extractor modules stay
+# free of any graph import (acyclic).
 
 # ---- constants ---------------------------------------------------------------
-# Language-owned constants and entry-point rules (VIRTUALS, GUT_ROOTS,
-# ADDON_VIRTUALS, MANUAL_BASES, ENTRY_RULES) live in extractors/gdscript.py;
-# VIRTUALS is imported for the dead-code tier heuristic only.
-
-QUALIFIED_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*\(")
-# receiver.member access that is NOT a call: member name lowercase-initial
-# (vars), negative lookahead rejects optional-whitespace-then-paren
-MEMBER_ACCESS_RE = re.compile(
-    r"(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([a-z_]\w*)\b(?!\s*\()"
-)
-# "res://...something.gd" string literals in bodies: dynamically loaded
-# scripts whose funcs must count as alive
-RES_LOAD_RE = re.compile(r"res://([\w/.-]+\.gd)")
-BARE_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\s*\(")
-# identifier-shaped token anywhere in raw corpus text (issue #20): the
-# dead-tier mention-count pass counts these per file once, comments and
-# string literals included — never a rescan per dead candidate
-MENTION_TOKEN_RE = re.compile(r"[A-Za-z_]\w*")
-
-# ---- fn-key grammar (single owner) -------------------------------------------
-# Node keys in Graph.edges/reverse/roots/referenced are "path::func" plus
-# three pseudo-node spellings: "path::tscn" (scene file node),
-# "path::SIGNAL:name" (signal node), "path::VAR:member" (member-write
-# node); a bare "*::name" marks name-only references. The grammar is
-# FROZEN — the viz template's fnKey/keyFile logic mirrors it, so any
-# change is a both-sides contract (graph.py + viz.py template), never
-# one-sided. split_key's "first :: wins" is safe because extractor
-# captures are identifier-shaped (never contain "::").
-FN_KEY_SEP = "::"
-TSCN_SUFFIX = "::tscn"
-SIGNAL_PREFIX = "::SIGNAL:"
-VAR_PREFIX = "::VAR:"
+# Language-owned constants, entry-point rules and body-scan patterns live
+# in extractors/ (see the import surface above). What remains here is
+# language-neutral graph law: the fn-key helpers, dead-tier weights, and
+# the cAST chunking knobs.
 
 
 def fn_key(rel: str, name: str) -> str:
@@ -94,6 +114,7 @@ def split_key(key: str) -> str:
     everything before the first separator. Bare file keys (cpp v1.1
     header-scope sources carry none) pass through whole."""
     return key.split(FN_KEY_SEP, 1)[0]
+
 # dead-tier weights (viz J2 consumes): per-tier weight for dead-code
 # candidates — "likely" 1.0, "review" 0.5 — and the dead-file share
 # threshold: a file only flags dead when its dead weight reaches this
@@ -101,131 +122,6 @@ def split_key(key: str) -> str:
 DEAD_TIER_WEIGHTS = {"likely": 1.0, "review": 0.5}
 DEAD_SHARE_THRESHOLD = 0.4
 
-# ---- python scanning (companion to extractors/python.py) ----------------------
-PY_ATTR_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\(")
-PY_CHAIN_CALL_RE = re.compile(
-    r"(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\("
-)
-PY_BARE_CALL_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*\(")
-# `name: Type` params and `x = Klass(` locals (capitalized = user
-# classes); hints keep a flat generic subscript (dict[str, Widget]) so
-# subscript access can resolve the value classes inside
-PY_PARAM_TYPED_RE = re.compile(r"[(,]\s*([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*(?:\[[^\]=]+\])?)")
-PY_LOCAL_NEW_RE = re.compile(r"(?<![\w.!=<>])([A-Za-z_]\w*)\s*=(?!=)\s*([A-Z]\w*)\s*\(")
-# with/async-with target bound from a constructor: with Session() as s
-PY_WITH_AS_RE = re.compile(
-    r"(?<![\w.])(?:async\s+)?with\s+([A-Z]\w*)\s*\([^()]*\)\s+as\s+([A-Za-z_]\w*)"
-)
-# annotated local: local: Widget = ... / pairs: dict[str, Widget] = ...
-PY_ANNOT_ASSIGN_RE = re.compile(
-    r"(?<![\w.])([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*(?:\[[^\]=]+\])?)\s*=(?!=)"
-)
-# box[k].method( / self.box[k].method( — subscript access into a hint
-PY_SUBSCRIPT_CALL_RE = re.compile(
-    r"(?<![\w.$])([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\[[^\]]*\]\s*\.\s*([A-Za-z_]\w*)\s*\("
-)
-# local bound from an imported call: extractor = registry_for(...)
-PY_MODULE_ASSIGN_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*=\s*([a-z_]\w*)\s*\(")
-# imported_call(args).method( — registry_for(path.suffix).parse(...)
-PY_RESULT_CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\(([^()]*)\)\s*\.\s*([A-Za-z_]\w*)\s*\(")
-PY_NON_CALLS = PY_CONTROL_KEYWORDS | {
-    "in", "is", "and", "or", "nonlocal", "global", "import", "from",
-    "len", "range", "str", "int", "float", "bool", "list", "dict", "set",
-    "tuple", "isinstance", "issubclass", "type", "sorted", "reversed",
-    "min", "max", "sum", "enumerate", "zip", "open", "getattr", "setattr",
-    "hasattr", "repr", "abs", "any", "all", "filter", "map", "dir", "id",
-    "hash", "iter", "next", "vars", "format", "bytes", "super", "exit",
-    "quit", "help", "input", "round", "divmod", "pow", "chr", "ord", "hex",
-    "oct", "bin", "frozenset", "bytearray", "complex", "object",
-    "staticmethod", "classmethod", "property", "dataclass", "field",
-    "Exception", "ValueError", "TypeError", "RuntimeError", "KeyError",
-    "IndexError", "OSError", "IOError", "StopIteration", "FileNotFoundError",
-    "NotImplementedError",
-}
-EMIT_RE = re.compile(r"emit_signal\(\s*[\"'](\w+)[\"']|([A-Za-z_]\w*)\.emit\(")
-# .tres/.res ext_resource lines: type="Script" path="res://..."
-TRES_SCRIPT_RE = re.compile(r'ext_resource\s+type="Script"[^>]*path="([^"]+)"')
-# signal wiring via direct method references: sig.connect(_handler)
-CONNECT_METHOD_RE = re.compile(r"\.(?:connect|disconnect|is_connected)\(\s*([A-Za-z_]\w*)")
-# typed locals + params anywhere in a body: `name: Type`
-PARAM_TYPED_RE = re.compile(r"(?<![\w.])(\w+)\s*:\s*([A-Z]\w*)")
-# cast-then-call: (node as CameraShake).shake(  ->  Type.method(
-AS_CAST_CALL_RE = re.compile(r"as\s+([A-Z]\w*)\)\s*\.\s*([A-Za-z_]\w*)\s*\(")
-CONNECT_RE = re.compile(r"\.connect\(|Callable\(")
-STRING_NAME_RE = re.compile(r"[\"']([A-Za-z_]\w*)[\"']")
-# dynamic-dispatch string harvest: method names in .call()/.rpc()/
-# has_method() string args and Callable(obj, "m") constructions have
-# runtime-typed receivers — keep same-named funcs alive, no static edge
-DISPATCH_STR_RE = re.compile(
-    r'\.(?:call|call_deferred|callv|rpc|rpc_id|rpc_config|has_method)'
-    r'\(\s*&?"([a-z_]\w*)"'
-)
-# receiver-less dispatch on implicit self: bare call_deferred("x") / rpc("x")
-BARE_DISPATCH_STR_RE = re.compile(
-    r'(?<![\w.])(?:call|call_deferred|callv|rpc|rpc_id|has_method)'
-    r'\(\s*&?"([a-z_]\w*)"'
-)
-STRINGNAME_LIT_RE = re.compile(r'&"([a-z_]\w{3,})"')
-CALLABLE_TWO_RE = re.compile(
-    r'Callable\s*\(\s*[\w.]+\s*,\s*&?"([a-z_]\w*)"\s*\)'
-    r'|Callable\s*\(\s*[\w.]+\s*,\s*([A-Za-z_]\w*)\s*\)'
-)
-# quoted identifier-shaped strings in bodies of files that use dynamic
-# dispatch (file-level gate) — callback-name conventions leak into plain
-# string args, e.g. run_callback(slot, "on_target_hit")
-QUOTED_IDENT_RE = re.compile(r"""["']([a-z_]\w{3,})["']""")
-# bare callback-convention identifiers (_on_*) in argument/array positions:
-# method references without call parens, e.g. ["QUIT", color, _on_quit]
-BARE_HANDLER_RE = re.compile(r'(?<![\w."&])_on_[a-z_]\w*')
-# bare method-ref as the FULL right-hand side of an assignment (raw, not
-# folded: the $ anchor needs real line ends): `obj.prop = _handler`
-ASSIGN_RHS_RE = re.compile(r"(?<![=!<>+\-*/%&|^])=\s*([a-z_]\w*)\s*$", re.M)
-ASSIGN_RHS_SKIP = {"true", "false", "null", "self"}
-# tween binders reference methods without parens: tween_method(_set_reveal)
-TWEEN_ARG_RE = re.compile(
-    r'\.(?:tween_method|tween_callback|tween_property)\(\s*&?"?([A-Za-z_]\w{3,})"?'
-)
-# two-level receiver chains: ctx.teams.team_ids(...) — resolve head, hop
-# through a declared member to the second class, then emit
-CHAIN_CALL_RE = re.compile(
-    r'(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([a-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\('
-)
-CHAIN_VAR_RE = re.compile(
-    r'(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([a-z_]\w*)\s*\.\s*([a-z_]\w*)\b(?!\s*\()'
-)
-# StringName values inside .tres (BT task routing): start_method_name = &"x"
-TRES_STRINGNAME_RE = re.compile(r'&"([a-z_]\w{3,})"')
-# file-level dynamic-dispatch hints enabling the quoted-ident harvest
-DYNAMIC_HINT_RE = re.compile(
-    r'\.call\(|\.call_deferred|Callable\(|has_method\(|\.connect\(|\.rpc\(|\.emit\('
-)
-# path-form extends (incl. inner classes): extends "res://....gd"
-PATH_EXTENDS_RE = re.compile(r'^\s*extends\s+"(res://[^"]+\.gd)"', re.M)
-
-# bare identifiers that are engine globals/keywords, never local calls
-DYNAMIC_METHODS = {"rpc", "rpc_id", "call", "call_deferred", "callv", "bind", "emit", "emit_signal", "notify_property_list_changed"}
-NON_CALLS = {
-    "if", "elif", "while", "for", "match", "return", "await", "func", "super",
-    "and", "or", "not", "in", "is", "break", "continue", "pass", "class",
-    "self", "true", "false", "null", "void", "static", "const", "var",
-    "signal", "enum", "export", "onready", "tool", "yield",
-    "print", "printerr", "push_error", "push_warning", "push_notice",
-    "str", "int", "float", "bool", "len", "range", "abs", "absf", "absi",
-    "min", "max", "minf", "maxf", "mini", "maxi", "clamp", "clampf", "clampi",
-    "lerp", "lerpf", "lerp_angle", "randf", "randi", "randf_range",
-    "randi_range", "randfn", "preload", "load", "resource_local_to_scene",
-    "assert", "is_instance_valid", "instance_from_id", "weakref", "hash",
-    "typeof", "type_string", "str_to_var", "var_to_str", "bytes_to_var",
-    "var_to_bytes", "inst_to_dict", "dict_to_inst", "ord", "char",
-    "range_lerp", "smoothstep", "move_toward", "ease", "step_decimals",
-    "snapped", "fmod", "fposmod", "posmod", "floor", "floori", "ceil",
-    "ceili", "round", "roundi", "sqrt", "pow", "sin", "cos", "tan", "asin",
-    "acos", "atan", "atan2", "exp", "log", "is_nan", "is_inf", "is_finite",
-    "is_equal_approx", "is_zero_approx", "sign", "signf", "signi", "seed",
-    "rand_from_seed", "deg_to_rad", "rad_to_deg", "linear_to_db",
-    "db_to_linear", "cartesian_to_polar", "polar_to_cartesian", "wrapi",
-    "wrapf", "nearest_po2", "det", "_error", "dedent",
-}
 
 
 # ---- data model ----------------------------------------------------------------
@@ -319,7 +215,7 @@ class Graph:
 
         # asset scenes sit outside the search index but carry animation method
         # tracks + connections that fire script funcs — parse for wiring only
-        for path in (nav.ROOT / "assets").rglob("*.tscn") if (nav.ROOT / "assets").is_dir() else ():
+        for path in (nav.ROOT / "assets").rglob(ASSET_SCENE_GLOB) if (nav.ROOT / "assets").is_dir() else ():
             rel = nav.file_id(path)
             if rel not in self.files:
                 self.files[rel] = registry_for(path.suffix).parse(path, rel)
@@ -1034,9 +930,7 @@ class Graph:
             if line.strip().startswith("["):
                 in_auto = False
             if in_auto:
-                m = re.match(
-                    r'^(\w+)\s*=\s*"\*?res://([\w/.-]+\.gd)"', line.strip()
-                )
+                m = AUTOLOAD_RE.match(line.strip())
                 if m and m.group(2) in self.files:
                     out[m.group(1)] = m.group(2)
         return out

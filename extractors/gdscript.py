@@ -527,3 +527,95 @@ def stand_in_review(fs: FileSym, name: str) -> bool:
 def mention_review(name: str, mentions: dict) -> bool:
     """Cpp-only rule (mention floor)."""
     return False
+
+
+# ---- gd body-scan + wiring patterns (moved from graph.py, langsep) -------------
+# "res://...something.gd" string literals in bodies: dynamically loaded
+# scripts whose funcs must count as alive
+RES_LOAD_RE = re.compile(r"res://([\w/.-]+\.gd)")
+EMIT_RE = re.compile(r"emit_signal\(\s*[\"'](\w+)[\"']|([A-Za-z_]\w*)\.emit\(")
+# .tres/.res ext_resource lines: type="Script" path="res://..."
+TRES_SCRIPT_RE = re.compile(r'ext_resource\s+type="Script"[^>]*path="([^"]+)"')
+# signal wiring via direct method references: sig.connect(_handler)
+CONNECT_METHOD_RE = re.compile(r"\.(?:connect|disconnect|is_connected)\(\s*([A-Za-z_]\w*)")
+# typed locals + params anywhere in a body: `name: Type`
+PARAM_TYPED_RE = re.compile(r"(?<![\w.])(\w+)\s*:\s*([A-Z]\w*)")
+# cast-then-call: (node as CameraShake).shake(  ->  Type.method(
+AS_CAST_CALL_RE = re.compile(r"as\s+([A-Z]\w*)\)\s*\.\s*([A-Za-z_]\w*)\s*\(")
+CONNECT_RE = re.compile(r"\.connect\(|Callable\(")
+STRING_NAME_RE = re.compile(r"[\"']([A-Za-z_]\w*)[\"']")
+# dynamic-dispatch string harvest: method names in .call()/.rpc()/
+# has_method() string args and Callable(obj, "m") constructions have
+# runtime-typed receivers — keep same-named funcs alive, no static edge
+DISPATCH_STR_RE = re.compile(
+    r'\.(?:call|call_deferred|callv|rpc|rpc_id|rpc_config|has_method)'
+    r'\(\s*&?"([a-z_]\w*)"'
+)
+# receiver-less dispatch on implicit self: bare call_deferred("x") / rpc("x")
+BARE_DISPATCH_STR_RE = re.compile(
+    r'(?<![\w.])(?:call|call_deferred|callv|rpc|rpc_id|has_method)'
+    r'\(\s*&?"([a-z_]\w*)"'
+)
+STRINGNAME_LIT_RE = re.compile(r'&"([a-z_]\w{3,})"')
+CALLABLE_TWO_RE = re.compile(
+    r'Callable\s*\(\s*[\w.]+\s*,\s*&?"([a-z_]\w*)"\s*\)'
+    r'|Callable\s*\(\s*[\w.]+\s*,\s*([A-Za-z_]\w*)\s*\)'
+)
+# quoted identifier-shaped strings in bodies of files that use dynamic
+# dispatch (file-level gate) — callback-name conventions leak into plain
+# string args, e.g. run_callback(slot, "on_target_hit")
+QUOTED_IDENT_RE = re.compile(r"""["']([a-z_]\w{3,})["']""")
+# bare callback-convention identifiers (_on_*) in argument/array positions:
+# method references without call parens, e.g. ["QUIT", color, _on_quit]
+BARE_HANDLER_RE = re.compile(r'(?<![\w."&])_on_[a-z_]\w*')
+# bare method-ref as the FULL right-hand side of an assignment (raw, not
+# folded: the $ anchor needs real line ends): `obj.prop = _handler`
+ASSIGN_RHS_RE = re.compile(r"(?<![=!<>+\-*/%&|^])=\s*([a-z_]\w*)\s*$", re.M)
+ASSIGN_RHS_SKIP = {"true", "false", "null", "self"}
+# tween binders reference methods without parens: tween_method(_set_reveal)
+TWEEN_ARG_RE = re.compile(
+    r'\.(?:tween_method|tween_callback|tween_property)\(\s*&?"?([A-Za-z_]\w{3,})"?'
+)
+# two-level receiver chains: ctx.teams.team_ids(...) — resolve head, hop
+# through a declared member to the second class, then emit
+CHAIN_CALL_RE = re.compile(
+    r'(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([a-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\('
+)
+CHAIN_VAR_RE = re.compile(
+    r'(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([a-z_]\w*)\s*\.\s*([a-z_]\w*)\b(?!\s*\()'
+)
+# StringName values inside .tres (BT task routing): start_method_name = &"x"
+TRES_STRINGNAME_RE = re.compile(r'&"([a-z_]\w{3,})"')
+# path-form extends (incl. inner classes): extends "res://....gd"
+PATH_EXTENDS_RE = re.compile(r'^\s*extends\s+"(res://[^"]+\.gd)"', re.M)
+
+# bare identifiers that are engine globals/keywords, never local calls
+DYNAMIC_METHODS = {"rpc", "rpc_id", "call", "call_deferred", "callv", "bind", "emit", "emit_signal", "notify_property_list_changed"}
+NON_CALLS = {
+    "if", "elif", "while", "for", "match", "return", "await", "func", "super",
+    "and", "or", "not", "in", "is", "break", "continue", "pass", "class",
+    "self", "true", "false", "null", "void", "static", "const", "var",
+    "signal", "enum", "export", "onready", "tool", "yield",
+    "print", "printerr", "push_error", "push_warning", "push_notice",
+    "str", "int", "float", "bool", "len", "range", "abs", "absf", "absi",
+    "min", "max", "minf", "maxf", "mini", "maxi", "clamp", "clampf", "clampi",
+    "lerp", "lerpf", "lerp_angle", "randf", "randi", "randf_range",
+    "randi_range", "randfn", "preload", "load", "resource_local_to_scene",
+    "assert", "is_instance_valid", "instance_from_id", "weakref", "hash",
+    "typeof", "type_string", "str_to_var", "var_to_str", "bytes_to_var",
+    "var_to_bytes", "inst_to_dict", "dict_to_inst", "ord", "char",
+    "range_lerp", "smoothstep", "move_toward", "ease", "step_decimals",
+    "snapped", "fmod", "fposmod", "posmod", "floor", "floori", "ceil",
+    "ceili", "round", "roundi", "sqrt", "pow", "sin", "cos", "tan", "asin",
+    "acos", "atan", "atan2", "exp", "log", "is_nan", "is_inf", "is_finite",
+    "is_equal_approx", "is_zero_approx", "sign", "signf", "signi", "seed",
+    "rand_from_seed", "deg_to_rad", "rad_to_deg", "linear_to_db",
+    "db_to_linear", "cartesian_to_polar", "polar_to_cartesian", "wrapi",
+    "wrapf", "nearest_po2", "det", "_error", "dedent",
+}
+
+# project.godot [autoload] entry: Name = "*res://path/to.gd" (the * marks
+# a scene-backed singleton; the script form is what the graph indexes)
+AUTOLOAD_RE = re.compile(r'^(\w+)\s*=\s*"\*?res://([\w/.-]+\.gd)"')
+# asset scenes sit outside the search index; graph parses them for wiring
+ASSET_SCENE_GLOB = "*.tscn"
