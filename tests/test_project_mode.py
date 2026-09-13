@@ -111,6 +111,19 @@ def main() -> None:
         gi2 = (proj / ".gitignore").read_text(encoding="utf-8")
         check("init: idempotent", gi2 == gi)
 
+        # 2b. init does NOT clobber a customized config on re-run (issue #121)
+        cfg_path.write_text(json.dumps({**cfg, "exclude_dirs": ["build/"], "embed_url": "http://example.invalid/embeddings"}), encoding="utf-8")
+        r = subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "init"], cwd=proj,
+                           env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}, "NEURONAV_EMBED_FAKE": "1"},
+                           capture_output=True, text=True, check=True)
+        preserved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        check("init re-run: user config byte-preserved, customizations kept",
+              preserved["exclude_dirs"] == ["build/"] and preserved["embed_url"] == "http://example.invalid/embeddings",
+              str(preserved.get("exclude_dirs")))
+        check("init re-run: notes the existing config instead of rewriting",
+              "config exists" in r.stdout and "exclude_dirs" not in r.stdout, r.stdout.strip()[:100])
+        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")  # restore for later checks
+
         # 3. discovery: project-local beats the install's checkout config
         out = run_nav(proj, "import nav; print(nav.ROOT)")
         check("discovery: project-local config wins from project cwd", out.strip() == str(proj))
@@ -136,6 +149,79 @@ def main() -> None:
         oc_doc = json.loads(oc.read_text(encoding="utf-8"))
         check("wire: opencode.json merged, not replaced", "other" in oc_doc["mcp"] and oc_doc["mcp"]["neuronav"]["environment"]["NEURONAV_CONFIG"] == str(cfg_path))
         check("wire: install stays read-only", not (ROOT / "config" / "proj.json").exists())
+
+        # 4b. wire is BOM-tolerant + loud on malformed MCP jsons, and not
+        # truncated when a merge dies part-way (issue #121)
+        mcp_path = proj / ".mcp.json"
+        mcp_path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"mcpServers": {"other": {}}}).encode("utf-8"))
+        oc.write_bytes(b"\xef\xbb\xbf" + json.dumps({"mcp": {"other": {}}}).encode("utf-8"))
+        subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "wire"], cwd=proj,
+                       env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}, "NEURONAV_EMBED_FAKE": "1"},
+                       capture_output=True, text=True, check=True)
+        mcp2 = json.loads(mcp_path.read_text(encoding="utf-8"))
+        check("wire: BOM'd .mcp.json parsed and merged, other entry kept",
+              sorted(mcp2["mcpServers"]) == sorted(["other", "neuronav"]), str(mcp2["mcpServers"].keys()))
+        oc2 = json.loads(oc.read_text(encoding="utf-8"))
+        check("wire: BOM'd opencode.json parsed and merged",
+              sorted(oc2["mcp"]) == sorted(["other", "neuronav"]), str(oc2["mcp"].keys()))
+        check("wire: BOM'd files rewritten BOM-free",
+              mcp_path.read_bytes()[:3] != b"\xef\xbb\xbf" and oc.read_bytes()[:3] != b"\xef\xbb\xbf")
+        good = json.dumps({"mcp": {"other": {}}})
+        # malformed .mcp.json body -> loud JSONDecodeError, nothing written
+        mcp_path.write_text("not json {", encoding="utf-8")
+        oc.write_text(good, encoding="utf-8")
+        r = subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "wire"], cwd=proj,
+                           env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}, "NEURONAV_EMBED_FAKE": "1"},
+                           capture_output=True, text=True)
+        err = (r.stderr or "") + (r.stdout or "")
+        check("wire: malformed .mcp.json fails loud, names the file + remedy",
+              r.returncode != 0 and "fix it or delete it" in err, err[:90])
+        check("wire: loud failure leaves .mcp.json unwritten",
+              mcp_path.read_text(encoding="utf-8") == "not json {")
+        # non-object .mcp.json root -> loud, names the merge key
+        mcp_path.write_text('["nope"]', encoding="utf-8")
+        r = subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "wire"], cwd=proj,
+                           env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}, "NEURONAV_EMBED_FAKE": "1"},
+                           capture_output=True, text=True)
+        err = (r.stderr or "") + (r.stdout or "")
+        check("wire: non-object .mcp.json root loud with the merge key",
+              r.returncode != 0 and "must be a JSON object" in err and "list" in err, err[:90])
+        check("wire: non-object root leaves the file unwritten",
+              mcp_path.read_text(encoding="utf-8") == '["nope"]')
+        # object root whose merge container is not an object -> loud too
+        mcp_path.write_text('{"mcpServers": []}', encoding="utf-8")
+        r = subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "wire"], cwd=proj,
+                           env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}, "NEURONAV_EMBED_FAKE": "1"},
+                           capture_output=True, text=True)
+        err = (r.stderr or "") + (r.stdout or "")
+        check("wire: non-object mcpServers container loud with the key",
+              r.returncode != 0 and "mcpServers" in err and "must be a JSON object" in err, err[:90])
+        check("wire: non-object container leaves the file unwritten",
+              mcp_path.read_text(encoding="utf-8") == '{"mcpServers": []}')
+        # malformed opencode.json -> loud too, and .mcp.json stays merged
+        mcp_path.write_text(json.dumps({"mcpServers": {"other": {}}}), encoding="utf-8")
+        oc.write_text("not json {", encoding="utf-8")
+        r = subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "wire"], cwd=proj,
+                           env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}, "NEURONAV_EMBED_FAKE": "1"},
+                           capture_output=True, text=True)
+        err = (r.stderr or "") + (r.stdout or "")
+        check("wire: malformed opencode.json fails loud too",
+              r.returncode != 0 and "opencode.json" in err and "fix it or delete it" in err, err[:90])
+        check("wire: .mcp.json not truncated by the failed opencode merge",
+              sorted(json.loads(mcp_path.read_text(encoding="utf-8"))["mcpServers"]) == sorted(["other", "neuronav"]))
+        # tombstone: no write-temp debris survives any of the above paths
+        # (the .tmp scratch dir is a fixture, not debris — match the
+        # mkstemp prefix exactly)
+        check("wire: no temp-file debris left behind",
+              not list(proj.glob(".mcp.json.*.tmp")) and not list(proj.glob("opencode.json.*.tmp")), "")
+
+        # 4c. wire starts from scratch when .mcp.json is absent (no tombstone)
+        oc.write_text(good, encoding="utf-8")
+        mcp_path.unlink()
+        subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "wire"], cwd=proj,
+                       env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}, "NEURONAV_EMBED_FAKE": "1"},
+                       capture_output=True, text=True, check=True)
+        check("wire: recreates a deleted .mcp.json cleanly", mcp_path.is_file())
 
         # 5. one command end-to-end (fake embeds): index + bake in the project
         p2 = make_project(tmp / "second")

@@ -12,11 +12,18 @@ path. Same pattern as explore.py (focused, self-contained).
   ``"state_dir": "default"`` opting into the project store — issue #91:
   a state_dir-less config aborts at load, the silent live-store default
   is gone) + idempotent ``.neuronav/`` line in the project's
-  .gitignore. Never touches the neuronav install.
+  .gitignore. Never touches the neuronav install. Re-running init (or
+  wire's init-if-missing) NEVER clobbers an existing config (issue
+  #121) — the same existence guard as .neuroignore: an existing config
+  is left byte-identical and the re-run notes it.
 - wire: init if needed, then write/merge the project's ``.mcp.json``
   (and ``opencode.json`` when present) with NEURONAV_CONFIG pinned to
-  the project-local config. Cross-platform pure stdlib (replaces
-  tools/wire-project.ps1).
+  the project-local config. Existing MCP jsons are read BOM-tolerant
+  (utf-8-sig) and guarded: malformed content fails loud with a
+  "fix or delete" message instead of a raw traceback, and writes go
+  through a temp file + os.replace so a crash never leaves a truncated
+  file over the user's wiring (issue #121). Cross-platform pure
+  stdlib (replaces tools/wire-project.ps1).
 - --index chains rescan (+ viz bake when the optional viz add-on is
   installed; skipped with a note otherwise).
 
@@ -30,6 +37,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 TOOL_DIR = Path(__file__).resolve().parent
@@ -39,7 +47,10 @@ def scaffold(project: Path | None = None) -> Path:
     """Write the project-local config scaffold — no env/config switch.
     Returns the config path. Shared by init() and the universal mount's
     fresh-dir first contact (server.py, issue #131): one literal, so a
-    scaffold written mid-call is byte-identical to `onboard.py init`'s."""
+    scaffold written mid-call is byte-identical to `onboard.py init`'s.
+    Idempotent on the config (issue #121): an existing config.json is
+    left byte-identical — the same existence guard as .neuroignore, so a
+    re-run never discards user customizations."""
     import nav
     from extractors import EXTENSIONS
 
@@ -47,15 +58,18 @@ def scaffold(project: Path | None = None) -> Path:
     state = proj / ".neuronav"
     state.mkdir(parents=True, exist_ok=True)
     cfg_path = state / "config.json"
-    cfg = {
-        "root": str(proj),
-        "collection": "main",
-        "state_dir": "default",
-        "include_dirs": list(nav.WALK_DEFAULTS["include_dirs"]),
-        "extensions": sorted(EXTENSIONS),
-        "exclude_dirs": list(nav.WALK_DEFAULTS["exclude_dirs"]),
-    }
-    cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8", newline="\n")
+    if not cfg_path.is_file():
+        cfg = {
+            "root": str(proj),
+            "collection": "main",
+            "state_dir": "default",
+            "include_dirs": list(nav.WALK_DEFAULTS["include_dirs"]),
+            "extensions": sorted(EXTENSIONS),
+            "exclude_dirs": list(nav.WALK_DEFAULTS["exclude_dirs"]),
+        }
+        cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8", newline="\n")
+    else:
+        print(f"config exists — left as-is: {cfg_path.as_posix()}")
     ig = state / ".neuroignore"
     if not ig.is_file():
         ig.write_text(
@@ -86,6 +100,51 @@ def init(project: Path | None = None, index: bool = False) -> Path:
     return cfg_path
 
 
+def _read_merge_json(path: Path, key_path: str) -> dict:
+    """Read a project's user MCP json for merging. utf-8-sig so a
+    leading BOM (PowerShell Set-Content legacy) parses; a malformed body,
+    a non-object root, or a non-object merge container fails loud with a
+    fix message instead of a raw traceback (issue #121)."""
+    enc = "utf-8-sig"
+    try:
+        doc: dict = json.loads(path.read_text(encoding=enc))
+    except json.JSONDecodeError as e:
+        raise SystemExit(
+            f"'{path}' is not valid JSON ({e}) — fix it or delete it so "
+            "wire can manage the file"
+        ) from e
+    if not isinstance(doc, dict):
+        raise SystemExit(
+            f"'{path}' must be a JSON object (found {type(doc).__name__} at its "
+            f"root) — fix it or delete it so wire can merge {key_path}"
+        )
+    container = doc.get(key_path)
+    if container is not None and not isinstance(container, dict):
+        raise SystemExit(
+            f"'{path}': \"{key_path}\" must be a JSON object "
+            f"(found {type(container).__name__}) — fix it or delete it so "
+            "wire can merge the entry"
+        )
+    return doc
+
+
+def _write_json_atomic(path: Path, doc: dict) -> None:
+    """Write the updated json via a same-dir temp file + os.replace so a
+    crash mid-write never truncates the user's wiring (issue #121)."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".",
+                               suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(doc, indent=2) + "\n")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def wire(project: Path | None = None, index: bool = False) -> Path:
     """init if needed, then write/merge project MCP entries. Returns the
     .mcp.json path. Never touches the install."""
@@ -106,19 +165,19 @@ def wire(project: Path | None = None, index: bool = False) -> Path:
         "env": {"NEURONAV_CONFIG": str(cfg_path)},
     }
     mcp_path = proj / ".mcp.json"
-    doc: dict = json.loads(mcp_path.read_text(encoding="utf-8")) if mcp_path.is_file() else {}
+    doc = _read_merge_json(mcp_path, "mcpServers") if mcp_path.is_file() else {}
     doc.setdefault("mcpServers", {})["neuronav"] = entry
-    mcp_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8", newline="\n")
+    _write_json_atomic(mcp_path, doc)
     oc_path = proj / "opencode.json"
     if oc_path.is_file():
-        oc: dict = json.loads(oc_path.read_text(encoding="utf-8"))
+        oc = _read_merge_json(oc_path, "mcp")
         oc.setdefault("mcp", {})["neuronav"] = {
             "type": "local",
             "command": [sys.executable, "-X", "utf8", server],
             "enabled": True,
             "environment": {"NEURONAV_CONFIG": str(cfg_path)},
         }
-        oc_path.write_text(json.dumps(oc, indent=2) + "\n", encoding="utf-8", newline="\n")
+        _write_json_atomic(oc_path, oc)
     return mcp_path
 
 
