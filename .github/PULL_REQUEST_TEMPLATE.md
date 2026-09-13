@@ -13,8 +13,13 @@
 
 ## Gate
 
-CI is the minimum bar (hermetic six: `test_strata`, `test_crosslang`,
-`test_pyhard`, `test_cpphard`, `test_autorescan`, `test_project_mode`).
+CI is the minimum bar (hermetic twenty: `test_strata`, `test_crosslang`,
+`test_pyhard`, `test_cpphard`, `test_autorescan`, `test_server_stdio`,
+`test_searchtext`, `test_project_mode`, `test_baseindex`, `test_mwires`,
+`test_clusterinv`, `test_recall`, `test_embedprov`, `test_repomap`,
+`test_selfindex`, `test_explore`, `test_verifier`, `test_bench`,
+`test_bakeint`, `test_portability`), plus the `viz` job for visual
+changes.
 
 - [ ] CI green
 - [ ] Extra local suites this change touches: <!-- e.g. test_viz (needs a fresh bake), test_target_regression, test_server_stdio, test_mwires, test_embedprov -->

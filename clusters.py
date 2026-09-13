@@ -695,7 +695,10 @@ def _doc_tokens(paths: list[tuple[str, str]]) -> list[str]:
     for p, cls in paths:
         toks.extend(t for t in tokenize_ident(_stem(p)) if _ok_token(t))
         if cls:
-            toks.extend(t for t in tokenize_ident(cls) if _ok_token(t))  # x2 weight
+            # class tokens join at the same weight as path tokens (appended
+            # once, not doubled) — the c-TF-IDF denominator normalizes over
+            # the combined token count
+            toks.extend(t for t in tokenize_ident(cls) if _ok_token(t))
     return toks
 
 
@@ -835,51 +838,6 @@ def _centroid_path(paths: list[tuple[str, str]], rows: dict[str, int], mat) -> s
         if sim > best_sim or (sim == best_sim and p < best):
             best, best_sim = p, sim
     return best
-
-
-def _split_cluster(
-    cluster: dict, rows: dict[str, int], mat, sim: float, depth: int
-) -> list[dict]:
-    paths = [p for p, _ in cluster["paths"]]
-    # 1. one dir segment covering >=60% -> group by subdirectory, done
-    seg_counts: Counter = Counter()
-    for p in paths:
-        for seg in set(dir_segments(p)):
-            seg_counts[seg] += 1
-    groups: dict[str, list[int]] = defaultdict(list)
-    if seg_counts:
-        seg, cnt = sorted(seg_counts.items(), key=lambda kv: (-kv[1], kv[0]))[0]
-        if cnt / len(paths) >= 0.60:
-            for i, p in enumerate(paths):
-                groups["/".join(p.split("/")[:-1])].append(i)
-            if len(groups) < 2:
-                # flat folder: subdir grouping returns the blob itself —
-                # fall through to the embedding split instead
-                groups = defaultdict(list)
-    if not groups:
-        # 2. agglomerative over the blob's embeddings only
-        from sklearn.cluster import AgglomerativeClustering
-
-        idxs = [rows[p] for p in paths if p in rows]
-        if len(idxs) < len(paths):
-            return [dict(cluster)]  # embeddings missing — leave untouched
-        labels = AgglomerativeClustering(
-            n_clusters=None,
-            distance_threshold=1.0 - sim,
-            metric="cosine",
-            linkage="average",
-        ).fit_predict(mat[idxs])
-        for pos, lab in enumerate(labels):
-            groups[int(lab)].append(pos)
-    out: list[dict] = []
-    for _, member_pos in sorted(groups.items(), key=lambda kv: (-len(kv[1]), paths[kv[1][0]])):
-        sub_paths = [cluster["paths"][i] for i in sorted(member_pos)]
-        sub = {"paths": sub_paths, "size": len(sub_paths)}
-        if depth < MAX_DEPTH and sub["size"] > BLOB_MIN:
-            out.extend(_split_cluster(sub, rows, mat, RECURSE_SIM, depth + 1))
-        else:
-            out.append(sub)
-    return out or [dict(cluster)]
 
 
 def _merge_small(subs: list[dict], rows: dict[str, int], mat) -> list[dict]:

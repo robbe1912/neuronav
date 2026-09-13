@@ -17,8 +17,8 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 
 - **No target-repo data in tracked files** — the default config points at a
   private repo; NOTHING derived from it may be committed: no file/class/
-  function names, no paths, no screenshots, no measured baselines (qa/ is
-  gitignored machine-local state). Tests and probes must be config-agnostic
+  function names, no paths, no screenshots, no measured baselines (`.tmp/qa/`
+  is gitignored machine-local state). Tests and probes must be config-agnostic
   (derive targets from the loaded index, see `test_viz`/`probe_scene_placement`/
   `test_server_stdio`); regression canaries live in the gitignored
   `config.json` under `regression_canaries`. Same rule for every future
