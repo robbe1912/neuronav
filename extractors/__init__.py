@@ -78,7 +78,7 @@ from extractors.gdscript import (  # noqa: F401  (re-export)
     UNDERSCORE_SHIELD,
     VIRTUALS,
     WALK_EXTS,
-    WIRING_ONLY_SUFFIXES,
+    SCENE_FILE_SUFFIXES,
     parse_gd,
     parse_tscn,
     res_to_rel,
@@ -115,7 +115,7 @@ EXTENSIONS: dict[str, object] = {
 def sync_parseable(suffix: str) -> bool:
     """True when sync_functions may parse the suffix into funcs: an
     extractor exists AND the file is not wiring-only scene data."""
-    return EXTENSIONS.get(suffix.lower()) is not None and suffix not in WIRING_ONLY_SUFFIXES
+    return EXTENSIONS.get(suffix.lower()) is not None and suffix not in SCENE_FILE_SUFFIXES
 
 
 def registry_for(suffix: str):
@@ -149,3 +149,8 @@ WIRE_SEQUENCE = (
     gdscript.wire_tscn,
     cpp.wire,
 )
+
+
+# registry choreography bind (langsep) — see extractors/gdscript.py's
+# _PASS_* block for the rationale.
+_PASS_FACTS = _facts_sweep

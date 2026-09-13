@@ -104,10 +104,6 @@ ADDON_VIRTUALS: dict[str, set[str]] = {
     for base in ("btaction", "btcondition", "btdecorator", "btcomposite", "bttask")
 }
 
-# custom-resource scene files that reference scripts via ext_resource and
-# StringName routing — the wiring-walk suffix set (graph consumes this via the
-# registry; shared modules never spell a language suffix)
-SCENE_WIRING_SUFFIXES = frozenset({".tres"})
 
 # entry bases that run from the editor/tooling, outside the game's call graph
 # (compared against fs.extends.lower(), so store the lowercased spelling)
@@ -471,8 +467,16 @@ def parse(path: Path, rel: str) -> FileSym:
 
 # Godot-profile default walk (nav WALK_DEFAULTS fallback).
 WALK_EXTS = (".gd", ".tscn")
-# Suffixes parsed for scene wiring only, never fn-indexed (sync_functions).
-WIRING_ONLY_SUFFIXES = frozenset({".tscn"})
+# The scene-wiring suffix PAIR (deliberate siblings, not a merged set):
+# SCENE_WIRING_SUFFIXES walks custom-resource files that CARRY wiring
+# (.tres ext_resource/StringName routing — harvest_scene_wiring walks
+# these beside the indexed tree); SCENE_FILE_SUFFIXES marks the scene
+# documents THEMSELSES (.tscn — parsed for wiring shape only, never
+# fn-indexed: sync_functions reparses skip them, bake pair passes route
+# around them). Same family, different walks; shared modules consume
+# both through the registry and never spell a language suffix.
+SCENE_WIRING_SUFFIXES = frozenset({".tres"})
+SCENE_FILE_SUFFIXES = frozenset({".tscn"})
 # Dead-tier underscore shield, corpus-wide: Godot virtual names keep a
 # function out of the review tier on unresolved bases for EVERY language —
 # the shared rule consults this set for .py and .cpp files too (LJ-3).
@@ -926,3 +930,13 @@ def is_wiring_only(fs: FileSym) -> bool:
     funcs to scan; sync reparses skip it; bake pair passes route around
     it). Scene files, not scripts."""
     return fs.ext == ".tscn"
+
+
+# registry choreography binds (langsep): BUILD_SEQUENCE/WIRE_SEQUENCE
+# dispatch these through the package attribute surface, which the
+# module scan cannot see — one module-var bind per hook keeps the
+# value-ref arm of the liveness scan honest (the same invariant that
+# keeps ENTRY_RULES-listed rules alive).
+_PASS_WIRING_HARVEST = harvest_scene_wiring
+_PASS_INHERITANCE = build_inheritance
+_PASS_TSCN_WIRE = wire_tscn

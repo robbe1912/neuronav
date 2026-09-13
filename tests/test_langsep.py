@@ -59,6 +59,9 @@ GUARD_IDIOMS = re.compile(
 # glob literals handed to rglob/glob/iter_root_files — `*.tscn` is a
 # suffix fact in disguise and escapes the quoted-suffix detector
 GLOB_LIT = re.compile(r"""["']\*\.(?:gd|tscn|tres|res|py|h|hpp|cc|cxx)["']""")
+# godot project-file section literals — repo-config facts that are still
+# language-family truths (project.godot walk, [autoload] section header)
+GODOT_LIT = re.compile(r"""["'](?:project\.godot|\[autoload\])["']""")
 PSEUDO_LIT = re.compile(r"""["']::(?:tscn|SIGNAL:|VAR:)["']""")
 # the one legal home for the pseudo spellings: their frozen constant defs
 GRAMMAR_DEF = re.compile(r"^(?:FN_KEY_SEP|TSCN_SUFFIX|SIGNAL_PREFIX|VAR_PREFIX)\s*=")
@@ -79,6 +82,10 @@ ALLOWED[("viz.py", 2838)] = "V-1: queued behind #123/#89 (data-flag contract)"
 # config/parametric walk filters — EXTS is the user's config include-set
 # and `suffixes` arrives as a caller argument (registry datum at the call
 # site); neither is a language truth hard-coded in nav
+ALLOWED[("clusters.py", 672)] = "PR2: autoload regex copy -> registry harvest hook (dual-consumer)"
+ALLOWED[("clusters.py", 665)] = "PR2: autoload regex copy -> registry harvest hook (dual-consumer)"
+ALLOWED[("graph.py", 244)] = "PR2: _parse_autoloads -> gdscript.harvest_autoloads (dual-consumer with clusters.py)"
+ALLOWED[("graph.py", 249)] = "PR2: _parse_autoloads -> gdscript.harvest_autoloads (dual-consumer with clusters.py)"
 ALLOWED[("nav.py", 467)] = "config walk filter (EXTS = user config)"
 ALLOWED[("nav.py", 497)] = "parametric walk filter (caller-supplied suffixes)"
 ALLOWED[("nav.py", 527)] = "config walk filter (EXTS = user config)"
@@ -98,6 +105,8 @@ def detectors(line: str) -> list[str]:
         why.append("jssuffix")
     if GLOB_LIT.search(line):
         why.append("glob")
+    if GODOT_LIT.search(line):
+        why.append("godot")
     return why
 
 
@@ -115,7 +124,7 @@ for f in SHARED:
         for kind in why:
             hits.setdefault(kind, []).append(f"{rel}:{i}: {line.strip()[:90]}")
 
-for kind in ("suffix", "guard", "pseudo", "reslogic", "jssuffix", "glob"):
+for kind in ("suffix", "guard", "pseudo", "reslogic", "jssuffix", "glob", "godot"):
     label = {
         "suffix": "no bare suffix literals in shared modules",
         "guard": "no ext/suffix guard idioms in shared modules",
@@ -123,6 +132,7 @@ for kind in ("suffix", "guard", "pseudo", "reslogic", "jssuffix", "glob"):
         "reslogic": "no res:// logic-strip idioms in shared modules",
         "jssuffix": "no JS suffix-regex leaks in the viz template",
         "glob": "no glob literals over language suffixes in shared modules",
+        "godot": "no godot project/section literals in shared modules",
     }[kind]
     found = hits.get(kind, [])
     check(label, not found, f"{len(found)} site(s)" + ("; first: " + found[0] if found else ""))
@@ -148,9 +158,13 @@ check("shared modules import extractors via the package only", not hits_import,
 sys.path.insert(0, str(HERE))
 from extractors import EXTENSIONS, registry_for  # noqa: E402
 
+# derived from the consumers-of-record: graph.py (scan_file, DYNAMIC_HINT,
+# is_entry_exempt, unresolved_base_review, stand_in_review, mention_review),
+# nav.py (stat_tags — F3: a missing stub crashed rescan on .py corpora),
+# bake/files_model.py + bake/wires.py (is_wiring_only)
 REQUIRED = ("parse", "ENTRY_RULES", "scan_file", "DYNAMIC_HINT",
             "is_entry_exempt", "unresolved_base_review", "stand_in_review",
-            "mention_review")
+            "mention_review", "stat_tags", "is_wiring_only")
 bad_contract = [
     f".{sfx}" for sfx, mod in sorted(EXTENSIONS.items())
     if not all(hasattr(mod, attr) for attr in REQUIRED)
@@ -162,15 +176,15 @@ check("registry_for round-trips every registered suffix",
       all(registry_for(s) is EXTENSIONS[s] for s in EXTENSIONS))
 
 try:
-    from extractors import WIRING_ONLY_SUFFIXES  # noqa: E402
+    from extractors import SCENE_FILE_SUFFIXES  # noqa: E402
 except ImportError:
-    WIRING_ONLY_SUFFIXES = None
-check("registry exports WIRING_ONLY_SUFFIXES", WIRING_ONLY_SUFFIXES is not None,
-      "extractors/__init__.py must export it (wiring-only suffixes like .tscn)")
-if WIRING_ONLY_SUFFIXES is not None:
-    check("WIRING_ONLY_SUFFIXES are registered suffixes",
-          WIRING_ONLY_SUFFIXES <= set(EXTENSIONS),
-          f"stray: {sorted(WIRING_ONLY_SUFFIXES - set(EXTENSIONS))}" or "OK")
+    SCENE_FILE_SUFFIXES = None
+check("registry exports SCENE_FILE_SUFFIXES", SCENE_FILE_SUFFIXES is not None,
+      "extractors/__init__.py must export it (scene-document suffixes like .tscn)")
+if SCENE_FILE_SUFFIXES is not None:
+    check("SCENE_FILE_SUFFIXES are registered suffixes",
+          SCENE_FILE_SUFFIXES <= set(EXTENSIONS),
+          f"stray: {sorted(SCENE_FILE_SUFFIXES - set(EXTENSIONS))}" or "OK")
 
 # ---- pin 4 (LJ-3): cross-language VIRTUALS shield survives the hook split ------
 # A .py fn named like a Godot virtual on an unresolved base stays "likely";

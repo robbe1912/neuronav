@@ -853,3 +853,14 @@ def _resolve_include(ctx, src_rel: str, inc: str) -> str:
 def is_wiring_only(fs: FileSym) -> bool:
     """C++ files always carry funcs — never wiring-only."""
     return False
+
+
+def stat_tags(text: str) -> tuple[str, str]:
+    """C++ has no class_name/extends header notion — empty tags."""
+    return ("", "")
+
+
+# registry choreography binds (langsep) — see extractors/gdscript.py's
+# _PASS_* block for the rationale.
+_PASS_WIRE = wire
+_PASS_FACTS = harvest_facts

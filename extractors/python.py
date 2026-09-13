@@ -979,3 +979,17 @@ def _module_method_dsts(mod_rel: str, meth: str, ctx) -> list[str]:
 def is_wiring_only(fs: FileSym) -> bool:
     """Python files always carry funcs — never wiring-only."""
     return False
+
+
+def stat_tags(text: str) -> tuple[str, str]:
+    """Python has no class_name/extends header notion — empty tags."""
+    return ("", "")
+
+
+# registry choreography binds (langsep) — see extractors/gdscript.py's
+# _PASS_* block for the rationale (attribute dispatch is invisible to
+# the module scan; the value-ref arm roots these binds).
+_PASS_REBIND = rebind_reexports_sweep
+_PASS_IMPORTS = import_liveness_sweep
+_PASS_ARG_REFS = arg_refs_sweep
+_PASS_FACTS = harvest_facts
