@@ -275,6 +275,58 @@ def main() -> None:
               "my-neuronav" in omp_doc3["mcpServers"] and "neuronav-omp-two" in omp_doc3["mcpServers"],
               str(sorted(omp_doc3["mcpServers"])))
 
+        # 4g. global-wire: ONE universal entry (no config pin, per-call dir
+        # routing, issue #131) in all four harness user configs; merge-only,
+        # idempotent, per-project pins preserved
+        gw_env = {
+            "NEURONAV_OMP_MCP": str(tmp / "omp-mcp.json"),
+            "NEURONAV_OPENCODE_MCP": str(tmp / "opencode-user.json"),
+            "NEURONAV_KILO_MCP": str(tmp / "kilo-mcp.json"),
+            "NEURONAV_ZCODE_MCP": str(tmp / "zcode-config.json"),
+        }
+        subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "global-wire"], cwd=proj,
+                       env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"},
+                            "NEURONAV_EMBED_FAKE": "1", **gw_env},
+                       capture_output=True, text=True, check=True)
+        gw_omp = json.loads((tmp / "omp-mcp.json").read_text(encoding="utf-8"))
+        gw_oc = json.loads((tmp / "opencode-user.json").read_text(encoding="utf-8"))
+        gw_ki = json.loads((tmp / "kilo-mcp.json").read_text(encoding="utf-8"))
+        gw_zc = json.loads((tmp / "zcode-config.json").read_text(encoding="utf-8"))
+        u_omp = gw_omp["mcpServers"]["neuronav"]
+        check("global-wire: omp universal entry carries no config pin",
+              "env" not in u_omp and u_omp["args"] == ["-X", "utf8", str(ROOT / "server.py")], str(u_omp))
+        check("global-wire: per-project omp pins survive beside the universal entry",
+              "my-neuronav" in gw_omp["mcpServers"] and "neuronav-omp-two" in gw_omp["mcpServers"])
+        oc_u = gw_oc["mcp"]["neuronav"]
+        check("global-wire: opencode local shape (command list, no environment)",
+              oc_u["type"] == "local" and oc_u["command"][0] == u_omp["command"]
+              and "environment" not in oc_u, str(oc_u))
+        ki_u = gw_ki["mcpServers"]["neuronav"]
+        check("global-wire: kilocode Cline shape (stdio, no autoApprove widening)",
+              ki_u["type"] == "stdio" and ki_u["command"] == u_omp["command"]
+              and "autoApprove" not in ki_u, str(ki_u))
+        zc_u = gw_zc["mcp"]["servers"]["neuronav"]
+        check("global-wire: zcode mcp.servers local shape",
+              zc_u["type"] == "local" and zc_u["command"] == u_omp["command"], str(zc_u))
+        before_oc = (tmp / "opencode-user.json").read_text(encoding="utf-8")
+        subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "global-wire"], cwd=proj,
+                       env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"},
+                            "NEURONAV_EMBED_FAKE": "1", **gw_env},
+                       capture_output=True, text=True, check=True)
+        check("global-wire: rerun idempotent",
+              (tmp / "opencode-user.json").read_text(encoding="utf-8") == before_oc
+              and json.loads((tmp / "kilo-mcp.json").read_text(encoding="utf-8")) == gw_ki)
+        gw_oc["mcp"]["other-server"] = {"type": "remote", "url": "x"}
+        (tmp / "opencode-user.json").write_text(json.dumps(gw_oc), encoding="utf-8")
+        subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "global-wire"], cwd=proj,
+                       env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"},
+                            "NEURONAV_EMBED_FAKE": "1", **gw_env},
+                       capture_output=True, text=True, check=True)
+        check("global-wire: unrelated harness servers preserved",
+              "other-server" in json.loads((tmp / "opencode-user.json").read_text(encoding="utf-8"))["mcp"])
+        check("global-wire: install stays read-only (no home config writes)",
+              (home_mcp.read_bytes() if home_mcp.exists() else None) == home_before)
+
         # 5. one command end-to-end (fake embeds): index + bake in the project
         p2 = make_project(tmp / "second")
         r = subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "wire", "--index"], cwd=p2,
