@@ -56,7 +56,7 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `layout.py` | pure strata/layout math for the bake: adjacency, iterative Tarjan SCC, strata depths, seeded force layout (moved verbatim from `viz.py`, issue #86; stdlib + numpy only, no nav/graph/chroma imports) |
 | `bake/` | pure per-job transforms for the viz DATA pipeline (issue #86 phase 2): `gitinfo` head/churn stamps, `files_model` J1-J4, `wires` J5-J8, `semantics` J11, `overlays` J13/J14/J17, `fnio` J15-J16, `budget` row-cap keeper — take g/clusters as args, no chroma/nav imports |
 | `onboard.py` | one-command project onboarding (issue #27): `init`/`wire` write `<project>/.neuronav/config.json` + MCP entries — the install stays read-only, OS-agnostic pure stdlib |
-| `tools/` | dev gate + viewer: `qa_readability.py` (readability/declutter gate), `serve.py` (no-cache viewer, exclusive bind + per-OS port-owner hint) |
+| `tools/` | dev gates: `qa_readability.py` (readability/declutter gate), `serve.py` (headless-dev no-cache HTTP for the bake only — production is opening `.neuronav/graph.html` directly, file://, issue #133; exclusive bind + per-OS port-owner hint) |
 | `config/` | named config profiles; `config.json` (root, gitignored) is the default |
 | `vendor/three-0.160.0/` | vendored three.js core + 4 addons, embedded at build (see below) |
 | `bench/` | recall benchmark: golden set, `run_bench.py`, committed results (`RESULTS.md`) — the numbers `docs/comparison.md` cites |
@@ -71,8 +71,9 @@ to the former single string, one script tag; the `__DATA__` and
 `__IMPORTMAP__` replaces are unchanged.
 Edit JS directly, but `graph.html` bakes the template at
 `generate()` time: **regen after every template edit** or you test stale JS
-(this has bitten us). Serve the bake via `python tools/serve.py`
-(no-cache, 127.0.0.1:8791).
+(this has bitten us). Production opens `<state_dir>/graph.html` directly
+(file:// — the bake is self-contained, issue #133); only headless dev
+rigs serve it via `python tools/serve.py` (no-cache, 127.0.0.1:8791).
 
 - `window.__dbg` is the harness contract: tests read `alphaTgt`, `bucketPosIB`,
   `hubCap`, `fns`, `meta`, `fnLod`, `busPts`, `corridorCensus`, ... — extend it,
@@ -145,8 +146,9 @@ network dependencies — keep it that way; never add a CDN reference.
 Playwright harness gotchas: launch `channel="chrome"`; it serves `graph.html`
 on an ephemeral loopback port (issue #132) — viz gates may run concurrently,
 and orphaned-process port holds / TIME_WAIT rerun failures are structurally
-gone. `tools/serve.py` keeps its explicit port by design (user-facing). The
-harness is config-agnostic: assertions data-gate on index content (dead
+gone. (`tools/serve.py`, the headless-dev-only viewer, keeps its explicit
+port by design.) The harness is config-agnostic: assertions data-gate on
+index content (dead
 files, cycles, clusters) so the self-index, the frozen corpus, and the
 target repo all run clean (issue #97: interaction checks skip loudly when
 the index shape cannot exercise them — no shape is silently assumed).

@@ -746,8 +746,9 @@ def visualize(dir: str = "") -> str:
     Nodes = files (colored by subsystem cluster, red-tinted when they contain
     dead-code candidates), edges = calls/instancing/signals. Search box,
     cluster filter chips, dead-code toggle, click for connections.
-    Returns the absolute path — open it in a browser. Regenerate after
-    rescan if the graph changed materially.
+    Returns the bake path + its openable file:// URI — the file is fully
+    self-contained and boots directly in a browser (issue #133). Regenerate
+    after rescan if the graph changed materially.
 
     dir="" serves the boot config's repo; any other path routes this one
     call to that checkout (issue #131 — a fresh dir onboards on first
@@ -765,7 +766,13 @@ def visualize(dir: str = "") -> str:
                     "Restore viz.py to re-enable the bake.")
 
         out = viz.ensure_bake()
-        return f"3D graph written to {out} — open it in a browser (double-click or `start {out}`)"
+        # production = open the self-contained bake directly (file://);
+        # serve.py exists for headless dev rigs only, never auto-launched
+        # from a stdio server (issue #133).
+        return (
+            f"3D graph written to {out}. Open the fully self-contained bake "
+            f"directly: {out.as_uri()}"
+        )
 
 
 # ---- auto-rescan freshness gate (issue #19) --------------------------------

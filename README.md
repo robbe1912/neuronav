@@ -24,7 +24,7 @@ other code-graph tools (CodeGraph, aider repo map, SCIP).
 | `crosstalk()` | which subsystem clusters are wired together (cross-cluster coupling report) |
 | `dead_code(n)` | unreachable-function candidates, tiered likely/review - candidates, never verdicts |
 | `duplicates(n)` | exact-clone function bodies (dedup targets) |
-| `visualize()` | generate interactive 3D graph.html (serve statically, open in browser) |
+| `visualize()` | generate interactive 3D graph.html (open the baked file directly — see [3D visualizer](#3d-visualizer-optional-add-on)) |
 | `rescan()` | incremental re-index (vectors + functions + graph) — the explicit always-sync variant; read tools already auto-rescan on worktree drift |
 
 All read-only tools carry `readOnlyHint`; `rescan` is the one mutating tool.
@@ -198,11 +198,22 @@ track them in the project repo, and teammates seed straight from there
 The **core** is the index (chroma) + hybrid recall (BM25F + vector + RRF)
 + graph + MCP server. The visualizer is an add-on that ships enabled:
 `viz.py` bakes a frozen deterministic layout + full graph data into a single
-self-contained `graph.html` (`tools/serve.py` serves it, `tools/qa_readability.py`
-gates it). Removing `viz.py` (+ its `layout.py`/`bake/` leaves) + `vendor/`
+self-contained `graph.html` (`tools/qa_readability.py` gates it). Removing
+`viz.py` (+ its `layout.py`/`bake/` leaves) + `vendor/`
 strips it cleanly — `onboard.py --index`
 skips the bake with a note, the MCP `visualize()` tool answers with a
 pointer instead of a bake, and every other tool keeps working.
+
+The bake lands at `<project>/.neuronav/graph.html` (per-project state,
+issue #15). **Production = open that file directly**: it is fully
+self-contained — vendored three.js is embedded as base64 `data:` URIs, so
+it boots from `file://` with zero network dependencies. The `visualize()`
+MCP tool appends the openable `file://` path to its result; `onboard.py
+init|wire --index` prints the per-OS open command (`start` on Windows,
+`open` on macOS, `xdg-open` on Linux). `tools/serve.py` remains for
+headless dev rigs only — it adds no-cache HTTP semantics for browser
+automation, not a production viewer; nothing auto-launches from the MCP
+server.
 Hover = 1-hop greyout, focus mode with animated call direction, live
 search with highlighted matches + click-to-focus on hubs and function
 tiers, strata (height = call depth from entry points), cluster supernodes,

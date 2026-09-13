@@ -49,7 +49,14 @@ Operational notes:
   with `node --check` on the extracted string (or paste into node) before
   running the gate.
 
-## serve.py — no-cache dev viewer
+## serve.py — headless-dev no-cache viewer only (issue #133)
+
+Production = open the bake directly: `<state_dir>/graph.html` is fully
+self-contained and boots from file:// (`start <proj>/.neuronav/graph.html`
+on Windows, `open` on macOS, `xdg-open` on Linux; `onboard.py init|wire
+--index` prints the right one). `tools/serve.py` exists ONLY for headless
+dev rigs that need no-cache HTTP semantics for browser automation — it is
+NOT the production viewer.
 
 `python tools/serve.py [--port 8791] [--config CONFIG]` - binds 127.0.0.1
 exclusively (issue #40): SO_EXCLUSIVEADDRUSE on Windows, plain EADDRINUSE

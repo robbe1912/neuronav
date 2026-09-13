@@ -38,7 +38,7 @@ the self-index or any scratch store via `NEURONAV_CONFIG`.
 | `viz.py` | optional add-on: data build + embedded three.js template -> `graph.html` |
 | `layout.py` | pure strata/layout math for the viz bake (stdlib + numpy only) |
 | `bake/` | pure per-job transforms for the viz DATA pipeline (g/clusters in, DATA rows out) |
-| `tools/` | dev gate (`qa_readability.py`) + no-cache bake viewer (`serve.py`) |
+| `tools/` | dev gates: `qa_readability.py` (readability/declutter gate) + headless-dev-only no-cache HTTP for the bake (`serve.py`; production opens `.neuronav/graph.html` directly via file:// — issue #133) |
 | `bench/` | recall benchmark: golden set + `run_bench.py`, results committed in `bench/RESULTS.md` |
 
 ## Ground rules
