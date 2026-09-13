@@ -1,9 +1,27 @@
-# Shared page-harness for test_viz.py and tools/qa_readability.py — the
-# helpers both gates need: provenance banner, HTTP serving on an ephemeral
-# loopback port, Chrome launch, page open + settle, __dbg probe, and the
-# CheckLog PASS/FAIL accumulator. Importable directly (`_page_harness`,
-# cwd=tests/) or as a package module (`tests._page_harness`, repo root on
-# sys.path).
+# Shared Playwright page harness for the viz suites (issue #86 strand R9).
+# Everything tests/test_viz.py and tools/qa_readability.py duplicated, in
+# one place — the suites keep their own assertions verbatim; nothing here
+# may weaken or drop a check:
+#   serve()     no-cache loopback server on an EPHEMERAL port (issue #132:
+#               concurrent viz gates can no longer collide on a fixed port,
+#               and a rerun never trips over the previous run's TIME_WAIT
+#               socket). The pre-#120 `reuse` double-bind option is gone:
+#               every rider binds exclusively (qa_readability dropped its
+#               allow_reuse_address shadow-bind, issue #120).
+#   launch()    real system Chrome via channel="chrome" (no browser download).
+#   open_page() 1600x900 page, favicon stubbed, graph.html loaded and
+#               settled; optional console/pageerror capture (#98 class:
+#               uncaught JS errors ride the pageerror channel even when no
+#               console.error call is made).
+#   boot_banner() line-1 provenance stamp: which config won, which state
+#               dir, and the graph.html size/mtime about to be served —
+#               a wrong-bake run is visible before the first check (#89
+#               class; CodeRabbit on #145).
+#   CheckLog    the check(name, cond, detail) accumulator with the suite's
+#               summary/exit contract: every failed check named at the end,
+#               exit 1 on any.
+# Import: test_viz gets this via sys.path[0] (tests/); qa_readability via
+# the repo root on sys.path (`tests._page_harness`).
 import http.server
 import os
 import socket
@@ -58,11 +76,7 @@ def port_owner_hint(port: int) -> str:
     return f"lsof -i :{port}  (or: ss -ltnp)"
 
 
-class _ReuseTCPServer(socketserver.TCPServer):
-    allow_reuse_address = True
-
-
-def serve(directory, reuse: bool = False, port: int = 0):
+def serve(directory, port: int = 0):
     """No-cache HTTP server for `directory` on a loopback port.
 
     `port` defaults to 0 — the ephemeral-port law (#145/#132): gates
@@ -70,22 +84,21 @@ def serve(directory, reuse: bool = False, port: int = 0):
     exists for diagnosis and the bind-refusal contract (#123): a taken
     port must fail LOUDLY, never as a raw traceback — SO_EXCLUSIVEADDRUSE
     on Windows (the serve.py issue #40 pattern) also stops a second
-    listener from silently shadowing the first. `reuse` preserves the
-    historic bind difference: qa_readability bound with
-    allow_reuse_address, test_viz without.
+    listener from silently shadowing the first. The pre-#120 `reuse`
+    option (qa_readability's allow_reuse_address shadow-bind) is gone:
+    an orphaned prior run must fail the next bind loudly, never
+    silently keep serving a stale bake.
     Teardown is the caller's: httpd.shutdown() then httpd.server_close().
     """
     boot_banner(directory)
     handler = partial(http.server.SimpleHTTPRequestHandler, directory=str(directory))
-    cls = _ReuseTCPServer if reuse else socketserver.TCPServer
     # exclusive-bind dance (issue #40): construct dormant, arm the socket
     # option, then bind/activate explicitly, so a taken port raises
-    # EADDRINUSE instead of shadowing (allow_reuse_address and
-    # SO_EXCLUSIVEADDRUSE are mutually exclusive on Windows — only the
-    # non-reuse path arms it).
-    httpd = cls(("127.0.0.1", port), handler, bind_and_activate=False)
+    # EADDRINUSE instead of shadowing.
+    httpd = socketserver.TCPServer(("127.0.0.1", port), handler,
+                                   bind_and_activate=False)
     try:
-        if sys.platform == "win32" and not reuse:
+        if sys.platform == "win32":
             httpd.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         httpd.server_bind()
         httpd.server_activate()
