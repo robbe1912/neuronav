@@ -2,7 +2,10 @@
 
 Parses one .py file into a FileSym:
 - funcs: every ``def``/``async def`` (class methods included, flat names);
-  bodies are indent-delimited (python indent = 4 spaces)
+  bodies are indent-delimited (python indent = 4 spaces); params/ret come
+  from the AST signature (issue #122) — the leading self/cls receiver of
+  methods is implicit and excluded, so the signature surface matches the
+  gd/cpp display contract
 - members: ``self.x`` assignments in methods (typed or ``= Klass(``)
   plus class-level annotations (``x: T``)
 - consts: ``from <repo module> import X`` / ``import <repo module>`` ->
@@ -12,6 +15,8 @@ Parses one .py file into a FileSym:
   @pytest.fixture-decorated funcs, @property/@name.setter accessors
   (attribute-dispatched — GDScript ``set(v):``/``get():`` analog) and
   quoted names in ``__all__`` (the declared export surface)
+- per-func IO parity with gd: writes (``self.x =``) and mut_params from a
+  body scan (issue #122)
 
 Body scanning (call edges) lives in graph._scan_body_py, keyed on fs.ext.
 """
@@ -280,6 +285,113 @@ def _harvest_ast(tree: ast.Module, path: Path, fs: FileSym) -> None:
         frontier.extend(sorted((class_refs.get(cls, set()) & set(classes)) - seen))
 
 
+# mutators callable on list/dict/set/pass-by-ref objects (gdscript's
+# _MUTATING_METHODS analog — the py member/param parity surface)
+_MUTATING_METHODS = {
+    "add", "append", "appendleft", "clear", "discard", "extend",
+    "insert", "pop", "popleft", "remove", "reverse", "setdefault",
+    "sort", "update",
+}
+
+
+def _line_starts(text: str) -> list[int]:
+    """Char offsets of each line's start in ``text`` — the fast lookup
+    table for _seg (ast.get_source_segment re-splits the whole source per
+    call; O(funcs x lines) is too slow for monster files). Universal
+    newlines: splitlines(True) keeps the terminator in each span, so the
+    running sum lands on the next line's first char for \n, \r\n and \r."""
+    pos = [0]
+    for ln in text.splitlines(True):
+        pos.append(pos[-1] + len(ln))
+    return pos
+
+
+def _seg(node: ast.expr | None, starts: list[int], src: str) -> str:
+    """Exact source text of an AST node (any span, multi-line included) —
+    the get_source_segment result without the per-call resplit. '' for a
+    missing node or a lost-token position."""
+    if node is None or getattr(node, "col_offset", -1) < 0:
+        return ""
+    end_line = getattr(node, "end_lineno", None)
+    if end_line is None or getattr(node, "end_col_offset", -1) < 0:
+        return ""
+    s = starts[max(0, node.lineno - 1)] + node.col_offset
+    e = starts[end_line - 1] + node.end_col_offset
+    return src[s:e]
+
+
+def _fn_signature(
+    fn: ast.AST | None, src: str | None = None, starts: list[int] | None = None
+) -> tuple[list[tuple[str, str]], str]:
+    """-> ([(name, type)], ret) for a FunctionDef/AsyncFunctionDef node.
+
+    Source-order params (positional-only, positional-or-keyword, vararg,
+    keyword-only, kwarg) with their annotations in signature order — the
+    display contract sync_functions/repo_map/fnio all consume. A
+    ``None`` node (unparseable-file fallback scan) and a parse-error
+    fallback tree with no source (segments unavailable) both degrade:
+    names/types empty for the former, declared types '' for the latter.
+    """
+    if fn is None or src is None:
+        return [], ""
+    if starts is None:
+        starts = _line_starts(src)
+    a = fn.args
+    t = lambda an: _seg(an, starts, src)  # noqa: E731
+    pairs = [(x.arg, t(x.annotation)) for x in a.posonlyargs]
+    pairs += [(x.arg, t(x.annotation)) for x in a.args]
+    if a.vararg is not None:
+        pairs.append((a.vararg.arg, t(a.vararg.annotation)))
+    pairs += [(x.arg, t(x.annotation)) for x in a.kwonlyargs]
+    if a.kwarg is not None:
+        pairs.append((a.kwarg.arg, t(a.kwarg.annotation)))
+    return pairs, t(fn.returns)
+
+
+def _ast_funcs(tree: ast.AST | None) -> tuple[dict[str, ast.AST], set[int]]:
+    """(def line -> FunctionDef node, def lines that are CLASS METHODS) —
+    the AST signature truth the line scan's keyed merge reads from.
+    Column-0 strings no longer desync the scan (issue #50), so the dict
+    is exact either way. The method set is precise: a def whose immediate
+    parent scope is a class body, recursing through nested classes but
+    never into function bodies — closures keep their own receivers."""
+    funcs: dict[str, ast.AST] = {}
+    methods: set[int] = set()
+    if tree is None:
+        return funcs, methods
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            funcs[node.lineno] = node
+    # class-body walk without descending into defs: direct defs (and defs
+    # of nested classes) are methods
+    stack = [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]
+    while stack:
+        cls = stack.pop()
+        for stmt in cls.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                methods.add(stmt.lineno)
+            elif isinstance(stmt, ast.ClassDef):
+                stack.append(stmt)
+    return funcs, methods
+
+
+def _scan_io(body: str, params: list) -> tuple:
+    """-> (writes, mut_params) member/param mutation sets for a body
+    (gdscript._scan_io's python analog — no member_names param: python
+    member writes are always ``self.x =``, bare assigns are locals).
+    Purely syntactic: member writes = ``self.x =`` (augmented too); param
+    mutation = a param name followed by a known mutating method call.
+    """
+    writes = set(re.findall(r"\bself\.([A-Za-z_]\w*)\s*=(?!=)", body))
+    writes |= set(re.findall(r"\bself\.([A-Za-z_]\w*)\s*(?:\+|-|\*|/|%)=(?!=)", body))
+    pnames = {p for p, _t in params}
+    mut = set()
+    for pm in re.finditer(r"\b([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\(", body):
+        if pm.group(1) in pnames and pm.group(2) in _MUTATING_METHODS:
+            mut.add(pm.group(1))
+    return writes, mut
+
+
 def _bind_module_var(asg: ast.Assign, fs: FileSym, classes: dict[str, set[str]]) -> None:
     """Module-level assignment facts:
     - value ref: `nav.embed = _counting` / `HOOK = helper` hands a file
@@ -324,6 +436,8 @@ def parse(path: Path, rel: str) -> FileSym:
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 def_end[node.lineno] = node.end_lineno
+    ast_fns, ast_methods = _ast_funcs(tree)
+    line_starts = _line_starts(text)
 
     in_tq = ""  # open triple-quote sentinel
     class_indents: list[int] = []  # open class headers' indents
@@ -425,7 +539,13 @@ def parse(path: Path, rel: str) -> FileSym:
                         break
                     j += 1
             body = "\n".join(lines[i:j])
-            merge_func(fs.funcs, rel, name, i + 1, body)
+            io_params, io_ret = _fn_signature(ast_fns.get(i + 1), text, line_starts)
+            # method receiver is implicit (gd/cpp parity): the signature
+            # surface shows only explicit args, never the leading self/cls
+            if i + 1 in ast_methods:
+                if io_params and io_params[0][0] in ("self", "cls"):
+                    io_params = io_params[1:]
+            merge_func(fs.funcs, rel, name, i + 1, body, params=io_params, ret=io_ret)
             # self.x members live INSIDE method bodies (consumed above) —
             # scan the slice: typed annotations and constructor calls
             if class_indents and class_indents[-1] < ind:
@@ -517,6 +637,10 @@ def parse(path: Path, rel: str) -> FileSym:
 
     if tree is not None:
         _harvest_ast(tree, path, fs)
+
+    # IO scan runs after the whole file is parsed (gdscript parity).
+    for fn in fs.funcs.values():
+        fn.writes, fn.mut_params = _scan_io(fn.body, fn.params)
 
     for nm in fixture_names:
         if nm in fs.funcs:

@@ -100,9 +100,24 @@ alive("__all__: exported funcs are roots", "exports.py", ["public_api", "public_
 stays_dead("__all__: non-export stays dead", "exports.py", "private_helper")
 
 # --- fixture: typehints.py ----------------------------------------------
-alive("hints: subscript value-type calls alive", "typehints.py", ["sweep", "sweep_all"])
+alive("hints: subscript value-type calls alive", "typehints.py", ["sweep", "sweep_all", "merge_peers"])
 alive("hints: hint-referenced methods alive", "typehints.py", ["refresh", "retire"])
 stays_dead("hints: control stays dead", "typehints.py", "unused_hint")
+_th = g.files["typehints.py"]
+check("hints: params extracted from AST signatures",
+      _th.funcs["sweep"].params == [("w", "Widget")]
+      and _th.funcs["sweep_all"].params == [("extra", "dict[str, Widget]")]
+      and _th.funcs["sweep_all"].ret == "None",
+      f"sweep={_th.funcs['sweep'].params} sweep_all={_th.funcs['sweep_all'].params}/{_th.funcs['sweep_all'].ret!r}")
+check("hints: method self receiver excluded from params",
+      _th.funcs["__init__"].params == [] and _th.funcs["refresh"].params == [],
+      f"__init__={_th.funcs['__init__'].params} refresh={_th.funcs['refresh'].params}")
+check("hints: untyped params keep names, empty types",
+      _th.funcs["merge_peers"].params == [("extra", "dict[str, Widget]")],
+      f"merge_peers={_th.funcs['merge_peers'].params}")
+check("hints: param mutation via mutating method call",
+      "extra" in _th.funcs["merge_peers"].mut_params,
+      f"mut={sorted(_th.funcs['merge_peers'].mut_params)}")
 
 # --- fixture: async_bodies.py -------------------------------------------
 alive(

@@ -20,8 +20,9 @@ class Func:
     line: int  # 1-based def line
     body: str
     # declared IO surface (params/ret from the signature; writes/mut_params
-    # from a body scan). Language-dependent fill; empty for languages that
-    # don't parse them yet. powers fn-panel signature display + mutator filter
+    # from a body scan). gd + py fill all four; cpp fills params/ret and
+    # defers writes/mut_params to v1.1 (its cpp.py header notes this).
+    # powers fn-panel signature display + mutator filter
     params: list = field(default_factory=list)      # [(name, type)]
     ret: str = ""                                   # declared return type
     writes: set = field(default_factory=set)        # members assigned (self.x =)
