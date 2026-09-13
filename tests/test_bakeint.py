@@ -99,6 +99,12 @@ def refusal(fn, label, needles):
 def no_constants(x):
     raise AssertionError(f"strict JSON violated: {x}")
 
+try:  # callback sanity at column 0 — parse_constant refs are not call sites (#96 class)
+    no_constants("NaN")
+    check("strict-JSON callback raises on constants", False, "no raise")
+except AssertionError:
+    check("strict-JSON callback raises on constants", True, "")
+
 
 # ---- 1. healthy store: bakes, strict JSON, importmap spliced ----------------
 nav.rescan()
