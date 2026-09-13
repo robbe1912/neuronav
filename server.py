@@ -96,7 +96,9 @@ def _validate_foreign_config(cfg_path: Path, target: Path) -> dict:
     one must fail THIS call as an MCP error, not SystemExit the server
     (nav's load-time aborts are for config-file-driven runs)."""
     try:
-        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        # utf-8-sig: a PowerShell-5-written config carries a BOM that a plain
+        # utf-8 read would die on (issue #119)
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as e:
         raise ValueError(
             f"dir '{target.as_posix()}' has an unreadable config ({cfg_path}: {e}) "

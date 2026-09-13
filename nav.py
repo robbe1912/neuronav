@@ -79,7 +79,10 @@ def _apply_config(path: Path | None) -> None:
             "unset the variable or point it at a real config json "
             "(onboard.py init writes one)"
         )
-    cfg: dict = json.loads(path.read_text(encoding="utf-8")) if path is not None else {}
+    # utf-8-sig: Windows tooling (PowerShell 5 Set-Content -Encoding utf8)
+    # writes a BOM that plain utf-8 reads keep — json.loads then dies on
+    # \ufeff with a cryptic JSONDecodeError (issue #119)
+    cfg: dict = json.loads(path.read_text(encoding="utf-8-sig")) if path is not None else {}
     # lazy import: extractors pulls graph-ish deps only for the suffix list
     from extractors import EXTENSIONS as _REGISTERED
     ROOT = Path(cfg.get("root") or Path.cwd())
@@ -180,7 +183,10 @@ def _neuroignore(path: Path | None) -> frozenset[str]:
     f = path.parent / ".neuroignore"
     if not f.is_file():
         return frozenset()
-    names = {ln.strip() for ln in f.read_text(encoding="utf-8").splitlines()
+    # utf-8-sig: a PowerShell-5-written .neuroignore carries a BOM that a
+    # plain utf-8 read would fold into the first name as \ufeff — silently
+    # re-including what the user excluded (issue #119)
+    names = {ln.strip() for ln in f.read_text(encoding="utf-8-sig").splitlines()
              if ln.strip() and not ln.lstrip().startswith("#")}
     return frozenset(n for n in names
                      if n not in ("", ".", "..") and "/" not in n and "\\" not in n)
@@ -1090,7 +1096,7 @@ def import_base() -> dict[str, int | str]:
         manifest_path = BASE_DIR / MANIFEST_NAME
         if not manifest_path.is_file():
             return {"skipped": 0}
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
         dim = manifest.get("dim")
         # stamps gate when present (#159): a manifest without dim is not
         # a mismatch — the model is the fingerprint, the shards carry
@@ -1124,6 +1130,15 @@ def import_base() -> dict[str, int | str]:
                 "exported_at": str(manifest.get("exported_at", ""))}
 
 if __name__ == "__main__":
+    # issue #119: a direct run piped through a cp1252/ascii console raises
+    # UnicodeEncodeError the moment a hit path is non-ASCII — the CLI is a
+    # console program, so force UTF-8 output regardless of the locale (the
+    # -X utf8 flag only arrives when launched via a wired onboard entry)
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     argv = list(sys.argv[1:])
     if argv and argv[0] == "--config":
         # switch to a second config (self-index etc.) before running:

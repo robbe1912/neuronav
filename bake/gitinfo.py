@@ -33,6 +33,11 @@ def churn(paths: list[str], root) -> list[float] | None:
     """
     try:
         root = str(root)
+        # git emits UTF-8 paths; without an explicit encoding the locale
+        # codec (cp1252 on Windows) decodes them to mojibake keys that
+        # never match node paths — or raises on undefined bytes, silently
+        # disabling the whole churn channel. errors="replace" keeps one
+        # weird path from killing the channel (issue #119).
         got = subprocess.run(
             ["git", "log", "--name-only", "--since=90.days", "--pretty=format:"],
             cwd=root,
