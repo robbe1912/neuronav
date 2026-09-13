@@ -5,6 +5,9 @@ Widget receiver. An annotated local (local: Widget = ...) binds the
 same way for later attribute calls.
 """
 
+#- @sweep_all ret None
+#- @merge_peers ret None
+
 
 class Widget:
     def __init__(self):
@@ -23,8 +26,13 @@ class Widget:
         local.refresh()  # annotated local receiver
 
 
+def merge_peers(extra: dict[str, Widget]) -> None:
+    extra.update({})  # param mutation via mutating method call
+
+
 def sweep(w: Widget) -> None:
     w.sweep_all({})
+    merge_peers({})
 
 
 def unused_hint() -> int:

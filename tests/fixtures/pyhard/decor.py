@@ -13,6 +13,7 @@ class Counter:
         self.n = 0
 
 #- @total defines func
+#- @total writes n
 #- entry total
     @property
     def total(self) -> int:
