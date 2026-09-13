@@ -1,6 +1,6 @@
 # AGENTS.md — tests/
 
-Twenty-six self-contained suites. Each is a standalone script — no pytest — run in
+Twenty-seven self-contained suites. Each is a standalone script — no pytest — run in
 its own process:
 
 ```
@@ -9,15 +9,19 @@ its own process:
 
 Exit 0 = all pass. Each suite bootstraps `sys.path` to the repo root and
 uses a local `check(name, cond)` helper (PASS/FAIL lines + failure count).
-CI (`.github/workflows/ci.yml`) runs twenty-two hermetic suites on ubuntu
+CI (`.github/workflows/ci.yml`) runs twenty-three hermetic suites on ubuntu
 with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
 `test_pyhard`, `test_cpphard`, `test_autorescan`, `test_server_stdio`,
 `test_searchtext`, `test_project_mode`, `test_baseindex`, `test_mwires`,
 `test_clusterinv`, `test_recall`, `test_embedprov`, `test_repomap`,
 `test_selfindex`, `test_explore`, `test_verifier`, `test_bench`,
-`test_bakeint`, `test_portability`, `test_bytelaws`, `test_walkguard`) plus a `viz` job that builds the
+`test_bakeint`, `test_portability`, `test_bytelaws`, `test_walkguard`,
+`test_qa_smoke`) plus a `viz` job that builds the
 frozen synthetic corpus (`tests/vizcorpus_build.py`) and runs `test_viz`
-against its hermetic store in a real browser (issue #100). The two e2e
+against its hermetic store in a real browser (issue #100), then re-runs
+`test_qa_smoke` there so its playwright battery leg executes (the suites
+job runs the same suite with that leg skipped via
+`NEURONAV_QA_SMOKE_NO_BROWSER=1`). The two e2e
 suites need NO committed store in CI (issue #180): on a fresh checkout
 (no `.neuronav/`, no checkout-local `config.json`) each self-bootstraps
 the self-index via one FAKE-embed rescan when `nav.count() == 0` — the
@@ -57,11 +61,12 @@ owner-side `test_chunking` and `test_truthful`.
 | `test_portability` | BOM-tolerant config reads (issue #119): BOM'd config.json / .neuroignore / base manifest / server `_validate_foreign_config` all read via `utf-8-sig`; git subprocess decode (`bake.gitinfo` head/churn) stays UTF-8 under an ASCII locale; nav CLI reconfigures stdout under an ascii console | stdlib + chromadb import (hermetic temp config, fake embeds, own scratch git repo) |
 | `test_bytelaws` | byte-level output laws (issue #124): `_importmap` pinned against the five vendored files (CRLF→LF embed law, relative-specifier rewrite, determinism), UTF-8-no-BOM law asserted on every generated JSON artifact (onboard config scaffold, export_base manifest, baked graph.html DATA/importmap splices) | chromadb + numpy import (hermetic temp config + FAKE store, self-sets `NEURONAV_EMBED_FAKE=1`) |
 | `test_walkguard` | rescan walk + write robustness (issue #117): vanishing-file parse isolation (stderr note, never a crash), pruned root-wide .tres wiring walk honoring exclude_dirs + the cache floor, include-overlap dedupe on index key, fn-store purge/upsert inside the write lock | chromadb import (hermetic scratch corpus + FAKE embeds) |
+| `test_qa_smoke` | hermetic smoke for the QA gate + bake-only serve.py (issues #120, #124-3): leg A pins serve.py's surface over a dummy bake (sole route `/graph.html`, `/chroma`+`/base`+traversal 404s, loopback-Host allow/403, no-store, bytes-fresh); leg B (playwright) builds a tiny 5-file corpus + FAKE store + bake, runs `--declutter` (exit 0 + baseline shape pinned: identity block + every subject x angle x GATE_KEYS cell), `--after` (exit 0), and the refusals — tampered/schema/identity-less baselines exit 2 naming both identities, probe exhaustion exits 2, orphan-held port bind fails loudly with the owner hint | stdlib for leg A; playwright + chrome for leg B (everything under machine temp; `NEURONAV_QA_DIR` reroutes battery outputs) |
 
 `_page_harness.py` (issue #86 strand R9) is the shared Playwright harness
 the two browser suites ride: `serve()` (no-cache loopback server, ephemeral
-port per issue #132; `reuse=` preserves the suites' historic bind
-difference; an explicit `port=` arms the serve.py issue #40 exclusive-bind
+port per issue #132; the pre-#120 `reuse` double-bind option is gone —
+an explicit `port=` arms the serve.py issue #40 exclusive-bind
 refusal — a taken port exits 1 with the per-OS `port_owner_hint()` remedy,
 never a raw traceback, #123), `require_fresh_bake()` (#89 stale-bake
 refusal — test_viz calls it before serving), `launch()` (real Chrome),
@@ -129,6 +134,9 @@ Suites pick their own config; the shell must not pre-export one:
   (`--dest <scratch>` → repo-shaped GDScript corpus with real git
   history, fake embeds, own config + `.neuronav`; hermetic — never a
   live store).
+- `test_qa_smoke` builds everything it needs under the system temp dir
+  (tiny corpus, FAKE store, bake, QA output via `NEURONAV_QA_DIR`) — it
+  never reads or writes a live store or real baselines.
 - `test_target_regression` uses the default `config.json` — the target
   repo must exist at its configured path.
 

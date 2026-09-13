@@ -230,7 +230,10 @@ MCP tool appends the openable `file://` path to its result; `onboard.py
 init|wire --index` prints the per-OS open command (`start` on Windows,
 `open` on macOS, `xdg-open` on Linux). `tools/serve.py` remains for
 headless dev rigs only — it adds no-cache HTTP semantics for browser
-automation, not a production viewer; nothing auto-launches from the MCP
+automation, not a production viewer; it serves exactly `/graph.html`
+(nothing else in the state dir) and refuses non-loopback `Host` headers,
+so the chroma store / embedding shards beside the bake are never exposed;
+nothing auto-launches from the MCP
 server.
 Hover = 1-hop greyout, focus mode with animated call direction, live
 search with highlighted matches + click-to-focus on hubs and function
