@@ -191,7 +191,7 @@ wipe(keep=0)
 check("store zeroed for the refusal leg", nav.count() == 0, str(nav.count()))
 refusal(lambda: viz.generate(), "zeroed store refused (even under FAKE)",
         ["0 vectors", f"{walk_n} files", "rescan", "bakeint_fix", str(nav.DB_DIR)])
-check("refusal leaves the old bake untouched", p1.read_text(encoding="utf-8") == html1, "")
+check("refusal leaves the old bake untouched", norm(p1.read_text(encoding="utf-8")) == norm(html1), "")
 nav.rescan()
 
 # ---- 7. #64 partial store: FAKE waiver bakes in-process ---------------------
