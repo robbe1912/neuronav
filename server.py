@@ -5,17 +5,20 @@ tool lives in. Clients: OpenCode, Claude Code, VS Code, Codex, omp
 (`onboard.py wire --omp`, issue #130) — all stdio MCP.
 
 Tools:
-- explore(query, n=4, anchor=""): START HERE for "how does X work" — one call
-  returns windowed line-numbered source slices + callers/callees flow for the
-  best hits; slices ending mid-file print a continuation anchor — pass it back
-  to page forward without re-querying;
+- explore(query, n=4, anchor="", orientation=True): START HERE for "how does
+  X work" — one call returns windowed line-numbered source slices +
+  callers/callees flow for the best hits; slices ending mid-file print a
+  continuation anchor — pass it back to page forward without re-querying;
+  orientation=False (repeat calls) skips the constant repo-map+cluster-map
+  preamble and spends the budget on slices;
 - repo_map(budget_tokens=2048): token-budget repo map — files ranked by
   structural PageRank with key signatures, tree-grouped by dir; the cheap
   orientation preamble to call before any search
 - semantic_search(query, n=8): hybrid recall — vector + BM25F ranks fused,
   hits carry src provenance and 1-hop ctx neighbors
 - find_functions(query, n=6): semantic search over individual functions
-- symbol_graph(symbol, depth=1): callers/callees around a function or class
+- symbol_graph(symbol, depth=1): callers/callees around a function or class,
+  rows carry true counts + "+N more", node-capped with a truncation marker
 - search_text(pattern, glob="", files_only=False): regex text search over
   the indexed files — grep-class queries (exact strings, TODOs, literals),
   Zoekt-style caps: 20 files / 3 lines each, truncation markers + totals
@@ -23,10 +26,12 @@ Tools:
 - duplicates(): exact-clone function bodies (normalized hash groups)
 - clusters(k, min_sim): subsystem clusters over the embedding space
 - crosstalk(): cross-cluster coupling-hotspot report
-- context(path, depth=1): subsystem map for one file (cluster, structural
-  + semantic neighbors, hub rank) — the fresh-agent orientation tool
+- context(path, depth=1): subsystem map for one file (what it defines
+  (funcs/signals/members, capped), cluster, structural + semantic neighbors,
+  hub rank) — the fresh-agent orientation tool
 - visualize(): generate the interactive 3D graph (graph.html) and return path
-- rescan(): incremental re-index of everything above
+- rescan(): incremental re-index of everything above; appends a capped
+  changed/deleted path list when anything moved
 every tool also takes dir="<checkout>" (issue #131): routes that one call
 to another repo's index — one server entry per harness instead of one per
 project. A fresh dir onboards on first contact (the build answers in
@@ -228,7 +233,13 @@ def _fmt(hits: list[dict]) -> str:
 
 
 @mcp.tool(annotations=READONLY)
-def explore(query: str, n: int = 4, anchor: str = "", dir: str = "") -> str:
+def explore(
+    query: str,
+    n: int = 4,
+    anchor: str = "",
+    orientation: bool = True,
+    dir: str = "",
+) -> str:
     """One-call orientation for "how does X work" questions.
 
     Seeds on the function-level vector index (lexical fallback when the
@@ -242,6 +253,10 @@ def explore(query: str, n: int = 4, anchor: str = "", dir: str = "") -> str:
     instead of noise; total output is budget-capped so nothing
     externalizes to a file mid-answer.
 
+    orientation=False (issue #125, repeat calls) skips the constant
+    repo-map + cluster-map preamble and spends that budget on the file
+    shortlist and slices instead.
+
     dir="" serves the boot config's repo; any other path routes this one
     call to that checkout (issue #131 — a fresh dir onboards on first
     contact).
@@ -250,7 +265,7 @@ def explore(query: str, n: int = 4, anchor: str = "", dir: str = "") -> str:
         if prelude:
             return prelude
         _auto_rescan()
-        return _explore.run(query, n, anchor)
+        return _explore.run(query, n, anchor, orientation)
 
 
 MAX_MAP_BUDGET = 8192
@@ -303,6 +318,11 @@ def semantic_search(
     grep when hunting a concept: input handling, timed effects, save
     system, netcode, AI behavior, item storage.
 
+    Scores are RRF rank-fusion values (1/(60+rank) summed per side that
+    found the file), NOT cosine: ~0.03 is a strong top hit and 1.0 is
+    unreachable — compare rows by order, never against find_functions'
+    0-1 cosine scale (issue #125).
+
     two_pass=True runs the RepoCoder second retrieve (issue #74: pass-1
     hits donate identifiers to one re-embedded augmented query; engaged
     rows are tagged 2pass). graph_boost>0 turns on the 1-hop
@@ -331,6 +351,11 @@ def find_functions(query: str, n: int = 6, dir: str = "") -> str:
     "apply status damage", "spawn projectile", "refresh item UI".
     Returns path::func with line numbers — pair with symbol_graph to see
     how a hit connects.
+
+    Scores are embedding cosine similarity on a 0-1 scale (1.0 =
+    identical — issue #125: never read semantic_search's ~0.03 RRF
+    fusion values against this scale); degraded rows are tagged lexical
+    substring strengths, not cosine.
 
     dir="" serves the boot config's repo; any other path routes this one
     call to that checkout (issue #131 — a fresh dir onboards on first
@@ -447,6 +472,86 @@ def search_text(pattern: str, glob: str = "", files_only: bool = False, dir: str
         return "\n".join(lines)
 
 
+# symbol_graph output shaping (issue #125): the walk stays in graph.py
+# (resolution + BFS), but its rendering truncated silently twice — rows
+# capped at 8 names with no count, response cut at 40 LINES, i.e.
+# mid-node. Rendering here follows explore's _flow line law instead:
+# full counts on every row, "+N more" past the name cap, node-boundary
+# cut + marker past the node cap. An agent checking "is removing this
+# function safe?" must never read 8 callers as the total when there are 20.
+SYMBOL_MAX_NODES = 13   # nodes per response (3 lines each + marker keeps
+                        # the old 40-line discipline)
+SYMBOL_ROW_NAMES = 8    # caller/callee names per row before "+N more"
+
+
+def _sg_short(key: str) -> str:
+    path, _, name = key.partition("::")
+    return f"{path}#{name}"
+
+
+def _sg_row(label: str, keys: list[str]) -> str:
+    shown = ", ".join(_sg_short(k) for k in keys[:SYMBOL_ROW_NAMES]) or "-"
+    more = (
+        f" +{len(keys) - SYMBOL_ROW_NAMES} more"
+        if len(keys) > SYMBOL_ROW_NAMES
+        else ""
+    )
+    return f"    {label}: {len(keys)} ({shown}{more})"
+
+
+def _symbol_view(g, symbol: str, depth: int) -> str:
+    """graph.symbol_graph's walk rendered with visible truncation (issue
+    #125): same resolution and BFS, but every row carries its true count
+    and the response says when it cut. A total miss suggests difflib
+    closest matches instead of dead-ending — context()'s precedent."""
+    keys = g._resolve(symbol)
+    if not keys:
+        import difflib
+
+        names = sorted({n for fs in g.files.values() for n in fs.funcs})
+        by_lower = {n.lower(): n for n in names}
+        close = difflib.get_close_matches(
+            symbol.lower(), sorted(by_lower), n=3, cutoff=0.4
+        )
+        sug = (
+            f" Closest matches: {', '.join(by_lower[c] for c in close)}"
+            if close
+            else ""
+        )
+        return f"no function matching '{symbol}'{sug}"
+    blocks: list[str] = []
+    seen: set[str] = set()
+    frontier = set(keys)
+    for _ in range(depth):
+        nxt: set[str] = set()
+        for key in sorted(frontier):
+            if key in seen:
+                continue
+            seen.add(key)
+            callers = sorted(g.reverse.get(key, ()))
+            callees = sorted(g.edges.get(key, ()))
+            blocks.append(
+                f"{_sg_short(key)}\n"
+                + _sg_row("callers", callers)
+                + "\n"
+                + _sg_row("callees", callees)
+            )
+            nxt |= {
+                c for c in callees + callers
+                if not c.endswith(graph.TSCN_SUFFIX)
+            }
+        frontier = nxt - seen
+        if not frontier:
+            break
+    out = blocks[:SYMBOL_MAX_NODES]
+    if len(blocks) > SYMBOL_MAX_NODES:
+        out.append(
+            f"… truncated at {SYMBOL_MAX_NODES} of {len(blocks)} nodes — "
+            "pass depth=1 or a narrower symbol"
+        )
+    return "\n".join(out)
+
+
 @mcp.tool(annotations=READONLY)
 def symbol_graph(symbol: str, depth: int = 1, dir: str = "") -> str:
     """Structural map around a function or class: who calls it, what it calls.
@@ -455,6 +560,12 @@ def symbol_graph(symbol: str, depth: int = 1, dir: str = "") -> str:
     to check if removing a function is safe, or to understand a subsystem's
     shape. depth=2 gives one hop beyond direct neighbors. Pair with
     find_functions when you only know the concept, not the name.
+
+    Resolution (issue #125, now documented): exact function name, then
+    class name (all its methods), then case-insensitive substring — up to
+    10 roots. Every row shows its true count with the first 8 names
+    ("+N more" past that); the response caps at 13 nodes with a
+    truncation marker; a total miss suggests closest matches.
 
     dir="" serves the boot config's repo; any other path routes this one
     call to that checkout (issue #131 — a fresh dir onboards on first
@@ -465,7 +576,7 @@ def symbol_graph(symbol: str, depth: int = 1, dir: str = "") -> str:
             return prelude
         _auto_rescan()
         depth = max(1, min(depth, 3))
-        return graph.get_graph().symbol_graph(symbol, depth)
+        return _symbol_view(graph.get_graph(), symbol, depth)
 
 
 @mcp.tool(annotations=READONLY)
@@ -675,6 +786,39 @@ def _ctx_overview(g) -> str:
     return "\n".join(lines)
 
 
+CTX_DEFINES_CAP = 12  # names per kind in context()'s defines section
+
+
+def _capped(names: list[str], cap: int) -> str:
+    """First `cap` names, sorted by the caller, then an explicit +N more —
+    the counts-everywhere discipline of explore's flow line (issue #125)."""
+    shown = ", ".join(names[:cap])
+    return shown + (f" +{len(names) - cap} more" if len(names) > cap else "")
+
+
+def _render_defines(fs) -> list[str]:
+    """What the file declares (issue #125): capped funcs/signals/members
+    rows. The fresh-agent entry point used to emit every orientation
+    fact EXCEPT the file's own API surface, forcing a blind read — this
+    completes find_functions -> context -> read in one call. Funcs in
+    definition order, signals/members sorted: deterministic."""
+    lines: list[str] = []
+    funcs = sorted(fs.funcs, key=lambda n: (fs.funcs[n].line, n))
+    if funcs:
+        lines.append(f"defines: {len(funcs)} func(s) — {_capped(funcs, CTX_DEFINES_CAP)}")
+    if fs.signals:
+        lines.append(
+            f"  {len(fs.signals)} signal(s): "
+            f"{_capped(sorted(fs.signals), CTX_DEFINES_CAP)}"
+        )
+    if fs.members:
+        lines.append(
+            f"  {len(fs.members)} member(s): "
+            f"{_capped(sorted(fs.members), CTX_DEFINES_CAP)}"
+        )
+    return lines
+
+
 def _render_membership(p: str, cs: list, indeg: dict[str, int]) -> list[str]:
     """Cluster block: label, confidence, this file's in-degree rank,
     top members."""
@@ -782,7 +926,8 @@ def context(path: str = "", depth: int = 1, dir: str = "") -> str:
     """Subsystem map for one repo file — the orientation tool for agents.
 
     Fresh-agent entry point: pass a res:// path (or repo-relative) and get
-    a text map — its cluster (label, confidence, member hubs by in-degree),
+    a text map — what it defines (funcs/signals/members, capped with
+    "+N more"), its cluster (label, confidence, member hubs by in-degree),
     structural neighbors grouped by edge type (call/signal/var/attach/inst
     with counts and direction, depth 1-3), top semantic neighbors (embedding
     cosine), and hub status (in-degree rank). Called with no path, returns
@@ -818,6 +963,7 @@ def context(path: str = "", depth: int = 1, dir: str = "") -> str:
         else:
             tag = fs.class_name or fs.extends or fs.ext
         lines = [f"res://{p}  [{tag}]"]
+        lines += _render_defines(fs)
         lines += _render_membership(p, nav.clusters(), indeg)
         lines += _render_neighbors(p, adj, indeg, depth)
         lines += _render_semantic(p)
@@ -984,6 +1130,26 @@ def _sync_chain(stats: dict) -> tuple[object, object, str]:
     return g, fns, note
 
 
+RESCAN_PATH_CAP = 10  # changed/deleted paths listed before "+N more"
+
+
+def _rescan_paths(stats: dict) -> str:
+    """Capped changed/deleted listing (issue #125): 'what changed since I
+    last looked' is the top reorientation question, and nav already
+    carries the lists in stats — the wire output dropped them. Sorted for
+    display only; stats keeps walk order for sync_functions."""
+    lines = []
+    for label, paths in (
+        ("changed", stats.get("changed", [])),
+        ("deleted", stats.get("deleted_paths", [])),
+    ):
+        if paths:
+            lines.append(
+                f"{label} ({len(paths)}): {_capped(sorted(paths), RESCAN_PATH_CAP)}"
+            )
+    return "\n" + "\n".join(lines) if lines else ""
+
+
 @mcp.tool()
 def rescan(dir: str = "") -> str:
     """Re-index changed/new/deleted files: vectors, function index, graph.
@@ -992,6 +1158,9 @@ def rescan(dir: str = "") -> str:
     edits. Read tools also auto-rescan on worktree drift (stat-gated,
     mtime/size fingerprint) — the boot project only; this explicit
     variant is also the freshness path for a non-boot dir (issue #131).
+
+    When files changed, a capped changed/deleted path list (10 shown,
+    "+N more" past it) follows the summary line.
 
     dir="" serves the boot config's repo; any other path routes this one
     call to that checkout (a fresh dir onboards on first contact).
@@ -1009,6 +1178,7 @@ def rescan(dir: str = "") -> str:
             f"{stats['unchanged']}/{stats['deleted']} (a/u/u/d), "
             f"fns {fns['fns_upserted']} upserted, graph {len(g.files)} files, "
             f"in {dt:.1f}s{note}"
+            + _rescan_paths(stats)
         )
 
 
