@@ -15,7 +15,7 @@ other code-graph tools (CodeGraph, aider repo map, SCIP).
 |---|---|
 | `repo_map(budget_tokens)` | token-budget repo map, PageRank-ranked — the cheap orientation preamble |
 | `semantic_search(query, n)` | find files by meaning ("rescan and index the repo" -> nav.py), RRF-fused with BM25F |
-| `find_functions(query, n)` | same, per function with line numbers |
+| `find_functions(query, n)` | same, per function with line numbers; embedding backend down degrades to a lexical substring fallback tagged `degraded:` (never a raw error) |
 | `search_text(pattern, glob, files_only)` | regex text search — grep-class exact-string/literal queries; capped `file:line:text` rows (20 files / 3 lines) with truncation markers + totals |
 | `symbol_graph(symbol, depth)` | callers/callees - refactoring safety |
 | `explore(query, n, anchor)` | one-call orientation: Read-equivalent source slices + callers/callees flow; slices cap at a 100-line window ending in `pass anchor="path:start-end" to continue` — pass that anchor back to page the next window with zero re-orientation |
@@ -23,7 +23,7 @@ other code-graph tools (CodeGraph, aider repo map, SCIP).
 | `clusters(k, min_sim)` | subsystem families from embedding geometry |
 | `crosstalk()` | which subsystem clusters are wired together (cross-cluster coupling report) |
 | `dead_code(n)` | unreachable-function candidates, tiered likely/review - candidates, never verdicts |
-| `duplicates(n)` | exact-clone function bodies (dedup targets) |
+| `duplicates(n)` | exact-clone function bodies across all indexed languages — .gd/.py/C++ (dedup targets) |
 | `visualize()` | generate interactive 3D graph.html (open the baked file directly — see [3D visualizer](#3d-visualizer-optional-add-on)) |
 | `rescan()` | incremental re-index (vectors + functions + graph) — the explicit always-sync variant; read tools already auto-rescan on worktree drift |
 
@@ -41,7 +41,13 @@ includes, TTL-cached ~3s so bursts don't re-walk) and, when it drifted from
 the last synced state, runs the sha-gated incremental rescan before
 answering — external edits show up in the next tool call with no manual
 `rescan()`. Embedding failures degrade loudly: one stderr warning, a 60s
-retry cooldown, and the tool answers from the current index. To index even
+retry cooldown, and the tool answers from the current index. Degraded
+markers tell the truth about *why* (issues #115/#116): a model/config
+mismatch (index built under another model, HTTP 4xx/5xx with a
+model-not-found signature) is named as such — model and provider — on
+the marker line and on every hit's `degraded_reason` field, instead of
+a blanket "backend unreachable"; only transport failures read as
+unreachable. To index even
 without tool traffic, set `"watch_interval_s": 0.5` (seconds; absent/0 = off)
 in the config: a stdlib daemon thread then polls the same stat gate and
 rescans after a ~2s quiet debounce.

@@ -1208,10 +1208,15 @@ class Graph:
     # -- duplicates ---------------------------------------------------------------
 
     def exact_duplicates(self, limit: int = 30) -> list[dict[str, object]]:
+        """Exact-duplicate function bodies (sha1 over the whitespace/
+        `#`-comment-normalized body) across ALL indexed languages —
+        issue #116: this was GDScript-only, so a Python or C++ repo got
+        a false 'no exact duplicates found' clean bill. C++ `//`
+        comments compare as body text (stripping at `//` would truncate
+        res:// literals in .gd bodies) — conservative: it can miss a
+        pair, never invent one."""
         groups: dict[str, list[str]] = defaultdict(list)
         for rel, fs in self.files.items():
-            if fs.ext != ".gd":
-                continue
             for name, fn in fs.funcs.items():
                 norm = _normalize_body(fn.body)
                 if len(norm.splitlines()) < 3:

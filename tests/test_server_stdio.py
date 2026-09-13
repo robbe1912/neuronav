@@ -132,6 +132,7 @@ def main() -> None:
     _rep = {
         "clusters": 2, "internal_edges": 3, "external_edges": 4,
         "external_ratio": 0.5, "unclustered_endpoint_edges": 0,
+        "tests_endpoint_edges": 0,
         "by_cluster": [],
         "worst_pairs": [{"a": "A", "b": "B", "edges": 4, "top_files": [
             {"pair": "x -> y", "w": 3}, {"pair": "p -> q", "w": 2},

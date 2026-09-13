@@ -66,13 +66,19 @@ def _lexical_fallback(query: str, n: int) -> list[dict]:
     return hits[:n]
 
 
-def _seed_hits(query: str, n: int) -> tuple[list[dict], bool]:
-    """(hits, degraded). chroma fn-level seeds with lexical fallback."""
+def _seed_hits(query: str, n: int) -> tuple[list[dict], bool, str | None]:
+    """(hits, degraded, reason). chroma fn-level seeds with lexical
+    fallback. `reason` names the backend failure when there was one
+    (issue #116: a model/config mismatch must not render as a generic
+    'unreachable' marker); it stays None when the index was simply
+    empty, which degrades without blaming the backend."""
     try:
         hits = graph.find_functions(query, n)
-        return (hits, False) if hits else (_lexical_fallback(query, n), True)
-    except Exception:
-        return _lexical_fallback(query, n), True
+        if hits:
+            return hits, False, None
+        return _lexical_fallback(query, n), True, None
+    except Exception as exc:
+        return _lexical_fallback(query, n), True, nav.embed_failure_reason(exc)
 
 
 def _flow(g, path: str, fn_name: str) -> str:
@@ -158,13 +164,15 @@ def _continue(anchor: str) -> str:
     return f"** {path} ** lines {first}-{last}\n{sl}"
 
 
-def _cluster_map(cs: "list[dict[str, object]] | None") -> str:
+def _cluster_map(
+    cs: "list[dict[str, object]] | None", err: str | None = None
+) -> str:
     """Funnel stage 1 (constant per repo): subsystem layout, biggest
     first — the Agentless structure map the shortlists narrow into.
     `cs` is the clusters list run() computed once; None = the pipeline
-    failed, degrade loudly."""
+    failed, degrade loudly with the true reason (issue #116)."""
     if cs is None:
-        return "== clusters == (unavailable - embedding index unreachable)"
+        return f"== clusters == (unavailable - {err or 'embedding index unreachable'})"
     lines = [
         f"- {c['label']} ({c['size']} files): "
         + ", ".join(p for p, _cls in c["paths"][:3])
@@ -190,7 +198,9 @@ def _file_shortlist(seeds: list[dict]) -> str:
     return "== file shortlist ==\n" + "\n".join(lines)[:SHORTLIST_CAP]
 
 
-def _symbol_slices(g, seeds: list[dict], degraded: bool, budget: int, cs) -> str:
+def _symbol_slices(
+    g, seeds: list[dict], degraded: bool, budget: int, cs, reason: str | None = None
+) -> str:
     """Funnel leaf: Read-equivalent `cat -n` windows + call flow under the
     codegraph budget discipline (score-proportional caps, cliff to pointer
     lines for weak hits) and the issue #69 window law (height cap +
@@ -200,18 +210,27 @@ def _symbol_slices(g, seeds: list[dict], degraded: bool, budget: int, cs) -> str
     total = 0
     parts: list[str] = []
     if degraded:
-        note = "(degraded: embedding backend unreachable - lexical fallback)"
+        # issue #116: carry the real reason (model mismatch reads as
+        # such), keep 'lexical fallback' so clients keying on it survive
+        note = f"(degraded: {reason or 'embedding backend unreachable'} - lexical fallback)"
         parts.append(note)
-        total += len(note)
+        total += len(note) + 2
 
     for h in seeds:
         if total >= budget:
             break
         weak = h["score"] < CLIFF_FRACTION * top
-        per_cap = max(MIN_HIT_CAP, min(MAX_HIT_CAP, (budget - total) // max(1, len(seeds))))
+        # issue #116: NO MIN_HIT_CAP floor — a thin remaining allowance
+        # demotes this hit to a pointer line instead of granting a full
+        # slice that overshoots the budget and gets amputated by the
+        # TOTAL_CAP backstop (which could cut the #69 continuation
+        # anchor). With the floor gone, blocks fit their fair share and
+        # the demotion guard is reachable via budget again.
+        per_cap = min(MAX_HIT_CAP, (budget - total) // max(1, len(seeds)))
         if weak or per_cap < MIN_HIT_CAP:
-            parts.append(f"- {h['path']}::{h['func']}:{h['line']} (score {h['score']:.3f} - not shown; find_functions('{h['func']}') for source)")
-            total += 90
+            ptr = f"- {h['path']}::{h['func']}:{h['line']} (score {h['score']:.3f} - not shown; find_functions('{h['func']}') for source)"
+            parts.append(ptr)
+            total += len(ptr) + 2
             continue
         fs = g.files.get(h["path"])
         body = fs.funcs[h["func"]].body if fs and h["func"] in fs.funcs else ""
@@ -237,7 +256,7 @@ def run(query: str, n: int = 4, anchor: str = "") -> str:
         return _continue(anchor)
     n = max(1, min(n, 8))
     g = graph.get_graph()
-    seeds, degraded = _seed_hits(query, n)
+    seeds, degraded, seed_err = _seed_hits(query, n)
 
     # Agentless funnel: constant orientation first (repo map, clusters),
     # then query-dependent narrowing (file shortlist -> symbol slices).
@@ -247,11 +266,13 @@ def run(query: str, n: int = 4, anchor: str = "") -> str:
     # identical and halves the pipeline cost (issue #44)
     try:
         cs = nav.clusters()
-    except Exception:
+        cs_err = None
+    except Exception as exc:
         cs = None
+        cs_err = nav.embed_failure_reason(exc)
     parts = [
         "== repo map ==\n" + g.repo_map(budget_tokens=PREAMBLE_TOKENS),
-        _cluster_map(cs),
+        _cluster_map(cs, cs_err),
     ]
     if not seeds:
         parts.append(
@@ -259,12 +280,27 @@ def run(query: str, n: int = 4, anchor: str = "") -> str:
             "name you saw in the map; semantic_search for file-level recall; "
             "rescan() if files were just created."
         )
-        return "\n\n".join(parts)[:TOTAL_CAP]
+        return _cap(parts)
 
     parts.append(_file_shortlist(seeds))
     used = sum(len(p) + 2 for p in parts)
-    parts.append(_symbol_slices(g, seeds, degraded, TOTAL_CAP - used, cs))
-    return "\n\n".join(parts)[:TOTAL_CAP]
+    parts.append(_symbol_slices(g, seeds, degraded, TOTAL_CAP - used, cs, seed_err))
+    return _cap(parts)
+
+
+def _cap(parts: list[str]) -> str:
+    """Join the funnel under TOTAL_CAP. If the sections still overshoot,
+    cut at a line boundary and SAY so — never truncate mid-line, which
+    could amputate a #69 continuation anchor and leave the agent
+    without a paging handle mid-answer (issue #116)."""
+    out = "\n\n".join(parts)
+    if len(out) <= TOTAL_CAP:
+        return out
+    cut = out[:TOTAL_CAP]
+    nl = cut.rfind("\n")
+    if nl:
+        cut = cut[:nl]
+    return cut + f"\n… budget-capped at {TOTAL_CAP} chars - narrow the query or pass a smaller n"
 
 
 def _cluster_labels(cs: "list[dict[str, object]] | None") -> dict[str, str]:

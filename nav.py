@@ -26,6 +26,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import shutil
 import sys
 import threading
@@ -389,6 +390,56 @@ def embed(texts: list[str]) -> list[list[float]]:
             )
         out.extend(rows)
     return out
+
+# Truthful degradation labels (issue #115): an embed-path failure that
+# is really a model/config problem must say so — naming the model AND
+# provider — instead of reading "backend unreachable" and sending the
+# user to restart a server that is fine. Shared by recall.search, the
+# server's find_functions fallback, explore's degraded notes and
+# _ctx_semantic, so every degraded surface tells the same truth.
+_MODEL_ERR_SIG = re.compile(
+    r"model[^\n]{0,120}?(?:not\s+found|not\s+supported|unknown|invalid|"
+    r"no\s+such|does\s+not\s+exist|missing)"
+    r"|(?:not\s+found|not\s+supported|unknown|invalid|no\s+such|"
+    r"does\s+not\s+exist|missing)[^\n]{0,120}?model",
+    re.I,
+)
+
+
+def embed_failure_reason(exc: Exception) -> str:
+    """One-line truthful reason for an embed-path exception, for the
+    degraded-mode markers. Classes, in order:
+
+    - the _check_model abort (index built under a different model or
+      provider) -> "embed model/config mismatch" carrying the original
+      actionable message (it already names both models + providers and
+      the drop+rescan fix);
+    - HTTP 4xx, or 5xx whose body carries a model-mismatch signature
+      (ollama/openai "model not found" etc.) -> names the configured
+      model + provider and says model/config error, not connectivity;
+    - any other HTTP status -> endpoint error (backend reachable);
+    - everything else (connection refused/timeouts) -> the one case
+      that legitimately reads "embedding backend unreachable".
+    """
+    msg = str(exc)
+    if "index was built with embed model" in msg:
+        return f"embed model/config mismatch — {msg}"
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        snippet = " ".join((exc.response.text or "").split())[:160]
+        if code // 100 == 4 or _MODEL_ERR_SIG.search(snippet):
+            out = (
+                f"{EMBED_PROVIDER} embed endpoint rejected model "
+                f"'{EMBED_MODEL}' (HTTP {code}"
+            )
+            if snippet:
+                out += f": {snippet}"
+            return out + ") — model/config error, not connectivity"
+        out = f"{EMBED_PROVIDER} embed endpoint error (HTTP {code}"
+        if snippet:
+            out += f": {snippet}"
+        return out + ") — backend reachable, endpoint failing"
+    return f"embedding backend unreachable ({type(exc).__name__})"
 
 
 def iter_files() -> Iterator[Path]:
