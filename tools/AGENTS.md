@@ -2,9 +2,9 @@
 
 ## qa_readability.py — readability / declutter gate for the visualizer
 
-Objective ink-clutter gate over the real page: serves the repo root, loads
-`graph.html` in headless Chrome (playwright, `channel="chrome"`, ephemeral
-loopback port — issue #132),
+Objective ink-clutter gate over the real page: serves the active config's
+state dir, loads `graph.html` in headless Chrome (playwright,
+`channel="chrome"`, ephemeral loopback port — issue #132),
 rides the shared page harness `tests/_page_harness.py` (issue #86 R9), and
 drives the same focus state as `test_viz.py` (highest-degree node stem),
 and measures clutter metrics from `window.__dbg` in both layers.
@@ -21,7 +21,9 @@ and measures clutter metrics from `window.__dbg` in both layers.
   (5 camera angles x global + top-8 hubs) into `.tmp/qa/declutter_base.json`
   plus a sha-suffixed snapshot copy and per-subject PNGs.
 - **`--after`**: reruns the same battery against the current build, prints a
-  per-metric delta table, exits 1 on any clutter regression (ratchet mode).
+  per-metric delta table, exits 1 on any clutter regression (ratchet mode);
+  a baseline whose identity does not match the served bake is REFUSED
+  (exit 2, naming both identities) — never a silent degrade (issue #120).
 - everything under `.tmp/qa/` is gitignored machine-local state (baselines +
   screenshots measured against whichever target the local config selects) —
   NEVER commit baselines; they embed private-target measurements.
@@ -30,6 +32,23 @@ and measures clutter metrics from `window.__dbg` in both layers.
   `inkCentral`) is exempt from the gate; `'tscn'` expands to all .tscn hub
   subjects, `'hubs'` to all. Structural clutter (`crossTT`, `chevCrowdHard`,
   `nodeOcclFrac`) is never exempt.
+- **Identity law (issue #120)**: `--declutter` embeds
+  `{schema, git_sha, bake_sha, hub_subjects}` in the baseline; `bake_sha`
+  hashes the bake's `const DATA = {...}` payload (volatile `generated_at`/
+  `meta.git` stamps normalized out — stable across rebakes and template
+  edits, different across corpora). Every mode first fetches `/graph.html`
+  off its own server and refuses to run when the served bytes are not the
+  on-disk bake. `BATTERY_SCHEMA` must be bumped on any change to the
+  metric set / probe semantics / angles / hub selection — older baselines
+  are refused by schema, not mismeasured.
+- The QA server binds via the shared harness `serve()` — exclusively
+  (issue #120 law): an orphaned prior run holding the port fails the next
+  bind loudly with the per-OS port-owner hint, never an
+  `allow_reuse_address` shadow-bind serving a stale bake. `probe()` exits
+  2 when its double-read retries exhaust without a stable census.
+- `NEURONAV_QA_DIR` overrides the output dir (`.tmp/qa` default) —
+  `tests/test_qa_smoke.py` rides it so hermetic battery runs never touch
+  real baselines.
 
 Gate calibration (empirical, do not loosen casually): label collisions flip
 +/-1..2 between identical runs; `crossTT` and `nodeOcclFrac` are bit-stable;
@@ -41,7 +60,8 @@ Operational notes:
 
 - Camera angles are applied to the SAVED subject base pose, never chained.
 - `settle()` waits for the tween to stop (3 identical reads); probes require
-  two consecutive identical census reads.
+  two consecutive identical census reads — exhaustion exits 2 (issue #120),
+  never a still-animating read.
 - PIL is NOT required — PNG ink analysis decodes a quarter-scale CDP capture
   in pure stdlib.
 - The census payloads (`JS_3D`, `JS_2D`, `JS_DECLUT`, `HUBS_JS`, `CAM_*`
@@ -63,12 +83,18 @@ exclusively (issue #40): SO_EXCLUSIVEADDRUSE on Windows, plain EADDRINUSE
 elsewhere — a taken port aborts startup (exit 1) with a per-OS
 port-owner hint (issue #51): `Get-NetTCPConnection -LocalPort <p>` on
 Windows, `lsof -i :<p>` (or `ss -ltnp`) elsewhere, instead of silently
-double-binding and shadowing the first listener. Serves the ACTIVE
 config's state dir (where the `graph.html` bake lives); `--config` is the
-NEURONAV_CONFIG equivalent, set per-process only. Every response carries
+NEURONAV_CONFIG equivalent, set per-process only. BAKE-ONLY (issue #120):
+`/graph.html` is the sole route, re-read from disk per request — the
+chroma store and base/ shards sitting beside it are NEVER served (404,
+structurally: no path but the bake reaches the filesystem), there is no
+directory listing, and non-loopback `Host:` headers (DNS-rebind pages) are
+refused 403. Every response carries
 `Cache-Control: no-store, no-cache, must-revalidate` so the
 browser always refetches `graph.html` (kills the stale-build bug class when
-iterating on the bake). Threaded, quiet logs.
+iterating on the bake). Threaded, quiet logs. Surface pinned hermetically by
+`tests/test_qa_smoke.py` (leg A); the port-refusal contract is pinned by
+`test_project_mode`.
 
 ## per-project MCP wiring — moved to `onboard.py`
 

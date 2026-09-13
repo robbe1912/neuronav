@@ -15,11 +15,26 @@
 #     vs the baseline and exits 1 on any clutter regression.
 #   (both need a python with playwright; PIL NOT required — PNG ink analysis
 #   decodes the CDP quarter-scale capture in pure stdlib)
+#
+# Identity law (issue #120): the declutter baseline embeds the bake's DATA
+# identity (battery schema + git sha + bake data sha + hub roster). --after
+# REFUSES a baseline whose identity mismatches the served bake — loud,
+# naming both identities — instead of silently degrading to hard-bar-only
+# checks; probe() exits 2 when its double-read retries exhaust without a
+# stable census. The QA server binds via the shared harness serve()
+# (exclusive bind, serve.py law): an orphaned prior run holding the port
+# fails the next bind loudly with the port-owner hint, never a silent
+# stale-bake shadow. NEURONAV_QA_DIR overrides the output dir (.tmp/qa
+# default); tests/test_qa_smoke.py rides it so hermetic runs never touch
+# real baselines.
 import argparse
 import base64
+import hashlib
 import json
+import os
 import re
 import sys
+import urllib.request
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -30,7 +45,7 @@ import nav  # noqa: E402  (the bake lives in the active config's state dir)
 from tests._page_harness import launch, open_page, probe_dbg, serve  # noqa: E402
 
 STATE = nav.STATE_DIR
-QA = ROOT / ".tmp" / "qa"
+QA = Path(os.environ.get("NEURONAV_QA_DIR") or (ROOT / ".tmp" / "qa"))
 
 # --- focus token: highest-degree node's path stem (tests/test_viz.py:140-150)
 TOK_JS = """() => { const d = window.__dbg;
@@ -268,6 +283,12 @@ JS_2D = r"""() => {
 # SETTLED camera (tween fully stopped, double-read identical), so baseline and
 # --after runs are comparable byte-for-byte on the same graph.html bake.
 # =============================================================================
+
+# Battery schema (issue #120): every baseline records which metric battery
+# produced it. --after refuses a baseline from another schema — recapture
+# instead of silently degrading. Bump on any change to the metric set,
+# probe semantics, angles, or hub selection.
+BATTERY_SCHEMA = 1
 
 # top-N hubs by baked connection count (undirected adj degree), deterministic
 # tiebreak on path
@@ -768,15 +789,18 @@ def settle(page, rounds=14):
         prev = cur
         page.wait_for_timeout(200)
 def probe(page):
-    """Settled JS_DECLUT read; two consecutive identical reads required."""
-    b = None
+    """Settled JS_DECLUT read; two consecutive identical reads required.
+    Exhausted retries are a BROKEN read (issue #120): exit 2 like the other
+    broken-bake paths — never return a census that may still be animating."""
     for _ in range(4):
         settle(page)
         a = page.evaluate(JS_DECLUT)
         b = page.evaluate(JS_DECLUT)
         if json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True):
             return a
-    return b
+    print("BROKEN probe: no stable double-read after 4 retries "
+          "(camera still moving or census flapping)")
+    sys.exit(2)
 
 
 def _apply_angle(page, op):
@@ -931,12 +955,14 @@ def gate_declut(base_doc, after_doc, afford=frozenset()):
                     violations.append(f"{subj}/{ang}/{key}: probe missing value (after={a})")
                     continue
                 if b is None:
-                    # anchor predates this metric: no baseline cell, evaluate
-                    # against the hard bar alone (legacy anchors stay usable)
-                    if bar is None:
-                        rows.append((subj, ang, key, b, a, "NOBASE"))
-                        continue
-                    b = 0
+                    # identity+schema binding (issue #120) means a matched
+                    # baseline carries every cell; a missing one is a stale
+                    # or hand-edited baseline — loud violation, never a
+                    # silent degrade to hard-bar-only checks
+                    rows.append((subj, ang, key, b, a, "NOBASE"))
+                    violations.append(f"{subj}/{ang}/{key}: baseline cell "
+                                      f"missing (stale or edited baseline)")
+                    continue
                 exempt = subj in afford and key in AFFORD_KEYS
                 if key in TOTAL_TOL and not exempt:
                     for side, val in (("base", b), ("after", a)):
@@ -1010,6 +1036,35 @@ def _git_sha():
     except Exception:
         return ""
 
+def bake_data_sha(html: bytes) -> str:
+    """Identity of WHAT the bake renders (issue #120): sha256 over the
+    `const DATA = {...}` payload with the volatile meta stamps
+    (generated_at, meta.git) normalized out — stable across rebakes and
+    template edits of the same store, different across corpora."""
+    m = re.search(rb"const DATA = (\{.*\});", html)
+    if not m:
+        print("BROKEN bake: no `const DATA = {...}` payload in graph.html")
+        sys.exit(2)
+    payload = re.sub(rb'"(generated_at|git)":"[^"]*"', rb'"\1":""', m.group(1))
+    return hashlib.sha256(payload).hexdigest()[:16]
+
+
+def served_bake_identity(port: int) -> dict:
+    """Pin the identity of the bake THIS run measures (issue #120): fetch
+    /graph.html off the QA server and hash its DATA payload. Refuses when
+    the served bytes are not the on-disk bake (shadowing server / swapped
+    state dir): a baseline must describe the bytes actually measured."""
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/graph.html",
+                                timeout=30) as r:
+        served = r.read()
+    disk = (STATE / "graph.html").read_bytes()
+    if served != disk:
+        print(f"BROKEN: the served bake is not {STATE / 'graph.html'} — a "
+              f"stale server is in the way; refusing to measure it")
+        sys.exit(1)
+    return {"schema": BATTERY_SCHEMA, "git_sha": _git_sha(),
+            "bake_sha": bake_data_sha(served)}
+
 
 def run_declut_battery(prefix: str, port: int):
     with sync_playwright() as pw:
@@ -1040,13 +1095,15 @@ def main():
                          "all .tscn hub subjects, 'hubs' to all hub subjects")
     args = ap.parse_args()
     QA.mkdir(parents=True, exist_ok=True)
-    httpd, port = serve(STATE, reuse=True)
+    httpd, port = serve(STATE)
     try:
+        identity = served_bake_identity(port)
         if args.declutter:
             doc = run_declut_battery("base", port)
+            doc["identity"] = {**identity, "hub_subjects": sorted(doc["views"])}
             out = QA / "declutter_base.json"
             out.write_text(json.dumps(doc, indent=1), encoding="utf-8")
-            sha = _git_sha()
+            sha = identity["git_sha"]
             if sha:
                 snap = QA / f"declutter_base_{sha}.json"
                 snap.write_text(json.dumps(doc, indent=1), encoding="utf-8")
@@ -1059,10 +1116,26 @@ def main():
             if not Path(args.base).is_absolute() and not basep.exists():
                 basep = Path(args.base).resolve()
             base_doc = json.loads(Path(basep).read_text(encoding="utf-8"))
+            base_id = base_doc.get("identity")
+            if (not isinstance(base_id, dict)
+                    or base_id.get("schema") != identity["schema"]
+                    or base_id.get("bake_sha") != identity["bake_sha"]):
+                print("REFUSED: the baseline's identity does not match this "
+                      "bake (issue #120) — recapture with --declutter or "
+                      "pass the --base captured on this corpus\n"
+                      f"  baseline:  {json.dumps(base_id, sort_keys=True)}\n"
+                      f"  this bake: {json.dumps(identity, sort_keys=True)}")
+                sys.exit(2)
             afford = expand_affordance(args.affordance, base_doc)
             if afford:
                 print(f"affordance-exempt subjects: {', '.join(sorted(afford))}")
             doc = run_declut_battery("after", port)
+            if base_id.get("hub_subjects") != sorted(doc["views"]):
+                print("REFUSED: the baseline's hub roster does not match "
+                      "this bake (issue #120)\n"
+                      f"  baseline:  {base_id.get('hub_subjects')}\n"
+                      f"  this bake: {sorted(doc['views'])}")
+                sys.exit(2)
             (QA / "declutter_after.json").write_text(
                 json.dumps(doc, indent=1), encoding="utf-8")
             sys.exit(gate_declut(base_doc, doc, afford))
