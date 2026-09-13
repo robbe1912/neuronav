@@ -574,7 +574,6 @@ def scan_calls(path: Path, rel: str) -> list[dict]:
         })
     sites.sort(key=lambda s: (s["line"], s["name"], s["kind"]))
     return sites
-    return fs
 
 
 def is_implicit_entry(name: str) -> bool:

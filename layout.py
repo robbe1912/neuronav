@@ -354,7 +354,7 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
         vel *= 0.86
     # overlap relaxation: the force sim guarantees cluster cohesion, not
     # non-overlap — dense cores leave spheres intersecting. Push every
-    # overlapping pair apart along its axis (min center distance = 1.35x
+    # overlapping pair apart along its axis (min center distance = 2.0x
     # the rendered radii sum) until clean, then spread + re-center.
     deg = np.zeros(n, dtype=np.float32)
     for l in links:
@@ -362,7 +362,7 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
         w_ = (l.get("w", 1) if isinstance(l, dict) else (l[2] if len(l) > 2 else 1))
         deg[s_] += w_
         deg[t_] += w_
-    # radius parity with the renderer: min(10, 3.5+sqrt(deg)) * churn boost
+    # radius parity with the renderer: min(12, 4.5+sqrt(deg)) * churn boost
     # * 1.1 — the browser draws exactly this; the relax must too or hot
     # files (up to +35% radius) end up overlapping their neighbors
     churn = (np.asarray(hot, dtype=np.float32) if hot is not None
@@ -398,17 +398,13 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
     # the force sim can leave two files at nearly identical positions (same
     # gravity basin), where every push direction cancels and they stay
     # concentric forever - which would poison the exact scale pass below
-    # (s = min_d/dist explodes on a dist~0 pair). Depenetrate up front, and
-    # again after the pushes (pushing can create new fusions).
+    # (s = min_d/dist explodes on a dist~0 pair). Depenetrate up front only:
+    # the separation moves pairs to >= 2.0x the radii sum, and nothing moves
+    # positions again until the scale pass, so no new fusions can form
+    # (a second call would always return 0).
     n0 = depenetrate()
-    # pair pushes REJECTED: at 0.5 gain they created 112 new fusions on
-    # target repos (nodes shoved into bystanders) while only marginally reducing
-    # the exact-scale factor. Depenetration + exact scale alone is both
-    # simpler and provably sufficient: scaling is linear in pos, so one
-    # multiply clears every pair.
-    n1 = depenetrate()
-    if dbg and (n0 or n1):
-        print(f"[depen] fixed {n0} before / {n1} after pushes", file=sys.stderr)
+    if dbg and n0:
+        print(f"[depen] fixed {n0} fused pairs", file=sys.stderr)
     dist = np.sqrt(((pos[:, None, :] - pos[None, :, :]) ** 2).sum(-1))
     np.fill_diagonal(dist, np.inf)
     s = float((min_d / dist).max())
