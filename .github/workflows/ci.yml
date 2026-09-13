@@ -33,6 +33,8 @@ jobs:
         run: python -X utf8 tests/test_baseindex.py
       - name: mwires (named-wire map rows, map-spec-v2 §0)
         run: python -X utf8 tests/test_mwires.py
+      - name: clusterinv (partition invariant + crosstalk parity, issue #114)
+        run: python -X utf8 tests/test_clusterinv.py
       - name: recall (vector recall two-pass, fake embeddings)
         run: python -X utf8 tests/test_recall.py
       - name: embedprov (embed provider auth + probe)

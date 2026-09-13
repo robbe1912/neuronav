@@ -1449,6 +1449,51 @@ def _pass_tiny_merge(parts: list[dict]) -> list[dict]:
             break
     return parts
 
+def _pass_partition(parts: list[dict], unit_of: dict[str, list[str]]) -> list[dict]:
+    """Partition invariant: every file ends up in exactly ONE part.
+
+    The routing passes move partial families (`_family_unit` leaves
+    other-pack scenes behind) while cap-enforce's split/chunk paths
+    regroup by FULL welded units — a weld broken earlier plus a part
+    split later re-pulls members that already moved, landing a file in
+    two parts (#114). Resolve duplicates by weld plurality: the kept
+    copy lives in the part holding the most of the file's welded unit,
+    ties by larger part then lower index; other copies are dropped,
+    repeated copies within the kept part collapse to the first, and
+    emptied parts are removed. Identity on already-disjoint input."""
+    owners: dict[str, list[int]] = defaultdict(list)
+    for pi, p in enumerate(parts):
+        for path, _cls in p["paths"]:
+            owners[path].append(pi)
+    dups = {path: pis for path, pis in owners.items() if len(pis) > 1}
+    if not dups:
+        return parts
+    for path in sorted(dups):
+        pis = dups[path]
+        unit = set(unit_of.get(path) or [path])
+        keep = max(
+            pis,
+            key=lambda pi: (
+                sum(1 for q, _ in parts[pi]["paths"] if q in unit),
+                len(parts[pi]["paths"]),
+                -pi,
+            ),
+        )
+        for pi in sorted(set(pis)):
+            if pi == keep:
+                kept: list = []
+                for e in parts[pi]["paths"]:
+                    if e[0] == path and any(k[0] == path for k in kept):
+                        continue
+                    kept.append(e)
+                parts[pi]["paths"] = kept
+            else:
+                parts[pi]["paths"] = [e for e in parts[pi]["paths"] if e[0] != path]
+    parts = [p for p in parts if p["paths"]]
+    for p in parts:
+        p["size"] = len(p["paths"])
+    return parts
+
 
 def _pass_label(
     parts: list[dict], rows: dict[str, int], mat, adj: dict[str, dict[str, float]] | None
@@ -1502,7 +1547,7 @@ def finalize(
     original monolith; each pass is the verbatim stage):
     split-units -> pack-split -> merge-small -> pack-consolidate ->
     usage -> scene-majority -> cap-enforce -> stray-sweep -> tiny-merge
-    -> label.
+    -> partition -> label.
     """
     rows = {p: i for i, p in enumerate(ids)}
     unit_of: dict[str, list[str]] = {p: list(u) for u in (units or []) for p in u}
@@ -1515,6 +1560,7 @@ def finalize(
     parts = _pass_cap_enforce(parts, rows, mat, unit_of)
     parts = _pass_stray_sweep(parts, unit_of)
     parts = _pass_tiny_merge(parts)
+    parts = _pass_partition(parts, unit_of)
     return _pass_label(parts, rows, mat, adj)
 
 
@@ -1576,7 +1622,9 @@ def crosstalk(cs: list[dict], g=None) -> dict:
     membership comes from `cs` (nav.clusters() output), edges from the
     structural graph of the active config. Answers "which subsystems are
     wired together despite clustering apart" and "which clusters are
-    internally hollow"."""
+    internally hollow". Mirrors the clusterer's graph shape: tests/
+    endpoints and unclustered endpoints are tallied separately and feed
+    no cluster number (#114)."""
     import graph
 
     if g is None:
@@ -1592,12 +1640,21 @@ def crosstalk(cs: list[dict], g=None) -> dict:
     pair_edges: Counter = Counter()  # (min_id, max_id) -> cross func pairs
     pair_files: dict[tuple[int, int], Counter] = defaultdict(Counter)
     unclustered = 0
+    tests_edges = 0
     for src, dsts in g.edges.items():
         sf = src.split("::")[0]
         for dst in dsts:
             df = dst.split("::")[0]
             if sf == df:
                 continue  # same-file pairs carry no cluster signal
+            if sf.startswith("tests/") or df.startswith("tests/"):
+                # parity with the clusterer: communities_graph builds its
+                # structural graph skipping tests/ endpoints, so wiring
+                # that touches tests is not coupling the partition saw —
+                # counting it as cross-cluster signal misleads (#114).
+                # Tally separately; contributes to no cluster number.
+                tests_edges += 1
+                continue
             a = file_cluster.get(sf)
             b = file_cluster.get(df)
             if a is None or b is None:
@@ -1651,6 +1708,7 @@ def crosstalk(cs: list[dict], g=None) -> dict:
         "external_edges": ext_total,
         "external_ratio": round(ext_total / max(ext_total + int_total, 1), 3),
         "unclustered_endpoint_edges": unclustered,
+        "tests_endpoint_edges": tests_edges,
         "by_cluster": by_cluster,
         "worst_pairs": worst_pairs,
     }
@@ -1670,6 +1728,11 @@ def fmt_crosstalk(rep: dict, align: bool = False, top_n: int = 0) -> str:
     if rep["unclustered_endpoint_edges"]:
         lines.append(
             f"  ({rep['unclustered_endpoint_edges']} edges touch unclustered files)"
+        )
+    if rep["tests_endpoint_edges"]:
+        lines.append(
+            f"  ({rep['tests_endpoint_edges']} edges touch tests/ files — "
+            f"excluded: the clusterer never wires tests)"
         )
     lines += ["", "per cluster (top 10 by external):"]
     for r in rep["by_cluster"][:10]:

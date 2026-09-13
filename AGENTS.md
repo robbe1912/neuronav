@@ -60,7 +60,7 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `config/` | named config profiles; `config.json` (root, gitignored) is the default |
 | `vendor/three-0.160.0/` | vendored three.js core + 4 addons, embedded at build (see below) |
 | `bench/` | recall benchmark: golden set, `run_bench.py`, committed results (`RESULTS.md`) — the numbers `docs/comparison.md` cites |
-| `tests/` | 19 self-contained suites + committed fixtures (see `tests/AGENTS.md`) |
+| `tests/` | 20 self-contained suites + committed fixtures (see `tests/AGENTS.md`) |
 | `docs/map-spec-v2.md` | spec the named-wire map layer implements |
 
 ## viz.py template laws
@@ -126,6 +126,7 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_crosslang` | self-index integration: parse + embed + fn search | chroma + Ollama (or `NEURONAV_EMBED_FAKE=1` for plumbing-only runs — what CI uses) |
 | `test_pyhard` | python extractor edge cases | numpy + chromadb import only (hermetic fixture config) |
 | `test_mwires` | named-wire map exports (`mwires`/`fns`/`meta` contract, map-spec-v2 §0) | chromadb import only (suite self-sets `NEURONAV_EMBED_FAKE=1`, hermetic fixture config) |
+| `test_clusterinv` | cluster partition invariant + crosstalk parity (issue #114): finalize double-assign repaired by weld plurality (identity on healthy input); crosstalk counts only wiring the clusterer's graph sees (tests/ endpoints tallied separately) | numpy + chromadb import only (crafted shapes + stub graph, `NEURONAV_EMBED_FAKE=1`) |
 | `test_selfindex` | neuronav indexes itself | chromadb import (structural only) |
 | `test_target_regression` | byte-stability over the target repo | chromadb import + the target repo configured in `config.json` |
 | `test_explore` | explore() behavior incl. degraded mode | mcp + chroma + populated self-index |
