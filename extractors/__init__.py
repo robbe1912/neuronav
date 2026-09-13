@@ -27,12 +27,17 @@ from extractors.cpp import (  # noqa: F401  (re-export)
 )
 from extractors.gdscript import (  # noqa: F401  (re-export)
     ADDON_VIRTUALS,
+    FUNC_KEYWORD,
     GUT_ROOTS,
     MANUAL_BASES,
     SCENE_WIRING_SUFFIXES,
+    UNDERSCORE_SHIELD,
     VIRTUALS,
+    WALK_EXTS,
+    WIRING_ONLY_SUFFIXES,
     parse_gd,
     parse_tscn,
+    res_to_rel,
 )
 from extractors.model import FileSym, Func, add_class_ctx  # noqa: F401  (re-export)
 from extractors.python import PY_HOOKS  # noqa: F401  (re-export)

@@ -709,3 +709,32 @@ def _entry_module(fs: FileSym, ctx):
 
 
 ENTRY_RULES = [_entry_virtuals, _entry_tests, _entry_module]
+
+# ---- uniform shared-surface hooks (langsep) -----------------------------------
+# Bodies mirror the graph.py expressions they replace byte-for-byte.
+
+from extractors.common import DYNAMIC_HINT_RE  # noqa: E402  (kept with the hooks it serves)
+
+DYNAMIC_HINT = DYNAMIC_HINT_RE
+
+
+def is_entry_exempt(name: str) -> bool:
+    """Cpp-only rule (implicit entries); py names never exempt."""
+    return False
+
+
+def unresolved_base_review(name: str) -> bool:
+    """Underscore-rule tail for py: underscore virtuals, stdlib serving
+    machinery (PY_HOOKS) and do_* overrides land in review."""
+    return name.startswith("_") or name in PY_HOOKS or name.startswith("do_")
+
+
+def stand_in_review(fs: FileSym, name: str) -> bool:
+    """Module-scope stand-ins (duck-typed stubs, framework singletons) are
+    consumed through an opaque caller — honest tier is review."""
+    return name in getattr(fs, "dispatch_names", ())
+
+
+def mention_review(name: str, mentions: dict) -> bool:
+    """Cpp-only rule (mention floor)."""
+    return False

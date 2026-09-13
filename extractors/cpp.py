@@ -619,3 +619,30 @@ def _entry_gdvirtual(fs: FileSym, ctx) -> Iterable[str]:
 
 
 ENTRY_RULES = [_entry_classdb, _entry_virtuals, _entry_gdvirtual]
+
+# ---- uniform shared-surface hooks (langsep) -----------------------------------
+# Bodies mirror the graph.py expressions they replace byte-for-byte.
+
+DYNAMIC_HINT = CPP_DYNAMIC_RE
+
+
+def is_entry_exempt(name: str) -> bool:
+    """Destructors, overloaded/conversion operators: invoked without a
+    call site — never dead candidates (issue #109)."""
+    return is_implicit_entry(name)
+
+
+def unresolved_base_review(name: str) -> bool:
+    """Underscore-rule tail for cpp."""
+    return name.startswith("_")
+
+
+def stand_in_review(fs: FileSym, name: str) -> bool:
+    """Python-only rule (module-scope stand-ins)."""
+    return False
+
+
+def mention_review(name: str, mentions: dict) -> bool:
+    """Name keeps appearing across the corpus (comments, string dispatch,
+    dropped ambiguous calls): wired somewhere static passes cannot see."""
+    return mentions.get(name, 0) >= CPP_MENTION_FLOOR

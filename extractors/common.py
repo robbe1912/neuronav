@@ -9,6 +9,8 @@ their divergence IS the language layer, not duplication to flatten.
 
 from __future__ import annotations
 
+import re
+
 from typing import Callable, Iterable, Iterator
 
 from extractors.model import FileSym, Func
@@ -20,6 +22,14 @@ PY_CONTROL_KEYWORDS = frozenset({
     "if", "for", "while", "elif", "return", "assert", "del", "print",
     "lambda", "not", "await", "with", "except", "raise", "yield",
 })
+
+# File-level dynamic-dispatch hints enabling the quoted-ident harvest and
+# the dead-tier "review" gate. Shared spelling: the gd scanner AND the py
+# dead-tier gate consult the same pattern today — divergence would shift
+# tiers silently, so one home (graph.py's original moved here verbatim).
+DYNAMIC_HINT_RE = re.compile(
+    r'\.call\(|\.call_deferred|Callable\(|has_method\(|\.connect\(|\.rpc\(|\.emit\('
+)
 
 
 def scan_indented_block(

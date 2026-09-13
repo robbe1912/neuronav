@@ -463,3 +463,67 @@ def parse(path: Path, rel: str) -> FileSym:
     if path.suffix == ".tscn":
         return parse_tscn(path, rel)
     return parse_gd(path, rel)
+
+# ---- uniform shared-surface hooks (langsep) -----------------------------------
+# Language facts consumed blind by graph/nav/bake/server. Bodies mirror the
+# graph.py expressions they replace byte-for-byte; the cutover commit
+# switches shared modules onto them.
+
+# Godot-profile default walk (nav WALK_DEFAULTS fallback).
+WALK_EXTS = (".gd", ".tscn")
+# Suffixes parsed for scene wiring only, never fn-indexed (sync_functions).
+WIRING_ONLY_SUFFIXES = frozenset({".tscn"})
+# Dead-tier underscore shield, corpus-wide: Godot virtual names keep a
+# function out of the review tier on unresolved bases for EVERY language —
+# the shared rule consults this set for .py and .cpp files too (LJ-3).
+UNDERSCORE_SHIELD = VIRTUALS
+# GDScript func head keyword (graph _is_micro heuristic sniff).
+FUNC_KEYWORD = "func "
+
+from extractors.common import DYNAMIC_HINT_RE  # noqa: E402  (kept with the hooks it serves)
+
+DYNAMIC_HINT = DYNAMIC_HINT_RE
+
+
+def res_to_rel(p: str) -> str:
+    """Repo-relative path from a res:// path. Logic sites only — display
+    strings keep their literals (presentation is not language behavior)."""
+    return p[len("res://"):] if p.startswith("res://") else p
+
+
+def stat_tags(text: str) -> tuple[str, str]:
+    """(class_name, extends) header sniff for nav's stat fingerprint."""
+    cls = ext = ""
+    for line in text.splitlines():
+        s = line.strip()
+        if not cls and s.startswith("class_name "):
+            cls = s.split(None, 1)[1].split()[0]
+        elif not ext and s.startswith("extends "):
+            ext = s.split(None, 1)[1].split()[0]
+    return cls, ext
+
+
+def counts_dead_share(fs: FileSym) -> bool:
+    """Dead-share denominator counts gd files only — preserves today's
+    behavior that py/cpp dead files never flag dead_weight."""
+    return fs.ext == ".gd"
+
+
+def is_entry_exempt(name: str) -> bool:
+    """Cpp-only rule (implicit entries); gd names never exempt here."""
+    return False
+
+
+def unresolved_base_review(name: str) -> bool:
+    """Underscore-rule tail for gd: engine-virtual convention."""
+    return name.startswith("_")
+
+
+def stand_in_review(fs: FileSym, name: str) -> bool:
+    """Python-only rule (module-scope stand-ins)."""
+    return False
+
+
+def mention_review(name: str, mentions: dict) -> bool:
+    """Cpp-only rule (mention floor)."""
+    return False
