@@ -113,6 +113,22 @@ project-local config. The stdio entries use the neuronav install's own
 `.venv` python (`-X utf8 server.py`) — the running interpreter is the
 fallback when a venv is absent.
 
+### Global wire (one universal entry per harness)
+
+```bash
+python /path/to/neuronav/onboard.py global-wire
+```
+
+Writes a single `neuronav` server entry — no `NEURONAV_CONFIG` pin — into
+the user-level config of **omp** (`~/.omp/agent/mcp.json`), **opencode**
+(`~/.config/opencode/opencode.json`), **kilocode** (VS Code globalStorage
+`mcp_settings.json`) and **zcode** (`~/.zcode/cli/config.json`). Every tool
+call routes per-call via its `dir` parameter (universal mount, issue #131),
+so one entry serves every repo; per-project `neuronav-<project>` pins from
+`wire --omp` coexist untouched. Merge-only by server name, idempotent,
+harness paths overridable via `NEURONAV_{OMP,OPENCODE,KILO,ZCODE}_MCP` for
+testing.
+
 ### omp harness (user-level mcpServers)
 
 `wire --omp` additionally emits the same entry into the omp harness user
