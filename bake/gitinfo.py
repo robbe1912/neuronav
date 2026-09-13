@@ -13,6 +13,7 @@ def head(repo_dir) -> str:
             ["git", "rev-parse", "--short", "HEAD"],
             cwd=str(repo_dir),
             capture_output=True, text=True, timeout=5,
+            encoding="utf-8", errors="replace",  # issue #118: git speaks UTF-8 — never the locale
         )
         return got.stdout.strip()
     except Exception:
@@ -36,6 +37,7 @@ def churn(paths: list[str], root) -> list[float] | None:
             ["git", "log", "--name-only", "--since=90.days", "--pretty=format:"],
             cwd=root,
             capture_output=True, text=True, timeout=15,
+            encoding="utf-8", errors="replace",  # issue #118
         )
         if got.returncode != 0:
             return None
@@ -43,6 +45,7 @@ def churn(paths: list[str], root) -> list[float] | None:
         top = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"], cwd=root,
             capture_output=True, text=True, timeout=5,
+            encoding="utf-8", errors="replace",  # issue #118
         ).stdout.strip().replace("\\", "/")
         if top:
             try:

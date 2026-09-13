@@ -8995,7 +8995,10 @@ def _atomic_write(out: Path, html: str) -> None:
     bake intact; the temp is reaped on any failure."""
     tmp = out.with_name(out.name + ".tmp")
     try:
-        tmp.write_text(html, encoding="utf-8")
+        # issue #118: text mode rewrites \n to os.linesep (\r\n on Windows)
+        # — pin LF so the bake is byte-identical across platforms over the
+        # same data
+        tmp.write_text(html, encoding="utf-8", newline="\n")
         os.replace(tmp, out)
     except BaseException:
         try:
