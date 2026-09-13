@@ -233,6 +233,8 @@ def main() -> None:
 
         # 4d. wire --omp: emits the omp harness mcpServers fragment (issue #130)
         omp_env = {"NEURONAV_OMP_MCP": str(tmp / "omp-mcp.json")}
+        home_mcp = Path.home() / ".omp" / "agent" / "mcp.json"
+        home_before = home_mcp.read_bytes() if home_mcp.exists() else None
         subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "wire", "--omp"], cwd=proj,
                        env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"},
                             "NEURONAV_EMBED_FAKE": "1", **omp_env},
@@ -244,7 +246,8 @@ def main() -> None:
         check("omp: fragment command = repo venv python, args -X utf8 server.py",
               omp_entry["command"] == entry["command"] and omp_entry["args"] == ["-X", "utf8", str(ROOT / "server.py")],
               str(omp_entry))
-        check("omp: install stays read-only (no ~/.omp written)", not (Path.home() / ".omp" / "agent" / "mcp.json").exists())
+        check("omp: install stays read-only (home mcp.json untouched)",
+              (home_mcp.read_bytes() if home_mcp.exists() else None) == home_before)
 
         # 4e. --omp-name overrides the server name; merge preserves other servers
         omp_doc["mcpServers"]["pre-existing"] = {"command": "x"}
