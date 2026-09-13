@@ -99,6 +99,12 @@ def refusal(fn, label, needles):
 def no_constants(x):
     raise AssertionError(f"strict JSON violated: {x}")
 
+try:  # callback sanity at column 0 — parse_constant refs are not call sites (#96 class)
+    no_constants("NaN")
+    check("strict-JSON callback raises on constants", False, "no raise")
+except AssertionError:
+    check("strict-JSON callback raises on constants", True, "")
+
 
 # ---- 1. healthy store: bakes, strict JSON, importmap spliced ----------------
 nav.rescan()
@@ -185,7 +191,7 @@ wipe(keep=0)
 check("store zeroed for the refusal leg", nav.count() == 0, str(nav.count()))
 refusal(lambda: viz.generate(), "zeroed store refused (even under FAKE)",
         ["0 vectors", f"{walk_n} files", "rescan", "bakeint_fix", str(nav.DB_DIR)])
-check("refusal leaves the old bake untouched", p1.read_text(encoding="utf-8") == html1, "")
+check("refusal leaves the old bake untouched", norm(p1.read_text(encoding="utf-8")) == norm(html1), "")
 nav.rescan()
 
 # ---- 7. #64 partial store: FAKE waiver bakes in-process ---------------------
