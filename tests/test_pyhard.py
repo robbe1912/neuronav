@@ -219,5 +219,28 @@ check("consumer: injected stand-in methods demote to review",
 stays_dead("consumer: unreferenced class method stays dead",
             "consumer_imports.py", "unused_tally")
 
+# --- fixture: callback_refs.py (#177) -------------------------------------
+# bare-name argument refs (keyword value / bare positional) attribute
+# the same-file def alive — a callback passed by reference has no call
+# site; strings and attribute refs never count (guard controls)
+alive("callbacks: parse_constant kwarg ref alive", "callback_refs.py",
+      ["no_constants", "rank_rows", "flush_caches"])
+alive("callbacks: callback consumers stay alive", "callback_refs.py",
+      ["sort_records", "make_listener", "serve"])
+_tiers = {
+    d["func"]: d["tier"]
+    for d in dead["candidates"]
+    if d["path"] == "callback_refs.py"
+}
+check("callbacks: handler-class arg ref demotes methods to review",
+      all(_tiers.get(m) == "review" for m in ("handle_request", "render")),
+      f"tiers={_tiers}")
+stays_dead("callbacks: unreferenced helper stays dead",
+            "callback_refs.py", "unused_callback")
+stays_dead("callbacks: string-literal name is not a ref",
+            "callback_refs.py", "ghost_from_string")
+stays_dead("callbacks: attribute ref is not a bare-name ref",
+            "callback_refs.py", "fire_later")
+
 print(f"{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)

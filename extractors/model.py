@@ -90,6 +90,12 @@ class FileSym:
     # (injected stand-ins handed to opaque consumers): runtime-dispatch
     # candidates — the dead scan tiers them review, never likely
     dispatch_names: set[str] = field(default_factory=set)
+    # python bare-identifier call-argument references (#177): name
+    # tokens in argument position (keyword values and bare positionals
+    # — AST Name expressions only, so string contents and attribute
+    # refs never land here). A def passed by reference has no call
+    # site; the graph attributes same-file defs alive from these.
+    arg_refs: set[str] = field(default_factory=set)
 
 
 # -- cAST-style doc chunking helpers (issue #76) -----------------------------
