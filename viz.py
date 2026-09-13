@@ -5313,6 +5313,7 @@ const mapPickEl = mapOvEl.querySelector("#mapPick");
 const mapPickIn = mapOvEl.querySelector("#mapPick input");
 const mapPickRows = mapOvEl.querySelector("#mapPick .rows");
 let mapPickRc = null;
+let mapListChip = -1;   // [issue #113] chip ix whose bundle list is open
 function mapTipHide() { mapTipEl.style.display = "none"; }
 function mapClosePick() { mapPickEl.style.display = "none"; mapPickRc = null; }
 // ---- [issue #82] sticky wire selection -----------------------------------
@@ -5528,12 +5529,27 @@ function mapOvCloseOne() {
   let closed = false;
   if (fnPickEl.style.display === "block") { fnClosePick(); closed = true; }
   if (mapPickEl.style.display === "block") { mapClosePick(); closed = true; }
-  if (mapListEl.style.display === "block") { mapListEl.style.display = "none"; closed = true; }
+  if (mapListEl.style.display === "block") { mapListEl.style.display = "none";
+    mapListChip = -1; closed = true; }
   if (mapFrozenIx >= 0) { mapFrozenIx = -1; closed = true; drawMapPane(); }
   // [issue #82] closing the bundle list unpins the wire its row selected
   // (menu-close dismissal; the list was that pin's menu)
   if (wirePin && wirePin.menu === "list" && mapListEl.style.display === "none") wirePinClear();
   return closed;
+}
+// [issues #112/#113] focus teardown converges HERE for the 2D surface: every
+// piece of map pick state a focus scope owned dies with that scope — the L3
+// freeze (a stale mapFrozenIx dims the NEXT focus's whole diagram via
+// dim()), the wire hover (dim()'s hov branch dims the same diagram while a
+// stale mapHover keeps pointing at the torn-down focus's wires), the vars
+// chip rect (a stale rect is an invisible toggle zone under the "focus a
+// node" hint) and the chip hover. clearFocus, resetAll and the no-focus
+// paint paths all route through this one function.
+function mapTeardown() {
+  mapFrozenIx = -1;
+  mapHover = -1;
+  mapVarsChipRect = null;
+  mapHoverChip = -1;
 }
 // L2: click a named wire -> fn panel. showFnInfo reads fnMeta[k] only, so a
 // miss pushes a temporary entry around the synchronous call (removed after).
@@ -5583,10 +5599,16 @@ function mapWireAt(wx, wy) {
 }
 let mapWireLastD = Infinity;
 function mapChipAt(wx, wy) {
+  // [issue #113] pick-vs-paint parity: hits test the SCREEN-space rect the
+  // paint actually drew (ch.hit — collision-ladder displacement, LOD, zoom
+  // fade and out-of-view all baked in), never the raw layout anchor. A
+  // hidden chip has hit === null and is unclickable; a displaced chip
+  // responds exactly where it is visible.
   if (!mapLayout) return -1;
+  const sx = (wx - mapPX) * mapZ, sy = (wy - mapPY) * mapZ;
   for (let c = 0; c < mapLayout.chips.length; c++) {
-    const ch = mapLayout.chips[c];
-    if (wx >= ch.x && wx <= ch.x + ch.w && wy >= ch.y && wy <= ch.y + ch.h) return c;
+    const h = mapLayout.chips[c].hit;
+    if (h && sx >= h.x && sx <= h.x + h.w && sy >= h.y && sy <= h.y + h.h) return c;
   }
   return -1;
 }
@@ -5615,6 +5637,7 @@ function mapTipText(w) {
 // bundle list (section 7): every wire on the corridor, enumerated + scrollable
 function mapOpenList(ci) {
   const ch = mapLayout.chips[ci];
+  mapListChip = ci;   // [issue #113] the list belongs to this chip (re-anchor)
   mapListEl.innerHTML = "";
   const h = document.createElement("h3");
   h.textContent = ch.origin
@@ -5638,12 +5661,22 @@ function mapOpenList(ci) {
     };
     mapListEl.appendChild(row);
   });
-  const b = mapPane.getBoundingClientRect();
-  const sx = Math.max(4, Math.min((ch.x - mapPX) * mapZ + 16, mapPane.clientWidth - 262));
-  const sy = Math.max(4, Math.min((ch.y - mapPY) * mapZ + 10, (b.height || innerHeight) - 170));
-  mapListEl.style.left = sx + "px";
-  mapListEl.style.top = sy + "px";
+  const a = mapListAnchor(ch);
+  mapListEl.style.left = a[0] + "px";
+  mapListEl.style.top = a[1] + "px";
   mapListEl.style.display = "block";
+}
+// [issue #113] the bundle list anchors to the chip's PAINTED rect when it
+// has one (pick-vs-paint parity), else to its raw anchor — and the paint
+// re-anchors an open list every frame, so wheel/pan/drag/resize can never
+// leave live UI floating over unrelated geometry.
+function mapListAnchor(ch) {
+  const b = mapPane.getBoundingClientRect();
+  const sx = Math.max(4, Math.min((ch.hit ? ch.hit.x + 16
+    : (ch.x - mapPX) * mapZ + 16), mapPane.clientWidth - 262));
+  const sy = Math.max(4, Math.min((ch.hit ? ch.hit.y + 10
+    : (ch.y - mapPY) * mapZ + 10), (b.height || innerHeight) - 170));
+  return [sx, sy];
 }
 // "+N more" picker (section 4 [F11]): edge-anchored, searchable, closes on
 // canvas input + ESC (wire both below)
@@ -5751,7 +5784,7 @@ function mapRender() {
   // NOTE: mapRects is NOT cleared here - a cache-hit repaint below skips the
   // rebuild and must keep the last hit-test rects; only discard/rebuild paths
   // touch it
-  if (!focusActive) { mapLayout = null; mapRects = []; hint("focus a node to see its map"); return; }
+  if (!focusActive) { mapTeardown(); mapLayout = null; mapRects = []; hint("focus a node to see its map"); return; }
   const litAll = [];
   for (let i = 0; i < N; i++) if (level[i] >= 0 && nodeVisible(nodes[i])) litAll.push(i);
   // cap by connectivity: keep the MAP_MAX most-connected lit files so a hub
@@ -5761,7 +5794,7 @@ function mapRender() {
   if (capNote) {
     lit = litAll.slice().sort((a, b) => (degree[b] - degree[a]) || (a - b)).slice(0, MAP_MAX);
   }
-  if (!lit.length) { mapLayout = null; mapRects = []; hint("focus a node to see its map"); return; }
+  if (!lit.length) { mapTeardown(); mapLayout = null; mapRects = []; hint("focus a node to see its map"); return; }
   // ONE layout at every zoom (owner mandate): no admission tiers, no doc
   // scoping - the wiring diagram below is zoom-independent. Relayouts fire
   // only on focus/visibility/expansion changes (cache key below).
@@ -5784,6 +5817,10 @@ function mapRender() {
     // pins whose menu was not the list.
     mapOvCloseOne();
     if (wirePin && wirePin.surface === "map") wirePinClear();
+    // [issue #113] the hover pick is keyed to this layout too: a stale
+    // mapHover index survives into the rebuilt wires array and dim()'s
+    // hov branch keeps dimming the new diagram by the old focus's wire.
+    mapHover = -1;
   }
   // tier-1 admission: file skeleton unchanged (survives section 10)
   const litSet = new Set(lit);
@@ -7245,6 +7282,9 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     top(L.chips.filter(ch => ch.origin), 6);
   }
   L.chips.forEach(ch => {
+    ch.hit = null;   // [issue #113] pick-vs-paint parity: the hit rect is
+    // exactly what THIS paint draws — every skip below (LOD, out-of-view,
+    // no ladder room, zoom fade) leaves it null = unclickable
     if ((ch.peel || ch.origin) && !chipLOD.has(ch)) return;
     const g = MGLYPH[ch.ty] || MGLYPH.call;
     const sw = ch.w * mapZ, sh = ch.h * mapZ;
@@ -7252,11 +7292,12 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     if (!inView(ch.x, ch.y)) return;
     const p2 = place2(a.x, a.y, sw, sh);
     if (p2 === null) return;
-    const dyW = p2.dy / mapZ, dxW = p2.dx / mapZ;  // screen px -> world px
     // zoom fade (InkKnobs #7): badges dissolve below z~0.45, solid by 0.70 -
     // at overview zoom they were unreadable smudges doubling the wire count
     const zf = Math.max(0, Math.min(1, (mapZ - 0.45) / 0.25));
     if (zf <= 0) return;
+    ch.hit = { x: a.x + p2.dx - sw / 2, y: a.y + p2.dy * mapZ - sh / 2, w: sw, h: sh };
+    const dyW = p2.dy / mapZ, dxW = p2.dx / mapZ;  // screen px -> world px
     ctx.globalAlpha = dim(ch.s, ch.t) * zf;
     ctx.fillStyle = "rgba(8,12,16,.85)";
     ctx.strokeStyle = g.c;
@@ -7272,7 +7313,22 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     ctx.fillText("\u00d7" + ch.n, ch.x + dxW + ch.w / 2, ch.y + dyW + ch.h / 2 + 0.5);
     ctx.font = MAP_FONT(10);
   });
-  // terminators last so arrowheads/dots sit on the box edges (section 9);
+  // [issue #113] an open bundle list is LIVE UI over a moving diagram: every
+  // repaint re-anchors it, so wheel / pan / divider-drag / resize can never
+  // strand it over unrelated geometry. A chip this paint hid (LOD, zoom
+  // fade, no ladder room) still labels a real bundle — the list keeps
+  // tracking its world anchor rather than closing, preserving the paint-tier
+  // pin its rows selected across zoom (#82 pin-survives-pan/zoom contract).
+  if (mapListEl.style.display === "block") {
+    const lc = mapListChip >= 0 && mapListChip < L.chips.length
+      ? L.chips[mapListChip] : null;
+    if (!lc) mapOvCloseOne();   // layout genuinely replaced it
+    else {
+      const an = mapListAnchor(lc);   // painted rect, else the chip anchor
+      mapListEl.style.left = an[0] + "px";
+      mapListEl.style.top = an[1] + "px";
+    }
+  }
   // ink-tier gated with the wires themselves - invisible wires wear no
   // arrowheads
   ctx.setLineDash([]);
@@ -7764,7 +7820,15 @@ mapPane.addEventListener("pointermove", e => {
 // leaving the pane (pointer onto the 3D canvas or the chrome) stops
 // mapPane pointermove, and window blur takes the pointer away entirely —
 // neither may leave a hover tip behind. Pin-owned cards are untouched.
-mapPane.addEventListener("pointerleave", () => { if (mapVisible) mapTipHide(); });
+// [issue #113] the wire hover is the same pointer-context ink: it must die
+// when the pointer leaves the pane, not linger dimming the diagram (the 2D
+// analog of the #112-3 stalk law) - a pointer transiting the pane toward the
+// search box otherwise latches a hover pick that dims the NEXT focus.
+mapPane.addEventListener("pointerleave", () => {
+  if (!mapVisible) return;
+  mapTipHide();
+  if (mapHover !== -1) { mapHover = -1; drawMapPane(); }
+});
 addEventListener("blur", () => {
   tip.style.display = "none";   // 3D hover tip dies with the surface
   mapTipHide();
@@ -7864,6 +7928,10 @@ function clearFocus() {
   // stay dirty after Escape, so the next focus inherited a stale tier)
   focusSeeds.clear(); query = "";
   focusStack = [];
+  camTween = null;   // [issue #112] Esc mid-tween must cancel it outright:
+  // frameGraph sets the overview pose below, and the tick's tween block
+  // would otherwise re-lerp the camera back toward the dead focus pose
+  // for the remaining ~400ms, landing it on an empty de-compacted region
   document.getElementById("search").value = "";
   info.style.display = "none";
   // [issue #82] hiding the fn panel closes the 2D wire's menu: a pin that
@@ -7876,8 +7944,14 @@ function clearFocus() {
     showInst = false;   // default returns with the rest of the focus scope
     document.getElementById("bInst").classList.remove("on");
   }
+  // [issue #112] the hover stalk is white depthTest-off ink over a fn
+  // layer this teardown disposes — Esc with the mouse stationary (no
+  // pointermove comes to hide it) left a bright line at the dead layer's
+  // coordinates. The hover id dies with it.
+  fnStalkHide(); hoveredFn = -1; _sfDirty = true;
   applyHighlight();   // query is empty -> clears hlArr/hlFn/.hl classes + results
   applyVisibility();
+  mapTeardown();   // [issue #113] stale L3 freeze + vars chip rect die here
   frameGraph();   // the camera followed the focus in; it follows the reset out
 }
 addEventListener("keydown", e => {
@@ -7898,7 +7972,9 @@ addEventListener("keydown", e => {
   if (e.key === "Escape" && wireTipEl.style.display !== "none") { hideWireTip(); return; }
   if (e.key === "Escape" && mapOvCloseOne()) return;   // map overlays own ESC first
   if (e.key === "Escape" && (focusSeeds.size || query)) clearFocus();
-  else if (e.key === "Backspace" && e.target !== searchEl &&
+  else if (e.key === "Backspace" && !(e.target instanceof Element &&
+    (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" ||
+     e.target.isContentEditable)) &&
     focusSeeds.size && focusStack.length) {
     e.preventDefault();
     popFocus();
@@ -7950,7 +8026,13 @@ applySpread(1);
   // the map pane is a viewport pref too — keep its button in lockstep
   if (mapVisible) document.getElementById("bMap").classList.add("on");
   // ...but its content state resets with everything else
-  mapExpandUser.clear(); mapFrozenIx = -1; mapHover = -1; mapVarsOn = false;
+  mapExpandUser.clear(); mapVarsOn = false; mapHover = -1;
+  mapTeardown();   // [issue #113] one clear function for the 2D surface
+  // [issue #112] "return everything to boot" includes EVERY pin, not just
+  // list-menu ones: a tip/info pin (and its persistent wire tip) used to
+  // survive the reset — violating the pin-dies-with-its-menu rule that
+  // clearFocus implements. wirePinClear also hides the tip.
+  wirePinClear();
   mapOvCloseOne();
   frameGraph();
   buildLegend();
@@ -8330,6 +8412,11 @@ renderer.domElement.addEventListener("pointerdown", e => {
   camTween = null;   // user grab beats the tween
   if (hovered < 0 && hoveredFn < 0) renderer.domElement.style.cursor = "grabbing";
 });
+// [issue #112] a user zoom beats the tween: OrbitControls handles wheel on
+// its own listener (a pointerdown-only cancel let the tick's tween block
+// re-lerp the camera over every mid-flight zoom). passive: we never scroll.
+renderer.domElement.addEventListener("wheel", () => { camTween = null; },
+  { passive: true });
 renderer.domElement.addEventListener("pointerup", () => {
   pointerDown = false;
   renderer.domElement.style.cursor = "grab";   // pointermove corrects to pointer over a node
@@ -8340,7 +8427,11 @@ renderer.domElement.addEventListener("pointerleave", () => { overCanvas = false;
   // left the canvas (onto the pane, the chrome, or out the window) and no
   // further canvas pointermove arrives to clear it. The pin-owned wireTip
   // is not hover state — it lives to dismissal (issue #85).
-  tip.style.display = "none"; });
+  tip.style.display = "none";
+  // [issue #112] the white stalk is hover ink of the same family: with the
+  // pointer gone no pointermove arrives to hide it, so it stayed drawn at
+  // the last fn-box coordinates after the cursor left the surface
+  fnStalkHide(); hoveredFn = -1; _sfDirty = true; });
 // multi-root camera: frame the centroid of all focus seeds at a distance
 // set by their spread (single seed falls back to the tight focus)
 function focusSeedsCamera() {
@@ -8813,6 +8904,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get controls() { return controls; },
   get fnMeta() { return fnMeta; }, get fnStalks() { return fnStalks; },
   get hovered() { return hovered; },
+  get hoveredFn() { return hoveredFn; },   // [issue #112] hover-id teardown probe
   get groundGrid() { return groundGrid; },
   get groupsMode() { return groupsMode; }, groups,
   get spread() { return spread; }, get deadOnly() { return deadOnly; },
@@ -8823,6 +8915,10 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   mapPane: { canvas: mapPane, draw: drawMapPane },
   mwires, mapInfo, mapWireAt, wireKeyOf,   // [issue #84] probe surface: hit-test named wires
   get mapVars() { return mapVarsOn; }, mapExpandUser,
+  get mapFrozenIx() { return mapFrozenIx; },   // [issue #113] stale-freeze probe
+  get mapHover() { return mapHover; },   // [issue #113] stale wire-hover dim probe
+  get mapVarsChipRect() { return mapVarsChipRect; },
+  mapChipAt, get mapListChip() { return mapListChip; },
   get mapZ() { return mapZ; }, get mapPX() { return mapPX; },
   get mapPY() { return mapPY; }, mapClampView,
   get mapInkOn() { return mapInkOn; },
