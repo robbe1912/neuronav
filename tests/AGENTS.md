@@ -1,6 +1,6 @@
 # AGENTS.md — tests/
 
-Twenty self-contained suites. Each is a standalone script — no pytest — run in
+Twenty-four self-contained suites. Each is a standalone script — no pytest — run in
 its own process:
 
 ```
@@ -9,18 +9,25 @@ its own process:
 
 Exit 0 = all pass. Each suite bootstraps `sys.path` to the repo root and
 uses a local `check(name, cond)` helper (PASS/FAIL lines + failure count).
-CI (`.github/workflows/ci.yml`) runs eighteen hermetic suites on ubuntu
+CI (`.github/workflows/ci.yml`) runs twenty hermetic suites on ubuntu
 with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
-`test_pyhard`, `test_cpphard`, `test_autorescan`, `test_searchtext`,
-`test_project_mode`, `test_baseindex`, `test_mwires`,
+`test_pyhard`, `test_cpphard`, `test_autorescan`, `test_server_stdio`,
+`test_searchtext`, `test_project_mode`, `test_baseindex`, `test_mwires`,
 `test_clusterinv`, `test_recall`, `test_embedprov`, `test_repomap`,
-`test_selfindex`, `test_verifier`, `test_bench`, `test_bakeint`,
-`test_portability`) plus a `viz` job that builds the frozen synthetic corpus
-(`tests/vizcorpus_build.py`) and runs `test_viz` against its hermetic
-store in a real browser (issue #100). The rest are local gates that need
-material CI cannot provide: `test_target_regression` (a populated target
-repo in the default config), `test_server_stdio` (ditto, stdio e2e),
-`test_explore` (a populated semantic self-index store).
+`test_selfindex`, `test_explore`, `test_verifier`, `test_bench`,
+`test_bakeint`, `test_portability`) plus a `viz` job that builds the
+frozen synthetic corpus (`tests/vizcorpus_build.py`) and runs `test_viz`
+against its hermetic store in a real browser (issue #100). The two e2e
+suites need NO committed store in CI (issue #180): on a fresh checkout
+(no `.neuronav/`, no checkout-local `config.json`) each self-bootstraps
+the self-index via one FAKE-embed rescan when `nav.count() == 0` — the
+#166 F1 pattern from `test_recall` — and drives its drift/stat-gate/
+routed-freshness/recall-knob/degraded scenarios on hermetic scratch
+trees. On an owner checkout (config present) both run their owner legs
+unchanged: the stores are never written by the CI bootstrap. The rest
+are local gates outside the matrix: `test_target_regression` (a
+populated target repo in the default config), plus the hermetic
+owner-side `test_chunking` and `test_truthful`.
 
 ## Suites
 
@@ -32,8 +39,8 @@ repo in the default config), `test_server_stdio` (ditto, stdio e2e),
 | `test_cpphard` | C++ extractor edge cases on `fixtures/cpp` (issue #13): macro surface, .h/.cpp pairing, registration harvest, dead tiers, determinism | tree-sitter + tree-sitter-cpp import only (hermetic fixture config) |
 | `test_selfindex` | self-index structural invariants: likely-dead zero, handlers stay review, deterministic rebuild | chromadb import (structural only) |
 | `test_target_regression` | byte-stability over the target repo: floor pins + liveness canaries | chromadb import + the target repo configured in `config.json` |
-| `test_explore` | explore() happy/degraded/no-hit paths, windowed slices + anchor paging (issue #69) + MCP tool annotations | mcp + chroma + populated self-index |
-| `test_server_stdio` | MCP stdio end-to-end: spawns server.py, drives JSON-RPC, asserts the context tool answers | mcp + default-config target repo |
+| `test_explore` | explore() happy/degraded/no-hit paths, windowed slices + anchor paging (issue #69) + MCP tool annotations; CI leg self-bootstraps the self-index under FAKE (issue #180) | mcp + chroma + populated self-index (CI: self-populated via FAKE rescan) |
+| `test_server_stdio` | MCP stdio end-to-end: spawns server.py, drives JSON-RPC, asserts the context tool answers; drift/stat-gate, routed-freshness, recall-knobs (graph_boost/two_pass) and degraded-shape scenarios (issue #180) | mcp + default-config target repo (CI: self-index FAKE bootstrap) |
 | `test_autorescan` | auto-rescan stat gate (issue #19): read-tool freshness, TTL burst guard, embed-failure cooldown, `watch_interval_s` watcher — in-process pins + two stdio e2e servers | mcp + chromadb + numpy/networkx/scipy/scikit-learn (hermetic temp target + `NEURONAV_EMBED_FAKE=1`) |
 | `test_searchtext` | capped `search_text` tool (issue #68): file:line:row shape, deterministic order, 20-file/3-line caps with markers + totals, `files_only`, glob, graceful regex errors | mcp + chromadb (hermetic temp config, `NEURONAV_EMBED_FAKE=1`) |
 | `test_baseindex` | export/import-base shards (issue #102): second-run idempotence (WinError 183), per-phase non-destruction (mid-write debris outside base, commit rollback, cleanup self-heal), byte determinism, stale-shard cleanup, fresh-store roundtrip | chromadb import (hermetic temp target, `NEURONAV_EMBED_FAKE=1`) |
@@ -68,7 +75,10 @@ Suites pick their own config; the shell must not pre-export one:
   `NEURONAV_CONFIG=<repo>/config/neuronav.json` (self-index profile).
 - `test_explore` uses `os.environ.setdefault` — an exported var WINS, which
   is exactly why exporting `NEURONAV_CONFIG` in your shell before running
-  suites silently points them at the wrong index. Never export it.
+  suites silently points them at the wrong index. Never export it. Under
+  `NEURONAV_EMBED_FAKE=1` it self-populates an empty self-index store
+  (issue #180: one FAKE rescan + fn sync when count == 0, the #166
+  pattern) — a populated real store is never touched.
 - `test_pyhard` / `test_mwires` write a generated temp config under the
   system temp dir pointing at `tests/fixtures/<name>` only — they never touch
   the real index.
@@ -94,7 +104,10 @@ Suites pick their own config; the shell must not pre-export one:
   temp dir and drives init/wire/discovery in fresh subprocesses with
   fake embeds — never touches a real profile.
 - `test_server_stdio` strips `NEURONAV_CONFIG` from the child env so the
-  server binds the default profile.
+  server binds the default profile; on a fresh checkout with FAKE embeds
+  available (CI) it instead binds the self-index profile and bootstraps
+  its store (issue #180) — its drift/degraded scenarios always run on
+  hermetic scratch trees under `.team_scratch/`.
 - `test_embedprov` writes a generated temp config under the system
   temp dir, points `embed_url` at its own loopback stub (ephemeral
   port), and manages `NEURONAV_EMBED_FAKE`/`NEURONAV_EMBED_KEY`
