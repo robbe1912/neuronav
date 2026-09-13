@@ -48,6 +48,7 @@ An extractor module must expose:
    | `from_imports: set[(mod, name)]` | python `from x import y` — binds only y (plus the receiver const); graph rebinds package re-exports to the defining module |
    | `module_vars: dict[name -> "module:<rel>"\|class]` | python module-level receivers (`LOG = CheckLog()`) — visible to every body scan |
    | `dispatch_names: set[name]` | python methods of module-scope-referenced classes (injected stand-ins) — review tier, never likely-dead |
+   | `arg_refs: set[name]` | python bare-identifier call-argument refs (kwarg values + bare positionals, AST Name args only — strings/attributes excluded) — same-file defs are attributed-alive (#177); class-name args extend `dispatch_names` |
    | `globals: dict[name -> type]` | C++ file-scope variables — unused statics are honest dead-code material |
    | `aliases: dict[name -> type text]` | C++ `typedef`/`using` declarations |
    | `private_members: set[name]` | C++ members declared under a private access region (stronger dead candidates) |

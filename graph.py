@@ -420,6 +420,23 @@ class Graph:
                 if mod in self.files and nm in self.files[mod].funcs:
                     self.referenced.add(f"{mod}::{nm}")
 
+        # python bare-name argument references (#177): a def passed by
+        # reference — `json.loads(..., parse_constant=no_constants)`,
+        # `sorted(rows, key=rank)`, `atexit.register(flush)` — has no
+        # call site, so the call-regex passes never see it and the dead
+        # tier flagged it likely. The extractor harvest is AST-guarded
+        # to plain identifier args (strings and attribute refs never
+        # land there); same-file defs get an attributed-alive key —
+        # precise per-def liveness, never the corpus-wide
+        # referenced_names name match, so same-named funcs elsewhere
+        # stay honest dead-code material.
+        for rel, fs in self.files.items():
+            if fs.ext != ".py":
+                continue
+            for nm in fs.arg_refs:
+                if nm in fs.funcs:
+                    self.referenced.add(fs.funcs[nm].key)
+
         for rel, fs in self.files.items():
             if fs.ext == ".gd":
                 for fn in fs.funcs.values():

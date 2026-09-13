@@ -284,6 +284,32 @@ def _harvest_ast(tree: ast.Module, path: Path, fs: FileSym) -> None:
         fs.dispatch_names |= classes[cls]
         frontier.extend(sorted((class_refs.get(cls, set()) & set(classes)) - seen))
 
+    # bare-name argument references (#177): a def or class passed by
+    # reference as a call argument — keyword value (`parse_constant=f`,
+    # `key=rank`) or bare positional (`atexit.register(flush)`,
+    # `Server(addr, HandlerCls)`) — has no call site, so liveness must
+    # read the argument itself. The AST is the strict guard: only
+    # plain Name argument expressions count, so string contents and
+    # attribute refs (obj.method) never land here, and **-unpacking
+    # (`f(**d)`) is excluded (d is a mapping, not a callable ref).
+    # Def-name refs feed the graph's attributed-alive arm; class-name
+    # refs ride the #153 dispatch convention (methods review, not
+    # likely) — body-level class refs are as much runtime dispatch as
+    # module-scope ones.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for arg in node.args:
+            if isinstance(arg, ast.Name):
+                fs.arg_refs.add(arg.id)
+                if arg.id in classes:
+                    fs.dispatch_names |= classes[arg.id]
+        for kw in node.keywords:
+            if kw.arg is not None and isinstance(kw.value, ast.Name):
+                fs.arg_refs.add(kw.value.id)
+                if kw.value.id in classes:
+                    fs.dispatch_names |= classes[kw.value.id]
+
 
 # mutators callable on list/dict/set/pass-by-ref objects (gdscript's
 # _MUTATING_METHODS analog — the py member/param parity surface)
