@@ -14,11 +14,12 @@
 # #120 lands (it holds 4 .tscn sites — LJ-4; growing the set is a one-line
 # change and must not be forgotten).
 #
-# Temporary, line-anchored allowlist: clusters.py is PR 2 of this wave
-# (owner ruling) and viz.py:2838 is queued behind HarnessPro's #123/#89.
-# Every allowlisted line is individually anchored and REQUIRES a live
-# detector hit — a stale entry fails this suite, so PR 2 cannot merge
-# without deleting its block. No blanket file carve-outs exist.
+# Temporary, line-anchored allowlist: viz.py:2838 is queued behind
+# HarnessPro's #123/#89 and nav's walk filters are config truth (not
+# language truth). clusters.py carried PR-2 deferrals until its cutover
+# landed — it must stay clean now, so its block is GONE and this
+# asserts it. Every allowlisted line is individually anchored and
+# REQUIRES a live detector hit — a stale entry fails this suite.
 #
 # Hermetic: text pins read source only; the tier pin builds a graph over
 # tests/fixtures/langsep with a generated temp config + temp state dir and
@@ -75,17 +76,10 @@ JS_SUFFIX = re.compile(r"""/\\.(?:tscn|gd|tres|res|py|cpp|h|hpp)\b""")
 
 # ---- temporary, line-anchored allowlist (see header) ---------------------------
 ALLOWED = {}
-for _ln in (173, 181, 186, 194, 211, 219, 280, 469, 484, 641, 743, 903, 966,
-            992, 1080, 1095, 1132, 1175, 1230, 1323, 1337, 1341):
-    ALLOWED[("clusters.py", _ln)] = "PR2: clusters refactor queued this wave"
 ALLOWED[("viz.py", 2838)] = "V-1: queued behind #123/#89 (data-flag contract)"
 # config/parametric walk filters — EXTS is the user's config include-set
 # and `suffixes` arrives as a caller argument (registry datum at the call
 # site); neither is a language truth hard-coded in nav
-ALLOWED[("clusters.py", 672)] = "PR2: autoload regex copy -> registry harvest hook (dual-consumer)"
-ALLOWED[("clusters.py", 665)] = "PR2: autoload regex copy -> registry harvest hook (dual-consumer)"
-ALLOWED[("graph.py", 244)] = "PR2: _parse_autoloads -> gdscript.harvest_autoloads (dual-consumer with clusters.py)"
-ALLOWED[("graph.py", 249)] = "PR2: _parse_autoloads -> gdscript.harvest_autoloads (dual-consumer with clusters.py)"
 ALLOWED[("nav.py", 467)] = "config walk filter (EXTS = user config)"
 ALLOWED[("nav.py", 497)] = "parametric walk filter (caller-supplied suffixes)"
 ALLOWED[("nav.py", 527)] = "config walk filter (EXTS = user config)"
@@ -140,8 +134,9 @@ for kind in ("suffix", "guard", "pseudo", "reslogic", "jssuffix", "glob", "godot
 stale = sorted(k for k in ALLOWED if k not in used_allowlist)
 check("allowlist fully live (no stale entries)", not stale,
       f"stale: {stale}" if stale else f"{len(ALLOWED)} anchored deferrals")
-check("clusters.py deferral is anchored per-line, not blanket",
-      all(isinstance(k, tuple) and k[0] == "clusters.py" for k in ALLOWED if k[0] == "clusters.py"))
+check("clusters.py carries zero deferrals (PR2 cutover landed)",
+      not any(k[0] == "clusters.py" for k in ALLOWED),
+      f"stray: {sorted(k for k in ALLOWED if k[0] == 'clusters.py')}")
 
 # ---- pin 2: package-only import surface ----------------------------------------
 DEEP_IMPORT = re.compile(r"""(?:from\s+extractors\.[\w.]+\s+import|^import\s+extractors\.)""")

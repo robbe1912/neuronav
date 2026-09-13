@@ -940,3 +940,54 @@ def is_wiring_only(fs: FileSym) -> bool:
 _PASS_WIRING_HARVEST = harvest_scene_wiring
 _PASS_INHERITANCE = build_inheritance
 _PASS_TSCN_WIRE = wire_tscn
+
+
+# ---- path-level predicates + project autoload harvest (langsep PR2) -----------
+# SCRIPT_FILE_SUFFIXES completes the documented scene pair above: script
+# documents (.gd) vs scene documents (.tscn) vs custom-resource wiring
+# walk (.tres). Consumers get predicates, never suffix literals.
+SCRIPT_FILE_SUFFIXES = frozenset({".gd"})
+
+
+def is_scene_path(p: str) -> bool:
+    """True when the repo-relative path names a scene document."""
+    return p.endswith(tuple(sorted(SCENE_FILE_SUFFIXES)))
+
+
+def is_script_path(p: str) -> bool:
+    """True when the repo-relative path names a GDScript document."""
+    return p.endswith(tuple(sorted(SCRIPT_FILE_SUFFIXES)))
+
+
+# the wide form: scene-backed singletons (the `*` spelling) carry any ext;
+# script-only consumers pass scripts_only=True
+AUTOLOAD_ANY_RE = re.compile(r'^(\w+)\s*=\s*"\*?res://([\w/.-]+\.\w+)"')
+PROJECT_FILE = "project.godot"
+
+
+def harvest_autoloads(root: Path, scripts_only: bool = False) -> dict[str, str]:
+    """project.godot [autoload] section: singleton name -> rel path.
+    ONE home, TWO consumers (graph.py's entry map, clusters.py's inverse
+    labeler map) — this replaces the pre-langsep copy-paste in both.
+    scripts_only drops scene-backed singletons (graph's historical shape
+    indexes scripts only)."""
+    out: dict[str, str] = {}
+    pg = root / PROJECT_FILE
+    if not pg.is_file():
+        return out
+    in_auto = False
+    for line in pg.read_text(encoding="utf-8", errors="replace").splitlines():
+        s = line.strip()
+        if s.startswith("[autoload]"):
+            in_auto = True
+            continue
+        if s.startswith("["):
+            in_auto = False
+        if in_auto:
+            m = AUTOLOAD_ANY_RE.match(s)
+            if m and (not scripts_only or is_script_path(m.group(2))):
+                out[m.group(1)] = m.group(2)
+    return out
+
+
+_PASS_AUTOLOADS = harvest_autoloads
