@@ -85,7 +85,7 @@ class NoCacheHandler(http.server.BaseHTTPRequestHandler):
             data = self.server.bake.read_bytes()  # fresh bytes every request
         except OSError:
             self.send_error(404, "graph.html is not baked under the state dir"
-                                 " — run a rescan+bake first")
+                                 " - run a rescan+bake first")
             return
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")

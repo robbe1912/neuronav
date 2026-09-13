@@ -157,6 +157,41 @@ def leg_a_serve():
             proc.terminate()
             proc.wait(timeout=15)
 
+        # no-bake refusal: a loud, well-formed 404 - never a dropped
+        # connection (GK F1: non-ASCII reason phrases crash latin-1 encode)
+        nobake = tmp / "nobake"
+        nobake.mkdir()
+        cfg2 = tmp / "config-nobake.json"
+        cfg2.write_text(json.dumps({
+            "root": str(tmp), "collection": "qasmoke", "include_dirs": ["."],
+            "extensions": [".gd"], "exclude_dirs": [".git"],
+            "state_dir": str(nobake)}), encoding="utf-8", newline="\n")
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port2 = s.getsockname()[1]
+        proc2 = subprocess.Popen(
+            [PY, "-X", "utf8", str(ROOT / "tools" / "serve.py"),
+             "--port", str(port2)],
+            cwd=str(ROOT), env=_child_env(cfg2),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            if not _wait_listening(port2):
+                check("serve: no-bake instance boots", False)
+                return
+            try:
+                st, body, _ = _fetch(port2, "/graph.html")
+            except Exception as exc:  # dropped connection = the F1 crash
+                check("serve: missing bake -> loud 404, connection lives",
+                      False, f"connection dropped: {type(exc).__name__}")
+            else:
+                check("serve: missing bake -> loud 404, connection lives",
+                      st == 404 and b"not baked" in body
+                      and b"rescan+bake" in body,
+                      f"status {st}")
+        finally:
+            proc2.terminate()
+            proc2.wait(timeout=15)
+
 
 # --- leg B: the declutter battery over a hermetic bake (#120 + #124-3) -------
 
