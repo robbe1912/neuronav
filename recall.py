@@ -39,6 +39,7 @@ import math
 import re
 import sys
 from collections import Counter
+import weakref
 
 RRF_K = 60.0
 BM25_K1 = 1.2
@@ -62,19 +63,29 @@ FIELDS: tuple[tuple[str, float], ...] = (
     ("body", 1.0),
 )
 
-_SPLIT_RE = re.compile(r"[^A-Za-z0-9]+")
+_SPLIT_RE = re.compile(r"[^\w]+")  # Unicode-aware (issue #115): non-ASCII
+# identifiers and CJK runs survive as tokens instead of silently
+# dropping to (near-)zero — ASCII-only input splits exactly as before.
 # BM25F -> BM, 25, F / parseGd -> parse, Gd / XMLReader -> XML, Reader
 _CAMEL_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z]+|[a-z]+|[0-9]+")
 
 
 def _tokens(text: str) -> list[str]:
-    """Deterministic token stream: split on non-alphanumerics, split
-    camel humps, lowercase, drop single characters."""
+    """Deterministic token stream: split on non-word characters, split
+    camel humps on the ASCII segments, lowercase, drop single
+    characters. A chunk containing non-ASCII is ALSO kept whole as its
+    own token (issue #115) while still yielding the ASCII camel tokens
+    inside it, so 'über' indexes as BOTH 'über' and 'ber', and pure-CJK
+    identifiers stop tokenizing to []."""
     out: list[str] = []
     for chunk in _SPLIT_RE.split(text):
         if not chunk:
             continue
-        for tok in _CAMEL_RE.findall(chunk):
+        if chunk.isascii():
+            toks = _CAMEL_RE.findall(chunk)
+        else:
+            toks = _CAMEL_RE.findall(chunk) + [chunk]
+        for tok in toks:
             if len(tok) > 1:
                 out.append(tok.lower())
     return out
@@ -172,20 +183,26 @@ class BM25F:
 
 # One index per corpus, not per query: search() used to construct
 # BM25F(g.files) inline, re-tokenizing the whole corpus on every call.
-# The fingerprint (files-dict identity + sorted path set) catches graph
-# rebuilds (get_graph(rebuild=True) yields a fresh dict) and path
-# add/remove; FileSym contents are frozen once Graph.build() returns, so
-# identity per corpus is sound. Pure perf — scores() output is
+# The cache holds the files dict ITSELF (plus its sorted path set) and
+# matches by identity: the strong reference means the cached dict can
+# never be freed, so its address can never be recycled onto a newer
+# dict while the entry lives (issue #115 — the old id()-only
+# fingerprint survived a free/realloc cycle, and two consecutive graph
+# rebuilds with no query in between routinely landed the third files
+# dict on the first one's address, serving the pre-rescan tokenization
+# with no warning). A different dict — graph rebuild, config-scope
+# swap — misses the identity check and rebuilds. FileSym contents are
+# frozen once Graph.build() returns. Pure perf — scores() output is
 # bit-identical to a fresh BM25F over the same files.
-_index_cache: tuple[tuple, BM25F] | None = None
+_index_cache: tuple[dict, tuple, BM25F] | None = None
 
 
 def _cached_index(files: dict) -> BM25F:
     global _index_cache
-    fp = (id(files), tuple(sorted(files)))
-    if _index_cache is None or _index_cache[0] != fp:
-        _index_cache = (fp, BM25F(files))
-    return _index_cache[1]
+    paths = tuple(sorted(files))
+    if _index_cache is None or _index_cache[0] is not files or _index_cache[1] != paths:
+        _index_cache = (files, paths, BM25F(files))
+    return _index_cache[2]
 
 
 def _vector_ranks(query: str, depth: int) -> tuple[list[str], dict[str, dict]]:
@@ -403,7 +420,9 @@ def search(
         if not vec:
             reason = "vector index is empty (call rescan first)"
     except Exception as exc:  # backend down = degraded, never a crash
-        reason = f"embedding backend unreachable ({type(exc).__name__})"
+        import nav  # lazy: truthful labels share nav's classifier (#115)
+
+        reason = nav.embed_failure_reason(exc)
     if reason:
         print(
             f"recall: vector recall unavailable — {reason}; serving BM25F-only",
@@ -437,10 +456,12 @@ def search(
         if aug:
             try:
                 vec2, metas2 = _vector_ranks(aug, depth)  # embed 2 of 2
-            except Exception as exc:  # pass-2 failure = pass-1, loud
+            except Exception as exc:
+                import nav  # lazy: same truthful classifier as pass 1
+
                 print(
-                    f"recall: two-pass retrieve failed ({type(exc).__name__}); "
-                    "serving pass-1 fusion",
+                    f"recall: two-pass retrieve failed "
+                    f"({nav.embed_failure_reason(exc)}); serving pass-1 fusion",
                     file=sys.stderr,
                 )
             else:
@@ -475,6 +496,7 @@ def search(
             hit["ext"] = str(meta.get("ext", ""))
         if reason:
             hit["degraded"] = True
+            hit["degraded_reason"] = reason
         if engaged:
             hit["two_pass"] = True
         hits.append(hit)
