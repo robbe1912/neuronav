@@ -33,7 +33,10 @@ for i in range(3):
         f"def mod{i}_thing_run(scale):\n    return scale * {i}\n", encoding="utf-8"
     )
 
-CFG = Path(tempfile.gettempdir()) / "neuronav_autorescan_config.json"
+# per-run config under the suite's own mkdtemp — a fixed path in the
+# shared tempdir let two overlapping autorescan runs clobber each
+# other's config mid-read (same class as #152's baseindex note)
+CFG = TMP / "config.json"
 CFG.write_text(
     json.dumps(
         {
@@ -350,7 +353,7 @@ def _file_count(repo_map_out: str) -> int:
 
 
 def _e2e_cfg(name: str, state_subdir: str, extra: dict | None = None) -> Path:
-    cfg = Path(tempfile.gettempdir()) / f"neuronav_autorescan_{name}_config.json"
+    cfg = TMP / f"config_{name}.json"
     body = {
         "root": str(TMP),
         "collection": f"autorescan_{name}",

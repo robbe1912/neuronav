@@ -1,6 +1,6 @@
 # AGENTS.md — tests/
 
-Twenty-four self-contained suites. Each is a standalone script — no pytest — run in
+Twenty-five self-contained suites. Each is a standalone script — no pytest — run in
 its own process:
 
 ```
@@ -9,13 +9,13 @@ its own process:
 
 Exit 0 = all pass. Each suite bootstraps `sys.path` to the repo root and
 uses a local `check(name, cond)` helper (PASS/FAIL lines + failure count).
-CI (`.github/workflows/ci.yml`) runs twenty hermetic suites on ubuntu
+CI (`.github/workflows/ci.yml`) runs twenty-one hermetic suites on ubuntu
 with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
 `test_pyhard`, `test_cpphard`, `test_autorescan`, `test_server_stdio`,
 `test_searchtext`, `test_project_mode`, `test_baseindex`, `test_mwires`,
 `test_clusterinv`, `test_recall`, `test_embedprov`, `test_repomap`,
 `test_selfindex`, `test_explore`, `test_verifier`, `test_bench`,
-`test_bakeint`, `test_portability`) plus a `viz` job that builds the
+`test_bakeint`, `test_portability`, `test_bytelaws`) plus a `viz` job that builds the
 frozen synthetic corpus (`tests/vizcorpus_build.py`) and runs `test_viz`
 against its hermetic store in a real browser (issue #100). The two e2e
 suites need NO committed store in CI (issue #180): on a fresh checkout
@@ -43,7 +43,7 @@ owner-side `test_chunking` and `test_truthful`.
 | `test_server_stdio` | MCP stdio end-to-end: spawns server.py, drives JSON-RPC, asserts the context tool answers; drift/stat-gate, routed-freshness, recall-knobs (graph_boost/two_pass) and degraded-shape scenarios (issue #180) | mcp + default-config target repo (CI: self-index FAKE bootstrap) |
 | `test_autorescan` | auto-rescan stat gate (issue #19): read-tool freshness, TTL burst guard, embed-failure cooldown, `watch_interval_s` watcher — in-process pins + two stdio e2e servers | mcp + chromadb + numpy/networkx/scipy/scikit-learn (hermetic temp target + `NEURONAV_EMBED_FAKE=1`) |
 | `test_searchtext` | capped `search_text` tool (issue #68): file:line:row shape, deterministic order, 20-file/3-line caps with markers + totals, `files_only`, glob, graceful regex errors | mcp + chromadb (hermetic temp config, `NEURONAV_EMBED_FAKE=1`) |
-| `test_baseindex` | export/import-base shards (issue #102): second-run idempotence (WinError 183), per-phase non-destruction (mid-write debris outside base, commit rollback, cleanup self-heal), byte determinism, stale-shard cleanup, fresh-store roundtrip | chromadb import (hermetic temp target, `NEURONAV_EMBED_FAKE=1`) |
+| `test_baseindex` | export/import-base shards (issue #102): second-run idempotence (WinError 183), per-phase non-destruction (mid-write debris outside base, commit rollback, cleanup self-heal), byte determinism, stale-shard cleanup, fresh-store roundtrip, stale-id skip (sources deleted since export), manifest model/dim-mismatch refusal (issue #124) | chromadb import (hermetic temp target, `NEURONAV_EMBED_FAKE=1`) |
 | `test_repomap` | repo_map budget bound, byte determinism, rank ordering, god-hub saturation on synthetic graphs | stdlib + numpy (no index, no embeddings) |
 | `test_mwires` | named-wire map exports (`mwires`/`fns`/`meta` contract, map-spec-v2 §0) | chromadb import only (self-sets `NEURONAV_EMBED_FAKE=1`) |
 | `test_clusterinv` | cluster partition invariant + crosstalk parity (issue #114): finalize's family moves vs full-weld regroups can double-assign a file — repaired by weld plurality (last pass, identity on healthy input); crosstalk counts only wiring the clusterer's structural graph sees (tests/ endpoints tallied separately, no cluster number) | numpy + chromadb import only (crafted shapes + stub graph, self-sets `NEURONAV_EMBED_FAKE=1`) |
@@ -55,6 +55,7 @@ owner-side `test_chunking` and `test_truthful`.
 | `test_bench` | bench record/golden coherence (issue #104): fingerprint determinism + order-insensitivity, render() refuses mismatched/missing fingerprints naming every stale record, coherent sandbox render e2e | stdlib only — imports bench/run_bench.py's render path against a temp bench dir; no config, no index, no embeds |
 | `test_bakeint` | bake integrity (issues #64/#108): empty/zeroed-store bake refusal naming the store + vector counts + the rescan fix, FAKE-only tiny-store waiver, strict-JSON splice (NaN/Infinity refused with paths), `</script`/`__DATA__`/`__IMPORTMAP__` breakout-token refusal, atomic `os.replace` bake write | chromadb import (self-sets `NEURONAV_EMBED_FAKE=1`; the real-provider refusal legs run in FAKE-scrubbed child processes) |
 | `test_portability` | BOM-tolerant config reads (issue #119): BOM'd config.json / .neuroignore / base manifest / server `_validate_foreign_config` all read via `utf-8-sig`; git subprocess decode (`bake.gitinfo` head/churn) stays UTF-8 under an ASCII locale; nav CLI reconfigures stdout under an ascii console | stdlib + chromadb import (hermetic temp config, fake embeds, own scratch git repo) |
+| `test_bytelaws` | byte-level output laws (issue #124): `_importmap` pinned against the five vendored files (CRLF→LF embed law, relative-specifier rewrite, determinism), UTF-8-no-BOM law asserted on every generated JSON artifact (onboard config scaffold, export_base manifest, baked graph.html DATA/importmap splices) | chromadb + numpy import (hermetic temp config + FAKE store, self-sets `NEURONAV_EMBED_FAKE=1`) |
 
 `_page_harness.py` (issue #86 strand R9) is the shared Playwright harness
 the two browser suites ride: `serve()` (no-cache loopback server, ephemeral

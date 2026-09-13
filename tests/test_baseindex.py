@@ -248,7 +248,93 @@ check("fresh store imports every id",
       r.get("imported") == 5 and r.get("manifest_count") == 5, str(r))
 check("imported count matches the store", nav.count() == 5, str(nav.count()))
 r2 = nav.import_base()
-check("non-empty store skips re-import", r2 == {"skipped": 5}, str(r2))
+check("non-empty store skips re-import",
+      r2 == {"skipped": 5}, str(r2))
+
+# ---- (f) stale-id skip: a source deleted since export is not imported ------
+# (issue #124: the roundtrip above never varied the tree — the skip branch
+# at the shard-row filter was unreachable in every leg so far). The base
+# still carries 5 ids; the tree now has 4 files.
+(TMP / "src" / "mod0000_thing.py").unlink()
+CFG3 = TMP / "config3.json"
+CFG3.write_text(
+    json.dumps(
+        {
+            "root": str(TMP),
+            "collection": "baseindex",
+            "include_dirs": ["src"],
+            "extensions": [".py"],
+            "state_dir": str(TMP / "state3"),
+        }
+    ),
+    encoding="utf-8",
+)
+nav._apply_config(CFG3)
+shutil.copytree(TMP / "state" / "base", nav.BASE_DIR)
+
+r3 = nav.import_base()
+check("deleted id skipped on import",
+      r3.get("imported") == 4 and r3.get("manifest_count") == 5, str(r3))
+check("store holds only surviving ids", nav.count() == 4, str(nav.count()))
+
+# ---- (g) manifest model/dim mismatch guards (issue #124) --------------------
+# a base exported under another model (or dim) must refuse LOUDLY, naming
+# the stored values — seeding it would upsert foreign vectors silently.
+def fresh_base(state: str) -> None:
+    cfg = TMP / f"config_{state}.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "root": str(TMP),
+                "collection": "baseindex",
+                "include_dirs": ["src"],
+                "extensions": [".py"],
+                "state_dir": str(TMP / state),
+            }
+        ),
+        encoding="utf-8",
+    )
+    nav._apply_config(cfg)
+    if nav.BASE_DIR.is_dir():
+        shutil.rmtree(nav.BASE_DIR)
+    shutil.copytree(TMP / "state" / "base", nav.BASE_DIR)
+
+
+def read_manifest() -> dict:
+    return json.loads(
+        (nav.BASE_DIR / nav.MANIFEST_NAME).read_text(encoding="utf-8")
+    )
+
+
+def write_manifest(doc: dict) -> None:
+    (nav.BASE_DIR / nav.MANIFEST_NAME).write_text(
+        json.dumps(doc, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def import_refuses(label: str, mutate, needles: list[str]) -> None:
+    fresh_base("state4")
+    doc = read_manifest()
+    mutate(doc)
+    write_manifest(doc)
+    try:
+        res = nav.import_base()
+        check(label, False, f"no refusal — {res}")
+    except RuntimeError as e:
+        msg = str(e)
+        check(label, all(n in msg for n in needles), msg[:130].replace("\n", " "))
+
+
+import_refuses(
+    "model-mismatch manifest refuses",
+    lambda d: d.update(model="totally-other-model"),
+    ["base index model mismatch", "totally-other-model", nav.EMBED_MODEL],
+)
+import_refuses(
+    "dim-mismatch manifest refuses",
+    lambda d: d.update(dim=nav.EMBED_DIM + 8),
+    ["base index model mismatch", str(nav.EMBED_DIM + 8)],
+)
 
 print(f"\n{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)
