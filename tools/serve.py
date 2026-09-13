@@ -1,5 +1,9 @@
 """No-cache dev server for graph.html - kills the stale-build bug class.
 
+HEADLESS-DEV ONLY (issue #133): production opens the bake directly via
+file:// — `.neuronav/graph.html` is fully self-contained and boots offline.
+This server exists for browser-automation rigs that need no-cache HTTP.
+
 Every response carries Cache-Control: no-store, so browsers always refetch.
 Serves the ACTIVE config's state dir, so /graph.html is always the bake
 that config owns (per-project state, issue #15).
@@ -44,7 +48,8 @@ def port_owner_hint(port: int) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="no-cache viewer for the active config's graph.html bake")
+        description="headless-dev no-cache HTTP for the active config's "
+                    "graph.html bake (production opens the file directly — see issue #133)")
     parser.add_argument("--port", type=int, default=8791,
                         help="port to bind on 127.0.0.1 (default: 8791)")
     parser.add_argument("--config", type=Path, default=None,

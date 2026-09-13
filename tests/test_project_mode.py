@@ -243,6 +243,65 @@ def main() -> None:
         msg = server.visualize()
         check("visualize degrades loudly without the add-on", "viz add-on not installed" in msg, msg[:60])
 
+        # 6b. issue #133: a real bake answers with an openable file:// URI —
+        # production opens <project>/.neuronav/graph.html directly, no server
+        import types
+        nav_state = Path(run_nav(proj, "import nav; print(nav.STATE_DIR)",
+                                 {"NEURONAV_CONFIG": str(cfg_path)}).strip())
+        fake_viz = types.ModuleType("viz")
+        fake_viz.ensure_bake = lambda: nav_state / "graph.html"
+        sys.modules["viz"] = fake_viz
+        try:
+            msg2 = server.visualize()
+        finally:
+            del sys.modules["viz"]
+        check("visualize: happy path appends the openable file:// URI",
+              msg2.startswith("3D graph written to")
+              and str(nav_state / "graph.html") in msg2
+              and "file://" in msg2,
+              msg2[:120])
+
+        # 6c. issue #133: onboard prints the per-OS open command for the
+        # baked file — win32 `start`, darwin `open`, POSIX `xdg-open`
+        import importlib.util as _ilu
+        _spec = _ilu.spec_from_file_location("onboard_uv", str(ROOT / "onboard.py"))
+        _onboard = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_onboard)
+        plat2 = sys.platform
+        try:
+            sys.platform = "win32"
+            win_open = _onboard.open_viewer(proj)
+            sys.platform = "darwin"
+            mac_open = _onboard.open_viewer(proj)
+            sys.platform = "linux"
+            lin_open = _onboard.open_viewer(proj)
+        finally:
+            sys.platform = plat2
+        bake = proj / ".neuronav" / "graph.html"
+        check("open_viewer: win32 prints `start <bake>`",
+              win_open == f"start {bake}", win_open)
+        check("open_viewer: darwin prints `open <bake>`",
+              mac_open == f"open {bake}", mac_open)
+        check("open_viewer: POSIX prints `xdg-open <bake>`",
+              lin_open == f"xdg-open {bake}", lin_open)
+        # a space-y project path needs quoting; win32 additionally needs
+        # `start "" "path"` (first quoted arg is the cmd window title)
+        spacey = tmp / "my project"
+        spacey.mkdir()
+        (spacey / ".neuronav").mkdir()
+        (spacey / ".neuronav" / "graph.html").write_text("x", encoding="utf-8")
+        try:
+            sys.platform = "win32"
+            win_space = _onboard.open_viewer(spacey)
+            sys.platform = "linux"
+            lin_space = _onboard.open_viewer(spacey)
+        finally:
+            sys.platform = plat2
+        check("open_viewer: win32 quotes and adds the empty title arg",
+              win_space == f'start "" "{spacey / ".neuronav" / "graph.html"}"', win_space)
+        check("open_viewer: POSIX quotes a space-y path",
+              lin_space == f'xdg-open "{spacey / ".neuronav" / "graph.html"}"', lin_space)
+
         # 7. nav: explicit-config guards (issue #41) — a missing env
         # config is a hard exit, an empty effective file set a loud
         # rescan error; neither may degrade silently

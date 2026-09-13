@@ -1,9 +1,10 @@
 """neuronav viz: self-contained force-directed 3D graph of the indexed repo.
 
-Generates `graph.html` (single file, three.js from CDN). Nodes = indexed
-files colored by semantic cluster; red-mixed nodes contain dead-code
-candidates. Edges = aggregated structural links (call edges, scene
-instancing, scene→script attachment).
+Generates `graph.html` (single file; vendored three.js is embedded as
+data: URIs, so it boots offline from file:// — zero network deps).
+Nodes = indexed files colored by semantic cluster; red-mixed nodes contain
+dead-code candidates. Edges = aggregated structural links (call edges,
+scene instancing, scene→script attachment).
 
 Usage:  python viz.py            # writes <state_dir>/graph.html (active config)
         python viz.py out.html   # custom output path

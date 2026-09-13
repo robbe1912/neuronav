@@ -192,6 +192,28 @@ def _index() -> None:
         print("viz add-on not installed — skipped the graph.html bake")
         return
     print(viz.ensure_bake())
+
+
+def open_viewer(project: Path | None = None) -> str:
+    """Command to open a project's baked graph.html (issue #133).
+
+    Production = open the self-contained bake directly (file://); serve.py
+    is headless-dev only. The command differs per OS; cross-platform pure
+    stdlib, no launching — just the hint.
+    """
+    bake = (project or Path.cwd()).resolve() / ".neuronav" / "graph.html"
+    if sys.platform == "win32":
+        # cmd `start` treats the FIRST quoted argument as a window title:
+        # a space-y path needs the `start "" "path"` form
+        if " " in str(bake):
+            return f'start "" "{bake}"'
+        return f"start {bake}"
+    q = f'"{bake}"' if " " in str(bake) else str(bake)
+    if sys.platform == "darwin":
+        return f"open {q}"
+    return f"xdg-open {q}"
+
+
 if __name__ == "__main__":
     argv = list(sys.argv[1:])
     cmd = argv[0] if argv else "init"
@@ -207,10 +229,14 @@ if __name__ == "__main__":
         print(f"state dir:      {target / '.neuronav'}")
         print(f"MCP wiring:     NEURONAV_CONFIG={p}")
         print("next:           onboard.py wire  (agents)  ·  nav.py rescan  ·  viz.py")
+        if do_index and (target / ".neuronav" / "graph.html").is_file():
+            print(f"viewer:         {open_viewer(target)}")
     elif cmd == "wire":
         m = wire(proj, index=do_index)
         print(f"mcp entry: {m}")
         print("restart MCP client sessions in the project to pick it up")
+        if do_index and (target / ".neuronav" / "graph.html").is_file():
+            print(f"viewer:         {open_viewer(target)}")
     else:
         print("usage: onboard.py [init|wire] [--project PATH] [--index]", file=sys.stderr)
         sys.exit(2)
