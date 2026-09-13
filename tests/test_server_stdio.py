@@ -6,6 +6,16 @@
 # tools/list -> tools/call context{...}. Asserts the context tool is
 # advertised and answers with a real subsystem map on the index's
 # most-wired file (config-agnostic — no hardcoded target paths).
+#
+# Two legs, self-selected (issue #180): with the owner's checkout-local
+# config.json the main server binds the default profile exactly as
+# before. On a fresh checkout (CI: no config anywhere, NEURONAV_EMBED_FAKE
+# in the env) the suite binds the self-index profile and self-populates
+# its store in-job via one FAKE-embed rescan (the #166 count==0
+# bootstrap from test_recall) — the store lives in the checkout's
+# gitignored .neuronav, never committed. The drift, routed-freshness,
+# recall-knobs and degraded scenarios below run on hermetic scratch
+# trees in both legs.
 import json
 import os
 import queue
@@ -19,7 +29,32 @@ from types import SimpleNamespace
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
+
+# CI hermetic leg (issue #180): the spawned main server strips
+# NEURONAV_CONFIG and re-runs nav's discovery from cwd=HERE —
+# project-local .neuronav/config.json, then the checkout-local
+# config.json. Neither exists on a fresh checkout, so with FAKE embeds
+# available the suite self-selects the self-index profile instead
+# (setdefault: an explicit export still wins, the test_explore law).
+CI_HERMETIC = (
+    os.environ.get("NEURONAV_EMBED_FAKE") == "1"
+    and not (HERE / ".neuronav" / "config.json").is_file()
+    and not (HERE / "config.json").is_file()
+)
+if CI_HERMETIC:
+    os.environ.setdefault(
+        "NEURONAV_CONFIG", str(HERE / "config" / "neuronav.json")
+    )
+
 import graph  # noqa: E402  (repo root on path)
+import nav  # noqa: E402
+
+if CI_HERMETIC and nav.count() == 0:
+    # GK #166 F1 bootstrap: fresh checkout, empty self-index store — one
+    # FAKE-embed rescan self-populates it (deterministic hash vectors,
+    # sorted walk); skipped when the store already serves (test_recall
+    # ran earlier in the CI job)
+    nav.rescan()
 
 _g = graph.get_graph()
 _call_wires: dict[str, int] = {}
@@ -30,6 +65,10 @@ for (_s, _d), _tys in _g.edge_types.items():
 # most call-wired file: guarantees the context tool's edge-type section
 # shows a call row on ANY config (config-agnostic, no hardcoded paths)
 TARGET = max(sorted(_call_wires), key=lambda p: _call_wires[p])
+
+# the stat gate's TTL cache is real (3s) — drift legs wait one window
+# out so the next read tool re-walks (test_autorescan's e2e precedent)
+TTL_WAIT = nav.STAT_TTL_S + 0.5
 
 FAILS = []
 
@@ -110,6 +149,7 @@ def _spawn(env: dict[str, str]) -> SimpleNamespace:
 
     def kill() -> None:
         proc.kill()
+        proc.wait(timeout=10)  # reap: an unwaited child holds pipes (CI flake)
         time.sleep(0.5)
 
     return SimpleNamespace(
@@ -147,7 +187,12 @@ def main() -> None:
         _out.splitlines()[-1],
     )
 
-    env = {k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}
+    if CI_HERMETIC:
+        # hermetic leg: the main server rides the self-index profile the
+        # bootstrap above populated
+        env = dict(os.environ)
+    else:
+        env = {k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}
     srv = _spawn(env)
     proc = srv.proc
     stderr_lines = srv.stderr_lines
@@ -348,9 +393,18 @@ def main() -> None:
         )
         check("semantic_search: ctx neighbor labels", "ctx=[" in sr, sr.splitlines()[1:2])
 
+        # issue #180: the recall knobs (#73 graph_boost, #74 two_pass)
+        # ride the MCP surface too, not just the library call
+        _recall_knobs_scenario(srv)
+
         # issue #131: universal mount — one server, per-call dir routing,
         # multi-project isolation, fresh-dir build pinned on fake embeds
         _universal_scenario()
+
+        # issue #180 CI legs: drift/stat-gate consistency + degraded
+        # semantics, both on hermetic scratch trees (run in both modes)
+        _drift_scenario()
+        _degraded_scenario()
     finally:
         srv.kill()
         if FAILS:
@@ -490,11 +544,359 @@ def _universal_scenario() -> None:
         out = text_of(call(28, "repo_map", {"budget_tokens": 256}))
         check("universal: server alive after foreign-config error",
               out.startswith(f"you are here: {boot.resolve().as_posix()}"), out[:100])
+
+        # issue #180 routed drift: alpha's tree grows between routed
+        # calls — the next routed call must heal it (config_scope's
+        # per-config fingerprint cache feeds the stat gate), never serve
+        # silently stale; and the boot scope's gate stays unpolluted.
+        (pa / "alpha_drift.py").write_text(
+            "def routed_drift_marker():\n    return 3\n",
+            encoding="utf-8", newline="\n",
+        )
+        time.sleep(TTL_WAIT)
+        out = text_of(call(29, "search_text",
+                           {"pattern": "routed_drift_marker", "dir": str(pa)}))
+        time.sleep(0.3)  # stderr drain settle
+        check("universal: routed drift heals on the next routed call",
+              " matches in " in out
+              and any("routed drift healed" in ln for ln in srv.stderr_lines),
+              out[:120])
+        out = text_of(call(30, "repo_map", {"budget_tokens": 256, "dir": str(pa)}))
+        check("universal: healed routed index serves the grown file count",
+              out.startswith(f"you are here: {pa.resolve().as_posix()} — 4 files,"),
+              out[:100])
+        time.sleep(TTL_WAIT)
+        n_boot = len([ln for ln in srv.stderr_lines if "auto-rescan: files" in ln])
+        out = text_of(call(31, "repo_map", {"budget_tokens": 256}))
+        time.sleep(0.3)
+        check("universal: boot scope gate unpolluted after routed heal",
+              out.startswith(f"you are here: {boot.resolve().as_posix()}")
+              and len([ln for ln in srv.stderr_lines
+                       if "auto-rescan: files" in ln]) == n_boot,
+              out[:100])
     finally:
         srv.kill()
         if FAILS:
             print("--- universal server stderr (tail) ---")
             print("\n".join(srv.stderr_lines[-15:]))
+
+
+def _recall_knobs_scenario(srv) -> None:
+    """issue #180: the recall knobs ride the MCP surface, not just the
+    library call — optional params advertised, negative boost refused
+    loudly over the wire, graph_boost=16 strictly lifts a 1-hop neighbor
+    of the first wired hit (the #73/#166-F2 rank-up invariant, ctx
+    labels as the wire-visible adjacency), two_pass tags its rows, and
+    both double-runs are byte-stable across the process boundary."""
+    send, recv = srv.send, srv.recv
+    q = "graph signal wiring edges"  # proven non-vacuous (test_recall)
+
+    def call(mid: int, args: dict) -> str:
+        send({"jsonrpc": "2.0", "id": mid, "method": "tools/call",
+              "params": {"name": "semantic_search",
+                         "arguments": {"query": q, **args}}})
+        return text_of(recv(mid)["result"])
+
+    send({"jsonrpc": "2.0", "id": 90, "method": "tools/list"})
+    schema = next(
+        (t.get("inputSchema") or {}) for t in recv(90)["result"]["tools"]
+        if t["name"] == "semantic_search"
+    )
+    props = schema.get("properties", {})
+    check(
+        "wire: two_pass + graph_boost advertised optional",
+        {"two_pass", "graph_boost"} <= set(props)
+        and not ({"two_pass", "graph_boost"} & set(schema.get("required", []))),
+        json.dumps(schema)[:200],
+    )
+
+    send({"jsonrpc": "2.0", "id": 91, "method": "tools/call",
+          "params": {"name": "semantic_search",
+                     "arguments": {"query": q, "n": 3, "graph_boost": -0.5}}})
+    bad = recv(91)["result"]
+    check(
+        "wire: graph_boost<0 refused loudly (isError naming the knob)",
+        bool(bad.get("isError")) and "graph_boost" in text_of(bad),
+        text_of(bad)[:160],
+    )
+
+    row_re = re.compile(r"^(\d+\.\d+)  (\S+)  src=(\S+)  ctx=\[([^\]]*)\]", re.M)
+    base = call(92, {"n": 12})
+    base2 = call(93, {"n": 12})
+    check(
+        "wire: semantic_search byte-stable (double-run)",
+        base == base2 and len(row_re.findall(base)) == 12,
+        base[:140],
+    )
+    check("wire: no 2pass tag without two_pass", " 2pass" not in base, base[:140])
+
+    strong = call(94, {"n": 12, "graph_boost": 16.0})
+    pb = [(m.group(2), m.group(4)) for m in row_re.finditer(base)]
+    ps = [(m.group(2), m.group(4)) for m in row_re.finditer(strong)]
+    wired = next(
+        ((i, f, [c.strip() for c in ctx.split(",") if c.strip()])
+         for i, (f, ctx) in enumerate(pb) if ctx),
+        None,
+    )
+    check("wire: wired hit carries ctx neighbors (non-vacuous)",
+          wired is not None, base[:160])
+    if wired:
+        _i0, f0, nb0 = wired
+        rank_b = {f: i for i, (f, _) in enumerate(pb)}
+        lifted = [
+            (f, rank_b.get(f, len(pb)), i)
+            for i, (f, _) in enumerate(ps)
+            if f in nb0 and i < rank_b.get(f, len(pb))
+        ]
+        check(
+            "wire: graph_boost=16 strictly lifts a wired 1-hop neighbor",
+            bool(lifted),
+            f"wired0={f0} nb0={nb0[:3]}",
+        )
+
+    tp = call(95, {"n": 12, "two_pass": True})
+    tp2 = call(96, {"n": 12, "two_pass": True})
+    if "degraded: BM25F-only" in base:
+        # dead backend: pass 2 is never attempted on a degraded vector
+        # side — the BM25F-only contract serves pass-1 bytes unchanged
+        check(
+            "wire: two_pass skipped on a degraded vector side (contract)",
+            tp == base,
+            tp[:140],
+        )
+    else:
+        tp_rows = [ln for ln in tp.splitlines() if "src=" in ln]
+        check(
+            "wire: two_pass marks every row",
+            len(tp_rows) == 12 and all(ln.rstrip().endswith("2pass") for ln in tp_rows),
+            "\n".join(tp_rows[:2]),
+        )
+    check("wire: two_pass response byte-stable (double-run)", tp == tp2, "")
+
+
+def _drift_scenario() -> None:
+    """issue #180 CI-leg (1)+(2): drift over real stdio on a scratch
+    boot project — edits between calls must be served by the NEXT read
+    tool (never silently stale), a touch-without-edit must diverge
+    observably from a real edit (the stat gate's mtime/size detection
+    through the whole path: churn vs no churn, byte-identical results),
+    a revert restores the baseline, a delete purges. The watcher stays
+    off (its default) so every heal is attributed to the read-tool gate
+    under test."""
+    import shutil
+
+    scratch = HERE / ".team_scratch" / "drift_stdio"
+    shutil.rmtree(scratch, ignore_errors=True)
+    proj = scratch / "proj"
+    proj.mkdir(parents=True)
+    a0 = "def drift_anchor_a():\n    return 'a'\n"
+    b0 = "def drift_anchor_b():\n    return 'b'\n"
+    (proj / "drift_a.py").write_text(a0, encoding="utf-8", newline="\n")
+    (proj / "drift_b.py").write_text(b0, encoding="utf-8", newline="\n")
+    cfg = scratch / "drift.neuronav.json"
+    cfg.write_text(json.dumps({
+        "root": str(proj.resolve()),
+        "collection": "main",
+        "state_dir": "default",
+        "include_dirs": ["."],
+        "extensions": [".py"],
+        "exclude_dirs": [".git", "__pycache__", ".venv", ".neuronav", "node_modules"],
+    }), encoding="utf-8", newline="\n")
+
+    env = {k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}
+    env["NEURONAV_CONFIG"] = str(cfg)
+    env["NEURONAV_EMBED_FAKE"] = "1"
+    srv = _spawn(env)
+    send, recv = srv.send, srv.recv
+
+    def call(mid: int, name: str, args: dict) -> str:
+        send({"jsonrpc": "2.0", "id": mid, "method": "tools/call",
+              "params": {"name": name, "arguments": args}})
+        return text_of(recv(mid)["result"])
+
+    def churn() -> list[str]:
+        time.sleep(0.3)  # let the stderr drain thread land the lines
+        return [ln for ln in srv.stderr_lines if "auto-rescan: files" in ln]
+
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "drift", "version": "0"}}})
+        check("drift: initialize handshake", "result" in recv(1), "")
+
+        base = call(2, "repo_map", {"budget_tokens": 256})
+        check("drift: boot project serves (2 files)",
+              base.startswith(
+                  f"you are here: {proj.resolve().as_posix()} — 2 files,"),
+              base[:100])
+        st = call(3, "search_text", {"pattern": "drift_anchor"})
+
+        # real edit: the next read tool must serve it, never silently stale
+        (proj / "drift_a.py").write_text(
+            a0 + "def drift_marker_v1():\n    return 1\n",
+            encoding="utf-8", newline="\n",
+        )
+        time.sleep(TTL_WAIT)
+        call(4, "repo_map", {"budget_tokens": 256})
+        check("drift: real edit healed by the next read tool (churn 0/1/1/0)",
+              any("auto-rescan: files 0/1/1/0" in ln for ln in churn()),
+              "\n".join(srv.stderr_lines[-4:]))
+        st2 = call(5, "search_text", {"pattern": "drift_marker_v1"})
+        check("drift: new marker served without a manual rescan",
+              " matches in " in st2, st2[:100])
+        st3 = call(6, "search_text", {"pattern": "drift_anchor_a"})
+        check("drift: pre-existing content still served after the heal",
+              " matches in " in st3, st3[:100])
+
+        # touch-without-edit: same bytes, new mtime — the stat gate must
+        # see the walk change yet the sha gate keep it a no-op: no churn,
+        # byte-identical results (mtime/size detection through the path)
+        os.utime(proj / "drift_a.py")
+        time.sleep(TTL_WAIT)
+        before = len(churn())
+        out4 = call(7, "search_text", {"pattern": "drift_anchor"})
+        after = len(churn())
+        check("drift: touch-without-edit adds no churn", after == before,
+              f"{before} -> {after}")
+        check("drift: touch-without-edit keeps results byte-identical",
+              out4 == st, f"{len(st)} vs {len(out4)} chars")
+
+        # revert: churn names the update, the marker is gone again
+        (proj / "drift_a.py").write_text(a0, encoding="utf-8", newline="\n")
+        time.sleep(TTL_WAIT)
+        call(8, "repo_map", {"budget_tokens": 256})
+        lines = churn()
+        check("drift: revert heals back (churn 0/1/1/0)",
+              len(lines) == 2 and "auto-rescan: files 0/1/1/0" in lines[-1],
+              lines[-1] if lines else "(no churn lines)")
+        st5 = call(9, "search_text", {"pattern": "drift_marker_v1"})
+        check("drift: reverted marker gone",
+              st5.startswith("no matches for "), st5[:80])
+
+        # delete: churn names the purge, the file stops being served
+        (proj / "drift_b.py").unlink()
+        time.sleep(TTL_WAIT)
+        out = call(10, "repo_map", {"budget_tokens": 256})
+        lines = churn()
+        check("drift: delete heals (churn 0/0/1/1, header shrinks)",
+              "auto-rescan: files 0/0/1/1" in lines[-1]
+              and out.startswith(
+                  f"you are here: {proj.resolve().as_posix()} — 1 files,"),
+              lines[-1] if lines else "(no churn lines)")
+        st6 = call(11, "search_text", {"pattern": "drift_anchor_b"})
+        check("drift: deleted file no longer served",
+              st6.startswith("no matches for "), st6[:80])
+
+        s1 = call(12, "semantic_search", {"query": "drift anchor", "n": 4})
+        s2 = call(13, "semantic_search", {"query": "drift anchor", "n": 4})
+        check("drift: semantic_search byte-stable after churn",
+              s1 == s2 and "src=" in s1, s1[:100])
+    finally:
+        srv.kill()
+        if FAILS:
+            print("--- drift server stderr (tail) ---")
+            print("\n".join(srv.stderr_lines[-15:]))
+
+
+def _degraded_scenario() -> None:
+    """issue #180 CI-leg (4): degraded semantics end-to-end. A store is
+    built under FAKE embeds via the server's own boot path, then served
+    by a fresh server whose embedding backend is a dead loopback port
+    (FAKE scrubbed from its env): every vector-side surface must answer
+    success-shaped with a truthful degraded reason carried through the
+    MCP response — never a raw error (issues #115/#116 over the wire).
+    Port 9 on loopback refuses instantly; no external network is touched.
+    """
+    import shutil
+
+    scratch = HERE / ".team_scratch" / "degraded_stdio"
+    shutil.rmtree(scratch, ignore_errors=True)
+    proj = scratch / "proj"
+    proj.mkdir(parents=True)
+    (proj / "degraded_wire.py").write_text(
+        "def degraded_wire_marker():\n    return 'w'\n",
+        encoding="utf-8", newline="\n",
+    )
+    (proj / "degraded_net.py").write_text(
+        "def degraded_net_marker():\n    return 'n'\n",
+        encoding="utf-8", newline="\n",
+    )
+    cfg = scratch / "degraded.neuronav.json"
+    cfg.write_text(json.dumps({
+        "root": str(proj.resolve()),
+        "collection": "main",
+        "state_dir": "default",
+        "include_dirs": ["."],
+        "extensions": [".py"],
+        "exclude_dirs": [".git", "__pycache__", ".venv", ".neuronav", "node_modules"],
+        "embed_url": "http://127.0.0.1:9/api/embed",
+    }), encoding="utf-8", newline="\n")
+
+    # phase 1: build files + fns under FAKE with the server's own paths
+    env_build = {k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}
+    env_build["NEURONAV_CONFIG"] = str(cfg)
+    env_build["NEURONAV_EMBED_FAKE"] = "1"
+    srv0 = _spawn(env_build)
+    try:
+        send0, recv0 = srv0.send, srv0.recv
+        send0({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "degraded-build", "version": "0"}}})
+        recv0(1)
+        send0({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+            "name": "repo_map", "arguments": {"budget_tokens": 256}}})
+        out = text_of(recv0(2)["result"])
+        check("degraded: store built under FAKE (2 files)",
+              out.startswith(
+                  f"you are here: {proj.resolve().as_posix()} — 2 files,"),
+              out[:100])
+    finally:
+        srv0.kill()
+
+    # phase 2: same store, backend dead, FAKE scrubbed — degraded answers
+    env_dead = {k: v for k, v in env_build.items() if k != "NEURONAV_EMBED_FAKE"}
+    srv = _spawn(env_dead)
+    send, recv = srv.send, srv.recv
+
+    def call(mid: int, name: str, args: dict) -> str:
+        send({"jsonrpc": "2.0", "id": mid, "method": "tools/call",
+              "params": {"name": name, "arguments": args}})
+        return text_of(recv(mid)["result"])
+
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "degraded", "version": "0"}}})
+        check("degraded: server boots with a dead backend",
+              "result" in recv(1), "")
+
+        out = call(2, "semantic_search", {"query": "degraded wire marker", "n": 4})
+        rows = [ln for ln in out.splitlines() if "src=" in ln]
+        check("degraded: semantic_search carries the truthful reason",
+              "degraded: BM25F-only (embedding backend unreachable" in out,
+              out[:180])
+        check("degraded: BM25F side still serves hits",
+              len(rows) >= 1
+              and all(re.search(r"src=bm25(?:\s|$)", ln) for ln in rows),
+              out[:180])
+
+        out = call(3, "find_functions", {"query": "degraded_wire_marker", "n": 4})
+        check("degraded: find_functions answers lexical fallback, never raw",
+              out.startswith("degraded: ") and "lexical fallback" in out
+              and "degraded_wire.py#degraded_wire_marker" in out,
+              out[:180])
+
+        out = call(4, "explore", {"query": "degraded wire marker", "n": 3})
+        check("degraded: explore still slices source with a degraded marker",
+              "degraded" in out.lower() and "def degraded_wire_marker" in out
+              and "\t" in out,
+              out[:180])
+    finally:
+        srv.kill()
+        if FAILS:
+            print("--- degraded server stderr (tail) ---")
+            print("\n".join(srv.stderr_lines[-15:]))
+
 
 if __name__ == "__main__":
     main()
