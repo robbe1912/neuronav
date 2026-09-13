@@ -3940,6 +3940,513 @@ def run_tests(port: int):
             print("SKIP info steal class - no ink-under-row pixel in "
                   "6 orbits (shape: no wire ink under #info on this index)")
 
+        # [issues #112/#113] focus teardown: the camera tween, hover ink,
+        # wire pins and the 2D map's focus-scoped state all die WITH the
+        # focus — nine enumerated bugs, one clear-state law per surface
+        # (clearFocus/mapTeardown for 2D). Real interactions only; skips
+        # are loud shape-guards, never silent.
+        page.evaluate("""() => { const d = window.__dbg;
+            document.getElementById('bReset').click();   // boot slate
+            if (d.mapPane.canvas.classList.contains('collapsed'))
+              document.getElementById('bMap').click(); }""")
+        page.wait_for_timeout(900)
+
+        def td_focus(path, wait=900):
+            page.fill("#search", path.split("/")[-1].split(".")[0])
+            page.dispatch_event("#search", "input")
+            page.wait_for_timeout(600)
+            page.evaluate(
+                """(p) => { const rows =
+                     [...document.querySelectorAll('#searchResults .row')];
+                     const r = rows.find(x => x.getAttribute('title') === p)
+                            || rows[0];
+                     r.dispatchEvent(new PointerEvent('pointerdown',
+                                                      { bubbles: true })); }""",
+                path)
+            page.wait_for_timeout(wait)
+
+        td_nodes = page.evaluate(
+            """() => { const d = window.__dbg;
+                 let hub = 0; for (let i = 1; i < d.nodes.length; i++)
+                   if (d.degree[i] > d.degree[hub]) hub = i;
+                 let other = -1;
+                 for (let i = 0; i < d.nodes.length; i++)
+                   if (i !== hub && d.degree[i] > 0) { other = i; break; }
+                 return { a: d.nodes[hub].path, b: d.nodes[other].path }; }""")
+
+        # -- #112-1: Esc mid-tween cancels the tween outright; the camera
+        # rests near the overview, never re-lerped onto the dead focus ball.
+        boot_p = page.evaluate("() => [...window.__dbg.camera.position]")
+        td_focus(td_nodes["a"], wait=130)   # tween still in flight
+        tween_live = page.evaluate("() => !!window.__dbg.camTween")
+        to_c = page.evaluate(
+            "() => window.__dbg.camTween ? [...window.__dbg.camTween.toC] : null")
+        page.keyboard.press("Escape")
+        esc_killed = page.evaluate("() => !window.__dbg.camTween")
+        page.wait_for_timeout(900)
+        fin = page.evaluate("() => [...window.__dbg.camera.position]")
+        if tween_live and to_c:
+            d_to_c = max(abs(fin[k] - to_c[k]) for k in range(3))
+            d_boot = max(abs(fin[k] - boot_p[k]) for k in range(3))
+            check("Esc mid-tween cancels it; camera escapes the dead pose (#112)",
+                  esc_killed and d_to_c > 300 and d_boot < 800,
+                  f"esc_killed={esc_killed} dist_focus_pose={d_to_c:.0f} "
+                  f"dist_boot={d_boot:.0f}")
+        else:
+            print("SKIP esc-mid-tween - tween not in flight at sample")
+
+        # -- #112-2: a user zoom beats the tween (wheel listener parity
+        # with the pointerdown cancel).
+        td_focus(td_nodes["a"], wait=130)
+        to_c2 = page.evaluate(
+            "() => window.__dbg.camTween ? [...window.__dbg.camTween.toC] : null")
+        spot2 = page.evaluate(
+            """() => { const cv = window.__dbg.renderer.domElement,
+                     r = cv.getBoundingClientRect();
+                 for (const [fx, fy] of [[0.5, 0.5], [0.4, 0.4], [0.6, 0.6],
+                                         [0.3, 0.5], [0.5, 0.3]]) {
+                   const x = r.left + r.width * fx, y = r.top + r.height * fy;
+                   if (document.elementFromPoint(x, y) === cv) return [x, y];
+                 }
+                 return null; }""")
+        # the enumerated bug is that the wheel never cancels the tween (only
+        # canvas pointerdown did). assert the cancel itself, gated on the
+        # tween being verifiably in flight when the wheel lands: a slow box
+        # may deliver the wheel near the tween's end, where the camera has
+        # almost converged - killing it there legitimately leaves the pose
+        # close to the target, so pose-escape distance is timing-fragile.
+        # base behavior with a live tween keeps lerping: camTween survives
+        # the wheel, which is the red.
+        if to_c2 and spot2:
+            page.mouse.move(spot2[0], spot2[1])
+            page.mouse.wheel(0, -600)
+            wheel_killed = page.evaluate("() => !window.__dbg.camTween")
+            page.wait_for_timeout(900)
+            fin2 = page.evaluate("() => [...window.__dbg.camera.position]")
+            d2 = max(abs(fin2[k] - to_c2[k]) for k in range(3))
+            check("wheel zoom mid-tween beats the tween (#112)",
+                  wheel_killed,
+                  f"wheel_killed={wheel_killed} (tween live pre-wheel) "
+                  f"dist_to_tween_pose={d2:.0f}")
+        else:
+            print("SKIP wheel-mid-tween - "
+                  + ("tween not in flight at sample" if not to_c2
+                     else "canvas fully covered"))
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(700)
+
+        # -- #112-3: the white hover stalk dies with its context (Esc
+        # teardown + canvas pointerleave), same law as the #58 tip family.
+        def td_hover_fnbox():
+            return page.evaluate(
+                """() => { const d = window.__dbg, T = d.THREE;
+                     const el = d.renderer.domElement,
+                           r = el.getBoundingClientRect();
+                     const ok = m => { if (m.agg && !m.count) return false;
+                       const v = new T.Vector3(m.p[0], m.p[1], m.p[2])
+                         .project(d.camera);
+                       return v.z < 1 && Math.abs(v.x) < 0.95
+                           && Math.abs(v.y) < 0.95; };
+                     for (let j = 0; j < d.fnMeta.length; j++) {
+                       if (!ok(d.fnMeta[j])) continue;
+                       const v = new T.Vector3(
+                         d.fnMeta[j].p[0], d.fnMeta[j].p[1], d.fnMeta[j].p[2])
+                         .project(d.camera);
+                       el.dispatchEvent(new PointerEvent('pointermove', {
+                         clientX: (v.x * 0.5 + 0.5) * r.width + r.left,
+                         clientY: (-v.y * 0.5 + 0.5) * r.height + r.top,
+                         bubbles: true }));
+                       return true; }
+                     return false; }""")
+
+        td_focus(td_nodes["a"])
+        hov1 = td_hover_fnbox()
+        page.wait_for_timeout(500)
+        stalk1 = page.evaluate(
+            "() => !!(window.__dbg.fnStalk && window.__dbg.fnStalk.visible)")
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(500)
+        stalk_esc = page.evaluate(
+            "() => !!(window.__dbg.fnStalk && window.__dbg.fnStalk.visible)")
+        if hov1:
+            check("hover stalk dies on focus teardown (#112)",
+                  stalk1 and not stalk_esc,
+                  f"shown={stalk1} after_esc={stalk_esc}")
+        else:
+            print("SKIP stalk-Esc - no fn box projects on-screen")
+        td_focus(td_nodes["a"])
+        hov2 = td_hover_fnbox()
+        page.wait_for_timeout(500)
+        stalk2 = page.evaluate(
+            "() => !!(window.__dbg.fnStalk && window.__dbg.fnStalk.visible)")
+        page.evaluate(
+            "() => window.__dbg.renderer.domElement.dispatchEvent("
+            "new PointerEvent('pointerleave'))")
+        page.wait_for_timeout(300)
+        stalk_lv = page.evaluate(
+            "() => !!(window.__dbg.fnStalk && window.__dbg.fnStalk.visible)")
+        if hov2:
+            check("hover stalk dies on canvas pointerleave (#112)",
+                  stalk2 and not stalk_lv,
+                  f"shown={stalk2} after_leave={stalk_lv}")
+        else:
+            print("SKIP stalk-leave - no fn box projects on-screen")
+
+        # -- #113-1: a stale mapFrozenIx dims the NEXT focus's diagram
+        # (dim() returns freeze-alpha for everything but the dead file).
+        def td_box_lum(ix):
+            return page.evaluate(
+                """(ix) => { const d = window.__dbg;
+                     const rc = d.mapRects.find(r => r.i === ix);
+                     if (!rc) return null;
+                     const cv = document.getElementById('mapPane');
+                     const dpr = cv.width / (cv.clientWidth || 440);
+                     const sx = (rc.x - d.mapPX) * d.mapZ,
+                           sy = (rc.y - d.mapPY) * d.mapZ;
+                     const x0 = Math.max(0, Math.round(sx * dpr)),
+                           y0 = Math.max(0, Math.round(sy * dpr));
+                     const w = Math.max(1, Math.min(Math.round(rc.w * dpr),
+                           cv.width - x0 - 1));
+                     const h = Math.max(1, Math.round(rc.h * dpr));
+                     const px = cv.getContext('2d')
+                       .getImageData(x0, y0, w, h).data;
+                     let s = 0, n = 0;
+                     for (let i = 0; i < px.length; i += 4) {
+                       s += .3 * px[i] + .59 * px[i + 1] + .11 * px[i + 2];
+                       n++; }
+                     return n ? s / n : -1; }""", ix)
+
+        td_focus(td_nodes["a"])   # the SAME node refocuses after Esc: the
+        # stale mapFrozenIx lands on this very diagram, so no cross-focus
+        # box sharing is needed
+        page.wait_for_timeout(400)
+        row_t = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const bb = document.getElementById('mapPane')
+                   .getBoundingClientRect();
+                 const rc = d.mapRects.find(r => r.rows && r.rows.length);
+                 if (!rc) return null;
+                 return { sx: (rc.x + rc.w / 2 - d.mapPX) * d.mapZ + bb.left,
+                          sy: ((rc.rows[0].y0 + rc.rows[0].y1) / 2
+                               - d.mapPY) * d.mapZ + bb.top,
+                          i: rc.i }; }""")
+        if row_t:
+            peer = page.evaluate(
+                """(i) => { const r = window.__dbg.mapRects.find(
+                     r => r.i !== i);
+                     return r ? r.i : null; }""", row_t["i"])
+            if peer is not None:
+                lum_f0, lum_p0 = td_box_lum(row_t["i"]), td_box_lum(peer)
+                page.mouse.click(row_t["sx"], row_t["sy"])
+                page.wait_for_timeout(700)
+                lum_f1, lum_p1 = td_box_lum(row_t["i"]), td_box_lum(peer)
+                # real user path: the pointer leaves the pane (hover ink
+                # dies with pointer context), then Esc walks the ladder one
+                # intent per press - 1st closes the freeze, 2nd clears the
+                # focus (the teardown under test)
+                page.mouse.move(400, 450)
+                page.wait_for_timeout(200)
+                for _ in range(3):
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(350)
+                    if page.evaluate(
+                            "() => window.__dbg.focusFileIdx") < 0:
+                        break
+                ix_esc = page.evaluate(
+                    "() => window.__dbg.mapFrozenIx !== undefined"
+                    " ? window.__dbg.mapFrozenIx : 'n/a'")
+                hover_esc = page.evaluate(
+                    "() => window.__dbg.mapHover !== undefined"
+                    " ? window.__dbg.mapHover : 'n/a'")
+                td_focus(td_nodes["a"])
+                page.wait_for_timeout(900)
+                lum_f2, lum_p2 = td_box_lum(row_t["i"]), td_box_lum(peer)
+                if -1 not in (lum_f0, lum_p0, lum_f1, lum_p1,
+                              lum_f2, lum_p2):
+                    # same-box across time: the peer must recover to its
+                    # OWN unfrozen baseline once Esc cleared the stale freeze
+                    # (cross-box compares are bogus - hub vs dep boxes carry
+                    # different inherent luminance)
+                    check("Esc clears the freeze before the next focus (#113)",
+                          lum_p1 + 3 < lum_p0 and ix_esc == -1 and
+                          abs(lum_p2 - lum_p0) < 6,
+                          f"peer {lum_p0:.0f}->{lum_p1:.0f} (frozen) "
+                          f"ix_after_esc={ix_esc} hover_after_esc={hover_esc}; "
+                          f"refocused peer {lum_p2:.0f} vs unfrozen "
+                          f"baseline {lum_p0:.0f}")
+                else:
+                    print("SKIP stale-freeze - box pixel probe off-canvas")
+            else:
+                print("SKIP stale-freeze - single-box diagram")
+        else:
+            print("SKIP stale-freeze - no roster-row box in this layout")
+
+        # -- #113-2: the no-focus teardown kills the vars chip rect (no
+        # invisible toggle zone under the "focus a node" hint).
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(700)
+        nf = page.evaluate(
+            "() => ({ layout: window.__dbg.mapLayout === null,"
+            " rect: window.__dbg.mapVarsChipRect })")
+        pbb = page.evaluate(
+            """() => { const r = document.getElementById('mapPane')
+                 .getBoundingClientRect();
+                 return { x: r.left, y: r.top }; }""")
+        page.mouse.click(pbb["x"] + 31, pbb["y"] + 34)   # stale chip zone
+        page.wait_for_timeout(400)
+        vars_flipped = page.evaluate("() => window.__dbg.mapVars")
+        td_focus(td_nodes["a"])
+        page.wait_for_timeout(900)
+        vars_after = page.evaluate("() => window.__dbg.mapVars")
+        check("dead-zone click cannot flip vars across teardown (#113)",
+              vars_flipped is False and vars_after is False,
+              f"layout_null={nf['layout']} rect={nf['rect']} "
+              f"flipped={vars_flipped} after_refocus={vars_after}")
+
+        # -- #113-3: pick-vs-paint parity — a zoom-faded chip's anchor is
+        # not a toggle, a painted (displaced) chip responds where drawn.
+        anchor = page.evaluate(
+            """() => { const d = window.__dbg, L = d.mapLayout;
+                 if (!L) return null;
+                 for (const ch of L.chips) {
+                   if (d.mapRects.some(rc =>
+                         ch.x < rc.x + rc.w + 6 && ch.x + ch.w > rc.x - 6 &&
+                         ch.y < rc.y + rc.h + 6 && ch.y + ch.h > rc.y - 6))
+                     continue;
+                   return { wx: ch.x + ch.w / 2, wy: ch.y + ch.h / 2 }; }
+                 return null; }""")
+        if anchor:
+            page.mouse.move(pbb["x"] + 200, pbb["y"] + 300)
+            for _ in range(16):
+                if page.evaluate("() => window.__dbg.mapZ") < 0.40:
+                    break
+                page.mouse.wheel(0, 240)
+                page.wait_for_timeout(110)
+            zout = page.evaluate("() => window.__dbg.mapZ")
+            sc = page.evaluate(
+                """(a) => { const d = window.__dbg;
+                     const bb = document.getElementById('mapPane')
+                       .getBoundingClientRect();
+                     return { x: (a.wx - d.mapPX) * d.mapZ + bb.left,
+                              y: (a.wy - d.mapPY) * d.mapZ + bb.top }; }""",
+                anchor)
+            page.mouse.click(sc["x"], sc["y"])
+            page.wait_for_timeout(400)
+            hid_open = page.evaluate(
+                "() => document.getElementById('mapList').style.display"
+                " === 'block'")
+            check("zoom-faded chip anchor is not a toggle (#113)",
+                  zout < 0.45 and not hid_open,
+                  f"mapZ={zout:.2f} list_open={hid_open}")
+            page.mouse.move(pbb["x"] + 200, pbb["y"] + 300)
+            for _ in range(18):
+                if page.evaluate("() => window.__dbg.mapZ") > 1.0:
+                    break
+                page.mouse.wheel(0, -240)
+                page.wait_for_timeout(110)
+            page.wait_for_timeout(300)
+            par = page.evaluate(
+                """() => { const d = window.__dbg;
+                     const vis = d.mapLayout.chips.filter(c => c.hit);
+                     if (!vis.length) return null;
+                     const c = vis[0],
+                           ci = d.mapLayout.chips.indexOf(c);
+                     const wx = (c.hit.x + c.hit.w / 2) / d.mapZ + d.mapPX,
+                           wy = (c.hit.y + c.hit.h / 2) / d.mapZ + d.mapPY;
+                     return { ci, pick: (d.mapChipAt ? d.mapChipAt(wx, wy) : null),
+                              bb: document.getElementById('mapPane')
+                                .getBoundingClientRect(),
+                              sxc: (c.hit.x + c.hit.w / 2) + 0,
+                              syc: (c.hit.y + c.hit.h / 2) + 0 }; }""")
+            if par:
+                page.mouse.click(par["bb"]["left"] + par["sxc"],
+                                 par["bb"]["top"] + par["syc"])
+                page.wait_for_timeout(400)
+                paint_open = page.evaluate(
+                    "() => document.getElementById('mapList').style.display"
+                    " === 'block'")
+                check("painted chip rect is the pick target (#113)",
+                      par["pick"] == par["ci"] and paint_open,
+                      f"ci={par['ci']} pick={par['pick']} "
+                      f"click_opened={paint_open}")
+            else:
+                check("painted chip rect is the pick target (#113)",
+                      False, "no chip reports a painted hit rect")
+        else:
+            print("SKIP chip parity - no off-box chip in this layout")
+
+        # -- #113-5: the bundle list re-anchors (or closes) when the map
+        # moves under it — live UI never floats over stale geometry.
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(500)
+        td_focus(td_nodes["a"])
+        page.wait_for_timeout(1200)
+        lpick = page.evaluate(
+            """() => { const d = window.__dbg;
+                 if (!d.mapLayout || !d.mapLayout.chips.length) return null;
+                 const vis = d.mapLayout.chips.filter(c => c.hit);
+                 const c = vis.length ? vis[0] : d.mapLayout.chips[0];
+                 return { ci: d.mapLayout.chips.indexOf(c),
+                          sx: c.hit ? c.hit.x + c.hit.w / 2
+                                    : (c.x + c.w / 2 - d.mapPX) * d.mapZ,
+                          sy: c.hit ? c.hit.y + c.hit.h / 2
+                                    : (c.y + c.h / 2 - d.mapPY) * d.mapZ }; }""")
+        if lpick:
+            page.mouse.click(pbb["x"] + lpick["sx"], pbb["y"] + lpick["sy"])
+            page.wait_for_timeout(500)
+            lb = page.evaluate(
+                """() => { const l = document.getElementById('mapList');
+                     return { open: l.style.display === 'block',
+                              left: parseFloat(l.style.left) || 0,
+                              top: parseFloat(l.style.top) || 0 }; }""")
+            # wheel OUTSIDE the list (pointer-events:auto eats pane events)
+            page.mouse.move(pbb["x"] + 600, pbb["y"] + 700)
+            page.mouse.wheel(0, -240)
+            page.wait_for_timeout(700)
+            la = page.evaluate(
+                """(ci) => { const l = document.getElementById('mapList');
+                     const d = window.__dbg;
+                     const c = d.mapLayout ? d.mapLayout.chips[ci] : null;
+                     const chipSx = c ? (c.hit ? c.hit.x + c.hit.w / 2
+                       : (c.x + c.w / 2 - d.mapPX) * d.mapZ) : null;
+                     return { open: l.style.display === 'block',
+                              left: parseFloat(l.style.left) || 0,
+                              chipSx }; }""", lpick["ci"])
+            moved = (la["chipSx"] is not None
+                     and abs(la["chipSx"] - lpick["sx"]) > 40)
+            check("bundle list re-anchors or closes on zoom (#113)",
+                  lb["open"] and moved and
+                  ((not la["open"]) or abs(la["left"] - lb["left"]) > 30),
+                  f"before={lb} after={la} chip_moved={moved}")
+            if la["open"]:
+                page.mouse.move(pbb["x"] + 600, pbb["y"] + 700)
+                page.mouse.down()
+                page.mouse.move(pbb["x"] + 740, pbb["y"] + 700, steps=6)
+                page.mouse.up()
+                page.wait_for_timeout(600)
+                lp = page.evaluate(
+                    """() => { const l = document.getElementById('mapList');
+                         return { open: l.style.display === 'block',
+                                  left: parseFloat(l.style.left) || 0 }; }""")
+                check("bundle list re-anchors or closes on pan (#113)",
+                      (not lp["open"]) or abs(lp["left"] - la["left"]) > 30,
+                      f"{la} -> {lp}")
+        else:
+            print("SKIP list re-anchor - no chip in this layout")
+
+        # -- #113-4: Backspace inside a picker filter edits the filter —
+        # it must not pop the focus stack beneath the open picker.
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(600)
+        td_focus(td_nodes["a"])
+        page.wait_for_timeout(800)
+        hdr = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const rc = d.mapRects.find(r => r.i !== d.focusFileIdx)
+                         || d.mapRects[0];
+                 if (!rc) return null;
+                 const bb = document.getElementById('mapPane')
+                   .getBoundingClientRect();
+                 return { sx: (rc.x + rc.w / 2 - d.mapPX) * d.mapZ + bb.left,
+                          sy: (rc.y + 8 - d.mapPY) * d.mapZ + bb.top }; }""")
+        more = None
+        if hdr:
+            page.mouse.click(hdr["sx"], hdr["sy"])   # header refocus pushes
+            page.wait_for_timeout(1000)
+            stack1 = page.evaluate("() => window.__dbg.focusStack.length")
+            focus_b = page.evaluate("() => window.__dbg.focusFileIdx")
+            more = page.evaluate(
+                """() => { const d = window.__dbg;
+                     const rc = d.mapRects.find(r => r.more && r.more.y0);
+                     if (!rc) return null;
+                     const bb = document.getElementById('mapPane')
+                       .getBoundingClientRect();
+                     return { sx: (rc.x + rc.w / 2 - d.mapPX) * d.mapZ
+                              + bb.left,
+                              sy: ((rc.more.y0 + rc.more.y1) / 2 - d.mapPY)
+                              * d.mapZ + bb.top }; }""")
+            if more and stack1 >= 1:
+                page.mouse.click(more["sx"], more["sy"])
+                page.wait_for_timeout(500)
+                picker_open = page.evaluate(
+                    "() => document.getElementById('mapPick').style.display"
+                    " === 'block'")
+                page.keyboard.type("he")
+                page.keyboard.press("Backspace")
+                page.wait_for_timeout(700)
+                bk = page.evaluate(
+                    """() => ({ stack: window.__dbg.focusStack.length,
+                         focus: window.__dbg.focusFileIdx,
+                         input: document.querySelector('#mapPick input').value })""")
+                check("Backspace edits the picker filter, not the stack (#113)",
+                      picker_open and bk["stack"] == stack1
+                      and bk["focus"] == focus_b and bk["input"] == "h",
+                      f"picker={picker_open} stack {stack1}->{bk['stack']} "
+                      f"focus {focus_b}->{bk['focus']} input={bk['input']!r}")
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(300)
+            elif not more:
+                print("SKIP picker backspace - no +N more roster overflow")
+        else:
+            print("SKIP picker backspace - no off-focus card header")
+
+        # -- #112-4: resetAll returns EVERY pin to boot — a tip-menu pin
+        # and its persistent wire tip used to survive the reset.
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(500)
+        td_focus(td_nodes["a"])
+        page.wait_for_timeout(1100)
+        cands = page.evaluate(
+            """() => { const d = window.__dbg;
+                 if (!d.mapLayout) return [];
+                 const bb = document.getElementById('mapPane')
+                   .getBoundingClientRect();
+                 const out = [];
+                 for (const sp of d.mapLayout.spines) {
+                   if (!sp.pts || sp.pts.length < 2) continue;
+                   for (const f of [0.5, 0.25, 0.75]) {
+                     const k = Math.floor(sp.pts.length * f);
+                     if (k < 1 || k >= sp.pts.length) continue;
+                     const m = sp.pts[k];
+                     if (d.mapRects.some(rc =>
+                           m[0] > rc.x - 4 && m[0] < rc.x + rc.w + 4 &&
+                           m[1] > rc.y - 4 && m[1] < rc.y + rc.h + 4))
+                       continue;
+                     const sx = Math.round(
+                       (m[0] - d.mapPX) * d.mapZ + bb.left);
+                     const sy = Math.round(
+                       (m[1] - d.mapPY) * d.mapZ + bb.top);
+                     // the click must land ON the pane canvas: a panned
+                     // view maps off-pane points onto the 3D surface
+                     if (document.elementFromPoint(sx, sy) !==
+                           document.getElementById('mapPane'))
+                       continue;
+                     out.push({ sx, sy });
+                     if (out.length >= 8) return out;
+                   }
+                 }
+                 return out; }""")
+        pin_t = None
+        for cand in (cands or []):
+            page.mouse.click(cand["sx"], cand["sy"])
+            page.wait_for_timeout(400)
+            pin_t = page.evaluate("() => window.__dbg.wirePin")
+            if pin_t:
+                break
+        if pin_t:
+            page.evaluate("() => document.getElementById('bReset').click()")
+            page.wait_for_timeout(900)
+            pin_r = page.evaluate("() => window.__dbg.wirePin")
+            tip_r = page.evaluate(
+                "() => document.getElementById('wireTip').style.display"
+                " !== 'block'")
+            check("resetAll clears every pin and its tip (#112)",
+                  pin_r is None and tip_r,
+                  f"{cands} pin {pin_t.get('menu')} -> {pin_r} "
+                  f"tip_hidden={tip_r}")
+        else:
+            print(f"SKIP reset pin clear - no spine point latched a pin "
+                  f"({cands})")
         # artifact: screenshot of the focused fn-layer state
         page.screenshot(path=str(SHOTS / "last_run.png"), scale="css", type="png")
         print("artifact: .tmp/shots/last_run.png")
