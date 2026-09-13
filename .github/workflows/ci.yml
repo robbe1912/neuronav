@@ -47,6 +47,8 @@ jobs:
         run: python -X utf8 tests/test_verifier.py
       - name: bench (record/golden coherence, issue #104)
         run: python -X utf8 tests/test_bench.py
+      - name: bakeint (empty-store refusal, splice hardening, atomic write, issues #64/#108)
+        run: python -X utf8 tests/test_bakeint.py
 
   # test_viz on the frozen synthetic corpus (issue #100/#97/#146): bake a
   # hermetic store (fake embeds, scratch config + state dir) and gate the
