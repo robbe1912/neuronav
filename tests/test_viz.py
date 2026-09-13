@@ -4469,25 +4469,32 @@ def run_tests(port: int):
                 continue          # canvas fully covered this frame: rescan
             _any_spot = True
             page.mouse.move(spot2[0], spot2[1])
+            # one round trip: sample the live tween AND arm the capture
+            # probe (CI round trips cost ~100ms each; every extra op
+            # between arming and the wheel ages the attempt).
             armed = page.evaluate(
-                "() => window.__dbg.camTween"
-                " ? { t0: window.__dbg.camTween.t0,"
-                "     toC: [...window.__dbg.camTween.toC] } : null")
-            if not armed:
-                continue          # tween died mid-arm: re-arm next round
-            page.evaluate(  # capture probe: the wheel's TRUE target, no skew
-                """() => { window.__wt = null;
+                """() => { const t = window.__dbg.camTween;
+                     if (!t) return null;
+                     window.__wt = null;
                      window.addEventListener('wheel',
                        e => { window.__wt =
                            e.target === window.__dbg.renderer.domElement; },
-                       { capture: true, once: true }); }""")
+                       { capture: true, once: true });
+                     return { t0: t.t0, toC: [...t.toC] }; }""")
+            if not armed:
+                continue          # tween died mid-arm: re-arm next round
             page.mouse.wheel(0, -600)
             got = page.evaluate(
                 """() => ({ onCanvas: window.__wt === true,
                             alive: !!window.__dbg.camTween,
                             now: performance.now() })""")
             age_ms = got["now"] - armed["t0"]
-            if got["onCanvas"] and age_ms < 350:
+            # the read is honest while it still precedes natural expiry:
+            # the tween dies at t0+400, so a camTween observed null with
+            # now-t0 < 400 was killed inside its window (only Esc /
+            # canvas pointerdown / the wheel listener null it mid-life,
+            # and this probe issues none of the first two).
+            if got["onCanvas"] and age_ms < 400:
                 probe2 = {"toC": armed["toC"],
                           "age": age_ms,
                           "killed": not got["alive"]}
@@ -4503,7 +4510,8 @@ def run_tests(port: int):
             check("wheel zoom mid-tween beats the tween (#112)",
                   probe2["killed"],
                   f"wheel_killed={probe2['killed']} "
-                  f"(canvas-proven delivery, tween age {probe2['age']:.0f}ms) "
+                  f"(canvas-proven delivery, tween age {probe2['age']:.0f}ms "
+                  f"of 400) "
                   f"dist_to_tween_pose={d2:.0f}")
         else:
             print("SKIP wheel-mid-tween (#112) - "
