@@ -12,6 +12,8 @@ Usage:  python viz.py            # writes <state_dir>/graph.html (active config)
 from __future__ import annotations
 
 import base64
+import math
+import os
 import re
 import json
 import sys
@@ -8873,13 +8875,144 @@ def _importmap() -> str:
     return json.dumps({"imports": imports}, separators=(",", ":"))
 
 
+def _bake_store_guard() -> None:
+    """Issue #64: refuse to bake graph.html from an empty or zeroed store.
+
+    A wiped store used to bake silently — every semantic channel
+    (clusters, kNN pairs, supergroups) degraded to empty and the graph
+    came out ~300KB short with no error: the store-wipe shape behind
+    issues #91/#159. The bake now refuses unless the store actually
+    covers the walk:
+      - 0 walked files: nothing to bake (rescan's issue #41 law);
+      - 0 vectors with files on disk: the store is empty or absent —
+        the incident class. NEURONAV_EMBED_FAKE does NOT lift this leg:
+        every hermetic rig rescan-populates the store it bakes from, so
+        a zero-vector store is never deliberate;
+      - under half the walked files embedded: a partially wiped or
+        foreign store. Only NEURONAV_EMBED_FAKE=1 waives this leg — the
+        documented override for deliberate tiny hermetic stores; a
+        real-provider run never gets the waiver.
+    """
+    walk_n = sum(1 for _ in nav.iter_files())
+    if walk_n == 0:
+        raise RuntimeError(
+            f"refusing to bake graph.html: the walk over root={nav.ROOT} "
+            f"found 0 files (include_dirs={list(nav.INCLUDE_DIRS)}, "
+            f"extensions={sorted(nav.EXTS)}) — a bake over nothing is the "
+            "silent-empty-graph failure (issues #64/#41); fix the config "
+            "or point it at a real checkout"
+        )
+    store_n = nav.count()
+    cfg = os.environ.get("NEURONAV_CONFIG")
+    rescan_cmd = (f"python nav.py --config {cfg} rescan" if cfg
+                  else "python nav.py rescan (in the project root)")
+    if store_n == 0:
+        raise RuntimeError(
+            f"refusing to bake graph.html from an empty store (issue #64): "
+            f"collection '{nav.COLLECTION}' in {nav.DB_DIR} holds 0 "
+            f"vectors while the walk found {walk_n} files — this is the "
+            "wiped-store shape that silently shipped a ~300KB-short graph. "
+            f"Fix: {rescan_cmd}"
+        )
+    if store_n * 2 < walk_n:
+        if not os.environ.get("NEURONAV_EMBED_FAKE"):
+            raise RuntimeError(
+                f"refusing to bake graph.html from a near-empty store "
+                f"(issue #64): collection '{nav.COLLECTION}' in "
+                f"{nav.DB_DIR} holds {store_n} vectors for {walk_n} "
+                "walked files (<50%) — a partial bake would silently "
+                f"degrade every semantic channel. Fix: {rescan_cmd} "
+                "(deliberate tiny hermetic store: NEURONAV_EMBED_FAKE=1 "
+                "waives this leg)"
+            )
+        print(f"neuronav: baking from a partial FAKE store "
+              f"({store_n}/{walk_n} files) — hermetic rig, issue #64 "
+              "waiver engaged", file=sys.stderr)
+
+
+def _reject_nonfinite(node, path: str) -> None:
+    """Issue #108: NaN/Infinity never reach graph.html. A non-finite
+    float in DATA means a broken computation upstream (layout, sims,
+    churn) — refuse with the offending path instead of writing invalid
+    JSON the page would have to choke on."""
+    if isinstance(node, float):
+        if not math.isfinite(node):
+            raise RuntimeError(
+                f"bake payload {path} is {node!r} (issue #108) — a NaN/"
+                "Infinity position or weight means a broken computation "
+                "upstream; refusing to write invalid JSON into graph.html"
+            )
+    elif isinstance(node, dict):
+        for k, v in node.items():
+            _reject_nonfinite(v, f"{path}.{k}" if path else str(k))
+    elif isinstance(node, (list, tuple)):
+        for i, v in enumerate(node):
+            _reject_nonfinite(v, f"{path}[{i}]")
+
+
+_SPLICE_MARKS = ("__DATA__", "__IMPORTMAP__")
+
+
+def _strict_json(data, what: str) -> str:
+    """Issue #108: strict-JSON serialize one bake payload — the finite
+    walk above refuses NaN/Infinity by path, and allow_nan=False is the
+    backstop at the serialization boundary."""
+    _reject_nonfinite(data, what)
+    try:
+        return json.dumps(data, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError) as e:
+        raise RuntimeError(f"{what} payload is not strict JSON: {e}") from e
+
+
+def _splice_safe(payload: str, what: str) -> str:
+    """Issue #108: a splice payload must never break out of the script
+    block or inject a second payload. '</script' (case-insensitive —
+    HTML ends script data on any case) ends the block early from inside
+    a JSON string; a literal __DATA__/__IMPORTMAP__ mark inside one
+    payload would get the OTHER payload spliced into it by the chained
+    replace. Crafted docs/names get a loud refusal, not a corrupt
+    graph.html."""
+    if "</script" in payload.lower():
+        raise RuntimeError(
+            f"{what} payload contains '</script' (case-insensitive) — a "
+            "crafted doc/name would break out of the graph.html script "
+            "block (issue #108); rename the offending content"
+        )
+    for mark in _SPLICE_MARKS:
+        if mark in payload:
+            raise RuntimeError(
+                f"{what} payload contains the {mark} splice mark — repo "
+                "content must never inject payloads into the template "
+                "(issue #108)"
+            )
+    return payload
+
+
+def _atomic_write(out: Path, html: str) -> None:
+    """Issue #108: graph.html lands whole or not at all — bytes build in
+    a sibling temp, then os.replace (atomic same-dir rename, the #158
+    export_base manifest-last law). A crash mid-write leaves the previous
+    bake intact; the temp is reaped on any failure."""
+    tmp = out.with_name(out.name + ".tmp")
+    try:
+        tmp.write_text(html, encoding="utf-8")
+        os.replace(tmp, out)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def generate(out: str | Path | None = None) -> Path:
     out = Path(out) if out else nav.STATE_DIR / "graph.html"
     out.parent.mkdir(parents=True, exist_ok=True)
+    _bake_store_guard()
     data = _build_data()
-    html = (_TEMPLATE.replace("__DATA__", json.dumps(data, separators=(",", ":")))
-                    .replace("__IMPORTMAP__", _importmap()))
-    out.write_text(html, encoding="utf-8")
+    html = (_TEMPLATE.replace("__DATA__", _splice_safe(_strict_json(data, "DATA"), "DATA"))
+                    .replace("__IMPORTMAP__", _splice_safe(_importmap(), "importmap")))
+    _atomic_write(out, html)
     return out
 
 def ensure_bake() -> Path:

@@ -1,6 +1,6 @@
 # AGENTS.md — tests/
 
-Nineteen self-contained suites. Each is a standalone script — no pytest — run in
+Twenty self-contained suites. Each is a standalone script — no pytest — run in
 its own process:
 
 ```
@@ -9,17 +9,17 @@ its own process:
 
 Exit 0 = all pass. Each suite bootstraps `sys.path` to the repo root and
 uses a local `check(name, cond)` helper (PASS/FAIL lines + failure count).
-CI (`.github/workflows/ci.yml`) runs fifteen hermetic suites on ubuntu
+CI (`.github/workflows/ci.yml`) runs sixteen hermetic suites on ubuntu
 with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
 `test_pyhard`, `test_cpphard`, `test_autorescan`, `test_searchtext`,
 `test_project_mode`, `test_baseindex`, `test_mwires`, `test_recall`,
 `test_embedprov`, `test_repomap`, `test_selfindex`, `test_verifier`,
-`test_bench`) plus a `viz` job that builds the frozen synthetic corpus
-(`tests/vizcorpus_build.py`) and runs `test_viz` against its hermetic
-store in a real browser (issue #100). The rest are local gates that need
-material CI cannot provide: `test_target_regression` (a populated target
-repo in the default config), `test_server_stdio` (ditto, stdio e2e),
-`test_explore` (a populated semantic self-index store).
+`test_bench`, `test_bakeint`) plus a `viz` job that builds the frozen
+synthetic corpus (`tests/vizcorpus_build.py`) and runs `test_viz` against
+its hermetic store in a real browser (issue #100). The rest are local
+gates that need material CI cannot provide: `test_target_regression` (a
+populated target repo in the default config), `test_server_stdio` (ditto,
+stdio e2e), `test_explore` (a populated semantic self-index store).
 
 ## Suites
 
@@ -44,6 +44,7 @@ repo in the default config), `test_server_stdio` (ditto, stdio e2e),
 | `test_viz` | 103-check Playwright harness over the real baked page; CI mode = frozen corpus (issue #100), local mode = the active config's store (default `config.json` or the self-index) | playwright + chrome + a fresh `graph.html` bake |
 | `test_verifier` | Kythe-style verifier fixtures (issue #66): `//-`-shaped goal comments inlined in fixture sources, asserted against extractor output (FileSym + cpp scan_calls); `@fn dead` is corpus-local liveness | stdlib + tree-sitter/tree-sitter-cpp for the C++ goals — extractor-level only: no config, no index, no chroma |
 | `test_bench` | bench record/golden coherence (issue #104): fingerprint determinism + order-insensitivity, render() refuses mismatched/missing fingerprints naming every stale record, coherent sandbox render e2e | stdlib only — imports bench/run_bench.py's render path against a temp bench dir; no config, no index, no embeds |
+| `test_bakeint` | bake integrity (issues #64/#108): empty/zeroed-store bake refusal naming the store + vector counts + the rescan fix, FAKE-only tiny-store waiver, strict-JSON splice (NaN/Infinity refused with paths), `</script`/`__DATA__`/`__IMPORTMAP__` breakout-token refusal, atomic `os.replace` bake write | chromadb import (self-sets `NEURONAV_EMBED_FAKE=1`; the real-provider refusal legs run in FAKE-scrubbed child processes) |
 
 `_page_harness.py` (issue #86 strand R9) is the shared Playwright harness
 the two browser suites ride: `serve()` (no-cache loopback server, ephemeral
@@ -58,7 +59,6 @@ changes may never weaken or drop a check.
 `probe_scene_placement.py` is a manual probe script, not a suite.
 
 ## Config self-selection (the leakage trap)
-
 Suites pick their own config; the shell must not pre-export one:
 
 - `test_crosslang` / `test_selfindex` hard-set
@@ -69,6 +69,10 @@ Suites pick their own config; the shell must not pre-export one:
 - `test_pyhard` / `test_mwires` write a generated temp config under the
   system temp dir pointing at `tests/fixtures/<name>` only — they never touch
   the real index.
+- `test_bakeint` builds a scratch corpus + FAKE store under the system
+  temp dir (the corpus-builder shape, miniature); its real-provider
+  refusal legs run in child processes with `NEURONAV_EMBED_FAKE`
+  scrubbed from the environment — never a live store.
 - `test_verifier` never touches config at all — it calls extractor
   `parse()` directly, so an exported `NEURONAV_CONFIG` is simply unseen
   (the one suite an exported var cannot leak into).
