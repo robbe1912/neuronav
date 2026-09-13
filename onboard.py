@@ -5,7 +5,7 @@ core; setup/wiring runs once per project and must not weigh on the hot
 path. Same pattern as explore.py (focused, self-contained).
 
   python onboard.py init  [--project PATH] [--index]
-  python onboard.py wire  [--project PATH] [--index]
+  python onboard.py wire  [--project PATH] [--index] [--omp [--omp-name NAME]]
 
 - init: write ``<project>/.neuronav/config.json`` (walk-everything
   defaults, extensions = every registered extractor suffix,
@@ -22,8 +22,14 @@ path. Same pattern as explore.py (focused, self-contained).
   (utf-8-sig) and guarded: malformed content fails loud with a
   "fix or delete" message instead of a raw traceback, and writes go
   through a temp file + os.replace so a crash never leaves a truncated
-  file over the user's wiring (issue #121). Cross-platform pure
-  stdlib (replaces tools/wire-project.ps1).
+  file over the user's wiring (issue #121). ``--omp`` additionally
+  emits the same stdio entry into the omp harness user config
+  (~/.omp/agent/mcp.json, issue #130) — ``NEURONAV_OMP_MCP`` overrides
+  that path for portability/testing. The default server name is
+  ``neuronav-<project>`` (derived from the project dir) so wiring
+  several projects never collides in the single user file;
+  ``--omp-name NAME`` overrides it. Cross-platform pure stdlib
+  (replaces tools/wire-project.ps1).
 - --index chains rescan (+ viz bake when the optional viz add-on is
   installed; skipped with a note otherwise).
 
@@ -145,9 +151,14 @@ def _write_json_atomic(path: Path, doc: dict) -> None:
         raise
 
 
-def wire(project: Path | None = None, index: bool = False) -> Path:
+_OMP_MCP_ENV = "NEURONAV_OMP_MCP"
+
+
+def wire(project: Path | None = None, index: bool = False,
+         omp: bool = False, omp_name: str | None = None) -> Path:
     """init if needed, then write/merge project MCP entries. Returns the
-    .mcp.json path. Never touches the install."""
+    .mcp.json path; with ``omp`` the omp harness config path is emitted
+    too. Never touches the install."""
     import nav
 
     proj = (project or Path.cwd()).resolve()
@@ -158,12 +169,7 @@ def wire(project: Path | None = None, index: bool = False) -> Path:
         nav.use_config(cfg_path)
         if index:
             _index()
-    server = str(TOOL_DIR / "server.py")
-    entry = {
-        "command": sys.executable,
-        "args": ["-X", "utf8", server],
-        "env": {"NEURONAV_CONFIG": str(cfg_path)},
-    }
+    entry = _entry(cfg_path)
     mcp_path = proj / ".mcp.json"
     doc = _read_merge_json(mcp_path, "mcpServers") if mcp_path.is_file() else {}
     doc.setdefault("mcpServers", {})["neuronav"] = entry
@@ -173,12 +179,53 @@ def wire(project: Path | None = None, index: bool = False) -> Path:
         oc = _read_merge_json(oc_path, "mcp")
         oc.setdefault("mcp", {})["neuronav"] = {
             "type": "local",
-            "command": [sys.executable, "-X", "utf8", server],
+            "command": [_entry(cfg_path)["command"], "-X", "utf8", str(TOOL_DIR / "server.py")],
             "enabled": True,
             "environment": {"NEURONAV_CONFIG": str(cfg_path)},
         }
         _write_json_atomic(oc_path, oc)
+    if omp:
+        _emit_omp(_omp_name(proj, omp_name), entry, _omp_mcp_path())
     return mcp_path
+
+
+def _entry(cfg_path: Path) -> dict:
+    """The shared stdio entry shape: repo venv python (falls back to the
+    running interpreter), -X utf8 server.py, env pinning the project
+    config. Identical in the project .mcp.json, opencode.json and the omp
+    harness fragment."""
+    venv = (TOOL_DIR / ".venv")
+    py = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    command = str(py) if py.is_file() else sys.executable
+    return {
+        "command": command,
+        "args": ["-X", "utf8", str(TOOL_DIR / "server.py")],
+        "env": {"NEURONAV_CONFIG": str(cfg_path)},
+    }
+
+
+def _omp_name(proj: Path, override: str | None) -> str:
+    """Server name in the omp user config. Default is ``neuronav-<basename>``
+    so wiring several projects never collides in the single file."""
+    if override:
+        return override
+    return f"neuronav-{proj.name}"
+
+
+def _omp_mcp_path() -> Path:
+    """omp user-level mcpServers config (issue #130); NEURONAV_OMP_MCP
+    overrides the path so tests stay hermetic."""
+    env = os.environ.get(_OMP_MCP_ENV)
+    return Path(env).expanduser() if env else Path.home() / ".omp" / "agent" / "mcp.json"
+
+
+def _emit_omp(name: str, entry: dict, path: Path) -> None:
+    """Write/merge the omp mcpServers fragment. User config merges by server
+    name, so multiple projects coexist; other servers are preserved."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc: dict = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    doc.setdefault("mcpServers", {})[name] = entry
+    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
 def _index() -> None:
@@ -222,6 +269,11 @@ if __name__ == "__main__":
         i = argv.index("--project")
         proj = Path(argv[i + 1])
     do_index = "--index" in argv
+    do_omp = "--omp" in argv
+    omp_name = None
+    if "--omp-name" in argv:
+        i = argv.index("--omp-name")
+        omp_name = argv[i + 1]
     target = (proj or Path.cwd()).resolve()
     if cmd == "init":
         p = init(proj, index=do_index)
@@ -232,11 +284,16 @@ if __name__ == "__main__":
         if do_index and (target / ".neuronav" / "graph.html").is_file():
             print(f"viewer:         {open_viewer(target)}")
     elif cmd == "wire":
-        m = wire(proj, index=do_index)
+        m = wire(proj, index=do_index, omp=do_omp, omp_name=omp_name)
         print(f"mcp entry: {m}")
-        print("restart MCP client sessions in the project to pick it up")
+        if do_omp:
+            print(f"omp fragment:   {_omp_mcp_path()} (server \"{_omp_name(target, omp_name)}\")")
+            print("restart omp sessions (or /mcp reload) to pick it up")
+        else:
+            print("restart MCP client sessions in the project to pick it up")
+            print("hint: add --omp to also emit an omp mcpServers fragment (issue #130)")
         if do_index and (target / ".neuronav" / "graph.html").is_file():
             print(f"viewer:         {open_viewer(target)}")
     else:
-        print("usage: onboard.py [init|wire] [--project PATH] [--index]", file=sys.stderr)
+        print("usage: onboard.py [init|wire] [--project PATH] [--index] [--omp [--omp-name NAME]]", file=sys.stderr)
         sys.exit(2)

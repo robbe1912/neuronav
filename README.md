@@ -103,7 +103,19 @@ with the `.tmp`/`.team_scratch` scratch conventions — edit freely, no json
 surgery), appends `.neuronav/` to the project's `.gitignore`, indexes the
 tree, bakes the map, and wires MCP entries (`.mcp.json` for Claude Code,
 `opencode.json` when present) with `NEURONAV_CONFIG` pinned to the
-project-local config.
+project-local config. The stdio entries use the neuronav install's own
+`.venv` python (`-X utf8 server.py`) — the running interpreter is the
+fallback when a venv is absent.
+
+### omp harness (user-level mcpServers)
+
+`wire --omp` additionally emits the same entry into the omp harness user
+config (`~/.omp/agent/mcp.json`) as `mcpServers.neuronav-<project>`
+(`--omp-name NAME` overrides the server name) — one install, many
+projects, zero install-side edits for this harness class too. Shared
+user file: the per-project default names never collide; unrelated
+servers already in the file are preserved. `NEURONAV_OMP_MCP` overrides
+the output path (handy for scripts/tests).
 **The neuronav install stays read-only** — nothing about a project is stored
 inside it, so one install serves any number of projects and the package is
 `npx`-shaped (run the tool against a repo, never edit the package).

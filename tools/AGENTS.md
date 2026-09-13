@@ -77,7 +77,7 @@ cross-platform onboarding module, and issue #27 pins the install as
 read-only). Use, from inside the target project:
 
 ```
-python /path/to/neuronav/onboard.py wire [--index] [--project PATH]
+python /path/to/neuronav/onboard.py wire [--index] [--project PATH] [--omp [--omp-name NAME]]
 ```
 
 It writes the project-local config (`<project>/.neuronav/config.json`),
@@ -87,8 +87,13 @@ optionally indexes + bakes, and wires `.mcp.json` / `opencode.json` with
 existing config.json is left byte-identical (issue #121), and the MCP
 jsons are read BOM-tolerant (`utf-8-sig`) with loud "fix or delete"
 errors on malformed content and atomic tmp + `os.replace` writes so a
-crash never truncates the user's wiring (issue #121). All state lands
-in the project; the install is never written to.
+crash never truncates the user's wiring (issue #121). `--omp` additionally
+emits the same stdio entry into the omp harness user config
+(`~/.omp/agent/mcp.json`, issue #130) under `neuronav-<project>`
+(`--omp-name NAME` overrides the server name) so multiple projects never
+collide; `NEURONAV_OMP_MCP` overrides the output path. All state lands
+in the project (plus the user's omp config when asked); the install is
+never written to.
 
 Requires `.venv` with `chromadb httpx "mcp<2" numpy networkx scipy scikit-learn`.
 Agent-side guidance snippet

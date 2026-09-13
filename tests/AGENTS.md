@@ -12,25 +12,14 @@ uses a local `check(name, cond)` helper (PASS/FAIL lines + failure count).
 CI (`.github/workflows/ci.yml`) runs sixteen hermetic suites on ubuntu
 with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
 `test_pyhard`, `test_cpphard`, `test_autorescan`, `test_searchtext`,
-<<<<<<< HEAD
 `test_project_mode`, `test_baseindex`, `test_mwires`,
 `test_clusterinv`, `test_recall`, `test_embedprov`, `test_repomap`,
-`test_selfindex`, `test_verifier`, `test_bench`) plus a `viz` job that builds the frozen synthetic corpus
+`test_selfindex`, `test_verifier`, `test_bench`, `test_bakeint`) plus a `viz` job that builds the frozen synthetic corpus
 (`tests/vizcorpus_build.py`) and runs `test_viz` against its hermetic
 store in a real browser (issue #100). The rest are local gates that need
 material CI cannot provide: `test_target_regression` (a populated target
 repo in the default config), `test_server_stdio` (ditto, stdio e2e),
 `test_explore` (a populated semantic self-index store).
-=======
-`test_project_mode`, `test_baseindex`, `test_mwires`, `test_recall`,
-`test_embedprov`, `test_repomap`, `test_selfindex`, `test_verifier`,
-`test_bench`, `test_bakeint`) plus a `viz` job that builds the frozen
-synthetic corpus (`tests/vizcorpus_build.py`) and runs `test_viz` against
-its hermetic store in a real browser (issue #100). The rest are local
-gates that need material CI cannot provide: `test_target_regression` (a
-populated target repo in the default config), `test_server_stdio` (ditto,
-stdio e2e), `test_explore` (a populated semantic self-index store).
->>>>>>> origin/main
 
 ## Suites
 
@@ -52,7 +41,7 @@ stdio e2e), `test_explore` (a populated semantic self-index store).
 | `test_clusterinv` | cluster partition invariant + crosstalk parity (issue #114): finalize's family moves vs full-weld regroups can double-assign a file — repaired by weld plurality (last pass, identity on healthy input); crosstalk counts only wiring the clusterer's structural graph sees (tests/ endpoints tallied separately, no cluster number) | numpy + chromadb import only (crafted shapes + stub graph, self-sets `NEURONAV_EMBED_FAKE=1`) |
 | `test_recall` | hybrid recall fusion, ctx hops, degraded mode (real+fake modes) | chromadb import; exact-rank pins need a real-embedded store |
 | `test_embedprov` | embed provider contract (issue #17): provider select/auto-detect, ollama+openai wire adapters, env-vs-config key precedence, keyless no-header, 401 loud, 429 retry, batch chunking, no-pad mismatches, fake-mode isolation, pre-#17 store heal vs provider-drift refusal + raw-provider messages (#159) | stdlib http.server stub on an ephemeral loopback port + chromadb import |
-| `test_project_mode` | onboarding (issue #27): discovery precedence env > project-local > checkout, `onboard.init`/`wire` scaffolds incl. `.neuroignore` (issue #36), init re-run NEVER clobbers a customized config (issue #121), wire BOM-tolerant + loud on malformed MCP jsons + atomic writes (issue #121), viz add-on degrade | stdlib + chromadb import (fresh subprocesses, fake embeds) |
+| `test_project_mode` | onboarding (issue #27): discovery precedence env > project-local > checkout, `onboard.init`/`wire` scaffolds incl. `.neuroignore` (issue #36), init re-run NEVER clobbers a customized config (issue #121), wire BOM-tolerant + loud on malformed MCP jsons + atomic writes (issue #121), `wire --omp` mcpServers fragment shape (issue #130: default/`--omp-name` server names, merge-preserving writes, two-project no-collision, hermetic `NEURONAV_OMP_MCP` reroute), viz add-on degrade | stdlib + chromadb import (fresh subprocesses, fake embeds) |
 | `test_viz` | 103-check Playwright harness over the real baked page; CI mode = frozen corpus (issue #100), local mode = the active config's store (default `config.json` or the self-index) | playwright + chrome + a fresh `graph.html` bake |
 | `test_verifier` | Kythe-style verifier fixtures (issue #66): `//-`-shaped goal comments inlined in fixture sources, asserted against extractor output (FileSym + cpp scan_calls); `@fn dead` is corpus-local liveness | stdlib + tree-sitter/tree-sitter-cpp for the C++ goals — extractor-level only: no config, no index, no chroma |
 | `test_bench` | bench record/golden coherence (issue #104): fingerprint determinism + order-insensitivity, render() refuses mismatched/missing fingerprints naming every stale record, coherent sandbox render e2e | stdlib only — imports bench/run_bench.py's render path against a temp bench dir; no config, no index, no embeds |

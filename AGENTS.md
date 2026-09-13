@@ -55,7 +55,7 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `viz.py` | Python `_build_data` orchestrator + the JS template as ONE ordered join of section constants (single script tag) -> `graph.html`; owns every nav/graph/chroma edge (J9/J10/J12/J18) and threads the rest through pure leaves; `ensure_bake()` (issue #86 R8) is the single rescan->bake entry — `server.visualize` and `onboard._index` delegate to it; `generate()` refuses empty/zeroed stores loudly, naming the store + counts + rescan fix (issue #64; tiny-store waiver is `NEURONAV_EMBED_FAKE=1`-only) and the splice is strict-JSON, `</script`/token-refusing, atomic via `os.replace` (issue #108) |
 | `layout.py` | pure strata/layout math for the bake: adjacency, iterative Tarjan SCC, strata depths, seeded force layout (moved verbatim from `viz.py`, issue #86; stdlib + numpy only, no nav/graph/chroma imports) |
 | `bake/` | pure per-job transforms for the viz DATA pipeline (issue #86 phase 2): `gitinfo` head/churn stamps, `files_model` J1-J4, `wires` J5-J8, `semantics` J11, `overlays` J13/J14/J17, `fnio` J15-J16, `budget` row-cap keeper — take g/clusters as args, no chroma/nav imports |
-| `onboard.py` | one-command project onboarding (issue #27): `init`/`wire` write `<project>/.neuronav/config.json` + MCP entries — the install stays read-only, OS-agnostic pure stdlib |
+| `onboard.py` | one-command project onboarding (issue #27): `init`/`wire` write `<project>/.neuronav/config.json` + MCP entries; `wire --omp` emits the omp harness mcpServers fragment (issue #130) — the install stays read-only, OS-agnostic pure stdlib |
 | `tools/` | dev gates: `qa_readability.py` (readability/declutter gate), `serve.py` (headless-dev no-cache HTTP for the bake only — production is opening `.neuronav/graph.html` directly, file://, issue #133; exclusive bind + per-OS port-owner hint) |
 | `config/` | named config profiles; `config.json` (root, gitignored) is the default |
 | `vendor/three-0.160.0/` | vendored three.js core + 4 addons, embedded at build (see below) |
@@ -190,6 +190,10 @@ Visualizer work also gates through `tools/qa_readability.py` (see
   `onboard.py init` scaffolds one pre-seeded with `.tmp`/`.team_scratch`.
 - Consumers wire per-project MCP entries that pass `NEURONAV_CONFIG` in the
   server env (see `onboard.py wire`) — one install, many projects, zero install-side edits.
+  `wire --omp` covers the omp harness class too (issue #130): the same stdio
+  entry lands in `~/.omp/agent/mcp.json` under `neuronav-<project>`
+  (`--omp-name` overrides; `NEURONAV_OMP_MCP` reroutes the file, kept out of
+  tracked docs because the path is machine-local).
 - Scratch/test dirs MUST be in `exclude_dirs` or they pollute the self-index
   dead-code tier (see `config/AGENTS.md`).
 - Throwaway worktrees and test screenshots live in `.tmp/` (repo root,
