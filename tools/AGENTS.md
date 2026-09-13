@@ -76,8 +76,12 @@ python /path/to/neuronav/onboard.py wire [--index] [--project PATH]
 It writes the project-local config (`<project>/.neuronav/config.json`),
 appends the `.neuronav/` gitignore snippet (idempotent, UTF-8 no BOM),
 optionally indexes + bakes, and wires `.mcp.json` / `opencode.json` with
-`NEURONAV_CONFIG` pinned to the project config. All state lands in the
-project; the install is never written to.
+`NEURONAV_CONFIG` pinned to the project config. Re-runs are safe: an
+existing config.json is left byte-identical (issue #121), and the MCP
+jsons are read BOM-tolerant (`utf-8-sig`) with loud "fix or delete"
+errors on malformed content and atomic tmp + `os.replace` writes so a
+crash never truncates the user's wiring (issue #121). All state lands
+in the project; the install is never written to.
 
 Requires `.venv` with `chromadb httpx "mcp<2" numpy networkx scipy scikit-learn`.
 Agent-side guidance snippet
