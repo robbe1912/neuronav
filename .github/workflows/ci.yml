@@ -72,6 +72,8 @@ jobs:
         run: python -X utf8 tests/test_portability.py
       - name: bytelaws (importmap vendored-bytes pin, UTF-8-no-BOM write law, issue #124)
         run: python -X utf8 tests/test_bytelaws.py
+      - name: walkguard (rescan walk + write robustness, issue #117)
+        run: python -X utf8 tests/test_walkguard.py
 
   # test_viz on the frozen synthetic corpus (issue #100/#97/#146): bake a
   # hermetic store (fake embeds, scratch config + state dir) and gate the

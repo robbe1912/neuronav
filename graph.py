@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import sys
 from collections import Counter, defaultdict, deque
 
 import nav
@@ -33,6 +34,7 @@ from extractors import (
     MANUAL_BASES,
     PY_CONTROL_KEYWORDS,
     PY_HOOKS,
+    SCENE_WIRING_SUFFIXES,
     VIRTUALS,
     add_class_ctx,
     harvest_registration,
@@ -297,7 +299,15 @@ class Graph:
             extractor = registry_for(path.suffix)
             if extractor is None:
                 continue
-            fs = extractor.parse(path, rel)
+            try:
+                fs = extractor.parse(path, rel)
+            except OSError as e:
+                # issue #117: the same race every later pass guards (the
+                # .tres walk, stat_fingerprint) — a file vanishing between
+                # iter_files and parse skips with a stderr note instead of
+                # aborting the whole index build
+                print(f"neuronav: parse skipped {rel}: {e}", file=sys.stderr)
+                continue
             self.files[rel] = fs
             if fs.class_name:
                 self.class_map[fs.class_name] = rel
@@ -315,11 +325,13 @@ class Graph:
                 self.files[rel] = registry_for(path.suffix).parse(path, rel)
 
         # .tres/.res reference scripts via ext_resource — data-constructed
-        # classes (custom resources) whose funcs never appear in .gd callers
+        # classes (custom resources) whose funcs never appear in .gd
+        # callers. Root-wide but pruned (issue #117): nav's walk honors the
+        # config's exclude contract + the standard cache floor — rglob
+        # traversed .venv/node_modules/.tmp/.neuronav and read every match
+        # on every server start and content-changing rescan.
         self.tres_scripts: set[str] = set()
-        for path in nav.ROOT.rglob("*.tres"):
-            if any(part in {".git", ".godot"} for part in path.parts):
-                continue
+        for path in nav.iter_root_files(SCENE_WIRING_SUFFIXES):
             try:
                 text = nav._read_text(path)
             except OSError:
@@ -1742,7 +1754,9 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
     correct and cheap. Purges resolve ids via where-get then
     delete(ids=...): chroma's delete(where=...) was observed to no-op
     silently under client churn while get(where=...) and delete(ids=...)
-    stay reliable."""
+    stay reliable. Every chroma write rides nav._db_lock (issue #117):
+    the parse/read phase runs lock-free, purges and upserts serialize
+    with all other writers (server auto-rescan vs CLI rescan)."""
     col = _fn_collection()
     cast = _cast_scale()  # nav CHUNK_CAST: 0.0 = legacy single-doc pass
     dirty = nav.DB_DIR / "fns.dirty"
@@ -1757,7 +1771,12 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
     purged_paths = 0
     purged_fns = 0
 
+    # issue #117: _purge_path and the gone-ids deletes are chroma WRITES —
+    # deferred to the locked phase below so they serialize with every
+    # other writer per _db_lock's contract; the parse/read phase above
+    # them stays lock-free (readers skip the lock)
     def _purge_path(rel: str) -> None:
+        """Whole-path fn purge. Caller holds nav._db_lock."""
         nonlocal purged_paths, purged_fns
         got = col.get(where={"path": rel}, include=[])
         if got["ids"]:
@@ -1765,14 +1784,13 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
             purged_paths += 1
             purged_fns += len(got["ids"])
 
-    if populated and deleted:
-        for p in sorted(set(deleted)):
-            _purge_path(p)
+    purge_rels: list[str] = sorted(set(deleted)) if populated and deleted else []
     parser = Graph()
     ids: list[str] = []
     docs: list[str] = []
     metas: list[dict[str, object]] = []
     moved: list[tuple[str, str, dict[str, object]]] = []
+    gone_batches: list[list[str]] = []
     cached = 0
     for rel in changed:
         path = nav.ROOT / rel
@@ -1781,7 +1799,7 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
         # parseable — a file that left parseable space is purged, not kept
         if not path.is_file() or suffix not in nav.EXTS or suffix == ".tscn":
             if populated:
-                _purge_path(rel)
+                purge_rels.append(rel)
             continue
         if suffix == ".gd":
             fs = parser._parse_gd(path, rel)
@@ -1826,10 +1844,14 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
                 metas.append(meta)
         gone = sorted(set(existing) - current)
         if gone:
-            col.delete(ids=gone)
-            purged_fns += len(gone)
+            gone_batches.append(gone)
     try:
         with nav._db_lock():
+            for rel in purge_rels:
+                _purge_path(rel)
+            for gone in gone_batches:
+                col.delete(ids=gone)
+                purged_fns += len(gone)
             added = 0
             for i in range(0, len(ids), nav.EMBED_BATCH):
                 vecs = nav.embed(docs[i : i + nav.EMBED_BATCH])

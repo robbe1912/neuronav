@@ -104,6 +104,11 @@ ADDON_VIRTUALS: dict[str, set[str]] = {
     for base in ("btaction", "btcondition", "btdecorator", "btcomposite", "bttask")
 }
 
+# custom-resource scene files that reference scripts via ext_resource and
+# StringName routing — the wiring-walk suffix set (graph consumes this via the
+# registry; shared modules never spell a language suffix)
+SCENE_WIRING_SUFFIXES = frozenset({".tres"})
+
 # entry bases that run from the editor/tooling, outside the game's call graph
 # (compared against fs.extends.lower(), so store the lowercased spelling)
 MANUAL_BASES = {"editorscript", "editorplugin", "scenetree"}

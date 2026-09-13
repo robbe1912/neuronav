@@ -451,6 +451,11 @@ def embed_failure_reason(exc: Exception) -> str:
 def iter_files() -> Iterator[Path]:
     # os.walk (not rglob) so exclude_dirs are pruned from the traversal —
     # a repo-root include_dir would otherwise walk .venv/.chroma/etc.
+    # Overlapping include_dirs ([".", "tests"]) dedupe on the index key
+    # (issue #117): each file yields exactly once — first include wins,
+    # order stays the per-dir sorted walk — so a rescan counts it once
+    # instead of double-embedding both copies into one upsert batch.
+    seen: set[str] = set()
     for d in INCLUDE_DIRS:
         base = ROOT / d
         if not base.is_dir():
@@ -459,7 +464,37 @@ def iter_files() -> Iterator[Path]:
             dirnames[:] = sorted(dn for dn in dirnames if dn not in EXCLUDE_DIRS)
             for name in sorted(filenames):
                 if Path(name).suffix in EXTS:
-                    yield Path(dirpath) / name
+                    p = Path(dirpath) / name
+                    fid = file_id(p)
+                    if fid in seen:
+                        continue
+                    seen.add(fid)
+                    yield p
+
+
+# standard cache prune floor for root-wide wiring walks (issue #117): the
+# indexed walk prunes the config's exclude_dirs (+ .neuroignore); root-wide
+# scans (the .tres wiring pass) prune those PLUS these caches — one set
+# beside the walk's config home; consumers derive, none re-hardcodes a
+# second list
+_PRUNE_FLOOR = frozenset(
+    {".git", ".godot", ".venv", "node_modules", ".tmp", ".neuronav"}
+)
+
+
+def iter_root_files(suffixes: set[str] | frozenset[str]) -> Iterator[Path]:
+    """Root-wide pruned walk (sorted, deterministic) for wiring passes —
+    the .tres scan's rglob replacement (issue #117): honors the SAME
+    exclude contract as iter_files (config exclude_dirs + .neuroignore)
+    plus the standard cache prune floor, so .venv/node_modules/.tmp/
+    .neuronav are pruned from the traversal instead of read and filtered
+    afterwards."""
+    prune = EXCLUDE_DIRS | _PRUNE_FLOOR
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        dirnames[:] = sorted(dn for dn in dirnames if dn not in prune)
+        for name in sorted(filenames):
+            if Path(name).suffix in suffixes:
+                yield Path(dirpath) / name
 
 
 # ---- stat-gate freshness (issue #19) ---------------------------------------

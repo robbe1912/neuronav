@@ -29,6 +29,7 @@ from extractors.gdscript import (  # noqa: F401  (re-export)
     ADDON_VIRTUALS,
     GUT_ROOTS,
     MANUAL_BASES,
+    SCENE_WIRING_SUFFIXES,
     VIRTUALS,
     parse_gd,
     parse_tscn,
