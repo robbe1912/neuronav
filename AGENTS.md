@@ -15,14 +15,16 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 
 ## Non-negotiable invariants
 
-- **No target-repo data in tracked files** — the default config points at a
-  private repo; NOTHING derived from it may be committed: no file/class/
-  function names, no paths, no screenshots, no measured baselines (`.tmp/qa/`
-  is gitignored machine-local state). Tests and probes must be config-agnostic
-  (derive targets from the loaded index, see `test_viz`/`probe_scene_placement`/
-  `test_server_stdio`); regression canaries live in the gitignored
-  `config.json` under `regression_canaries`. Same rule for every future
-  target (the engine profile included).
+- **No target-repo data in tracked files** — NOTHING derived from any
+  target repo may be committed: no file/class/function names, no paths, no
+  screenshots, no absolute machine paths (drive letters, home dirs — a
+  grep for those shapes over tracked files must stay empty), no measured
+  baselines (`.tmp/qa/` is gitignored machine-local state). Tests and
+  probes must be config-agnostic (derive targets from the loaded index,
+  see `test_viz`/`probe_scene_placement`/`test_server_stdio`); regression
+  canaries live in the untracked machine-local config passed per-command
+  via `NEURONAV_CONFIG` under `regression_canaries`. Same rule for every
+  future target (the engine profile included).
 - **Determinism**: same DATA -> same layout byte-for-byte. `_layout` uses a
   seeded rng (1234); the regression suite over the target repo
   (`test_target_regression`) pins range floors — >=630 files, 6500–8100 edges,
@@ -55,9 +57,9 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `viz.py` | Python `_build_data` orchestrator + the JS template as ONE ordered join of section constants (single script tag) -> `graph.html`; owns every nav/graph/chroma edge (J9/J10/J12/J18) and threads the rest through pure leaves; `ensure_bake()` (issue #86 R8) is the single rescan->bake entry — `server.visualize` and `onboard._index` delegate to it; `generate()` refuses empty/zeroed stores loudly, naming the store + counts + rescan fix (issue #64; tiny-store waiver is `NEURONAV_EMBED_FAKE=1`-only) and the splice is strict-JSON, `</script`/token-refusing, atomic via `os.replace` (issue #108) |
 | `layout.py` | pure strata/layout math for the bake: adjacency, iterative Tarjan SCC, strata depths, seeded force layout (moved verbatim from `viz.py`, issue #86; stdlib + numpy only, no nav/graph/chroma imports) |
 | `bake/` | pure per-job transforms for the viz DATA pipeline (issue #86 phase 2): `gitinfo` head/churn stamps, `files_model` J1-J4, `wires` J5-J8, `semantics` J11, `overlays` J13/J14/J17, `fnio` J15-J16, `budget` row-cap keeper — take g/clusters as args, no chroma/nav imports |
-| `onboard.py` | one-command project onboarding (issue #27): `init`/`wire` write `<project>/.neuronav/config.json` + MCP entries; `wire --omp` emits the omp harness mcpServers fragment (issue #130) — the install stays read-only, OS-agnostic pure stdlib |
+| `onboard.py` | one-command project onboarding (issue #27): `init`/`wire` write `<project>/.neuronav/config.json` + MCP entries; `wire --omp` emits the omp harness mcpServers fragment (issue #130); `global-wire` emits ONE uvx entry (`uvx --from git+…@vX.Y.Z neuronav-mcp`, issue #204) on all four harnesses — the install stays read-only, OS-agnostic pure stdlib |
 | `tools/` | dev gates: `qa_readability.py` (readability/declutter gate), `serve.py` (headless-dev no-cache HTTP for the bake only — production is opening `.neuronav/graph.html` directly, file://, issue #133; exclusive bind + per-OS port-owner hint) |
-| `config/` | named config profiles; `config.json` (root, gitignored) is the default |
+| `config/` | named config profiles, machine-portable only (relative `root`s); the root `config.json` is deliberately ABSENT (issue #204 — the repo carries no machine values; consumers pass `NEURONAV_CONFIG` per-command or boot pure-defaults on cwd) |
 | `vendor/three-0.160.0/` | vendored three.js core + 4 addons, embedded at build (see below) |
 | `bench/` | recall benchmark: golden set, `run_bench.py`, committed results (`RESULTS.md`) — the numbers `docs/comparison.md` cites |
 | `tests/` | 28 self-contained suites + committed fixtures (see tests/AGENTS.md) |
@@ -129,8 +131,7 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_mwires` | named-wire map exports (`mwires`/`fns`/`meta` contract, map-spec-v2 §0) | chromadb import only (suite self-sets `NEURONAV_EMBED_FAKE=1`, hermetic fixture config) |
 | `test_clusterinv` | cluster partition invariant + crosstalk parity (issue #114): finalize double-assign repaired by weld plurality (identity on healthy input); crosstalk counts only wiring the clusterer's graph sees (tests/ endpoints tallied separately) | numpy + chromadb import only (crafted shapes + stub graph, `NEURONAV_EMBED_FAKE=1`) |
 | `test_selfindex` | neuronav indexes itself | chromadb import (structural only) |
-| `test_target_regression` | byte-stability over the target repo | chromadb import + the target repo configured in `config.json` |
-| `test_explore` | explore() behavior incl. degraded mode | mcp + chroma + populated self-index (CI: self-populated via FAKE rescan, issue #180) |
+| `test_target_regression` | byte-stability over the target repo | chromadb import + the target repo via per-command `NEURONAV_CONFIG` (untracked machine-local profile) |
 | `test_server_stdio` | MCP tool surface end-to-end (JSON-RPC over stdio) | mcp + default-config target repo (CI: self-index FAKE bootstrap, issue #180) |
 | `test_autorescan` | auto-rescan stat gate: freshness, TTL burst guard, failure cooldown, watcher (issue #19) | mcp + chromadb + numpy/networkx/scipy/scikit-learn (hermetic temp target, fake embeds) |
 | `test_searchtext` | capped regex text search tool (issue #68): rows/order, 20-file + 3-line caps, truncation markers, totals, files_only, glob, graceful paths | mcp + chromadb (hermetic temp target, fake embeds) |
@@ -173,7 +174,11 @@ Visualizer work also gates through `tools/qa_readability.py` (see
 
 ## Config profiles
 
-- Default `config.json` (gitignored, machine-local) - the primary target repo.
+- Root `config.json` — deliberately ABSENT and never restored (issue
+  #204: the repo is consumed via `uvx …@tag neuronav-mcp` in any
+  directory with zero config; no machine values may live here). Target
+  repos are selected per-command via `NEURONAV_CONFIG` pointing at an
+  untracked machine-local profile.
 - Per-project state (issue #15): everything a profile generates (chroma
   store, base shards, `graph.html` bake) lives in `state_dir` — an
   explicit path, or `"default"` for `<root>/.neuronav/` (`onboard.py

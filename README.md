@@ -9,6 +9,31 @@ point it at any project via config; nothing is vendored into target projects.
 See [docs/comparison.md](docs/comparison.md) for how neuronav differs from
 other code-graph tools (CodeGraph, aider repo map, SCIP).
 
+## Install anywhere (uvx, zero config)
+
+The npx-shaped entry — spawn it in ANY repo directory with no config, no
+venv, no install step:
+
+```bash
+uvx --from git+https://github.com/robbe1912/neuronav@v0.1.0 neuronav-mcp
+```
+
+The server boots pure-defaults on the session cwd: root = that directory,
+state = `<root>/.neuronav`, every registered file suffix walked
+(`config/AGENTS.md` step 4). Boot state is visible from the first second
+(issue #203): stderr names the resolved config — or `pure defaults,
+root=<cwd>` — BEFORE any indexing starts, and the boot store-lock wait is
+bounded at 60s with a loud abort naming the lock and its likely holder.
+`onboard.py global-wire` writes exactly this entry (pinned to the current
+tag) into all four harness user configs.
+
+Tag cadence: the maintainer pushes a `vX.Y.Z` git tag per merge to `main`;
+the entry pins the tag, so a release is just a pushed tag — bump by
+re-running `global-wire` after it. The repo itself carries NO config and
+no machine values (issue #204): the root `config.json` is deliberately
+absent (never restored); consumers pass `NEURONAV_CONFIG` per-command or
+rely on the pure-defaults cwd boot.
+
 ## Tools (stdio MCP, 13)
 
 | tool | use |
@@ -79,7 +104,7 @@ flip per project after trying it.
   Ollama's own `/v1` layer): point `embed_url` at it and, if it needs a
   key, set `NEURONAV_EMBED_KEY` (env beats the config's `embed_api_key`,
   so secrets stay out of tracked files). See `config/AGENTS.md`.
-- `pip install chromadb httpx "mcp<2" numpy networkx scipy scikit-learn "tree-sitter==0.26.0" "tree-sitter-cpp==0.23.4"` (into the venv)
+- `pip install chromadb filelock httpx "mcp<2" numpy networkx scipy scikit-learn "tree-sitter==0.26.0" "tree-sitter-cpp==0.23.4"` (into the venv; `pyproject.toml` pins the exact versions)
 
 The default setup keeps embeddings on the machine; queries and indexing
 both need the backend reachable.
@@ -119,15 +144,20 @@ fallback when a venv is absent.
 python /path/to/neuronav/onboard.py global-wire
 ```
 
-Writes a single `neuronav` server entry — no `NEURONAV_CONFIG` pin — into
-the user-level config of **omp** (`~/.omp/agent/mcp.json`), **opencode**
-(`~/.config/opencode/opencode.json`), **kilocode** (VS Code globalStorage
-`mcp_settings.json`) and **zcode** (`~/.zcode/cli/config.json`). Every tool
-call routes per-call via its `dir` parameter (universal mount, issue #131),
-so one entry serves every repo; per-project `neuronav-<project>` pins from
-`wire --omp` coexist untouched. Merge-only by server name, idempotent,
-harness paths overridable via `NEURONAV_{OMP,OPENCODE,KILO,ZCODE}_MCP` for
-testing.
+Writes a single `neuronav` server entry — `uvx --from
+git+https://github.com/robbe1912/neuronav@vX.Y.Z neuronav-mcp`: no venv,
+no cwd, no env, no `NEURONAV_CONFIG` pin — into the user-level config of
+**omp** (`~/.omp/agent/mcp.json`), **opencode**
+(`~/.config/opencode/opencode.json``), **kilocode** (VS Code globalStorage
+`mcp_settings.json`) and **zcode** (`~/.zcode/cli/config.json`). The tag
+is derived from the package version (`pyproject.toml` is the source of
+truth). The server boots pure-defaults on the harness session's cwd (= the
+repo being served), and every tool call can still route per-call via its
+`dir` parameter (universal mount, issue #131), so one entry serves every
+repo; per-project `neuronav-<project>` pins from `wire --omp` coexist
+untouched. Merge-only by server name, idempotent, harness paths
+overridable via `NEURONAV_{OMP,OPENCODE,KILO,ZCODE}_MCP` for testing.
+Needs `uv` on PATH and the pinned tag pushed.
 
 ### omp harness (user-level mcpServers)
 
@@ -145,7 +175,8 @@ inside it, so one install serves any number of projects and the package is
 Config discovery when you run `nav.py`/`server.py` yourself:
 `NEURONAV_CONFIG` env → `<cwd>/.neuronav/config.json` (the project-local
 one `onboard.py init` writes) → `config.json` next to `nav.py` *only when
-cwd is the checkout* (machine-local default) → pure defaults (root = cwd,
+cwd is the checkout* (legacy mechanism; deliberately absent in this repo,
+issue #204 — never restored) → pure defaults (root = cwd,
 walk everything). An explicit `NEURONAV_CONFIG` that points at a missing
 file aborts at load, a rescan that matches zero files aborts too, and a
 config without `state_dir` aborts the same way (issue #91: the silent
@@ -176,9 +207,8 @@ per call — this replaces the per-project `mcpServers.neuronav` entries:
 {
   "mcpServers": {
     "neuronav": {
-      "command": "E:/path/to/neuronav/.venv/Scripts/python.exe",
-      "args": ["-X", "utf8", "E:/path/to/neuronav/server.py"],
-      "env": {"NEURONAV_CONFIG": "E:/path/to/main-project/.neuronav/config.json"}
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/robbe1912/neuronav@v0.1.0", "neuronav-mcp"]
     }
   }
 }
@@ -190,9 +220,10 @@ repo_map({"budget_tokens": 1024, "dir": "D:/work/game-a"})
 semantic_search({"query": "save system", "dir": "D:/work/game-b"})
 ```
 
-The boot repo (no `dir` passed) follows normal config discovery — the
-`env` pin above just gives the mount a default; without one, a boot that
-finds no repo aborts loudly at startup (zero-files contract).
+The boot repo (no `dir` passed) is the session cwd — spawned from a repo
+directory, the pure-defaults boot indexes exactly it (the stderr banner
+names the root before any work starts); a cwd whose walk matches zero
+files aborts loudly at startup (zero-files contract).
 
 Routing is stateless by design (issue #131: no activate/switch round
 trip to forget): one call answers from exactly one repo and the next
