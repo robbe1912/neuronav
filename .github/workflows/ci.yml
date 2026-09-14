@@ -22,7 +22,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - run: pip install numpy chromadb httpx "mcp<2" networkx scipy scikit-learn tree-sitter==0.26.0 tree-sitter-cpp==0.23.4
+      - run: pip install numpy chromadb filelock httpx "mcp<2" networkx scipy scikit-learn tree-sitter==0.26.0 tree-sitter-cpp==0.23.4 build
       - name: strata (depth layering, cycles, determinism)
         run: python -X utf8 tests/test_strata.py
       - name: crosslang (self-index integration, deterministic fake embeddings)
@@ -83,6 +83,11 @@ jobs:
         run: python -X utf8 tests/test_qa_smoke.py
         env:
           NEURONAV_QA_SMOKE_NO_BROWSER: "1"
+      # issue #204: the uvx contract — wheel build, scratch-venv install,
+      # installed neuronav-mcp on a config-less fixture repo over stdio
+      # (initialize + tools/list + repo_map + the #203 pre-rescan banner)
+      - name: packaging (wheel + installed console script, issue #204)
+        run: python -X utf8 tests/test_packaging.py
 
   # test_viz on the frozen synthetic corpus (issue #100/#97/#146): bake a
   # hermetic store (fake embeds, scratch config + state dir) and gate the
