@@ -1,55 +1,55 @@
 {
  "set": "after",
  "config": "expand",
- "commit": "2b9cbbe",
+ "commit": "2a1f231",
  "dirty": false,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
- "files": 44,
+ "files": 58,
  "k": 12,
- "golden": "84b58c13512fb282",
- "hit@1": 0.36,
- "hit@5": 0.56,
- "hit@10": 0.76,
- "mrr": 0.444,
+ "golden": "4daef95861450cd9",
+ "hit@1": 0.4,
+ "hit@5": 0.52,
+ "hit@10": 0.64,
+ "mrr": 0.459,
  "reach@5": 0.76,
- "reach@10": 0.88,
+ "reach@10": 0.76,
  "by_kind": {
   "exact": {
    "n": 10,
-   "hit@1": 0.2,
-   "hit@5": 0.4,
+   "hit@1": 0.3,
+   "hit@5": 0.3,
    "hit@10": 0.5,
-   "mrr": 0.282
+   "mrr": 0.336
   },
   "symbol": {
    "n": 4,
    "hit@1": 0.25,
    "hit@5": 0.5,
-   "hit@10": 0.75,
-   "mrr": 0.369
+   "hit@10": 0.5,
+   "mrr": 0.375
   },
   "prose": {
    "n": 9,
    "hit@1": 0.556,
-   "hit@5": 0.778,
-   "hit@10": 1.0,
-   "mrr": 0.631
+   "hit@5": 0.667,
+   "hit@10": 0.778,
+   "mrr": 0.596
   },
   "cross": {
    "n": 2,
    "hit@1": 0.5,
-   "hit@5": 0.5,
+   "hit@5": 1.0,
    "hit@10": 1.0,
-   "mrr": 0.562
+   "mrr": 0.625
   }
  },
  "per_query": [
   {
    "q": "parse_tscn",
-   "rank": 3,
-   "ctx5": false,
-   "ctx10": false
+   "rank": 1,
+   "ctx5": true,
+   "ctx10": true
   },
   {
    "q": "sha256_of",
@@ -61,7 +61,7 @@
    "q": "titleize",
    "rank": 1,
    "ctx5": false,
-   "ctx10": false
+   "ctx10": true
   },
   {
    "q": "registry_for",
@@ -71,15 +71,15 @@
   },
   {
    "q": "sync_functions",
-   "rank": null,
+   "rank": 10,
    "ctx5": true,
    "ctx10": true
   },
   {
-   "q": "_fold_continuations",
-   "rank": 10,
-   "ctx5": true,
-   "ctx10": true
+   "q": "fold_continuations",
+   "rank": null,
+   "ctx5": false,
+   "ctx10": false
   },
   {
    "q": "_has_exact",
@@ -89,13 +89,13 @@
   },
   {
    "q": "_lexical_fallback",
-   "rank": 5,
+   "rank": 6,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "import_base",
-   "rank": 11,
+   "rank": null,
    "ctx5": true,
    "ctx10": true
   },
@@ -113,57 +113,57 @@
   },
   {
    "q": "LabelContext",
-   "rank": 4,
-   "ctx5": false,
+   "rank": 2,
+   "ctx5": true,
    "ctx10": true
   },
   {
    "q": "FileSym",
-   "rank": 7,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "Func",
-   "rank": 12,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "where do godot scene resources get read",
    "rank": 1,
-   "ctx5": false,
-   "ctx10": false
+   "ctx5": true,
+   "ctx10": true
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": 10,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "what stops two simultaneous rescans from corrupting the store",
-   "rank": 8,
-   "ctx5": false,
+   "rank": null,
+   "ctx5": true,
    "ctx10": true
   },
   {
    "q": "how do hermetic suites embed without a live model backend",
-   "rank": 4,
+   "rank": 9,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "how are subsystem names chosen from member vocabulary",
    "rank": 1,
-   "ctx5": false,
-   "ctx10": false
+   "ctx5": true,
+   "ctx10": true
   },
   {
    "q": "which module hosts the agent protocol on stdin and stdout",
-   "rank": 5,
-   "ctx5": false,
-   "ctx10": false
+   "rank": 4,
+   "ctx5": true,
+   "ctx10": true
   },
   {
    "q": "single call that shows a newcomer how the codebase is organized",
@@ -185,7 +185,7 @@
   },
   {
    "q": "unreachable deletion candidates and their confidence tiers",
-   "rank": 8,
+   "rank": 4,
    "ctx5": true,
    "ctx10": true
   },

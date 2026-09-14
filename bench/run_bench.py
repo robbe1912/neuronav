@@ -540,16 +540,18 @@ def _sweep_table(recs: dict[str, dict]) -> list[str]:
         "double-run — wins inside the documented Ollama ±jitter are treated as",
         "ties.",
         "",
-        "Verdict (re-swept at 2b9cbbe on the 44-file index, issue #104): λ 0.25 @",
-        "rrf_k 30 again tops hit@1 — 0.400 vs 0.320–0.360 across every λ=0 cell,",
-        "and the after-table `gb` row pins it — while its MRR 0.567 sits in",
-        "near-tie range of gb0-k30 (0.576); the retired 34-file sweep crowned the",
-        "same cell cleanly (hit@1 0.520 vs 0.440, MRR 0.651 vs 0.624). Every",
-        "λ ≥ 0.5 loses monotonically in both sweeps (hub files crowd out precise",
-        "matches). The win is a single cell on one corpus, so `recall.GRAPH_BOOST`",
-        "stays 0.0 — plumbing landed default-off — and the `gb` config pins the",
-        "winner for opted-in evaluation. Cross-store deltas (across commits)",
-        "carry ±jitter; the same-store `gb` vs `both` rows are the attribution.",
+        "Verdict (re-swept at 2a1f231 on the 58-file index after the issue #75",
+        "golden re-justify — the retired 44-file sweep at 2b9cbbe crowned the",
+        "same cell): λ 0.25 @ rrf_k 30 sits in a three-cell top tier — hit@1",
+        "0.560 here vs 0.600 at gb0.25-k60 and gb0.5-k30, a one-query gap well",
+        "inside the documented jitter — and it carries the tier's best hit@10",
+        "(0.920) with MRR 0.692 vs the k60 cell's 0.702. Every λ ≥ 1 loses",
+        "monotonically (hub files crowd out precise matches). The win stays a",
+        "single-cell-tier result on one corpus, so `recall.GRAPH_BOOST` stays",
+        "0.0 — default-off — and the `gb` config keeps pinning λ 0.25 @",
+        "rrf_k 30 for opted-in evaluation; the after-table `gb` row pins it.",
+        "Cross-store deltas (across commits) carry ±jitter; the same-store `gb`",
+        "vs `both` rows are the attribution.",
         "",
         "| config | hit@1 | hit@5 | hit@10 | MRR | reach@5 | reach@10 |",
         "|---|---|---|---|---|---|---|",
@@ -617,6 +619,7 @@ def _ab_section(recs: dict[str, dict]) -> list[str]:
         "`query_prefix`/`doc_prefix` when a leg uses them. Same-store legs are",
         "the attribution unit; cross-store deltas ride the double-run floors",
         "below.",
+        "",
     ]
     for prefix, note in AB_LEGS:
         chunk = _set_table(prefix, recs, note)
@@ -624,6 +627,26 @@ def _ab_section(recs: dict[str, dict]) -> list[str]:
             lines += chunk + [""]
         lines += _kind_table(prefix, recs)
     lines += _ab_delta_table(recs)
+    lines += [
+        "Verdict (measured at the commit stamped in the records, both batteries",
+        "double-run — every metric line identical across passes; the previously",
+        "observed Ollama fp-jitter flipped nothing this round): the model swap",
+        "FAILS the ≥ +3-point win condition on the shipped `both` config — plain",
+        "jina loses hit@5 by 12.0 pts (0.72 vs 0.84), jinaq by 16.0, and the",
+        "full paper recipe jinap still trails hit@5 by 4.0 (0.80 vs 0.84) despite",
+        "winning hit@1 (+20.0) and MRR (+12.5); the vec-only rows show the same",
+        "shape (jina/vec hit@5 0.44 vs ab/vec 0.52), so the paper's aggregate",
+        "edge does not transfer to whole-file retrieval on this corpus at Q8_0.",
+        "qwen3-embedding:0.6b stays. The free leg wins outright: the nl2code",
+        "query instruction on qwen3 (same store, zero re-index) lifts `both` to",
+        "0.52/0.92/0.96 with MRR 0.674 — +16.0 hit@1 / +8.0 hit@5 / +8.0",
+        "hit@10 / +14.8 MRR over the baseline, and `gb` to 0.64/0.96. Shipping",
+        "the prefix as a recall default is the actionable follow-up (its own",
+        "issue: the instruction text is JCE-trained yet empirically transfers to",
+        "qwen3 here). On the default-off `gb` config jinap tops every column",
+        "(0.72/0.96, MRR 0.817) — noted, not shipped.",
+        "",
+    ]
     return lines
 
 
