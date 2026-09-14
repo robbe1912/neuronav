@@ -2,8 +2,10 @@ name: openhands-queue
 
 # 24/7 external-agent queue: every 3h (fits the OpenHands Cloud free tier's
 # 10 conversations/day), if no @openhands claim is open, invoke @openhands on
-# the lowest-numbered issue labeled `agent-queue` (explicit per-issue opt-in).
-# The claim workflow then scaffolds the linked draft PR.
+# the lowest-numbered issue labeled `agent-queue` (explicit per-issue opt-in),
+# then set the agent:openhands claim label directly — comments authored with
+# GITHUB_TOKEN never fire issue_comment workflows (anti-recursion), so
+# openhands-claim.yml only scaffolds human-typed mentions.
 on:
   schedule:
     - cron: "0 */3 * * *"
@@ -45,6 +47,13 @@ jobs:
           fi
           gh issue comment "$ISSUE" --body "@openhands please implement this issue end-to-end and open a pull request. Read AGENTS.md at the repo root first for the repo laws (determinism, suite gate, conventional commits, no live-store configs: any scratch config needs an explicit state_dir)."
           gh issue edit "$ISSUE" --remove-label "agent-queue"
+          # claim marker set here, not in openhands-claim.yml: a GITHUB_TOKEN
+          # comment cannot trigger the claim workflow (anti-recursion rule),
+          # and this job has no checkout to build the placeholder branch.
+          # The label alone broadcasts ownership and feeds the one-at-a-time
+          # guard; unclaim removes it when the real PR arrives.
+          gh label create "agent:openhands" --color D4C5F9 --description "claimed by @openhands (external agent)" || true
+          gh issue edit "$ISSUE" --add-label "agent:openhands"
           echo "invoked @openhands on #$ISSUE"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
