@@ -8726,6 +8726,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
             ? "focusArcs" : "gone",
     n: r.segs.length })); },   // [#196] wire-arc tint probe
   get pinCoverX() { return pinCoverX; },   // [#196] cross-surface cover
+  get pinDots() { return pinPts ? pinPts.visible : null; },   // [#196] endpoint-dot visibility probe
   get pinChain() { return { a: pinChA, b: pinChB, boxA: pinBoxA, boxB: pinBoxB, ep0: pinEp0, ep1: pinEp1 }; },  // [issue #84] fn-box endpoint law probe hook
   get degFloorArr() { return degFloor; },  // zoomed-out min diameter px per fi (probe hook)
   get hlArr() { return hlArr; },  // search-highlight flags per fi (probe hook)

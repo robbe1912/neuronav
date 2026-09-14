@@ -4113,6 +4113,166 @@ def run_tests(port: int):
         else:
             print("SKIP replace-restore - no trunk pin")
 
+        # [issue #196 / skeptic R9b] tint lifecycle convergence law:
+        # trunk pin -> wire pin replace -> Esc must leave EVERY tint
+        # buffer byte-exact stock. The replacing wire's own emphasis
+        # (corridor chain + its arcs) is legitimate while it lives -
+        # a hash compare at the live-pin point false-positives on it
+        # (the R9b dispute) - but nothing may survive dismissal, so
+        # the invariant is pinned at the post-Esc point where any
+        # stale record would necessarily show.
+        stockC = page.evaluate("""() => {
+            const d = window.__dbg;
+            if (!d.fnBus || !d.fnBus.instanceColor || !d.fnLines ||
+                !d.fnLines.geometry ||
+                !d.fnLines.geometry.attributes.instanceColorStart)
+              return null;
+            return {
+              bus: Array.from(d.fnBus.instanceColor.array),
+              cs: Array.from(d.fnLines.geometry.attributes
+                .instanceColorStart.array),
+              ce: Array.from(d.fnLines.geometry.attributes
+                .instanceColorEnd.array) }; }""")
+        pinA2 = None
+        if stockC:
+            for _t in range(3):
+                tc2 = page.evaluate("""() => { const d = window.__dbg;
+                    const el = d.renderer.domElement,
+                          r = el.getBoundingClientRect();
+                    const out = [];
+                    for (let x = 24; x < r.width - 24 && out.length < 10;
+                         x += 40)
+                        for (let y = 70; y < r.height - 24 &&
+                             out.length < 10; y += 40) {
+                            const m = d.pickWireMeta({
+                                clientX: r.left + x, clientY: r.top + y });
+                            if (m && (m.kind === "trunk" || m.kind === "jleg")
+                                && document.elementFromPoint(
+                                    r.left + x, r.top + y) === el)
+                                out.push([Math.round(r.left + x),
+                                          Math.round(r.top + y)]);
+                        }
+                    return out; }""")
+                for c2 in (tc2 or []):
+                    page.mouse.move(c2[0], c2[1])
+                    page.wait_for_timeout(120)
+                    hov = page.evaluate(
+                        "() => ({ hf: window.__dbg.hoveredFn,"
+                        " hv: window.__dbg.hovered })")
+                    if (hov["hf"] is not None and hov["hf"] >= 0) or \
+                       (hov["hv"] is not None and hov["hv"] >= 0):
+                        continue
+                    page.mouse.click(c2[0], c2[1])
+                    try:
+                        page.wait_for_function(
+                            "() => window.__dbg.wirePin &&"
+                            " window.__dbg.wirePin.kind === 'trunk'",
+                            timeout=1200)
+                    except PwTimeout:
+                        continue
+                    pinA2 = page.evaluate("() => window.__dbg.wirePin")
+                    break
+                if pinA2:
+                    break
+        pinB2 = None
+        if pinA2:
+            for _t in range(3):
+                lc2 = page.evaluate("""() => { const d = window.__dbg;
+                    const el = d.renderer.domElement,
+                          r = el.getBoundingClientRect();
+                    const xmax = document.getElementById('mapPane')
+                        .getBoundingClientRect().left - 14;
+                    const out = [];
+                    for (let x = 24; x < xmax && x < r.width - 24 &&
+                         out.length < 12; x += 40)
+                        for (let y = 70; y < r.height - 24 &&
+                             out.length < 12; y += 40) {
+                            const m = d.pickWireMeta({
+                                clientX: r.left + x, clientY: r.top + y });
+                            if (m && (m.kind === "link" || m.kind === "wire")
+                                && document.elementFromPoint(
+                                    r.left + x, r.top + y) === el)
+                                out.push([Math.round(r.left + x),
+                                          Math.round(r.top + y)]);
+                        }
+                    return out; }""")
+                tipR2 = page.evaluate(
+                    "() => { const t = document.getElementById"
+                    "('wireTip'); if (!t || t.style.display === "
+                    "'none') return null; const r = t."
+                    "getBoundingClientRect(); return [r.left, r.top,"
+                    " r.right, r.bottom]; }")
+                for c2 in (lc2 or []):
+                    if tipR2 and tipR2[0] - 24 < c2[0] < tipR2[2] + 24 \
+                       and tipR2[1] - 24 < c2[1] < tipR2[3] + 24:
+                        continue
+                    page.mouse.move(c2[0], c2[1])
+                    page.wait_for_timeout(120)
+                    hov = page.evaluate(
+                        "() => ({ hf: window.__dbg.hoveredFn,"
+                        " hv: window.__dbg.hovered })")
+                    if (hov["hf"] is not None and hov["hf"] >= 0) or \
+                       (hov["hv"] is not None and hov["hv"] >= 0):
+                        continue
+                    page.mouse.click(c2[0], c2[1])
+                    try:
+                        page.wait_for_function(
+                            "() => window.__dbg.wirePin &&"
+                            " (window.__dbg.wirePin.kind === 'link'"
+                            " || window.__dbg.wirePin.kind === 'wire')",
+                            timeout=1200)
+                    except PwTimeout:
+                        continue
+                    pb = page.evaluate("() => window.__dbg.wirePin")
+                    if pb and pb.get("id") != pinA2.get("id"):
+                        pinB2 = pb
+                        break
+                if pinB2:
+                    break
+        if pinA2 and pinB2:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(400)
+            conv = page.evaluate("""(st) => {
+                const d = window.__dbg;
+                let bus = -1, cs = -1, ce = -1;
+                if (d.fnBus && d.fnBus.instanceColor) {
+                    const a = d.fnBus.instanceColor.array;
+                    bus = 0;
+                    for (let i = 0; i < a.length; i++)
+                        if (Math.abs(a[i] - st.bus[i]) > 1e-6) bus++;
+                }
+                const g = d.fnLines && d.fnLines.geometry &&
+                    d.fnLines.geometry.attributes;
+                if (g && g.instanceColorStart) {
+                    const a = g.instanceColorStart.array;
+                    cs = 0;
+                    for (let i = 0; i < a.length; i++)
+                        if (Math.abs(a[i] - st.cs[i]) > 1e-6) cs++;
+                }
+                if (g && g.instanceColorEnd) {
+                    const a = g.instanceColorEnd.array;
+                    ce = 0;
+                    for (let i = 0; i < a.length; i++)
+                        if (Math.abs(a[i] - st.ce[i]) > 1e-6) ce++;
+                }
+                const pt = d.pinTint;
+                return { bus, cs, ce,
+                         rec: pt.tinted.length, arcs: d.pinTint2.length,
+                         dots: d.pinDots,
+                         pin: d.wirePin ? d.wirePin.id : null }; }""",
+                stockC)
+            check("replace->esc converges every tint buffer to stock",
+                  conv["pin"] is None and conv["bus"] == 0 and
+                  conv["cs"] == 0 and conv["ce"] == 0 and
+                  conv["rec"] == 0 and conv["arcs"] == 0 and
+                  conv["dots"] is False,
+                  f"{pinA2['id']} -> {pinB2['id']} -> esc: {conv}")
+        elif stockC:
+            print(f"SKIP convergence law - latches {pinA2 and 'trunk'}"
+                  f" {pinB2 and 'wire'}")
+        else:
+            print("SKIP convergence law - no tint buffers")
+
         # [issue #85 owner r5] the click-slop law: a real hand drifts
         # 5-12px between press and release - before the slop restore
         # every drifted card click was swallowed as a pan and the 3D
