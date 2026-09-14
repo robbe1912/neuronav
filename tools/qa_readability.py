@@ -44,6 +44,7 @@ sys.path.insert(0, str(ROOT))
 import nav  # noqa: E402  (the bake lives in the active config's state dir)
 from extractors import is_scene_path  # noqa: E402  (langsep: registry predicate, never a suffix literal)
 from tests._page_harness import launch, open_page, probe_dbg, serve  # noqa: E402
+from tests._page_harness import quiesce  # noqa: E402  (focus fly-in settle)
 
 STATE = nav.STATE_DIR
 QA = Path(os.environ.get("NEURONAV_QA_DIR") or (ROOT / ".tmp" / "qa"))
@@ -54,6 +55,27 @@ TOK_JS = """() => { const d = window.__dbg;
      for (let i = 1; i < d.nodes.length; i++)
        if ((d.adj[i]||[]).length > (d.adj[best]||[]).length) best = i;
      return d.nodes[best].path.split('/').pop().replace(/\\.[^.]+$/, '').toLowerCase(); }"""
+
+# --- issue #33 law: focus enters ONLY by a results-row click. The old
+# fill+cbFn mirror silently no-ops (cbFn stays disabled until a focus
+# exists), so the battery measured the global view 9x (level0N=0 in every
+# captured base). enter by row click, exactly like tests/test_viz.py.
+BEST_JS = """() => { const d = window.__dbg;
+     let best = 0;
+     for (let i = 1; i < d.nodes.length; i++)
+       if ((d.adj[i]||[]).length > (d.adj[best]||[]).length) best = i;
+     return d.nodes[best].path; }"""
+
+def focus_via_row(page, path):
+    page.fill("#search", path)
+    page.dispatch_event("#search", "input")
+    page.wait_for_timeout(300)
+    page.evaluate(
+        """(p) => { const rows = [...document.querySelectorAll('#searchResults .row')];
+             const r = rows.find(x => x.getAttribute('title') === p) || rows[0];
+             r.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); }""",
+        path)
+    quiesce(page)
 
 # --- 3D fn-layer clutter metrics (all world coords via __dbg) ---------------
 JS_3D = r"""() => {
@@ -866,8 +888,7 @@ def run_declut(page, qa: Path, prefix: str):
     views["global"] = declut_subject(page, cdp, "global", prefix, qa)
     for rank, hub in enumerate(hubs, 1):
         subj = f"hub{rank}_{_stem(hub['p'])}"
-        page.fill("#search", hub["p"])
-        page.dispatch_event("#search", "input")
+        focus_via_row(page, hub["p"])
         if not page.is_checked("#cbFn"):
             page.check("#cbFn")
         page.wait_for_timeout(1500)
@@ -1157,10 +1178,11 @@ def run(qa: Path, port: int):
             page.wait_for_timeout(150)
 
             # --- 3D focus state (mirrors tests/test_viz.py:140-150) ---
-            tok = page.evaluate(TOK_JS)
-            page.fill("#search", tok)
-            page.dispatch_event("#search", "input")
-            page.check("#cbFn")
+            best = page.evaluate(BEST_JS)
+            tok = _stem(best)
+            focus_via_row(page, best)
+            if not page.is_checked("#cbFn"):
+                page.check("#cbFn")
             page.wait_for_timeout(1200)
             m3 = page.evaluate(JS_3D)
             if not m3 or m3.get("fail"):
