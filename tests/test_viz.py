@@ -2061,7 +2061,14 @@ def run_tests(port: int):
                             continue
                         rows = page.locator("#mapList .row")
                         if rows.count() >= 2:
-                            rows.nth(0).click()
+                            try:
+                                rows.nth(0).click(timeout=2000)
+                            except PwTimeout:
+                                # the list can flutter closed between the
+                                # open-wait and the click (a mid-tween
+                                # repaint re-anchors and fails) - retry
+                                # the next chip instead of dying
+                                continue
                             try:
                                 page.wait_for_function(
                                     "() => window.__dbg.wirePin &&"
