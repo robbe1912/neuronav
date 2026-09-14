@@ -10,9 +10,10 @@
 # new extractor module + registry entry and NO diff in shared files.
 #
 # Scan set: graph.py nav.py server.py viz.py layout.py clusters.py
-# explore.py recall.py onboard.py bake/*.py. tools/ joins when ServeGuard's
-# #120 lands (it holds 4 .tscn sites — LJ-4; growing the set is a one-line
-# change and must not be forgotten).
+# explore.py recall.py onboard.py bake/*.py tools/*.py. tools/ joined with
+# ServeGuard's #120 landing (LJ-4, repaid via #199: the one live site —
+# qa_readability's affordance subject filter — routes through the registry
+# predicate is_scene_path; tools/ carries no allowlist entries).
 #
 # Temporary, line-anchored allowlist: viz.py:2783 is queued behind
 # HarnessPro's #123/#89 and nav's walk filters are config truth (not
@@ -47,6 +48,7 @@ SHARED = sorted(
     [HERE / n for n in ("graph.py", "nav.py", "server.py", "viz.py", "layout.py",
                         "clusters.py", "explore.py", "recall.py", "onboard.py")]
     + list((HERE / "bake").glob("*.py"))
+    + list((HERE / "tools").glob("*.py"))
 )
 
 # quoted language-suffix literals (code form; prose comments never quote them)
