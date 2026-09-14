@@ -1,85 +1,85 @@
 {
  "set": "sweep",
  "config": "gb2-k60",
- "commit": "2b9cbbe",
+ "commit": "2a1f231",
  "dirty": false,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
- "files": 44,
+ "files": 58,
  "k": 12,
- "golden": "84b58c13512fb282",
+ "golden": "4daef95861450cd9",
  "gb_lambda": 2.0,
  "gb_rrf_k": 60.0,
  "hit@1": 0.2,
- "hit@5": 0.64,
- "hit@10": 0.88,
- "mrr": 0.398,
- "reach@5": 0.64,
- "reach@10": 0.88,
+ "hit@5": 0.72,
+ "hit@10": 0.92,
+ "mrr": 0.426,
+ "reach@5": 0.76,
+ "reach@10": 0.92,
  "by_kind": {
   "exact": {
    "n": 10,
    "hit@1": 0.2,
    "hit@5": 0.8,
-   "hit@10": 0.9,
-   "mrr": 0.468
+   "hit@10": 1.0,
+   "mrr": 0.466
   },
   "symbol": {
    "n": 4,
    "hit@1": 0.0,
-   "hit@5": 0.25,
+   "hit@5": 0.5,
    "hit@10": 0.75,
-   "mrr": 0.135
+   "mrr": 0.171
   },
   "prose": {
    "n": 9,
    "hit@1": 0.333,
    "hit@5": 0.667,
    "hit@10": 0.889,
-   "mrr": 0.455
+   "mrr": 0.497
   },
   "cross": {
    "n": 2,
    "hit@1": 0.0,
-   "hit@5": 0.5,
+   "hit@5": 1.0,
    "hit@10": 1.0,
-   "mrr": 0.312
+   "mrr": 0.417
   }
  },
  "per_query": [
   {
    "q": "parse_tscn",
-   "rank": 4,
-   "ctx5": false,
-   "ctx10": false
+   "rank": 2,
+   "ctx5": true,
+   "ctx10": true
   },
   {
    "q": "sha256_of",
-   "rank": 1,
+   "rank": 2,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "titleize",
-   "rank": 2,
+   "rank": 4,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "registry_for",
-   "rank": null,
-   "ctx5": false,
-   "ctx10": false
-  },
-  {
-   "q": "sync_functions",
-   "rank": 2,
+   "rank": 7,
    "ctx5": true,
    "ctx10": true
   },
   {
-   "q": "_fold_continuations",
-   "rank": 2,
+   "q": "sync_functions",
+   "rank": 3,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "fold_continuations",
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
@@ -92,7 +92,7 @@
   {
    "q": "_lexical_fallback",
    "rank": 3,
-   "ctx5": true,
+   "ctx5": false,
    "ctx10": true
   },
   {
@@ -109,7 +109,7 @@
   },
   {
    "q": "NoCacheHandler",
-   "rank": 6,
+   "rank": 10,
    "ctx5": false,
    "ctx10": false
   },
@@ -127,19 +127,19 @@
   },
   {
    "q": "Func",
-   "rank": 8,
+   "rank": 3,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "where do godot scene resources get read",
-   "rank": 5,
+   "rank": 2,
    "ctx5": false,
-   "ctx10": false
+   "ctx10": true
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": 10,
+   "rank": 7,
    "ctx5": false,
    "ctx10": false
   },
@@ -163,15 +163,15 @@
   },
   {
    "q": "which module hosts the agent protocol on stdin and stdout",
-   "rank": 8,
-   "ctx5": false,
-   "ctx10": false
-  },
-  {
-   "q": "single call that shows a newcomer how the codebase is organized",
    "rank": 3,
    "ctx5": false,
    "ctx10": true
+  },
+  {
+   "q": "single call that shows a newcomer how the codebase is organized",
+   "rank": 6,
+   "ctx5": false,
+   "ctx10": false
   },
   {
    "q": "how is the embedding index archived inside the repository",
@@ -181,7 +181,7 @@
   },
   {
    "q": "how is visual clutter of the rendered page measured",
-   "rank": 11,
+   "rank": 12,
    "ctx5": false,
    "ctx10": false
   },
@@ -193,7 +193,7 @@
   },
   {
    "q": "how are node positions computed reproducibly before baking",
-   "rank": 8,
+   "rank": 3,
    "ctx5": false,
    "ctx10": false
   }

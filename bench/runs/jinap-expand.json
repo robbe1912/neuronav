@@ -1,0 +1,201 @@
+{
+ "set": "jinap",
+ "config": "expand",
+ "commit": "2a1f231",
+ "dirty": false,
+ "mode": "real",
+ "model": "jina-code-embeddings-0.5b:Q8_0",
+ "query_prefix": "Find the most relevant code snippet given the following query:\n",
+ "doc_prefix": "Candidate code snippet:\n",
+ "files": 58,
+ "k": 12,
+ "golden": "4daef95861450cd9",
+ "hit@1": 0.36,
+ "hit@5": 0.64,
+ "hit@10": 0.68,
+ "mrr": 0.476,
+ "reach@5": 0.84,
+ "reach@10": 0.96,
+ "by_kind": {
+  "exact": {
+   "n": 10,
+   "hit@1": 0.1,
+   "hit@5": 0.5,
+   "hit@10": 0.5,
+   "mrr": 0.254
+  },
+  "symbol": {
+   "n": 4,
+   "hit@1": 0.75,
+   "hit@5": 1.0,
+   "hit@10": 1.0,
+   "mrr": 0.875
+  },
+  "prose": {
+   "n": 9,
+   "hit@1": 0.556,
+   "hit@5": 0.667,
+   "hit@10": 0.778,
+   "mrr": 0.596
+  },
+  "cross": {
+   "n": 2,
+   "hit@1": 0.0,
+   "hit@5": 0.5,
+   "hit@10": 0.5,
+   "mrr": 0.25
+  }
+ },
+ "per_query": [
+  {
+   "q": "parse_tscn",
+   "rank": 2,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "sha256_of",
+   "rank": null,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "titleize",
+   "rank": 11,
+   "ctx5": false,
+   "ctx10": true
+  },
+  {
+   "q": "registry_for",
+   "rank": 2,
+   "ctx5": false,
+   "ctx10": true
+  },
+  {
+   "q": "sync_functions",
+   "rank": null,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "fold_continuations",
+   "rank": 1,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "_has_exact",
+   "rank": null,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "_lexical_fallback",
+   "rank": 5,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "import_base",
+   "rank": null,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "find_functions",
+   "rank": 4,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "NoCacheHandler",
+   "rank": 1,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "LabelContext",
+   "rank": 1,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "FileSym",
+   "rank": 1,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "Func",
+   "rank": 2,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "where do godot scene resources get read",
+   "rank": 1,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "how do cross-module references become caller edges",
+   "rank": 9,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "what stops two simultaneous rescans from corrupting the store",
+   "rank": null,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "how do hermetic suites embed without a live model backend",
+   "rank": null,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "how are subsystem names chosen from member vocabulary",
+   "rank": 1,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "which module hosts the agent protocol on stdin and stdout",
+   "rank": 4,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "single call that shows a newcomer how the codebase is organized",
+   "rank": 1,
+   "ctx5": false,
+   "ctx10": true
+  },
+  {
+   "q": "how is the embedding index archived inside the repository",
+   "rank": 1,
+   "ctx5": true,
+   "ctx10": true
+  },
+  {
+   "q": "how is visual clutter of the rendered page measured",
+   "rank": 1,
+   "ctx5": false,
+   "ctx10": false
+  },
+  {
+   "q": "unreachable deletion candidates and their confidence tiers",
+   "rank": null,
+   "ctx5": false,
+   "ctx10": true
+  },
+  {
+   "q": "how are node positions computed reproducibly before baking",
+   "rank": 2,
+   "ctx5": false,
+   "ctx10": false
+  }
+ ]
+}

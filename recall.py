@@ -379,6 +379,7 @@ def search(
     graph_boost: float | None = None,
     rrf_k: float | None = None,
     two_pass: bool | None = None,
+    query_prefix: str = "",
 ) -> list[dict[str, object]]:
     """Hybrid recall: chroma vector ranks fused with BM25F lexical
     ranks, each hit carrying 1-hop graph context labels. ``bm25`` /
@@ -390,6 +391,11 @@ def search(
     λ·unit/(source rank); None keeps the module default GRAPH_BOOST
     (0.0 = off). ``rrf_k`` overrides the fusion constant for bench
     sweeps.
+
+    ``query_prefix`` (issue #75, JCE card): task-instruction text
+    prepended to the EMBEDDED query only — pass 1 and the two-pass
+    augmented retrieve both; the lexical side keeps the raw query so
+    instruction tokens never pollute BM25F. "" keeps the plain wire.
 
     ``two_pass`` (issue #74, RepoCoder): deterministic second retrieve —
     the pass-1 top-k hits donate their identifier surface (char-budgeted
@@ -416,7 +422,7 @@ def search(
     metas: dict[str, dict] = {}
     reason: str | None = None
     try:
-        vec, metas = _vector_ranks(query, depth)
+        vec, metas = _vector_ranks(query_prefix + query, depth)
         if not vec:
             reason = "vector index is empty (call rescan first)"
     except Exception as exc:  # backend down = degraded, never a crash
@@ -455,7 +461,7 @@ def search(
         aug = _augment(query, pool, g)
         if aug:
             try:
-                vec2, metas2 = _vector_ranks(aug, depth)  # embed 2 of 2
+                vec2, metas2 = _vector_ranks(query_prefix + aug, depth)  # embed 2 of 2
             except Exception as exc:
                 import nav  # lazy: same truthful classifier as pass 1
 
