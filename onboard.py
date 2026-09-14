@@ -229,14 +229,35 @@ def _emit_omp(name: str, entry: dict, path: Path) -> None:
 
 
 
+_UVX_SOURCE = "git+https://github.com/robbe1912/neuronav"
+
+
+def _uvx_ref() -> str:
+    """Git tag the uvx entry pins: ``v`` + the package version (issue
+    #204). importlib.metadata answers for any installed copy (uvx/wheel
+    — pyproject.toml is the version's source of truth); a plain checkout
+    falls back to reading the pyproject beside this file (tomllib,
+    stdlib since 3.11)."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        return "v" + version("neuronav")
+    except PackageNotFoundError:
+        import tomllib
+        with open(TOOL_DIR / "pyproject.toml", "rb") as fh:
+            return "v" + tomllib.load(fh)["project"]["version"]
+
+
 def _universal_entry() -> dict:
-    """The universal-mount stdio entry (issue #131): same venv-python +
-    server.py command as the project entry, but NO NEURONAV_CONFIG pin —
-    every tool call routes per-call via its dir param, so one global
+    """The universal-mount stdio entry (issue #204): uvx fetches the
+    pinned git tag and runs the ``neuronav-mcp`` console script — no
+    venv, no cwd, no env, no config pin. The server boots pure-defaults
+    on the harness session's cwd (= the repo being served), and every
+    tool call can still route per-call via its dir param, so one global
     entry per harness serves every repo."""
-    e = _entry(Path())  # command/args shape only; the env pin is dropped
-    e.pop("env", None)
-    return e
+    return {
+        "command": "uvx",
+        "args": ["--from", f"{_UVX_SOURCE}@{_uvx_ref()}", "neuronav-mcp"],
+    }
 
 
 _OPENCODE_MCP_ENV = "NEURONAV_OPENCODE_MCP"
@@ -264,13 +285,14 @@ def _zcode_mcp_path() -> Path:
 
 
 def global_wire(name: str = "neuronav") -> dict[str, Path]:
-    """Emit ONE universal-mount entry (no config pin, per-call dir
-    routing, issue #131) into every harness user config: omp
-    (mcpServers), opencode (mcp), kilocode (mcpServers, Cline shape),
-    zcode (mcp.servers). Merge-only by server name — existing entries
-    (including per-project neuronav-<x> pins) are preserved untouched.
-    Harness paths are env-overridable for hermetic tests. Returns the
-    paths written. Idempotent: same entry bytes on re-run."""
+    """Emit ONE universal-mount entry (issue #204: uvx on the pinned tag,
+    no venv/cwd/env, per-call dir routing) into every harness user
+    config: omp (mcpServers), opencode (mcp), kilocode (mcpServers,
+    Cline shape), zcode (mcp.servers). Merge-only by server name —
+    existing entries (including per-project neuronav-<x> pins) are
+    preserved untouched. Harness paths are env-overridable for hermetic
+    tests. Returns the paths written. Idempotent: same entry bytes on
+    re-run."""
     u = _universal_entry()
     written: dict[str, Path] = {}
 
@@ -392,8 +414,8 @@ if __name__ == "__main__":
     elif cmd == "global-wire":
         for harness, path in global_wire().items():
             print(f"{harness:<9} {path}")
-        print("universal entry \"neuronav\" (per-call dir routing, no config pin)")
-        print("restart harness sessions to pick it up")
+        print(f"universal entry \"neuronav\": uvx --from {_UVX_SOURCE}@{_uvx_ref()} neuronav-mcp")
+        print("(per-call dir routing, no config pin — needs uv on PATH and a pushed vX.Y.Z tag)")
     else:
         print("usage: onboard.py [init|wire|global-wire] [--project PATH] [--index] [--omp [--omp-name NAME]]", file=sys.stderr)
         sys.exit(2)
