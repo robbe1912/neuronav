@@ -37,7 +37,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import chromadb
-from filelock import FileLock
+from filelock import FileLock, Timeout
 import httpx
 
 # hybrid recall (BM25F + reciprocal-rank fusion + 1-hop context). Module-
@@ -70,7 +70,7 @@ def _apply_config(path: Path | None) -> None:
     and again by ``nav.py --config <path>`` (which also sets NEURONAV_CONFIG
     so subprocesses and sibling modules like graph.py agree). ``path=None``
     means no config anywhere: pure cwd defaults (issue #27)."""
-    global ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM, EMBED_PROVIDER, EMBED_API_KEY, WATCH_INTERVAL_S, RECALL_TWO_PASS, CHUNK_CAST, STATE_DIR, DB_DIR, BASE_DIR
+    global CONFIG_PATH, ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM, EMBED_PROVIDER, EMBED_API_KEY, WATCH_INTERVAL_S, RECALL_TWO_PASS, CHUNK_CAST, STATE_DIR, DB_DIR, BASE_DIR
     if path is not None and not path.is_file():
         # issue #41: an explicit config path is a contract, not a hint —
         # silently degrading to walk-all defaults flips the walk identity
@@ -83,6 +83,7 @@ def _apply_config(path: Path | None) -> None:
     # utf-8-sig: Windows tooling (PowerShell 5 Set-Content -Encoding utf8)
     # writes a BOM that plain utf-8 reads keep — json.loads then dies on
     # \ufeff with a cryptic JSONDecodeError (issue #119)
+    CONFIG_PATH = path
     cfg: dict = json.loads(path.read_text(encoding="utf-8-sig")) if path is not None else {}
     # lazy import: extractors pulls graph-ish deps only for the suffix list
     from extractors import EXTENSIONS as _REGISTERED
@@ -207,7 +208,7 @@ def use_config(path: Path) -> None:
 
 
 
-ROOT: Path
+CONFIG_PATH: Path | None
 COLLECTION: str
 INCLUDE_DIRS: tuple[str, ...]
 EXTS: set[str]
@@ -245,6 +246,7 @@ _apply_config(_discover_config())
 # boot config.
 
 _CONFIG_FIELDS = (
+    "CONFIG_PATH",
     "ROOT", "COLLECTION", "INCLUDE_DIRS", "EXTS", "EXCLUDE_DIRS",
     "EMBED_URL", "EMBED_MODEL", "EMBED_DIM", "EMBED_PROVIDER",
     "EMBED_API_KEY", "WATCH_INTERVAL_S", "RECALL_TWO_PASS", "CHUNK_CAST",
@@ -586,14 +588,18 @@ def _read_text(path: Path) -> str:
 
 
 
-def _db_lock() -> "FileLock":
+def _db_lock(timeout: float | None = None) -> "FileLock":
     """Advisory cross-process writer lock (server, CLI, viz all write via
     nav functions). One lock per store, cached (issue #131): the
     universal server alternates configs, so the lock must follow the
-    store rather than pin whichever was touched first. Readers skip it;
-    sqlite handles the rest."""
+    store. ``timeout`` bounds the acquire (issue #203 boot hardening);
+    None waits forever (the filelock default). Always assigned: the
+    instance is cached per store, so a boot-bounded acquire must not
+    leak its bound onto later default callers."""
     DB_DIR.mkdir(parents=True, exist_ok=True)
-    return _LOCKS.setdefault(str(DB_DIR), FileLock(str(DB_DIR / ".write.lock")))
+    lock = _LOCKS.setdefault(str(DB_DIR), FileLock(str(DB_DIR / ".write.lock")))
+    lock.timeout = -1 if timeout is None else timeout
+    return lock
 
 
 _LOCKS: dict[str, "FileLock"] = {}
@@ -789,13 +795,25 @@ def fns_collection() -> chromadb.Collection:
     return _named_collection(fns_name())
 
 
-def rescan() -> dict[str, int]:
+def rescan(timeout: float | None = None) -> dict[str, int]:
     """Incremental index: add/update changed files, purge deleted ones.
     Warm passes skip read+hash via the stat fingerprint (issue #42); the
-    sha stays the content identity."""
+    sha stays the content identity. ``timeout`` bounds the cross-process
+    store-lock wait (issue #203): exceeded, the rescan aborts loudly
+    naming the lock and the likely holder instead of queueing forever."""
     _memo_drop_current()  # embeddings changed — recompute on demand
-    with _db_lock():
-        return _rescan_locked()
+    lock = _db_lock(timeout)
+    try:
+        with lock:
+            return _rescan_locked()
+    except Timeout:
+        raise SystemExit(
+            f"neuronav: gave up after {timeout:g}s waiting for the store "
+            f"write lock {lock.lock_file} — another neuronav process "
+            "(server, CLI rescan or viz bake) holds it; a stale MCP server "
+            "from a dead session is the usual suspect. End that process "
+            "and retry — the lock releases itself when its holder exits."
+        ) from None
 
 
 def _stored_fp(meta: dict) -> tuple[int, int] | None:
