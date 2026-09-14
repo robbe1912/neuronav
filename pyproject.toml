@@ -1,0 +1,49 @@
+# Packaging for the static uvx entry (issue #204):
+#   uvx --from git+https://github.com/robbe1912/neuronav@vX.Y.Z neuronav-mcp
+# Flat modules stay flat (py-modules); extractors/ and bake/ are the only
+# runtime packages; vendor/ rides as package data so viz's __file__-relative
+# three.js lookup (viz.py _VENDOR) keeps working from site-packages. tools/
+# is dev-gates-only (never imported at runtime, not a package) and stays out.
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neuronav"
+version = "0.1.0"
+description = "Local code-intelligence for AI coding agents: vector recall, call/signal graph, clusters, dead code, 3D visualizer - stdio MCP server"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Robin Fröhlich" }]
+dependencies = [
+    "chromadb==1.5.9",
+    "filelock==3.32.5",
+    "httpx==0.28.1",
+    "mcp>=1,<2",
+    "networkx==3.6.1",
+    "numpy==2.5.2",
+    "scikit-learn==1.9.0",
+    "scipy==1.18.1",
+    "tree-sitter==0.26.0",
+    "tree-sitter-cpp==0.23.4",
+]
+
+[project.scripts]
+neuronav-mcp = "server:main"
+
+[tool.setuptools]
+py-modules = ["nav", "graph", "server", "viz", "layout", "clusters", "explore", "recall", "onboard"]
+packages = ["extractors", "bake", "vendor"]
+
+# the byte-critical vendored three.js (test_bytelaws pins these exact bytes;
+# explicit names — a glob could silently grow the wheel's import surface)
+[tool.setuptools.package-data]
+vendor = [
+    "three-0.160.0/three.module.js",
+    "three-0.160.0/controls/OrbitControls.js",
+    "three-0.160.0/lines/LineSegments2.js",
+    "three-0.160.0/lines/LineSegmentsGeometry.js",
+    "three-0.160.0/lines/LineMaterial.js",
+]

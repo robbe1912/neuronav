@@ -1184,14 +1184,32 @@ def rescan(dir: str = "") -> str:
         )
 
 
-if __name__ == "__main__":
+# issue #203: the boot store-lock wait is bounded — a wedged holder (a
+# stale MCP server from a dead session) aborts loudly here, never a
+# silent infinite queue that the MCP client reads as a hung server
+BOOT_LOCK_WAIT_S = 60.0
+
+
+def main() -> None:
+    """Console-script boot (issue #204) — the historic ``__main__`` body
+    behind the ``neuronav-mcp`` entry point, plus the #203 hardening:
+    boot state lands on stderr BEFORE any rescan work, and the boot
+    lock wait is bounded. Behavior otherwise identical to the direct
+    ``python server.py`` boot."""
     t0 = time.perf_counter()
-    stats = nav.rescan()
+    # issue #203: first contact must never be silent — name the resolved
+    # config (or the pure-defaults root) before the boot rescan starts,
+    # so a long first-contact build is visible from its first second
+    if nav.CONFIG_PATH is not None:
+        print(f"neuronav: config {nav.CONFIG_PATH}", file=sys.stderr)
+    else:
+        print(f"neuronav: pure defaults, root={nav.ROOT}", file=sys.stderr)
+    stats = nav.rescan(timeout=BOOT_LOCK_WAIT_S)
     g, fns, _ = _sync_chain(stats)
     nav.stat_mark_synced()
     watch_note = ""
-# boot config only by design (issue #131): the watcher drives
-# _auto_rescan, which is boot-gated — routed dirs refresh explicitly
+    # boot config only by design (issue #131): the watcher drives
+    # _auto_rescan, which is boot-gated — routed dirs refresh explicitly
     if nav.WATCH_INTERVAL_S > 0:
         _start_watcher(nav.WATCH_INTERVAL_S)
         watch_note = f", watcher {nav.WATCH_INTERVAL_S:g}s"
@@ -1212,3 +1230,7 @@ if __name__ == "__main__":
         file=sys.stderr,
     )
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()

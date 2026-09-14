@@ -275,9 +275,10 @@ def main() -> None:
               "my-neuronav" in omp_doc3["mcpServers"] and "neuronav-omp-two" in omp_doc3["mcpServers"],
               str(sorted(omp_doc3["mcpServers"])))
 
-        # 4g. global-wire: ONE universal entry (no config pin, per-call dir
-        # routing, issue #131) in all four harness user configs; merge-only,
-        # idempotent, per-project pins preserved
+        # 4g. global-wire: ONE universal entry (issue #204: uvx on the
+        # pinned git tag — no venv, no cwd, no env, per-call dir routing)
+        # in all four harness user configs; merge-only, idempotent,
+        # per-project pins preserved
         gw_env = {
             "NEURONAV_OMP_MCP": str(tmp / "omp-mcp.json"),
             "NEURONAV_OPENCODE_MCP": str(tmp / "opencode-user.json"),
@@ -293,8 +294,14 @@ def main() -> None:
         gw_ki = json.loads((tmp / "kilo-mcp.json").read_text(encoding="utf-8"))
         gw_zc = json.loads((tmp / "zcode-config.json").read_text(encoding="utf-8"))
         u_omp = gw_omp["mcpServers"]["neuronav"]
-        check("global-wire: omp universal entry carries no config pin",
-              "env" not in u_omp and u_omp["args"] == ["-X", "utf8", str(ROOT / "server.py")], str(u_omp))
+        import onboard  # noqa: E402  (same env as the subprocess: same ref derivation)
+
+        want_args = ["--from", f"{onboard._UVX_SOURCE}@{onboard._uvx_ref()}", "neuronav-mcp"]
+        check("global-wire: omp universal entry = uvx on the pinned tag, no config pin",
+              u_omp["command"] == "uvx" and u_omp["args"] == want_args
+              and "env" not in u_omp and "cwd" not in u_omp, str(u_omp))
+        check("global-wire: the entry pins this repo at a vX.Y.Z tag",
+              want_args[1].startswith("git+https://github.com/robbe1912/neuronav@v"), want_args[1])
         check("global-wire: per-project omp pins survive beside the universal entry",
               "my-neuronav" in gw_omp["mcpServers"] and "neuronav-omp-two" in gw_omp["mcpServers"])
         oc_u = gw_oc["mcp"]["neuronav"]

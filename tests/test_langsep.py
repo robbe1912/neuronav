@@ -80,9 +80,9 @@ ALLOWED[("viz.py", 2783)] = "V-1: queued behind #123/#89 (data-flag contract)"
 # config/parametric walk filters — EXTS is the user's config include-set
 # and `suffixes` arrives as a caller argument (registry datum at the call
 # site); neither is a language truth hard-coded in nav
-ALLOWED[("nav.py", 467)] = "config walk filter (EXTS = user config)"
-ALLOWED[("nav.py", 497)] = "parametric walk filter (caller-supplied suffixes)"
-ALLOWED[("nav.py", 527)] = "config walk filter (EXTS = user config)"
+ALLOWED[("nav.py", 469)] = "config walk filter (EXTS = user config)"
+ALLOWED[("nav.py", 499)] = "parametric walk filter (caller-supplied suffixes)"
+ALLOWED[("nav.py", 529)] = "config walk filter (EXTS = user config)"
 
 
 def detectors(line: str) -> list[str]:

@@ -3,7 +3,10 @@
 Config resolution. One neuronav install indexes many projects and the
 install itself stays read-only (issue #27): the project-local config
 (``<project>/.neuronav/config.json``, written by ``onboard.py init``) is
-the primary form; named profiles here are the tuned-override form.
+the primary form. Tracked profiles here are machine-PORTABLE only
+(relative roots, no machine paths — issue #204); machine-specific
+profiles (absolute roots into local checkouts) live OUTSIDE the repo,
+untracked, and are selected via ``$NEURONAV_CONFIG``.
 
 ## Selection (``nav._discover_config``)
 
@@ -15,7 +18,10 @@ the primary form; named profiles here are the tuned-override form.
 2. ``<cwd>/.neuronav/config.json`` — project-local config; running any
    command from inside a project just works.
 3. ``config.json`` at the repo ROOT (gitignored, machine-local) — the
-   legacy default, honored ONLY when cwd is the checkout itself.
+   legacy mechanism, honored ONLY when cwd is the checkout itself. This
+   repo deliberately ships NONE and never restores it (issue #204): the
+   checkout is consumed via ``uvx …@tag neuronav-mcp`` from arbitrary
+   directories with zero config, so no machine values may live here.
 4. Nothing found — pure cwd defaults: root = cwd, include ``.``,
    extensions = every registered extractor suffix, excludes = the sane
    set (``.git``, ``__pycache__``, ``.venv``, ``.neuronav``,
@@ -40,6 +46,27 @@ modules and subprocesses agree). A relative ``"root"`` resolves against
 the config file's own directory — shipped profiles stay machine-portable
 (``config/neuronav.json`` uses ``"root": ".."`` to index this repo
 itself).
+
+## Machine-specific profiles live outside the repo (issue #204)
+
+The former ``config/godot-engine.json`` (absolute root into a local
+engine checkout) violated the zero-machine-values law and moved out of
+the repo. The pattern to reproduce it machine-locally — create e.g.
+``~/.neuronav/godot-engine.json`` (any untracked location works):
+
+```json
+{
+  "root": "<absolute path to your engine checkout>",
+  "collection": "engine-stable",
+  "state_dir": "default",
+  "include_dirs": ["core", "scene", "servers", "editor", "modules", "drivers"],
+  "extensions": [".h", ".cpp"],
+  "exclude_dirs": ["thirdparty", "platform", "demos", "misc", ".git"]
+}
+```
+
+then run any command with ``NEURONAV_CONFIG=<that file>`` (per-command;
+never export it in a shell the suites share).
 
 ``.neuroignore`` beside the active config (project-local
 ``<root>/.neuronav/.neuroignore``, or ``config/.neuroignore`` for a
