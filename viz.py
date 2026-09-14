@@ -5211,6 +5211,38 @@ const mapInkEval = () => {
   if (!mapInkOn && mapZ >= mapInkHi) mapInkOn = true;
   else if (mapInkOn && mapZ < mapInkLo) mapInkOn = false;
 };
+// [#77] distance-gated wire LOD bands (paint tier, continues the ink-tier
+// ladder): band 1 thins the label plane (roster rows fold to a count, box
+// labels truncate, badge LOD tightens), band 2 aggregates to cluster
+// corridors (intra-cluster spines fold away, per-pair badges merge into
+// cluster-pair counts). LAYOUT IS NEVER TOUCHED - bands only choose what
+// paint draws (VISSOFT'25: 15/16 viewers prefer distance-gated LOD; the
+// map keeps ONE layout at every zoom, #63). Hysteresis like the ink tier;
+// both entry thresholds sit far below the fit floor (world-width cap 1100
+// keeps fit z >= ~0.5 on any sane pane), so the overview stays full
+// fidelity and wheel jitter cannot flicker a band boundary.
+const MAP_LOD_Z1 = 0.42, MAP_LOD_Z1X = 0.47, MAP_LOD_Z2 = 0.28, MAP_LOD_Z2X = 0.33;
+let mapLodBand = 0;        // 0 full fidelity / 1 thinned / 2 cluster-aggregated
+let mapLodFitZ = 0;        // zoom the current layout fit at (probe)
+let mapLodSpinesPainted = 0;   // [#77] spine strokes this frame (probe)
+let mapLodRosterShown = 0;     // [#77] roster rows painted this frame (probe)
+let mapLodAggChips = 0;        // [#77] cluster-aggregate badges painted (probe)
+let mapLodUnbundled = 0;       // [#77] riders painted unbundled (probe)
+const mapLodEval = () => {
+  if (mapLodBand === 0 && mapZ < MAP_LOD_Z1) mapLodBand = 1;
+  else if (mapLodBand === 1 && mapZ >= MAP_LOD_Z1X) mapLodBand = 0;
+  else if (mapLodBand === 1 && mapZ < MAP_LOD_Z2) mapLodBand = 2;
+  else if (mapLodBand === 2 && mapZ >= MAP_LOD_Z2X) mapLodBand = 1;
+};
+// [#77] selection-time unbundling (AVI'12: bundling measurably degrades
+// path tracing): while a map pin lives, the pinned PAIR leaves its bundle -
+// riders draw straight/individual and the pair's corridor stroke + badge
+// hide. The pin is the ONLY state; every frame derives both directions, so
+// dismissal (Escape / void / focus change) restores band ink atomically.
+const mapLodPinPair = () => {
+  if (!wirePin || wirePin.surface !== "map" || !mapLayout) return null;
+  if (wirePin.s !== undefined) return wirePin.s + "_" + wirePin.t;  // trunk/single
+};
 let mapDrag = null, mapDragged = false;
 let mapDownPt = null;    // [issue #84] press origin: jitter-click resolution
 let mapJitterHit = null; // [issue #84] press-on-ink + <10px drift = a pick
@@ -6193,8 +6225,10 @@ function mapRender() {
     // there), one wheel-notch out it drops; restore needs +14% (hysteresis)
     mapInkLo = Math.max(0.35, Math.min(0.85, mapZ * 0.97));
     mapInkHi = Math.min(1.0, mapInkLo * 1.14);
+    mapLodFitZ = mapZ;   // [#77] probe: zoom this layout fit at
   }
   mapInkEval();   // hysteresis re-arm after every zoom change
+  mapLodEval();   // [#77] band re-arm (paint-only tier)
   // inter-row gap bands + lane machinery (survives section 10)
   const rects = [];
   place.forEach(p => rects.push({ x0: p.x, x1: p.x + p.w, y0: p.y, y1: p.y + p.h }));
@@ -7002,6 +7036,33 @@ function mapRender() {
   // route audit: numeric truth for the merge gate (VLM reads of 1.5px
   // curves are unreliable). Rebuilt on every layout build; cached repaints
   // keep the last build's numbers — they describe the same layout.
+  // [#77] unbundling ledger (layout-derived, deterministic): for every
+  // corridor pair the riders plus ONE straight paint path per rider
+  // (source-row port -> dest-row port, clamped to the boxes). Consumed
+  // ONLY by paint while the pair is pinned (AVI'12 tracing aid); corridor
+  // ink itself is untouched - this adds fields, changes no bytes.
+  const pairRiders = {};
+  byPair.forEach((ws, pr) => {
+    const riders = ws.filter(w => !indivSet.has(w));
+    if (!riders.length) return;
+    const paths = riders.map(w => {
+      const A = place.get(w.sf), B = place.get(w.df);
+      if (!A || !B) return null;
+      const gA = geo.get(w.sf), gB = geo.get(w.df);
+      const nA = gA && gA.roster ? gA.roster.rows.length : 0;
+      const nB = gB && gB.roster ? gB.roster.rows.length : 0;
+      const sRow = rowOf.has(w.sf + "\0" + w.sfn) ? rowOf.get(w.sf + "\0" + w.sfn) : nA - 1;
+      const dRow = rowOf.has(w.df + "\0" + w.dfn) ? rowOf.get(w.df + "\0" + w.dfn) : nB - 1;
+      const sy = Math.min(Math.max(A.y + NH + (Math.max(0, sRow) + 1) * RH, A.y + 6), A.y + A.h - 2);
+      const ty = Math.min(Math.max(B.y + NH + (Math.max(0, dRow) + 1) * RH, B.y + 6), B.y + B.h - 2);
+      const fwd = B.x + B.w / 2 >= A.x + A.w / 2;   // draw toward the dest
+      const sx = fwd ? A.x + A.w : A.x;
+      const tx = fwd ? B.x : B.x + B.w;
+      return { sf: w.sf, sfn: w.sfn, df: w.df, dfn: w.dfn, ty: w.ty, line: w.line,
+               pts: [[sx, sy], [tx, ty]], bez: false, tx, ty, back: false };
+    }).filter(Boolean);
+    if (paths.length) pairRiders[pr] = paths;
+  });
   const audit = { named: vw.length, indiv: indiv.length, admitted: E,
     spines: 0, underlays: underlays.length, wires: wires.length,
     trunkGroups, buses: buses.length,
@@ -7022,6 +7083,7 @@ function mapRender() {
     chips, rosterRows, expandedSet: expand, worldH, worldW: cwL, capNote,
     trunkGroups, trunkTotal: trunkGroups + hubTrunks, hubBuses, hubDots,
     pairW, chunkY, chunkRowH, audit, buses,
+    pairRiders,   // [#77] corridor riders + straight unbundle paths
   };
   window.routeAudit = mapLayout.audit;
   mapConsumeCenterReq();
@@ -7102,8 +7164,21 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     ctx.moveTo(u.tx - 4, u.ty); ctx.lineTo(u.tx + 4, u.ty);
     ctx.stroke();
   });
+  const pinPair = mapLodPinPair();   // [#77] pair unbundled this frame (or null)
+  mapLodSpinesPainted = 0;
   L.spines.forEach(sp => {
     if (sp.con || !sp.pts.length) return;  // riders: ink rides the trunk
+    // [#77] band 2 folds intra-cluster corridors (same cluster both ends):
+    // at cluster distance the map reads cluster-to-cluster traffic; hub
+    // trunks/taps are the aggregated form and always stay. The pick scan
+    // applies the same predicate (pick-vs-paint parity, #113).
+    if (mapLodBand === 2 && !sp.hub &&
+        nodes[sp.s].cluster === nodes[sp.t].cluster) return;
+    // [#77] unbundling: the pinned pair's own corridor stroke hides while
+    // its riders draw straight (pass below); trunks carry other pairs too
+    // and stay
+    if (pinPair && sp.pair === pinPair && !sp.hub) return;
+    mapLodSpinesPainted++;
     // wire color = TYPE (Blueprint law); wty carries it (the old build let
     // the y-coordinate overwrite the type, painting everything call-gray)
     const color = sp.amber ? "#ffb347" : (MGLYPH[sp.wty] || MGLYPH.call).c;
@@ -7143,8 +7218,22 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     // backward edges (against flow gravity) read as dashed; type color kept
     seg(w, g.c, 1.5, w.back ? [2, 3] : g.dash, 0.9 * dim(w.sf, w.df));
   });
+  // [#77] selection-time unbundling (AVI'12): the pinned pair's riders
+  // leave the corridor and draw straight/individual at ANY band or zoom -
+  // tracing a bundled wire is exactly when the bundle must open. Paint
+  // tier only; paths come from the layout-time pairRiders ledger above.
+  mapLodUnbundled = 0;
+  if (pinPair && L.pairRiders && L.pairRiders[pinPair]) {
+    L.pairRiders[pinPair].forEach(r => {
+      const g = MGLYPH[r.ty] || MGLYPH.call;
+      seg(r, g.c, 1.5, r.back ? [2, 3] : g.dash,
+          0.9 * dim(r.sf, r.df));
+      mapLodUnbundled++;
+    });
+  }
   // boxes + rosters
   ctx.setLineDash([]);
+  mapLodRosterShown = 0;
   L.lit.forEach(i => {
     const p = L.place.get(i), g = L.geo.get(i);
     if (!p || !g) return;   // pinned subject can outlive the placer (belt)
@@ -7169,26 +7258,44 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     ctx.font = MAP_FONT(11);
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(nodes[i].label, p.x + p.w / 2, p.y + 11 + 0.5);
+    // [#77] band 1 shortens box labels (9 chars + ellipsis, the spec-6
+    // narrow-label law): mid-distance reads stems, not smears
+    const lbl = mapLodBand >= 1 && nodes[i].label.length > 9
+      ? nodes[i].label.slice(0, 9) + "\u2026" : nodes[i].label;
+    ctx.fillText(lbl, p.x + p.w / 2, p.y + 11 + 0.5);
     if (g.roster) {
-      ctx.font = MAP_FONT(10);
-      ctx.textAlign = "left";
-      g.roster.rows.forEach((r, k) => {
-        const ry = p.y + 22 + k * RH + RH / 2 + 0.5;
-        ctx.globalAlpha = a;
-        ctx.fillStyle = c.t;
-        ctx.fillText(r.nm, p.x + 8, ry);
-        if (r.io && r.io.w.length) {   // writes badge (section 4)
-          ctx.fillStyle = "#80cbc4";
-          ctx.textAlign = "right";
-          ctx.fillText("\u270e" + r.io.w.length, p.x + p.w - 6, ry);
-          ctx.textAlign = "left";
-        }
-      });
-      if (g.roster.more.length) {
+      if (mapLodBand >= 1) {
+        // [#77] band 1 folds the roster to a count (thinned labels,
+        // VISSOFT'25 mid band). PAINT + PICK parity (#113): folded rows
+        // are unpickable (see the click gate); the header keeps refocus.
+        // Box geometry stays - heights are layout, this is paint tier.
+        ctx.globalAlpha = a * 0.85;
         ctx.fillStyle = "#546e7a";
-        ctx.fillText("+" + g.roster.more.length + " more...",
-          p.x + 8, p.y + 22 + g.roster.rows.length * RH + RH / 2 + 0.5);
+        ctx.font = MAP_FONT(10);
+        ctx.textAlign = "left";
+        ctx.fillText("+" + g.roster.rows.length + " fns", p.x + 8,
+          p.y + 22 + RH / 2 + 0.5);
+      } else {
+        ctx.font = MAP_FONT(10);
+        ctx.textAlign = "left";
+        mapLodRosterShown += g.roster.rows.length;
+        g.roster.rows.forEach((r, k) => {
+          const ry = p.y + 22 + k * RH + RH / 2 + 0.5;
+          ctx.globalAlpha = a;
+          ctx.fillStyle = c.t;
+          ctx.fillText(r.nm, p.x + 8, ry);
+          if (r.io && r.io.w.length) {   // writes badge (section 4)
+            ctx.fillStyle = "#80cbc4";
+            ctx.textAlign = "right";
+            ctx.fillText("\u270e" + r.io.w.length, p.x + p.w - 6, ry);
+            ctx.textAlign = "left";
+          }
+        });
+        if (g.roster.more.length) {
+          ctx.fillStyle = "#546e7a";
+          ctx.fillText("+" + g.roster.more.length + " more...",
+            p.x + 8, p.y + 22 + g.roster.rows.length * RH + RH / 2 + 0.5);
+        }
       }
     }
   });
@@ -7248,17 +7355,25 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   // per-hub budget cannot cut it: most hubs own one peel). Layout keeps
   // every chip (mapInfo contract); zoom-in restores the full set.
   const chipLOD = new Set();
-  if (mapZ < 0.85) {
+  if (mapLodBand < 2 && mapZ < 0.85) {
+    // [#77] band 1 tightens the badge LOD 6 -> 3 (thinned label plane)
+    const kk = mapLodBand >= 1 ? 3 : 6;
     const top = (a, k) => a.sort((p, q) => q.n - p.n || p.row - q.row ||
       p.s - q.s).slice(0, k).forEach(ch => chipLOD.add(ch));
-    top(L.chips.filter(ch => ch.peel), 6);
-    top(L.chips.filter(ch => ch.origin), 6);
+    top(L.chips.filter(ch => ch.peel), kk);
+    top(L.chips.filter(ch => ch.origin), kk);
   }
-  L.chips.forEach(ch => {
+  const paintChip = ch => {
     ch.hit = null; ch.disp = null;   // [issue #113] pick-vs-paint parity: the hit rect is
     // exactly what THIS paint draws — every skip below (LOD, out-of-view,
     // no ladder room, zoom fade) leaves it null = unclickable
-    if ((ch.peel || ch.origin) && !chipLOD.has(ch)) return;
+    if (!ch.agg) {   // [#77] aggregate badges bypass the per-chip skips
+      if ((ch.peel || ch.origin) && !chipLOD.has(ch)) return;
+      // [#77] band 2 replaces every pair badge with cluster aggregates
+      // (built below); the unbundled pair's badge hides with its corridor
+      if (mapLodBand === 2) return;
+      if (pinPair && ch.pair === pinPair) return;
+    }
     const g = MGLYPH[ch.ty] || MGLYPH.call;
     const sw = ch.w * mapZ, sh = ch.h * mapZ;
     const a = m2s(ch.x + ch.w / 2, ch.y + ch.h / 2);
@@ -7266,8 +7381,11 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     const p2 = place2(a.x, a.y, sw, sh);
     if (p2 === null) return;
     // zoom fade (InkKnobs #7): badges dissolve below z~0.45, solid by 0.70 -
-    // at overview zoom they were unreadable smudges doubling the wire count
-    const zf = Math.max(0, Math.min(1, (mapZ - 0.45) / 0.25));
+    // at overview zoom they were unreadable smudges doubling the wire count.
+    // [#77] cluster aggregates are exempt: one count per cluster pair
+    // REPLACES that smudge field, it does not add to it.
+    const zfRaw = Math.max(0, Math.min(1, (mapZ - 0.45) / 0.25));
+    const zf = ch.agg ? Math.max(zfRaw, 0.7) : zfRaw;
     if (zf <= 0) return;
     ch.disp = p2;   // [issue #198] ladder slot (screen px): paint draws
     // dyW = dy/mapZ world px = dy screen px, so the hit rect rides plain dy
@@ -7287,7 +7405,37 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText("\u00d7" + ch.n, ch.x + dxW + ch.w / 2, ch.y + dyW + ch.h / 2 + 0.5);
     ctx.font = MAP_FONT(10);
-  });
+  };
+  L.chips.forEach(paintChip);
+  // [#77] band 2 cluster aggregation: per-pair/peel/origin badges merge
+  // into ONE count per (source cluster -> target cluster) - at cluster
+  // distance the map reads cluster-to-cluster traffic, not pair inventory.
+  // Deterministic (chip order); visual summary - not clickable (hit stays
+  // null = unclickable, #113); wheel in one notch for pair interaction.
+  mapLodAggChips = 0;
+  if (mapLodBand === 2) {
+    const agg = new Map();
+    L.chips.forEach(ch => {
+      if (ch.t < 0 && !ch.peel && !ch.origin) return;
+      const key = nodes[ch.s].cluster + "\u2192" +
+        (ch.t >= 0 ? nodes[ch.t].cluster : nodes[ch.s].cluster);
+      let rec = agg.get(key);
+      if (!rec) {
+        rec = { n: 0, wires: [], s: ch.s, t: Math.max(ch.t, 0), ty: ch.ty,
+                x: ch.x, y: ch.y, w: ch.w, h: ch.h, row: ch.row,
+                pair: null, peel: false, origin: false, agg: true };
+        agg.set(key, rec);
+      }
+      rec.n += ch.n;
+      if (rec.wires.length < 200) rec.wires = rec.wires.concat(ch.wires);
+    });
+    agg.forEach(rec => {
+      const txt = "\u00d7" + rec.n;
+      rec.w = Math.max(rec.w, txt.length * 6 + 10);
+      paintChip(rec);
+      if (rec.disp) mapLodAggChips++;
+    });
+  }
   // [issue #113] an open bundle list is LIVE UI over a moving diagram: every
   // repaint re-anchors it, so wheel / pan / divider-drag / resize can never
   // strand it over unrelated geometry. A chip this paint hid (LOD, zoom
@@ -7640,6 +7788,7 @@ mapPane.addEventListener("wheel", e => {
   const wx = cx / mapZ + mapPX, wy = cy / mapZ + mapPY;
   mapZ = Math.max(0.2, Math.min(3, mapZ * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
   mapInkEval();   // hysteresis re-arm at the new zoom (paint-only tier)
+  mapLodEval();   // [#77] band re-arm at the new zoom (paint-only tier)
   mapPX = wx - cx / mapZ;
   mapPY = wy - cy / mapZ;
   mapClampView();
@@ -7714,6 +7863,7 @@ mapPane.addEventListener("click", e => {
   }
   const w = mapJitterHit || mapToWorld(e);
   mapJitterHit = null;
+  const pp = mapLodPinPair();   // [#77] unbundled pair: its stroke unpickable
   // 1. bundle chip -> pinned enumeration list (section 7)
   const ci = mapChipAt(w.x, w.y);
   if (ci >= 0) { mapOpenList(ci); return; }
@@ -7758,6 +7908,11 @@ mapPane.addEventListener("click", e => {
     let th = -1, td = tol;
     mapLayout.spines.forEach((sp, six) => {
       if (!sp.pts || sp.pts.length < 2) return;
+      // [#77] pick-vs-paint parity: band-2-folded intra-cluster corridors
+      // and the unbundled pair's hidden stroke carry no hit target
+      if (mapLodBand === 2 && !sp.hub &&
+          nodes[sp.s].cluster === nodes[sp.t].cluster) return;
+      if (pp && sp.pair === pp && !sp.hub) return;
       for (let k = 1; k < sp.pts.length; k++) {
         const d = segDist(w.x, w.y, sp.pts[k-1][0], sp.pts[k-1][1],
                              sp.pts[k][0], sp.pts[k][1]);
@@ -7807,7 +7962,7 @@ mapPane.addEventListener("click", e => {
   for (let k = mapRects.length - 1; k >= 0; k--) {
     const rc = mapRects[k];
     if (w.x < rc.x || w.x > rc.x + rc.w || w.y < rc.y || w.y > rc.y + rc.h) continue;
-    if (rc.rows.length) {
+    if (rc.rows.length && mapLodBand < 1) {   // [#77] folded rows unpickable (parity)
       if (rc.more && w.y >= rc.more.y0 && w.y < rc.more.y1) { mapOpenPicker(rc); return; }
       for (const row of rc.rows) {
         if (w.y >= row.y0 && w.y < row.y1) {
@@ -7932,6 +8087,16 @@ const mapInfo = () => {
     pin: wirePin ? { surface: wirePin.surface, kind: wirePin.kind, id: wirePin.id } : null,
     pinCover,
     pinCoverX,   // [#196] cross-surface emphasis cover
+    // [#77] wire LOD bands + selection-time unbundling probes
+    lodBand: mapLodBand,          // 0 full / 1 thinned / 2 cluster-aggregated
+    lodFitZ: mapLodFitZ,
+    lodKeep: !!mapLodPinPair(),   // unbundling live (a pin holds the pair open)
+    lodUnbundled: mapLodUnbundled,
+    lodAggChips: mapLodAggChips,
+    lodSpinesPainted: mapLodSpinesPainted,
+    rosterShown: mapLodRosterShown,   // rows painted THIS frame (band 1 folds)
+    lodHiddenSpines: mapLayout.spines.filter(sp => !sp.con && sp.pts.length &&
+      !sp.hub && nodes[sp.s].cluster === nodes[sp.t].cluster).length,
   };
 };
 document.getElementById("bGround").onclick = e => {
@@ -9011,6 +9176,10 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get mapZ() { return mapZ; }, get mapPX() { return mapPX; },
   get mapPY() { return mapPY; }, mapClampView,
   get mapInkOn() { return mapInkOn; },
+  get mapLodBand() { return mapLodBand; },   // [#77] 0 full / 1 thinned / 2 cluster
+  get mapLodFitZ() { return mapLodFitZ; },   // [#77]
+  get mapLodThresholds() { return { z1: MAP_LOD_Z1, z1x: MAP_LOD_Z1X,
+    z2: MAP_LOD_Z2, z2x: MAP_LOD_Z2X }; },   // [#77] band gates (probe)
   get mapCenterReq() { return mapCenterReq; }, get mapPulse() { return mapPulse; },
   get pickWireZ() { return pickWireZ; },   // [issue #87] ink depth at last pick
   get paneW() { return paneW; }, setMapVisible, divider,
