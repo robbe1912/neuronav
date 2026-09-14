@@ -70,7 +70,7 @@ def _apply_config(path: Path | None) -> None:
     and again by ``nav.py --config <path>`` (which also sets NEURONAV_CONFIG
     so subprocesses and sibling modules like graph.py agree). ``path=None``
     means no config anywhere: pure cwd defaults (issue #27)."""
-    global CONFIG_PATH, ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM, EMBED_PROVIDER, EMBED_API_KEY, WATCH_INTERVAL_S, RECALL_TWO_PASS, CHUNK_CAST, STATE_DIR, DB_DIR, BASE_DIR
+    global CONFIG_PATH, ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM, EMBED_DOC_PREFIX, EMBED_PROVIDER, EMBED_API_KEY, WATCH_INTERVAL_S, RECALL_TWO_PASS, CHUNK_CAST, STATE_DIR, DB_DIR, BASE_DIR
     if path is not None and not path.is_file():
         # issue #41: an explicit config path is a contract, not a hint —
         # silently degrading to walk-all defaults flips the walk identity
@@ -103,6 +103,10 @@ def _apply_config(path: Path | None) -> None:
     EMBED_URL = str(cfg.get("embed_url", "http://127.0.0.1:11434/api/embed"))
     EMBED_MODEL = str(cfg.get("embed_model", "qwen3-embedding:0.6b"))
     EMBED_DIM = int(cfg.get("embed_dim", 1024))
+    # issue #75: passage-instruction text (JCE card "Candidate code
+    # snippet:") prepended to the EMBEDDED document only — stored
+    # documents stay raw. Symmetric to recall's query_prefix.
+    EMBED_DOC_PREFIX = str(cfg.get("embed_doc_prefix", ""))
     # issue #17: the wire protocol follows the endpoint — Ollama /api/embed
     # or any OpenAI-compatible /embeddings (OpenAI, vLLM, LM Studio,
     # Ollama's own /v1 layer). Explicit "ollama"|"openai" wins; unset
@@ -216,6 +220,7 @@ EXCLUDE_DIRS: frozenset[str]
 EMBED_URL: str
 EMBED_MODEL: str
 EMBED_DIM: int
+EMBED_DOC_PREFIX: str
 EMBED_PROVIDER: str
 EMBED_API_KEY: str
 WATCH_INTERVAL_S: float
@@ -248,7 +253,7 @@ _apply_config(_discover_config())
 _CONFIG_FIELDS = (
     "CONFIG_PATH",
     "ROOT", "COLLECTION", "INCLUDE_DIRS", "EXTS", "EXCLUDE_DIRS",
-    "EMBED_URL", "EMBED_MODEL", "EMBED_DIM", "EMBED_PROVIDER",
+    "EMBED_URL", "EMBED_MODEL", "EMBED_DIM", "EMBED_DOC_PREFIX", "EMBED_PROVIDER",
     "EMBED_API_KEY", "WATCH_INTERVAL_S", "RECALL_TWO_PASS", "CHUNK_CAST",
     "STATE_DIR", "DB_DIR", "BASE_DIR",
 )
@@ -862,7 +867,7 @@ def _rescan_locked() -> dict[str, int]:
         nonlocal pending_ids, pending_docs, pending_meta
         if not pending_ids:
             return
-        vectors = embed(pending_docs)
+        vectors = embed([EMBED_DOC_PREFIX + d for d in pending_docs]) if EMBED_DOC_PREFIX else embed(pending_docs)
         col.upsert(
             ids=pending_ids,
             embeddings=vectors,

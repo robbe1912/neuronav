@@ -103,6 +103,21 @@ def main() -> int:
           isinstance(err, RuntimeError) and "before-vec.json" in str(err)
           and "after-both.json" not in str(err), repr(err))
 
+    ab = synth_record(golden, fp)
+    ab["set"] = "ab"
+    jina = synth_record(golden, fp)
+    jina["set"] = "jina"
+    jina["model"] = "jina-code-embeddings-0.5b:Q8_0"
+    for key in ("hit@1", "hit@5", "hit@10", "mrr", "reach@5", "reach@10"):
+        jina[key] = 0.9
+    text, err = render_in_sandbox({"ab-both": ab, "jina-both": jina})
+    check("A/B section renders from leg records (issue #75)",
+          err is None and text is not None and "## Embedding A/B (issue #75)" in text,
+          repr(err))
+    if text is not None:
+        check("A/B delta table credits the jina leg",
+              "jina-code-embeddings-0.5b:Q8_0" in text and "-10.0" in text)
+
     print(f"\n{len(FAILURES)} failure(s)")
     return 1 if FAILURES else 0
 

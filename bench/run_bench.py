@@ -29,7 +29,12 @@ Usage:
 
 --repo PATH  checkout to measure (default: this script's repo). Point it at
              a detached worktree for per-commit attribution.
---set NAME   record set: after | fake | sweep (fake implies CI plumbing mode).
+--set NAME   record set: after | fake | sweep (fake implies CI plumbing
+             mode), or the issue #75 embedding A/B legs ab | qprefix |
+             jina | jinaq | jinap (real embeds only; the jina legs ride
+             the #17 openai wire against a llama-server hosting the
+             official JCE GGUF, and use their own state store under
+             .tmp/ so the qwen3 store stays untouched).
 --fake       NEURONAV_EMBED_FAKE=1 (deterministic hash embeddings; coherent
              only against a collection built in the same mode — use a fresh
              checkout/.neuronav per mode).
@@ -62,6 +67,33 @@ GB_LAMBDA = 0.25  # swept winner: λ 0.25 @ rrf_k 30 (h1 +0.08 vs λ=0, double-r
 GB_RRF_K = 30.0  # every λ ≥ 0.5 lost to plain fusion; GRAPH_BOOST default stays 0.0
 GB_LAMBDAS = (0.0, 0.25, 0.5, 1.0, 2.0)
 GB_RRF_KS = (30.0, 60.0, 120.0)
+# --- issue #75: embedding A/B (jina-code-embeddings-0.5b vs qwen3) ---
+# Task instructions from the JCE model card (arXiv 2508.21290): the
+# nl2code pair, prepended to the embedded query / embedded document.
+Q_PREFIX = "Find the most relevant code snippet given the following query:\n"
+DOC_PREFIX = "Candidate code snippet:\n"
+# JCE-0.5b Q8_0 (official jinaai GGUF) served by llama-server with the
+# card's pooling contract — Ollama imports the same GGUF as a completion
+# model (no pooling metadata) and its /api/embed refuses it, so the leg
+# rides the #17 openai wire against llama-server's /v1/embeddings.
+JINA_EMBED = {
+    "tag": "jina",
+    "embed_url": "http://127.0.0.1:18081/v1/embeddings",
+    "embed_model": "jina-code-embeddings-0.5b:Q8_0",
+    "embed_dim": 896,
+    "state_dir": ".tmp/bench-jina-store",
+}
+# set name -> run() kwargs; every A/B set is a real-embed leg.
+SET_FLAGS = {
+    "ab": {},
+    "qprefix": {"query_prefix": Q_PREFIX},
+    "jina": {"embed": dict(JINA_EMBED)},
+    "jinaq": {"query_prefix": Q_PREFIX, "embed": dict(JINA_EMBED)},
+    "jinap": {"query_prefix": Q_PREFIX,
+              "embed": {**JINA_EMBED, "tag": "jina-pfx",
+                        "embed_doc_prefix": DOC_PREFIX,
+                        "state_dir": ".tmp/bench-jinap-store"}},
+}
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -214,10 +246,36 @@ def _run_config(repo: Path, search_fn, config: str, queries: list[dict]) -> dict
     }
 
 
-def run(repo: Path, set_name: str, configs: list[str], fake: bool) -> int:
+def _override_config(repo: Path, embed: dict) -> Path:
+    """Scratch config for an A/B embed leg (issue #75): the repo's
+    self-index profile with the embed keys overridden and its own state
+    store, parked under <repo>/.tmp (gitignored, walker-excluded). The
+    separate store is load-bearing: _check_model refuses to reuse a
+    store stamped with a different embed model, so the qwen3 store and
+    each jina variant keep disjoint vectors."""
+    cfg = json.loads((repo / "config" / "neuronav.json").read_text(encoding="utf-8"))
+    for key in ("embed_url", "embed_model", "embed_dim", "embed_provider",
+                "embed_doc_prefix"):
+        if embed.get(key) is not None:
+            cfg[key] = embed[key]
+    if embed.get("state_dir"):
+        sd = Path(embed["state_dir"])
+        cfg["state_dir"] = str(sd if sd.is_absolute() else repo / sd)
+    out_dir = repo / ".tmp"
+    out_dir.mkdir(exist_ok=True)
+    out = out_dir / f"bench-embed-{embed.get('tag', 'override')}.json"
+    out.write_text(json.dumps(cfg, indent=1) + "\n", encoding="utf-8", newline="\n")
+    return out
+
+
+def run(repo: Path, set_name: str, configs: list[str], fake: bool,
+        query_prefix: str = "", embed: dict | None = None) -> int:
     if fake:
         os.environ["NEURONAV_EMBED_FAKE"] = "1"
-    os.environ["NEURONAV_CONFIG"] = str(repo / "config" / "neuronav.json")
+    if embed:
+        os.environ["NEURONAV_CONFIG"] = str(_override_config(repo, embed))
+    else:
+        os.environ["NEURONAV_CONFIG"] = str(repo / "config" / "neuronav.json")
     sys.path.insert(0, str(repo))
 
     import nav  # noqa: E402  (binds the self-index profile via NEURONAV_CONFIG)
@@ -233,14 +291,18 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool) -> int:
     if missing:
         print(f"ERROR: config(s) {missing} need recall.py, which this checkout lacks")
         return 2
+    if query_prefix and not have_recall:
+        print("ERROR: query_prefix needs recall.py (vector-side prefixing)")
+        return 2
 
     if not fake:
         import httpx
 
+        probe = embed["embed_url"] if embed else "http://127.0.0.1:11434/api/tags"
         try:
-            httpx.get("http://127.0.0.1:11434/api/tags", timeout=10)
+            httpx.get(probe, timeout=10)
         except Exception as e:
-            raise RuntimeError(f"real mode needs Ollama on 11434: {e}") from e
+            raise RuntimeError(f"real mode needs the embed endpoint at {probe}: {e}") from e
 
     if verify_golden(repo):
         return 3
@@ -268,6 +330,8 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool) -> int:
                     kw["rrf_k"] = GB_RRF_K
                 if "two_pass" in flags:
                     kw["two_pass"] = True
+                if query_prefix:
+                    kw["query_prefix"] = query_prefix
                 return recall.search(query, **kw)
             return nav.search(query, n=K)
 
@@ -290,6 +354,9 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool) -> int:
             "dirty": dirty,
             "mode": "fake" if fake else "real",
             "model": "hash-embed" if fake else nav.EMBED_MODEL,
+            **({"query_prefix": query_prefix} if query_prefix else {}),
+            **({"doc_prefix": nav.EMBED_DOC_PREFIX}
+               if not fake and nav.EMBED_DOC_PREFIX else {}),
             "files": nav.count(),
             "k": K,
             "golden": fp,
@@ -493,6 +560,73 @@ def _sweep_table(recs: dict[str, dict]) -> list[str]:
     lines += [_metrics_row(r) for r in rows]
     return lines + [""]
 
+AB_LEGS = [
+    ("ab", "A/B baseline — qwen3-embedding:0.6b at the A/B commit (same store as `qprefix`)"),
+    ("qprefix", "A/B leg 1 — qwen3 + nl2code query instruction (`query_prefix`, embedded query only)"),
+    ("jina", "A/B leg 2 — jina-code-embeddings-0.5b Q8_0 (llama-server `--pooling last`, openai wire), no instructions"),
+    ("jinaq", "A/B leg 2b — jina + nl2code query instruction (same store as `jina`)"),
+    ("jinap", "A/B leg 2c — jina paper recipe: query + `Candidate code snippet:` passage instruction at index time (fresh store)"),
+]
+
+
+def _ab_delta_table(recs: dict[str, dict]) -> list[str]:
+    base = recs.get("ab-both")
+    legs = [(s, recs[f"{s}-both"]) for s, _ in AB_LEGS[1:] if f"{s}-both" in recs]
+    if not base or not legs:
+        return []
+
+    def pts(leg: dict, key: str) -> str:
+        return f"{(leg[key] - base[key]) * 100:+.1f}"
+
+    lines = [
+        "Δ vs the `ab` baseline (`both` config), in points (1 pt = 0.010);",
+        "the ab row shows absolutes, leg rows show deltas:",
+        "",
+        "| set | model | hit@1 | hit@5 | hit@10 | MRR |",
+        "|---|---|---|---|---|---|",
+        f"| ab | `{base['model']}` | {base['hit@1']:.3f} | {base['hit@5']:.3f} "
+        f"| {base['hit@10']:.3f} | {base['mrr']:.3f} |",
+    ]
+    for name, r in legs:
+        lines.append(
+            f"| {name} | `{r['model']}` | {pts(r, 'hit@1')} | {pts(r, 'hit@5')} "
+            f"| {pts(r, 'hit@10')} | {pts(r, 'mrr')} |"
+        )
+    return lines + [""]
+
+
+def _ab_section(recs: dict[str, dict]) -> list[str]:
+    present = [s for s, _ in AB_LEGS if any(f"{s}-{c}" in recs for c in CONFIGS)]
+    if not present:
+        return []  # no A/B records committed yet (or hermetic sandbox)
+    lines = [
+        "## Embedding A/B (issue #75)",
+        "",
+        "Question: does jina-code-embeddings-0.5b (JCE, arXiv 2508.21290) beat the",
+        "shipped qwen3-embedding:0.6b on this golden set by the ≥ +3-point margin",
+        "the paper's 25-task aggregate suggests (78.41 vs 73.49 overall)? JCE Q8_0",
+        "(official jinaai GGUF) is served by llama-server with the card's",
+        "`--pooling last` contract on the #17 openai wire — Ollama imports the",
+        "same GGUF as a completion model (no pooling metadata) and refuses",
+        "`/api/embed`, so the A/B needed a sidecar server, not a provider swap.",
+        "Every leg is real embeds, double-run, on its own state store: `ab`/",
+        "`qprefix` share the qwen3 store (prefixes are query-side only, no",
+        "re-index), `jina`/`jinaq` share the JCE store, `jinap` re-indexes with",
+        "the passage instruction prepended to embedded docs (stored documents",
+        "stay raw — the prefix is an embed-input transform). Records stamp",
+        "`query_prefix`/`doc_prefix` when a leg uses them. Same-store legs are",
+        "the attribution unit; cross-store deltas ride the double-run floors",
+        "below.",
+    ]
+    for prefix, note in AB_LEGS:
+        chunk = _set_table(prefix, recs, note)
+        if chunk:
+            lines += chunk + [""]
+        lines += _kind_table(prefix, recs)
+    lines += _ab_delta_table(recs)
+    return lines
+
+
 def _assert_records_current(recs: dict[str, dict]) -> None:
     """Loud coherence gate (issue #104): a golden swap without re-running
     left records whose per_query rows no longer matched the golden set —
@@ -561,6 +695,7 @@ def render() -> None:
         if chunk:
             lines += chunk + [""]
         lines += _kind_table(prefix, recs)
+    lines += _ab_section(recs)
     lines += retired
     lines += _sweep_table(recs)
     lines += _per_query_table("after", recs)
@@ -569,8 +704,15 @@ def render() -> None:
         "",
         "```",
         "git worktree add --detach ../bench-measure <commit>",
-        ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set after --repo ../bench-measure",
         ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set sweep --repo ../bench-measure",
+        ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set ab --repo ../bench-measure",
+        ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set qprefix --repo ../bench-measure",
+        "# JCE legs: serve the official jinaai Q8_0 GGUF first (Ollama imports",
+        "# it as a completion model — /api/embed refuses the unpooled GGUF):",
+        "llama-server -m jina-code-embeddings-0.5b-Q8_0.gguf --embeddings --pooling last --host 127.0.0.1 --port 18081 -c 32768",
+        ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set jina --repo ../bench-measure",
+        ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set jinaq --repo ../bench-measure",
+        ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set jinap --repo ../bench-measure",
         ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set fake --fake --repo ../bench-measure",
         "```",
         "",
@@ -579,7 +721,10 @@ def render() -> None:
         "index is never touched and attribution is by commit. Ordering: run real sets",
         "first, fake last — fake mode wipes the worktree store for embed-mode",
         "coherence, and a real run after it would embed queries against sha-equal",
-        "fake docs. Records carry a golden fingerprint; a golden edit without a",
+        "fake docs. A/B legs (issue #75): run `ab` then `qprefix` first (qwen3",
+        "store), then the jina legs (their own `.tmp/` stores); `jinap` re-embeds",
+        "the corpus with the passage instruction, the others reuse it. Records",
+        "carry a golden fingerprint; a golden edit without a",
         "re-run makes `--render-only` fail loudly naming the stale records.",
     ]
     (BENCH_DIR / "RESULTS.md").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
@@ -592,7 +737,8 @@ def render() -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description="recall benchmark over the self-index")
     ap.add_argument("--repo", default=str(DEFAULT_REPO))
-    ap.add_argument("--set", choices=["after", "fake", "sweep"], default="after")
+    ap.add_argument("--set", choices=["after", "fake", "sweep", *SET_FLAGS],
+                    default="after")
     ap.add_argument("--configs", default=",".join(CONFIGS))
     ap.add_argument("--fake", action="store_true")
     ap.add_argument("--verify-only", action="store_true")
@@ -621,7 +767,12 @@ def main() -> int:
         return 2
     if args.set == "sweep":
         return sweep(repo)
-    return run(repo, args.set, configs, fake)
+    flags = SET_FLAGS.get(args.set, {})
+    if flags and fake:
+        print("ERROR: A/B sets are real-embed legs (no --fake)")
+        return 2
+    return run(repo, args.set, configs, fake,
+               flags.get("query_prefix", ""), flags.get("embed"))
 
 
 if __name__ == "__main__":
