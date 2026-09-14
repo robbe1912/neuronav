@@ -3261,6 +3261,117 @@ def run_tests(port: int):
             ink_on = page.evaluate("() => window.__dbg.mapInkOn")
             check("zoom-in restores fine ink (hysteresis)",
                   ink_on is True, str(ink_on))
+
+            # 8c2. [#77] distance-gated wire LOD bands + selection-time
+            # unbundling. Bands are PAINT tier (layout never changes, #63;
+            # DATA blob byte-identical): band 1 thins the label plane,
+            # band 2 aggregates to cluster corridors. Thresholds sit below
+            # the fit floor, so the overview above ran at band 0.
+            thr = page.evaluate("() => window.__dbg.mapLodThresholds")
+            fit_z = page.evaluate("() => window.__dbg.mapZ")
+            if fit_z < thr["z1x"]:
+                print(f"SKIP 8c2 LOD bands — fit z {fit_z:.2f} sits below "
+                      f"band-1 exit {thr['z1x']} (corpus shape, #97)")
+            else:
+                def wheel_to(target, direction):
+                    for _ in range(50):
+                        z = page.evaluate("() => window.__dbg.mapZ")
+                        if (direction < 0 and z < target) or \
+                           (direction > 0 and z >= target):
+                            return z
+                        page.mouse.move(mcx, mcy)
+                        page.mouse.wheel(0, 120 if direction < 0 else -120)
+                        page.wait_for_timeout(35)
+                    return page.evaluate("() => window.__dbg.mapZ")
+
+                b0 = page.evaluate("() => window.__dbg.mapInfo()")
+                check("LOD band 0 at fit: full fidelity (#77)",
+                      b0["lodBand"] == 0 and b0["rosterShown"] > 0,
+                      f"band={b0['lodBand']} roster={b0['rosterShown']}")
+                page.screenshot(path=".tmp/shots/qa_map_band0.png", type="png")
+
+                wheel_to(thr["z1"], -1)
+                b1 = page.evaluate("() => window.__dbg.mapInfo()")
+                check("LOD band 1: roster folds + badges thin (VISSOFT'25)",
+                      b1["lodBand"] == 1 and b1["rosterShown"] == 0,
+                      f"band={b1['lodBand']} roster={b1['rosterShown']}")
+                page.screenshot(path=".tmp/shots/qa_map_band1.png", type="png")
+
+                wheel_to(thr["z2"], -1)
+                b2 = page.evaluate("() => window.__dbg.mapInfo()")
+                if b2["lodHiddenSpines"] > 0:
+                    check("LOD band 2: intra-cluster corridors fold",
+                          b2["lodBand"] == 2 and
+                          b2["lodSpinesPainted"] ==
+                          b2["spinesDrawn"] - b2["lodHiddenSpines"],
+                          f"band={b2['lodBand']} "
+                          f"painted={b2['lodSpinesPainted']} "
+                          f"drawn={b2['spinesDrawn']} hidden={b2['lodHiddenSpines']}")
+                else:
+                    print("SKIP band-2 spine fold — corpus has no "
+                          "intra-cluster corridors (#97)")
+                if b2["lodAggChips"] > 0:
+                    check("LOD band 2: pair badges aggregate to cluster counts",
+                          b2["lodBand"] == 2 and b2["lodAggChips"] >= 1,
+                          f"aggChips={b2['lodAggChips']}")
+                else:
+                    print("SKIP band-2 chip aggregation — corpus shape (#97)")
+                page.screenshot(path=".tmp/shots/qa_map_band2.png", type="png")
+
+                # selection-time unbundling (AVI'12: bundling degrades path
+                # tracing): while a pin holds a corridor pair open, its
+                # riders draw straight/individual EVEN at band 2; Escape
+                # restores band ink atomically (dismissal parity, #197).
+                trunk_pick = page.evaluate(
+                    """() => { const d = window.__dbg, L = d.mapLayout;
+                         if (!L || !L.pairRiders) return null;
+                         for (const sp of L.spines) {
+                           if (sp.hub !== "trunk" || !sp.pts || sp.pts.length < 2) continue;
+                           if (!L.pairRiders[sp.s + "_" + sp.t]) continue;
+                           const m = sp.pts[Math.floor(sp.pts.length / 2)];
+                           return { pair: sp.s + "_" + sp.t,
+                                    riders: L.pairRiders[sp.s + "_" + sp.t].length,
+                                    sx: (m[0] - d.mapPX) * d.mapZ,
+                                    sy: (m[1] - d.mapPY) * d.mapZ };
+                         }
+                         return null; }""")
+                if trunk_pick is None:
+                    print("SKIP selection-time unbundling — no trunk with "
+                          "riders at band 2 (corpus shape, #97)")
+                else:
+                    page.mouse.click(mbb["x"] + trunk_pick["sx"],
+                                     mbb["y"] + trunk_pick["sy"])
+                    page.wait_for_timeout(250)
+                    pin = page.evaluate("() => window.__dbg.wirePin")
+                    ub = page.evaluate("() => window.__dbg.mapInfo()")
+                    check("unbundling: pinned pair opens at band 2 (#77)",
+                          pin and pin["kind"] == "trunk" and
+                          ub["lodKeep"] and ub["lodUnbundled"] > 0,
+                          f"pin={pin and pin['kind']} keep={ub['lodKeep']} "
+                          f"unbundled={ub['lodUnbundled']} "
+                          f"riders={trunk_pick['riders']}")
+                    page.screenshot(path=".tmp/shots/qa_map_unbundled.png", type="png")
+                    agg_pre = ub["lodAggChips"]
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(250)
+                    pin_e = page.evaluate("() => window.__dbg.wirePin")
+                    ub2 = page.evaluate("() => window.__dbg.mapInfo()")
+                    check("dismissal parity: Escape restores band ink (#197)",
+                          pin_e is None and ub2["lodUnbundled"] == 0 and
+                          not ub2["lodKeep"] and ub2["lodAggChips"] == agg_pre
+                          and ub2["lodBand"] == 2,
+                          f"pin={pin_e} unbundled={ub2['lodUnbundled']} "
+                          f"keep={ub2['lodKeep']} agg={ub2['lodAggChips']}"
+                          f"/{agg_pre} band={ub2['lodBand']}")
+
+                # restore past band-0 exit AND to 8c's z >= 1.0 state:
+                # the later pan-clamp law needs the world wider than the
+                # window (its premise holds at z >= 1.0)
+                wheel_to(1.0, 1)
+                b0b = page.evaluate("() => window.__dbg.mapInfo()")
+                check("LOD bands restore: zoom-in returns to band 0",
+                      b0b["lodBand"] == 0 and b0b["rosterShown"] > 0,
+                      f"band={b0b['lodBand']} roster={b0b['rosterShown']}")
             # 8d. map-center-on-selection: clicking a 3D file node pans the
             # 2D pane so the node's box lands on pane center (tol 12px,
             # clamp permitting), pulses it, and is a clean no-op while the

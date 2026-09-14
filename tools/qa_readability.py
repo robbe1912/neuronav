@@ -233,9 +233,19 @@ JS_2D = r"""() => {
   const info = d.mapInfo();
   // stroked ink only: all named wires + spines that are NOT consolidated
   // twins (sp.con true rides the shared trunk and paints no polyline)
+  // painted ink only (parity with mapPaint): wires paint behind the ink
+  // tier gate; spines fold at LOD band 2 (intra-cluster) [#77]. Counting
+  // invisible ink reported the far-zoom view as cluttered as the fit view.
+  const band = d.mapLodBand === undefined ? 0 : d.mapLodBand;
   const polys = [];
-  L.wires.forEach((w, i) => polys.push({ pts: w.pts, kind: 'w', id: 'w' + i }));
-  L.spines.forEach((sp, i) => { if (!sp.con) polys.push({ pts: sp.pts, kind: 's', id: 's' + i }); });
+  if (d.mapInkOn !== false)
+    L.wires.forEach((w, i) => polys.push({ pts: w.pts, kind: 'w', id: 'w' + i }));
+  L.spines.forEach((sp, i) => {
+    if (sp.con) return;
+    if (band === 2 && !sp.hub &&
+        d.nodes[sp.s].cluster === d.nodes[sp.t].cluster) return;
+    polys.push({ pts: sp.pts, kind: 's', id: 's' + i });
+  });
   const segs = [];
   polys.forEach(p => {
     for (let s = 0; s + 1 < p.pts.length; s++) {
@@ -295,6 +305,11 @@ JS_2D = r"""() => {
       segments: segs.length, polylines: polys.length,
       worstPolyline: worstPoly,
     },
+    lodBand: band, lodFitZ: d.mapLodFitZ === undefined ? null : d.mapLodFitZ,
+    lodSpinesPainted: info.lodSpinesPainted === undefined ? null : info.lodSpinesPainted,
+    lodAggChips: info.lodAggChips === undefined ? null : info.lodAggChips,
+    lodUnbundled: info.lodUnbundled === undefined ? null : info.lodUnbundled,
+    rosterShown: info.rosterShown === undefined ? null : info.rosterShown,
   };
 }"""
 
@@ -1228,6 +1243,10 @@ def run(qa: Path, port: int):
                   f" chips={m2['chips']} rosterRows={m2['mapInfo']['rosterRows']}")
             print(f"nearParallel pairs={np_['pairs']} (ww={np_['wireWire']} ss={np_['spineSpine']}"
                   f" sw={np_['spineWire']}) over {np_['segments']} segs; worst={np_['worstPolyline']}")
+            print(f"lod: band={m2['lodBand']} fitZ={m2['lodFitZ']}"
+                  f" spinesPainted={m2['lodSpinesPainted']}"
+                  f" aggChips={m2['lodAggChips']} rosterShown={m2['rosterShown']}"
+                  f" unbundled={m2['lodUnbundled']}")
             print(f"consoleErrors={len(real_errors)}")
             print(f"wrote {qa / 'readability_base.json'}, gate_base_3d.png, gate_base_map.png")
             if real_errors:
