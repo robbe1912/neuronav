@@ -8718,8 +8718,12 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get pinTint() { return { tinted: pinTinted ? pinTinted.slice() : [],
     orig: pinTintOrig ? pinTintOrig.slice() : [], key: pinTintKey }; },  // [issue #85 owner r4] probe hook
   get pinTint2() { return pinTint2.map(r => ({
+    // exact-match labels; the else arm is unreachable (the frame filter
+    // drops records whose mesh is gone) but self-documents as "gone"
     mesh: r.mesh === fnLines ? "fnLines" :
-          r.mesh === fnQuiet ? "fnQuiet" : "focusArcs",
+          r.mesh === fnQuiet ? "fnQuiet" :
+          (focusArcs && r.mesh === focusArcs.lines)
+            ? "focusArcs" : "gone",
     n: r.segs.length })); },   // [#196] wire-arc tint probe
   get pinCoverX() { return pinCoverX; },   // [#196] cross-surface cover
   get pinChain() { return { a: pinChA, b: pinChB, boxA: pinBoxA, boxB: pinBoxB, ep0: pinEp0, ep1: pinEp1 }; },  // [issue #84] fn-box endpoint law probe hook
