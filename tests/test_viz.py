@@ -1941,6 +1941,13 @@ def run_tests(port: int):
                 check("wire pin emphasis resolves (pinCover)",
                       page.evaluate(
                           "() => window.__dbg.mapInfo().pinCover") == 1)
+                # [#196] cross-surface: ONE latch, BOTH surfaces - the
+                # map pin's 3D twin emphasizes the same wire (corridor
+                # chain tint + the wire's own arcs)
+                covX0 = page.evaluate(
+                    "() => window.__dbg.mapInfo().pinCoverX")
+                check("map wire pin emphasizes in 3d (cross-surface)",
+                      covX0 >= 1, f"pinCoverX {covX0}")
                 # chip-list item selection: a bundle chip's enumerated rows
                 # are wires too - two distinct row clicks must REPLACE the
                 # pin (single pin at a time)
@@ -2342,6 +2349,24 @@ def run_tests(port: int):
                           f"{trunk3}, cover {cover3t}")
                     check("3d trunk emphasis resolves (pinCover)",
                           cover3t >= 2, f"cover {cover3t}")
+                    # [#196] cross-surface: the 3D pin's map twin
+                    # paints (trunk corridor, or its singles fallback
+                    # for a pair the map drew below trunk admission)
+                    covXT = page.evaluate(
+                        "() => window.__dbg.mapInfo().pinCoverX")
+                    check("3d trunk pin emphasizes in 2d (cross-surface)",
+                          covXT >= 1, f"pinCoverX {covXT}")
+                    # [#196] the picker is geometry-only: instance-color
+                    # writes must never feed pickWireMeta (the same ink
+                    # still resolves the same meta under a live tint)
+                    pkBlind = page.evaluate("""(c) => {
+                        const m = window.__dbg.pickWireMeta(
+                            { clientX: c.x, clientY: c.y });
+                        return m && m.kind === "trunk"
+                            ? String(m.k) : null; }""", cand)
+                    check("pickWireMeta stays color-blind under tint",
+                          pkBlind == str(trunk3.get("k")),
+                          f"{pkBlind} vs {trunk3.get('k')}")
                     # [issue #84] endpoint law: both chain termini sit ON
                     # the fn boxes the legs serve (owner: 'from the actual
                     # start function to the actual end function'), not at
@@ -2452,6 +2477,42 @@ def run_tests(port: int):
                           f"{disp3a} {txt3a[:50]!r}")
                     check("3d pin emphasis resolves (pinCover)",
                           cover3d >= 1, f"cover {cover3d}")
+                    # [#196] cross-surface twin (map wire row of the
+                    # pair, or the pair's corridors/singles). A pair the
+                    # map layout does not admit (a file outside the map
+                    # lit set) has no 2D ink to emphasize - gate on
+                    # presence so the check has teeth exactly when the
+                    # twin is owed
+                    cxp = page.evaluate("""() => {
+                        const d = window.__dbg, pin = d.wirePin;
+                        const fm = d.fnMeta, L = d.mapLayout;
+                        if (!pin || !L) return { skip: true };
+                        if (pin.kind !== "wire" || pin.a == null ||
+                            !fm || !fm[pin.a] || !fm[pin.b])
+                          // link pin: hub-budget pair - no gate
+                          return { skip: false,
+                                   x: d.mapInfo().pinCoverX };
+                        const sf = fm[pin.a].file, df = fm[pin.b].file;
+                        // the gate mirrors the resolver: a pair the map
+                        // aggregated away (no trunk/single/row ink)
+                        // owes no 2D twin; any ink present must paint
+                        let ink = 0;
+                        for (const sp of L.spines)
+                          if (sp.pts && sp.pts.length > 1 &&
+                              ((sp.s === sf && sp.t === df) ||
+                               (sp.s === df && sp.t === sf))) ink++;
+                        for (const w of L.wires)
+                          if ((w.sf === sf && w.df === df) ||
+                              (w.sf === df && w.df === sf)) ink++;
+                        return { skip: ink === 0,
+                                 x: d.mapInfo().pinCoverX }; }""")
+                    if not cxp.get("skip"):
+                        check("3d wire pin emphasizes in 2d (cross-surface)",
+                              cxp.get("x", 0) >= 1,
+                              f"pinCoverX {cxp.get('x')}")
+                    else:
+                        print("SKIP 3d wire 2d twin - pair outside "
+                              "the map layout")
                     # camera orbit: paint-tier state, overlay re-derived
                     # per frame from the bucket buffers
                     cx0, cy0 = 400, 460
@@ -2472,6 +2533,14 @@ def run_tests(port: int):
                         ".style.display")
                     check("pin tip survives the orbit press",
                           tip3b2 == "block", f"tip {tip3b2}")
+                    # [#196] the instance tint is paint-tier state: an
+                    # orbit (no rebuild) leaves it applied
+                    tOrb = page.evaluate("""() => {
+                        const d = window.__dbg, t = d.pinTint;
+                        return { n: t.tinted.length,
+                                 arcs: d.pinTint2.length }; }""")
+                    check("3d tint survives the orbit (paint tier)",
+                          tOrb["n"] + tOrb["arcs"] > 0, str(tOrb))
 
                     # [issue #58] regression guard: hover-context ends must
                     # not touch pin-owned cards — blur + canvas leave leave
@@ -2492,6 +2561,13 @@ def run_tests(port: int):
                     pin3c = page.evaluate("() => window.__dbg.wirePin")
                     check("esc dismisses the 3d pin", pin3c is None,
                           f"{pin3b} -> {pin3c}")
+                    # [#196] one esc clears BOTH surfaces' emphasis
+                    covZ = page.evaluate(
+                        "() => ({ c: window.__dbg.pinCover,"
+                        " x: window.__dbg.pinCoverX })")
+                    check("esc clears the pin on both surfaces",
+                          pin3c is None and covZ["c"] == 0
+                          and covZ["x"] == 0, str(covZ))
                     page.keyboard.press("Escape")
                     page.wait_for_timeout(250)
                     tip3c = page.evaluate(
@@ -3384,18 +3460,24 @@ def run_tests(port: int):
                   "bus" in tipLg and "\u2192" in tipLg,
                   (tipLg or "")[:60])
 
-            # [issue #85 owner r4] the overlay must LIE ON the corridor:
-            # every long consecutive overlay hop's midpoint stays
-            # within a few px of the corridor's own instance geometry
-            # (the pre-fix emission-order polyline chord-ed box-to-box)
-            geoLg = page.evaluate("""() => {
-                const d = window.__dbg, pin = d.wirePin, pts = d.pinPath;
-                if (!pin || !pin.k || !pts || pts.length < 3) return null;
+            # [issue #85 owner r4 / #196] the emphasis IS the corridor
+            # now: the tinted instance set must EQUAL the corridor's
+            # true serving set (trunk pieces + junction legs, visible
+            # only) and carry the accent lerp on every sampled piece.
+            # On-geometry by construction - this replaces the old
+            # polyline-hop distance probe (the constructed overlay it
+            # measured is deleted; a chord regression is impossible)
+            geoT = page.evaluate("""() => {
+                const d = window.__dbg, pin = d.wirePin;
+                if (!pin || !pin.k || !d.fnBus || !d.fnBus.instanceColor)
+                    return null;
                 const prefs = [];
                 for (const S of (d.fnStations || []))
                     if (S.tks.indexOf(pin.k) >= 0)
                         prefs.push("L|" + S.fi + "|" + S.id + "|");
-                const mm = d.fnBus.instanceMatrix.array, segs = [];
+                const mm = d.fnBus.instanceMatrix.array,
+                      ca = d.fnBus.instanceColor.array;
+                const want = [];
                 for (let i = 0; i < d.busPtsMeta.length; i++) {
                     const mt = d.busPtsMeta[i]; if (!mt) continue;
                     const k = String(mt.k || "");
@@ -3405,63 +3487,33 @@ def run_tests(port: int):
                     if (!hit) continue;
                     if (Math.hypot(mm[i*16], mm[i*16+1], mm[i*16+2])
                         <= 0.001) continue;
-                    segs.push([d.busPts[i].a, d.busPts[i].b]);
+                    want.push(i);
                 }
-                if (!segs.length) return { ok: false, why: "no pieces" };
-                const cam = d.camera, el = d.renderer.domElement,
-                      r = el.getBoundingClientRect();
-                // THREE is module-scoped - project by hand from the
-                // camera's column-major matrix elements
-                const prj = p => {
-                    const mi = cam.matrixWorldInverse.elements,
-                          pm = cam.projectionMatrix.elements;
-                    const x = p[0]*mi[0] + p[1]*mi[4] + p[2]*mi[8] + mi[12];
-                    const y = p[0]*mi[1] + p[1]*mi[5] + p[2]*mi[9] + mi[13];
-                    const z = p[0]*mi[2] + p[1]*mi[6] + p[2]*mi[10] + mi[14];
-                    const w = p[0]*mi[3] + p[1]*mi[7] + p[2]*mi[11] + mi[15];
-                    const cx = x*pm[0] + y*pm[4] + z*pm[8] + pm[12];
-                    const cy = x*pm[1] + y*pm[5] + z*pm[9] + pm[13];
-                    const cw = x*pm[3] + y*pm[7] + z*pm[11] + pm[15];
-                    return [(cx/cw * 0.5 + 0.5) * r.width + r.left,
-                            (-cy/cw * 0.5 + 0.5) * r.height + r.top]; };
-                const ppx = pts.map(prj);
-                const spx = segs.map(sg => [prj(sg[0]), prj(sg[1])]);
-                const d2s = (p, a, b) => {
-                    const dx = b[0] - a[0], dy = b[1] - a[1];
-                    const L2 = dx * dx + dy * dy || 1e-9;
-                    let t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2;
-                    t = Math.max(0, Math.min(1, t));
-                    return Math.hypot(p[0] - (a[0] + dx * t),
-                                      p[1] - (a[1] + dy * t)); };
-                let worst = 0, nchk = 0, nex = 0;
-                // hops 0->1 and n-2->n-1 are the fn-box anchor stubs -
-                // off-corridor BY DESIGN (endpoint law); interior hops
-                // must ride the geometry exactly, except straight
-                // bridges over LOD-culled piece holes (bounded well
-                // under chord scale - a box-to-box chord regression is
-                // hundreds of px)
-                for (let i = 2; i < ppx.length - 1; i++) {
-                    const a = ppx[i - 1], b = ppx[i];
-                    if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 4) continue;
-                    nchk++;
-                    const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-                    let dm = Infinity;
-                    for (const sg of spx)
-                        dm = Math.min(dm, d2s(mid, sg[0], sg[1]));
-                    if (dm < 1.0) nex++;
-                    if (dm > worst) worst = dm;
+                const pt = d.pinTint;
+                const tinted = pt.tinted;
+                if (!tinted.length)
+                    return { ok: false, why: "no tint",
+                             want: want.length };
+                const same = tinted.length === want.length &&
+                    tinted.every((v, i2) => v === want[i2]);
+                // accent-lerp teeth: green-dominant samples (a revert
+                // to stock/white colors fails this)
+                let gN = 0, sN = 0;
+                for (let j = 0; j < tinted.length;
+                     j += Math.max(1, Math.floor(tinted.length / 12))) {
+                    const q = tinted[j]; sN++;
+                    if (ca[q*3+1] > ca[q*3] + 0.08 && ca[q*3+1] > 0.35)
+                        gN++;
                 }
-                return { ok: true, worst, nchk, nex, nseg: spx.length,
-                         npts: pts.length }; }""")
-            if geoLg and geoLg.get("ok"):
-                check("pinned polyline rides the corridor geometry",
-                      geoLg["nchk"] >= 2 and geoLg["worst"] <= 40.0
-                      and geoLg["nex"] >= geoLg["nchk"] * 0.8,
-                      f"worst {geoLg['worst']:.1f}px, exact "
-                      f"{geoLg['nex']}/{geoLg['nchk']} hops, "
-                      f"{geoLg['nseg']} pieces, {geoLg['npts']} pts")
-            elif geoLg:
-                print(f"SKIP geometry check - {geoLg}")
+                return { ok: true, same, nT: tinted.length,
+                         nW: want.length, gN, sN }; }""")
+            if geoT and geoT.get("ok"):
+                check("pin emphasis tints exactly the corridor set",
+                      geoT["same"] and geoT["gN"] >= 1,
+                      f"tinted {geoT['nT']} vs want {geoT['nW']}, "
+                      f"accent {geoT['gN']}/{geoT['sN']} samples")
+            elif geoT:
+                print(f"SKIP on-geometry tint check - {geoT}")
 
             # [issue #85 owner r4] the corridor itself reads selected:
             # covered instances tint toward the accent (sibling = leg
@@ -3500,6 +3552,13 @@ def run_tests(port: int):
                       and tintLg["t"][1] > 0.35,
                       f"piece {tintLg['q']} rgb "
                       f"{[round(v, 2) for v in tintLg['t']]}")
+                # [#196] the LOD serve pass rewrites matrices only -
+                # the instance tint rides it untouched (the leg block
+                # runs with _lodServe on)
+                tSrv = page.evaluate(
+                    "() => window.__dbg.pinTint.tinted.length")
+                check("corridor tint survives the serve pass",
+                      tSrv > 0, f"tinted {tSrv}")
 
             # press on the leg again: the transient tip hides on
             # pointerdown and the pin re-asserts it next frame
@@ -4053,6 +4112,166 @@ def run_tests(port: int):
                 print("SKIP replace-restore - no covered piece")
         else:
             print("SKIP replace-restore - no trunk pin")
+
+        # [issue #196 / skeptic R9b] tint lifecycle convergence law:
+        # trunk pin -> wire pin replace -> Esc must leave EVERY tint
+        # buffer byte-exact stock. The replacing wire's own emphasis
+        # (corridor chain + its arcs) is legitimate while it lives -
+        # a hash compare at the live-pin point false-positives on it
+        # (the R9b dispute) - but nothing may survive dismissal, so
+        # the invariant is pinned at the post-Esc point where any
+        # stale record would necessarily show.
+        stockC = page.evaluate("""() => {
+            const d = window.__dbg;
+            if (!d.fnBus || !d.fnBus.instanceColor || !d.fnLines ||
+                !d.fnLines.geometry ||
+                !d.fnLines.geometry.attributes.instanceColorStart)
+              return null;
+            return {
+              bus: Array.from(d.fnBus.instanceColor.array),
+              cs: Array.from(d.fnLines.geometry.attributes
+                .instanceColorStart.array),
+              ce: Array.from(d.fnLines.geometry.attributes
+                .instanceColorEnd.array) }; }""")
+        pinA2 = None
+        if stockC:
+            for _t in range(3):
+                tc2 = page.evaluate("""() => { const d = window.__dbg;
+                    const el = d.renderer.domElement,
+                          r = el.getBoundingClientRect();
+                    const out = [];
+                    for (let x = 24; x < r.width - 24 && out.length < 10;
+                         x += 40)
+                        for (let y = 70; y < r.height - 24 &&
+                             out.length < 10; y += 40) {
+                            const m = d.pickWireMeta({
+                                clientX: r.left + x, clientY: r.top + y });
+                            if (m && (m.kind === "trunk" || m.kind === "jleg")
+                                && document.elementFromPoint(
+                                    r.left + x, r.top + y) === el)
+                                out.push([Math.round(r.left + x),
+                                          Math.round(r.top + y)]);
+                        }
+                    return out; }""")
+                for c2 in (tc2 or []):
+                    page.mouse.move(c2[0], c2[1])
+                    page.wait_for_timeout(120)
+                    hov = page.evaluate(
+                        "() => ({ hf: window.__dbg.hoveredFn,"
+                        " hv: window.__dbg.hovered })")
+                    if (hov["hf"] is not None and hov["hf"] >= 0) or \
+                       (hov["hv"] is not None and hov["hv"] >= 0):
+                        continue
+                    page.mouse.click(c2[0], c2[1])
+                    try:
+                        page.wait_for_function(
+                            "() => window.__dbg.wirePin &&"
+                            " window.__dbg.wirePin.kind === 'trunk'",
+                            timeout=1200)
+                    except PwTimeout:
+                        continue
+                    pinA2 = page.evaluate("() => window.__dbg.wirePin")
+                    break
+                if pinA2:
+                    break
+        pinB2 = None
+        if pinA2:
+            for _t in range(3):
+                lc2 = page.evaluate("""() => { const d = window.__dbg;
+                    const el = d.renderer.domElement,
+                          r = el.getBoundingClientRect();
+                    const xmax = document.getElementById('mapPane')
+                        .getBoundingClientRect().left - 14;
+                    const out = [];
+                    for (let x = 24; x < xmax && x < r.width - 24 &&
+                         out.length < 12; x += 40)
+                        for (let y = 70; y < r.height - 24 &&
+                             out.length < 12; y += 40) {
+                            const m = d.pickWireMeta({
+                                clientX: r.left + x, clientY: r.top + y });
+                            if (m && (m.kind === "link" || m.kind === "wire")
+                                && document.elementFromPoint(
+                                    r.left + x, r.top + y) === el)
+                                out.push([Math.round(r.left + x),
+                                          Math.round(r.top + y)]);
+                        }
+                    return out; }""")
+                tipR2 = page.evaluate(
+                    "() => { const t = document.getElementById"
+                    "('wireTip'); if (!t || t.style.display === "
+                    "'none') return null; const r = t."
+                    "getBoundingClientRect(); return [r.left, r.top,"
+                    " r.right, r.bottom]; }")
+                for c2 in (lc2 or []):
+                    if tipR2 and tipR2[0] - 24 < c2[0] < tipR2[2] + 24 \
+                       and tipR2[1] - 24 < c2[1] < tipR2[3] + 24:
+                        continue
+                    page.mouse.move(c2[0], c2[1])
+                    page.wait_for_timeout(120)
+                    hov = page.evaluate(
+                        "() => ({ hf: window.__dbg.hoveredFn,"
+                        " hv: window.__dbg.hovered })")
+                    if (hov["hf"] is not None and hov["hf"] >= 0) or \
+                       (hov["hv"] is not None and hov["hv"] >= 0):
+                        continue
+                    page.mouse.click(c2[0], c2[1])
+                    try:
+                        page.wait_for_function(
+                            "() => window.__dbg.wirePin &&"
+                            " (window.__dbg.wirePin.kind === 'link'"
+                            " || window.__dbg.wirePin.kind === 'wire')",
+                            timeout=1200)
+                    except PwTimeout:
+                        continue
+                    pb = page.evaluate("() => window.__dbg.wirePin")
+                    if pb and pb.get("id") != pinA2.get("id"):
+                        pinB2 = pb
+                        break
+                if pinB2:
+                    break
+        if pinA2 and pinB2:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(400)
+            conv = page.evaluate("""(st) => {
+                const d = window.__dbg;
+                let bus = -1, cs = -1, ce = -1;
+                if (d.fnBus && d.fnBus.instanceColor) {
+                    const a = d.fnBus.instanceColor.array;
+                    bus = 0;
+                    for (let i = 0; i < a.length; i++)
+                        if (Math.abs(a[i] - st.bus[i]) > 1e-6) bus++;
+                }
+                const g = d.fnLines && d.fnLines.geometry &&
+                    d.fnLines.geometry.attributes;
+                if (g && g.instanceColorStart) {
+                    const a = g.instanceColorStart.array;
+                    cs = 0;
+                    for (let i = 0; i < a.length; i++)
+                        if (Math.abs(a[i] - st.cs[i]) > 1e-6) cs++;
+                }
+                if (g && g.instanceColorEnd) {
+                    const a = g.instanceColorEnd.array;
+                    ce = 0;
+                    for (let i = 0; i < a.length; i++)
+                        if (Math.abs(a[i] - st.ce[i]) > 1e-6) ce++;
+                }
+                const pt = d.pinTint;
+                return { bus, cs, ce,
+                         rec: pt.tinted.length, arcs: d.pinTint2.length,
+                         dots: d.pinDots,
+                         pin: d.wirePin ? d.wirePin.id : null }; }""",
+                stockC)
+            check("replace->esc converges every tint buffer to stock",
+                  conv["pin"] is None and conv["bus"] == 0 and
+                  conv["cs"] == 0 and conv["ce"] == 0 and
+                  conv["rec"] == 0 and conv["arcs"] == 0 and
+                  conv["dots"] is False,
+                  f"{pinA2['id']} -> {pinB2['id']} -> esc: {conv}")
+        elif stockC:
+            print(f"SKIP convergence law - latches {pinA2 and 'trunk'}"
+                  f" {pinB2 and 'wire'}")
+        else:
+            print("SKIP convergence law - no tint buffers")
 
         # [issue #85 owner r5] the click-slop law: a real hand drifts
         # 5-12px between press and release - before the slop restore

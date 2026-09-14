@@ -1210,27 +1210,61 @@ let pickWireZ = 1;   // NDC depth of the last hit — node-front comparisons
 // read as a "pre-curved collider"), budget chords under their arcs, and
 // dead-end dim (0.012) ink that reads as nothing. Distances score to the
 // INK EDGE (4px trunk beats 2px wire at ties; the quiet tier needs margin).
-// [issue #82] 3D wire pin: persistent highlight of the wire's full path
-// (endpoints emphasized as screen-constant dots). The overlay is rebuilt
-// from the same buffers pickWireMeta reads, updated IN PLACE every frame —
-// it survives camera moves and scene rebuilds, and follows the "no
-// explanation without presence" rule: the ink vanishes with the wire, the
-// pin object itself stays (paint-tier state, never a layout rebuild).
-let pinLine = null, pinPts = null, pinLinePos = null, pinPtsPos = null;
-let pinMisses = 0;   // [issue #84] consecutive unresolved ball-pin frames
-let pinPathPts = null;
+// [issue #82 / #196] 3D wire pin. The emphasis IS the corridor now:
+// the pin tints the wire's SERVING INSTANCES (bus trunk + junction legs
+// + the wire's own arcs) instead of drawing a constructed polyline over
+// them - the highlight rides the real geometry, so curvature and LOD
+// holes can never detach it (owner: the old overlay was "weirdly all
+// over the place"). Endpoint dots stay (screen-constant, fn-box law).
+// [#196] ONE latch paints on BOTH surfaces: a map pin resolves its 3D
+// emphasis here, a ball pin's map twin paints in drawMapPane. The pin's
+// home surface owns pinCover (#83 contract); the other surface's
+// emphasis reads pinCoverX. Every dismissal path clears both because
+// both paints key on the single pin object.
+let pinPts = null, pinPtsPos = null;
+let pinMisses = 0;   // [issue #84/#196] frames NO surface resolved the pin
+let pinCoverX = 0;   // [#196] cross-surface cover (see above)
+let pinTint2 = [];   // [#196] wire-arc tints: {mesh, segs[], orig[[6rgb]]}
+const PIN_TINT = [0.114, 0.914, 0.714];   // #1de9b6 == PIN_ACCENT
+const PIN_TINT_LERP = 0.55;
 // [skeptic #16] roster generation: bumped on every fn-layer rebuild.
 // Ball pins index fnMeta/links/arc buckets - after a refocus those
 // arrays are fresh and the stale indices either throw (#17) or
 // silently "find" ink that is not the pinned thing (a link pin kept
 // its arc alive on the rebuilt roster). A pin dies with its roster.
-let rosterGen = 0;   // [issue #85 owner r4] walked pin polyline (probe hook)
+let rosterGen = 0;   // [issue #85 owner r4] fn-layer generation counter
 let pinTinted = [];      // [issue #85 owner r4] tinted busPts indices
 let pinTintOrig = [];    // parallel [r,g,b] originals for restore
 let pinTintBus = null;   // fnBus the tint was written into (swap guard)
 let pinTintKey = null;   // wirePin.id the tint belongs to
 let pinEp0 = null, pinEp1 = null, pinBoxA = null, pinBoxB = null;
 let pinChA = -1, pinChB = -1;   // chain file pair (probe hook)
+// [#196] resolve a map pin's (file, fn) strings against the LIVE
+// roster - never cache indices across rebuilds (skeptic #17: stale
+// fnMeta reads threw out of tick and stalled the reap). Aggregate
+// boxes carry no single fn, so they never match - the pair corridor
+// fallback carries those pins.
+function pinFnOf(file, name) {
+  if (file == null || file < 0 || !fnMeta) return -1;
+  for (let i = 0; i < fnMeta.length; i++) {
+    const m = fnMeta[i];
+    if (m.file === file && m.name === name && !m.agg) return i;
+  }
+  return -1;
+}
+// [#196] pair-level trunk key: the first corridor in emission order
+// serving the pair either orientation (deterministic)
+function pinPairTrunkKey(A, B) {
+  if (!busPtsMeta || A == null || A < 0 || B == null || B < 0) return null;
+  for (let i = 0; i < busPtsMeta.length; i++) {
+    const m = busPtsMeta[i];
+    if (!m || m.kind !== "trunk") continue;
+    const pp = String(m.k).split(">");
+    if ((+pp[0] === A && +pp[1] === B) || (+pp[0] === B && +pp[1] === A))
+      return String(m.k);
+  }
+  return null;
+}
 function updateBallPin() {
   // [skeptic #16] identity death, independent of ink/tip work: a ball
   // pin from a previous roster generation is meaningless (stale
@@ -1240,16 +1274,7 @@ function updateBallPin() {
     wirePinClear();
     return;
   }
-  if (!pinLine) {
-    pinLinePos = new Float32Array(256 * 3);   // [issue #84] corridor chains are long
-    pinLine = new THREE.Line(
-      new THREE.BufferGeometry().setAttribute("position",
-        new THREE.BufferAttribute(pinLinePos, 3)),
-      // [skeptic #18] one selection language: the 3D overlay joins the
-        // 2D map's PIN_ACCENT (#1de9b6) instead of stray amber
-        new THREE.LineBasicMaterial({ color: 0x1de9b6, transparent: true,
-        opacity: 0.95, depthTest: false }));
-    pinLine.renderOrder = 999; pinLine.frustumCulled = false;
+  if (!pinPts) {
     pinPtsPos = new Float32Array(2 * 3);
     pinPts = new THREE.Points(
       new THREE.BufferGeometry().setAttribute("position",
@@ -1258,282 +1283,202 @@ function updateBallPin() {
         sizeAttenuation: false, transparent: true, opacity: 1,
         depthTest: false }));
     pinPts.renderOrder = 1000; pinPts.frustumCulled = false;
-    scene.add(pinLine); scene.add(pinPts);
+    pinPts.visible = false;   // dots exist only while a pin resolves them
+    scene.add(pinPts);
   }
-  let n = 0;
-  // [issue #84] corridor-complete law: a pin covers the WHOLE chain —
-  // node -> leg -> station -> trunk -> station -> leg -> node — from the
-  // actual start file to the actual end file. Trunk, link and fn-wire
-  // clicks resolve to the same chain: the corridor trunk owning the pair
-  // plus both endpoint files' legs. Clicking any segment of the chain
-  // selects the whole chain; pinCover counts the chain legs resolved.
-  let ep0 = null, ep1 = null, chainCover = 0;
-  let chainPts = null, chainA = -1, chainB = -1;
-  let chainPieces = null, chainTintIdx = null;
-  let boxA = null, boxB = null;
+  // [#196] a rebuilt fn layer swaps the tint targets out from under
+  // the records: drop them (their buffers are gone - a fresh mesh
+  // carries its own stock colors) and force a re-apply so the live
+  // pin re-tints the fresh instances.
+  let dropped = false;
+  if (pinTintBus && fnBus && pinTintBus !== fnBus) {
+    pinTinted = []; pinTintOrig = []; pinTintBus = null; dropped = true;
+  }
+  if (pinTint2.length) {
+    const keep = pinTint2.filter(r =>
+      r.mesh === fnLines || r.mesh === fnQuiet ||
+      (focusArcs && r.mesh === focusArcs.lines));
+    if (keep.length !== pinTint2.length) dropped = true;
+    pinTint2 = keep;
+  }
+  if (dropped) pinTintKey = null;
   // [skeptic #19] restore on ANY tint-key mismatch: a replaced pin
   // (trunk -> wire/link) never dies, so the only path that can put the
-  // corridor back is this head guard - the tint block only ever runs
-  // for corridor pins (chainTintIdx is empty otherwise)
-  if (!wirePin || wirePin.surface !== "ball" ||
-      pinTintKey !== wirePin.id) pinTintRestore();
-  if (wirePin && wirePin.surface === "ball" &&
-      fnBus && fnBus.visible && busPts && busPtsMeta) {
-    let A = -1, B = -1, tk = null;
-    if (wirePin.kind === "trunk") tk = String(wirePin.k);
-    else if (wirePin.kind === "link" && wirePin.li >= 0 &&
-             wirePin.li < links.length) {
+  // corridor back is this head guard
+  if (!wirePin || pinTintKey !== wirePin.id) pinTintRestore();
+  // [#196] collect + tint ONCE per pin identity (and once per fn-layer
+  // rebuild): per-frame cost after that is the misses check below.
+  if (wirePin && pinTintKey !== wirePin.id) {
+    let A = -1, B = -1, tk = null, wa = -1, wb = -1;
+    const idp = String(wirePin.id || "").split("|");
+    if (wirePin.kind === "trunk") {
+      if (wirePin.k != null) tk = String(wirePin.k);
+      else if (wirePin.s != null) { A = +wirePin.s; B = +wirePin.t; }
+    } else if (wirePin.kind === "link" && links &&
+               wirePin.li >= 0 && wirePin.li < links.length) {
       A = links[wirePin.li].s; B = links[wirePin.li].t;
-    } else if (wirePin.kind === "wire" && fnMeta &&
-               wirePin.a >= 0 && wirePin.a < fnMeta.length &&
-               wirePin.b >= 0 && wirePin.b < fnMeta.length) {
-      A = fnMeta[wirePin.a].file; B = fnMeta[wirePin.b].file;
+    } else if (wirePin.kind === "wire") {
+      if (wirePin.a != null && wirePin.a >= 0 && fnMeta &&
+          wirePin.a < fnMeta.length && wirePin.b >= 0 &&
+          wirePin.b < fnMeta.length) {
+        wa = wirePin.a; wb = wirePin.b;
+        A = fnMeta[wa].file; B = fnMeta[wb].file;
+      } else if (idp[0] === "w") {
+        // map wire row "w|sf|sfn|df|dfn|ty": both fns re-resolve from
+        // the id's immutable strings; unresolvable fns (var targets,
+        // aggregates) ride the pair corridor instead
+        wa = pinFnOf(+idp[1], idp[2]);
+        wb = pinFnOf(+idp[3], idp[4]);
+        A = +idp[1]; B = +idp[3];
+      } else if (idp[0] === "S") { A = +idp[1]; B = +idp[2]; }
     }
-    if (!tk && A >= 0) {
-      for (let i = 0; i < busPtsMeta.length; i++) {
-        const m2 = busPtsMeta[i];
-        if (!m2 || m2.kind !== "trunk") continue;
-        const pp = String(m2.k).split(">");
-        if ((+pp[0] === A && +pp[1] === B) || (+pp[0] === B && +pp[1] === A)) {
-          tk = String(m2.k); break;
-        }
-      }
-    }
+    if (!tk && A >= 0 && B >= 0) tk = pinPairTrunkKey(A, B);
+    let chainCover = 0, refA = null, refB = null;
+    const chainTintIdx = [];
     if (tk) {
       const tp = tk.split(">"); A = +tp[0]; B = +tp[1];
       const prefixes = [];
       for (const S of (fnStationsArr || []))
-        if (S.tks.indexOf(tk) >= 0) prefixes.push("L|" + S.fi + "|" + S.id + "|");
-      const mx = fnBus.instanceMatrix.array;
-      chainPts = [];
-      chainPieces = [];
-      chainTintIdx = [];
-      for (let i = 0; i < busPts.length; i++) {
-        const m2 = busPtsMeta[i];
-        if (!m2) continue;
-        const k2 = String(m2.k || "");
-        let hit = false;
-        if (m2.kind === "trunk" && k2 === tk) hit = true;
-        else if (prefixes.length && k2.charCodeAt(0) === 76) {   // leg key
-          for (const pref of prefixes) if (k2.startsWith(pref)) { hit = true; break; }
+        if (S.tks.indexOf(tk) >= 0)
+          prefixes.push("L|" + S.fi + "|" + S.id + "|");
+      if (fnBus && fnBus.visible && busPts && busPtsMeta &&
+          fnBus.instanceMatrix) {
+        const mx = fnBus.instanceMatrix.array;
+        for (let i = 0; i < busPts.length; i++) {
+          const m2 = busPtsMeta[i];
+          if (!m2) continue;
+          const k2 = String(m2.k || "");
+          let hit = false;
+          if (m2.kind === "trunk" && k2 === tk) hit = true;
+          else if (prefixes.length && k2.charCodeAt(0) === 76)   // leg key
+            for (const pref of prefixes)
+              if (k2.startsWith(pref)) { hit = true; break; }
+          if (!hit) continue;
+          // pick/render parity: a culled instance parked at scale ~0 stays out
+          if (Math.hypot(mx[i*16], mx[i*16+1], mx[i*16+2]) <= 0.001) continue;
+          chainTintIdx.push(i);
+          const s2 = busPts[i];
+          if (!refA) refA = s2.a;
+          refB = s2.b;   // extremes in emission order (deterministic)
+          chainCover++;
         }
-        if (!hit) continue;
-        // pick/render parity: a culled instance parked at scale ~0 stays out
-        if (Math.hypot(mx[i*16], mx[i*16+1], mx[i*16+2]) <= 0.001) continue;
-        const s2 = busPts[i];
-        // [issue #85 owner r4] collect pieces; the fill walks them into
-        // one continuous path - emission order is station-grouped and
-        // chords the polyline straight across the corridor
-        chainPieces.push([s2.a, s2.b]);
-        chainTintIdx.push(i);
-        chainCover++;
       }
     }
-    chainA = A; chainB = B;
-  }
-  if (wirePin && wirePin.surface === "ball") {
-    if (chainPieces && chainPieces.length) {
-      // [issue #84] anchor the chain at the FN BOXES the legs serve
-      // (fnMeta[i].p = hover/click anchor = rendered box position). The
-      // corridor's own geometry ends at station dots on the file spheres;
-      // the visible terminus the owner reads is the box. A fn-wire pin
-      // knows its exact fns (wirePin.a/b); a trunk/link pin takes each
-      // file's box nearest to that side's chain end (deterministic:
-      // nearest, ties by fnMeta index).
-      const boxOf = (file, refPt) => {
-        if (file < 0 || !fnMeta || !fnMeta.length) return null;
-        let best = null, bd2 = Infinity;
-        for (let i2 = 0; i2 < fnMeta.length; i2++) {
-          const m2 = fnMeta[i2];
-          if (m2.file !== file || !m2.p) continue;
-          if (m2.agg && !m2.count) continue;   // scale-0 stub, invisible
-          if (!m2.p[0] && !m2.p[1] && !m2.p[2]) continue;   // unfilled
-          const d2 = (m2.p[0] - refPt[0]) ** 2 + (m2.p[1] - refPt[1]) ** 2 +
-                     (m2.p[2] - refPt[2]) ** 2;
-          if (d2 < bd2 - 1e-9) { bd2 = d2; best = m2.p; }
-        }
-        return best;
-      };
-      boxA = null; boxB = null;
-      if (wirePin.kind === "wire" && fnMeta &&
-          wirePin.a >= 0 && wirePin.a < fnMeta.length &&
-          wirePin.b >= 0 && wirePin.b < fnMeta.length) {
-        const pa = fnMeta[wirePin.a].p, pb = fnMeta[wirePin.b].p;
-        if (pa && (pa[0] || pa[1] || pa[2])) boxA = pa;
-        if (pb && (pb[0] || pb[1] || pb[2])) boxB = pb;
-      } else if (chainA >= 0 && chainB >= 0) {
-        // [owner r4 hotfix] chainPts is BUILT by the walk below - the
-        // reference ends come from the raw pieces (pre-fix this read
-        // undefined and threw out of tick: cover 0, dead rAF, reaped pin)
-        boxA = boxOf(chainA, chainPieces[0][0]);
-        boxB = boxOf(chainB, chainPieces[chainPieces.length - 1][1]);
-      }
-      // [issue #85 owner r4] walk the pieces into one continuous path
-      // anchor-to-anchor: the overlay must lie ON the corridor geometry
-      // it emphasizes, not chord between emission-order waypoints
-      // (owner: "straight from a to b"). Greedy nearest-endpoint walk;
-      // strict < keeps first-index ties (deterministic every frame).
-      const wpts = [];
-      let cur = boxA ? boxA.slice() : chainPieces[0][0].slice();
-      wpts.push(cur.slice());
-      let left = chainPieces.length;
-      const used = new Array(chainPieces.length).fill(false);
-      while (left > 0) {
-        // prefer a topological join: corridor pieces share exact
-        // endpoints (bollards, junctions, trunk splits), so an endpoint
-        // coinciding with cur is the true next piece - pure nearest
-        // greedy mis-joins same-bollard legs of other branches
-        let bi2 = -1, bfar = null, exact = false, bd2 = Infinity;
-        for (let p2 = 0; p2 < chainPieces.length; p2++) {
-          if (used[p2]) continue;
-          const e0 = chainPieces[p2][0], e1 = chainPieces[p2][1];
-          const d0 = (e0[0]-cur[0])*(e0[0]-cur[0]) +
-                     (e0[1]-cur[1])*(e0[1]-cur[1]) +
-                     (e0[2]-cur[2])*(e0[2]-cur[2]);
-          const d1 = (e1[0]-cur[0])*(e1[0]-cur[0]) +
-                     (e1[1]-cur[1])*(e1[1]-cur[1]) +
-                     (e1[2]-cur[2])*(e1[2]-cur[2]);
-          const dd = d0 <= d1 ? d0 : d1;
-          const ex0 = d0 <= 1e-6, ex1 = d1 <= 1e-6;
-          if (ex0 || ex1) {
-            if (!exact || dd < bd2 - 1e-9) {
-              exact = true; bd2 = dd; bi2 = p2; bfar = ex0 ? e1 : e0;
-            }
-            continue;
-          }
-          if (exact) continue;
-          if (dd < bd2 - 1e-9) { bd2 = dd; bi2 = p2; bfar = d0 <= d1 ? e1 : e0; }
-        }
-        if (bi2 < 0) break;
-        used[bi2] = true; left--;
-        cur = bfar;
-        wpts.push(cur.slice());
-      }
-      if (boxB) wpts.push(boxB.slice());
-      chainPts = wpts;
-      for (let i2 = 0; i2 < chainPts.length && n < 256; i2++) {
-        pinLinePos[n*3] = chainPts[i2][0]; pinLinePos[n*3+1] = chainPts[i2][1];
-        pinLinePos[n*3+2] = chainPts[i2][2]; n++;
-      }
-      pinPathPts = chainPts.map(p3 => p3.slice());
-      // [issue #85 owner r4] the corridor itself reads selected: lerp the
-      // covered instances toward the pin accent (0.114/0.914/0.714 =
-      // #1de9b6). One shot per pin; originals captured from the buffer
-      // before the write; the LOD serve pass only rewrites matrices, so
-      // this paint-tier tint never fights culling or picking.
-      if (fnBus && fnBus.instanceColor && chainTintIdx.length &&
-          pinTintKey !== wirePin.id) {
-        pinTintRestore();
-        pinTinted = chainTintIdx.slice();
-        pinTintBus = fnBus;
-        pinTintKey = wirePin.id;
-        const ca = fnBus.instanceColor.array;
-        for (const q of pinTinted)
-          pinTintOrig.push([ca[q*3], ca[q*3+1], ca[q*3+2]]);
-        for (let q2 = 0; q2 < pinTinted.length; q2++) {
-          const ix = pinTinted[q2], oc = pinTintOrig[q2];
-          ca[ix*3]   = oc[0] + (0.114 - oc[0]) * 0.55;
-          ca[ix*3+1] = oc[1] + (0.914 - oc[1]) * 0.55;
-          ca[ix*3+2] = oc[2] + (0.714 - oc[2]) * 0.55;
-        }
-        fnBus.instanceColor.needsUpdate = true;
-      }
-      // endpoint emphasis: the chain's extreme pair — deterministic max
-      // mutual distance, ties broken by index order (stable every frame)
-      let bi = 0, bj = chainPts.length - 1, bd = -1;
-      for (let i2 = 0; i2 < chainPts.length; i2++)
-        for (let j2 = i2 + 1; j2 < chainPts.length; j2++) {
-          const d2 = (chainPts[i2][0] - chainPts[j2][0]) ** 2 +
-                     (chainPts[i2][1] - chainPts[j2][1]) ** 2 +
-                     (chainPts[i2][2] - chainPts[j2][2]) ** 2;
-          if (d2 > bd + 1e-9) { bd = d2; bi = i2; bj = j2; }
-        }
-      ep0 = boxA || chainPts[bi]; ep1 = boxB || chainPts[bj];
-    } else if (wirePin.kind === "link") {
-      const li = wirePin.li;
-      // no edgeK guard here: the pin is explicit user intent and the ink
-      // pass flickers near the distance threshold — the overlay follows the
-      // pinned wire as long as its geometry resolves (2D parity: pin
-      // emphasis outranks zoom-gated ink tiers)
-      if (li >= 0 && li < links.length &&
-          bucketOf[li] >= 0 && bucketOf[li] < bucketPosIB.length) {
-        const arr = bucketPosIB[bucketOf[li]].array;
-        const fo = hwSlot[li] >= 0 ? hwSlot[li] : slotOf[li] * 6;
-        const nseg = hwSlot[li] >= 0 ? 16 : 1;
-        for (let s = 0; s < nseg && n < 16; s++) {
-          pinLinePos[n*3] = arr[fo + s*6];
-          pinLinePos[n*3+1] = arr[fo + s*6 + 1];
-          pinLinePos[n*3+2] = arr[fo + s*6 + 2]; n++;
-        }
-        pinLinePos[n*3] = arr[fo + (nseg-1)*6 + 3];
-        pinLinePos[n*3+1] = arr[fo + (nseg-1)*6 + 4];
-        pinLinePos[n*3+2] = arr[fo + (nseg-1)*6 + 5]; n++;
-      }
-    } else if (wirePin.kind === "trunk") {
-      // 3D trunk conduit: chain its busPts segments (pick parity — a
-      // culled instance parked at scale ~0 stays hidden)
-      if (fnBus && fnBus.visible && busPts && busPtsMeta) {
-        const mx = fnBus.instanceMatrix.array;
-        for (let i = 0; i < busPts.length && n < 16; i++) {
-          const m2 = busPtsMeta[i];
-          if (!m2 || m2.kind !== "trunk" ||
-              String(m2.k) !== String(wirePin.k)) continue;
-          const s2 = busPts[i];
-          if (Math.hypot(mx[i*16], mx[i*16+1], mx[i*16+2]) <= 0.001) continue;
-          if (!n) { pinLinePos[0] = s2.a[0]; pinLinePos[1] = s2.a[1];
-                    pinLinePos[2] = s2.a[2]; n = 1; }
-          pinLinePos[n*3] = s2.b[0]; pinLinePos[n*3+1] = s2.b[1];
-          pinLinePos[n*3+2] = s2.b[2]; n++;
-        }
-      }
-    } else if (wirePin.kind === "wire") {
-      // fn wire: its arc is a group of segments in the fn line meshes —
-      // find the group by meta identity, chain its segment endpoints
-      for (const mesh of [fnLines, fnQuiet, focusArcs && focusArcs.lines]) {
+    pinChA = A; pinChB = B;
+    // [#196] the wire's own arcs: every call-site arc of the fn pair
+    // across the wire meshes - the wire itself reads selected, not just
+    // its corridor. Line2 vertex colors live in the per-instance
+    // instanceColorStart/End attributes (setColors buffers).
+    let arcN = 0;
+    if (wirePin.kind === "wire" && wa >= 0 && wb >= 0) {
+      for (const mesh of [fnLines, fnQuiet,
+                          focusArcs && focusArcs.lines]) {
         if (!mesh || !mesh.visible) continue;
-        const a2 = mesh.geometry.attributes.instanceStart.array;
+        const g2 = mesh.geometry;
+        if (!g2 || !g2.attributes.instanceColorStart ||
+            !g2.attributes.instanceColorEnd ||
+            !g2.attributes.instanceStart) continue;
         const meta2 = mesh.userData.meta || [];
         const per2 = mesh.userData.seg || 8;
+        const nseg2 = g2.attributes.instanceStart.count;
         for (let g = 0; g < meta2.length; g++) {
           const m2 = meta2[g];
-          if (!m2 || m2.kind !== "wire" || m2.a !== wirePin.a ||
-              m2.b !== wirePin.b || m2.ln !== wirePin.ln) continue;
-          const last = Math.min(g * per2 + per2, a2.length / 6);
-          for (let i2 = g * per2; i2 < last && n < 16; i2++) {
-            const o2 = i2 * 6;
-            pinLinePos[n*3] = a2[o2]; pinLinePos[n*3+1] = a2[o2+1];
-            pinLinePos[n*3+2] = a2[o2+2]; n++;
+          if (!m2 || m2.kind !== "wire" || m2.a !== wa || m2.b !== wb)
+            continue;
+          const first = g * per2;
+          const last = Math.min(first + per2, nseg2);
+          if (first >= last) continue;
+          const cs = g2.attributes.instanceColorStart.array;
+          const ce = g2.attributes.instanceColorEnd.array;
+          const rec = { mesh: mesh, segs: [], orig: [] };
+          for (let i2 = first; i2 < last; i2++) {
+            rec.segs.push(i2);
+            rec.orig.push([cs[i2*3], cs[i2*3+1], cs[i2*3+2],
+                           ce[i2*3], ce[i2*3+1], ce[i2*3+2]]);
+            cs[i2*3]   += (PIN_TINT[0] - cs[i2*3])   * PIN_TINT_LERP;
+            cs[i2*3+1] += (PIN_TINT[1] - cs[i2*3+1]) * PIN_TINT_LERP;
+            cs[i2*3+2] += (PIN_TINT[2] - cs[i2*3+2]) * PIN_TINT_LERP;
+            ce[i2*3]   += (PIN_TINT[0] - ce[i2*3])   * PIN_TINT_LERP;
+            ce[i2*3+1] += (PIN_TINT[1] - ce[i2*3+1]) * PIN_TINT_LERP;
+            ce[i2*3+2] += (PIN_TINT[2] - ce[i2*3+2]) * PIN_TINT_LERP;
           }
-          const o3 = (last - 1) * 6;
-          pinLinePos[n*3] = a2[o3+3]; pinLinePos[n*3+1] = a2[o3+4];
-          pinLinePos[n*3+2] = a2[o3+5]; n++;
-          break;
+          g2.attributes.instanceColorStart.needsUpdate = true;
+          g2.attributes.instanceColorEnd.needsUpdate = true;
+          pinTint2.push(rec);
+          arcN++;
         }
-        if (n) break;
       }
     }
+    // corridor chain tint (the d6295ac pattern): originals captured
+    // from the buffer before the write; the LOD serve pass only
+    // rewrites matrices, so this paint-tier tint never fights culling
+    // or picking (pickWireMeta is geometry-only, color-blind)
+    if (chainTintIdx.length && fnBus && fnBus.instanceColor) {
+      pinTinted = chainTintIdx.slice();
+      pinTintBus = fnBus;
+      const ca = fnBus.instanceColor.array;
+      for (const q of pinTinted)
+        pinTintOrig.push([ca[q*3], ca[q*3+1], ca[q*3+2]]);
+      for (let q2 = 0; q2 < pinTinted.length; q2++) {
+        const ix = pinTinted[q2], oc = pinTintOrig[q2];
+        ca[ix*3]   = oc[0] + (PIN_TINT[0] - oc[0]) * PIN_TINT_LERP;
+        ca[ix*3+1] = oc[1] + (PIN_TINT[1] - oc[1]) * PIN_TINT_LERP;
+        ca[ix*3+2] = oc[2] + (PIN_TINT[2] - oc[2]) * PIN_TINT_LERP;
+      }
+      fnBus.instanceColor.needsUpdate = true;
+    }
+    pinTintKey = wirePin.id;
+    // [issue #84] endpoint law: both termini sit ON the fn boxes the
+    // legs serve (owner: 'from the actual start function to the actual
+    // end function'). A fn-wire pin knows its exact fns; a trunk/link
+    // pin takes each file's box nearest to that side's chain extreme
+    // (deterministic: nearest, ties by fnMeta index).
+    const boxOf = (file, refPt) => {
+      if (file < 0 || !fnMeta || !fnMeta.length) return null;
+      let best = null, bd2 = Infinity;
+      for (let i2 = 0; i2 < fnMeta.length; i2++) {
+        const m2 = fnMeta[i2];
+        if (m2.file !== file || !m2.p) continue;
+        if (m2.agg && !m2.count) continue;   // scale-0 stub, invisible
+        if (!m2.p[0] && !m2.p[1] && !m2.p[2]) continue;   // unfilled
+        const d2 = (m2.p[0] - refPt[0]) ** 2 +
+                   (m2.p[1] - refPt[1]) ** 2 +
+                   (m2.p[2] - refPt[2]) ** 2;
+        if (d2 < bd2 - 1e-9) { bd2 = d2; best = m2.p; }
+      }
+      return best;
+    };
+    pinBoxA = pinBoxB = null;
+    if (wirePin.kind === "wire" && wa >= 0 && wb >= 0 && fnMeta &&
+        wa < fnMeta.length && wb < fnMeta.length) {
+      const pa = fnMeta[wa].p, pb = fnMeta[wb].p;
+      if (pa && (pa[0] || pa[1] || pa[2])) pinBoxA = pa;
+      if (pb && (pb[0] || pb[1] || pb[2])) pinBoxB = pb;
+    } else if (A >= 0 && B >= 0 && refA && refB) {
+      pinBoxA = boxOf(A, refA);
+      pinBoxB = boxOf(B, refB);
+    }
+    pinEp0 = pinBoxA; pinEp1 = pinBoxB;
+    const covB = chainCover + arcN;
+    if (wirePin.surface === "ball") pinCover = covB;
+    else pinCoverX = covB;
+    pinPts.visible = !!(pinEp0 || pinEp1);
+    if (pinEp0) { pinPtsPos[0] = pinEp0[0]; pinPtsPos[1] = pinEp0[1];
+                  pinPtsPos[2] = pinEp0[2]; }
+    if (pinEp1) { pinPtsPos[3] = pinEp1[0]; pinPtsPos[4] = pinEp1[1];
+                  pinPtsPos[5] = pinEp1[2]; }
+    if (pinEp0 || pinEp1)
+      pinPts.geometry.attributes.position.needsUpdate = true;
   }
-  const on = n > 1;
-  pinLine.visible = pinPts.visible = on;
-  if (wirePin && wirePin.surface === "ball") {
-    // skeptic #5: reap a ball pin that stopped resolving (focus change
-    // rebuilt the fn layer out from under it) — invisible stale selection
-    if (on) pinMisses = 0;
+  // [#196] reap: a pin lives while ANY surface resolves it. 3D-side
+  // death alone no longer kills a map-carried pin (and vice versa);
+  // nothing resolving anywhere for ~1s means the entities are gone.
+  if (wirePin) {
+    const ballCov = wirePin.surface === "ball" ? pinCover : pinCoverX;
+    const mapCov = wirePin.surface === "map" ? pinCover : pinCoverX;
+    if (ballCov > 0 || (mapVisible && mapCov > 0)) pinMisses = 0;
     else if (++pinMisses > 60) { pinMisses = 0; wirePinClear(); return; }
   }
-  if (on) {
-    pinLine.geometry.setDrawRange(0, n);
-    const e0 = ep0 || [pinLinePos[0], pinLinePos[1], pinLinePos[2]];
-    const e1 = ep1 || [pinLinePos[(n-1)*3], pinLinePos[(n-1)*3+1],
-                       pinLinePos[(n-1)*3+2]];
-    pinPtsPos[0] = e0[0]; pinPtsPos[1] = e0[1]; pinPtsPos[2] = e0[2];
-    pinPtsPos[3] = e1[0]; pinPtsPos[4] = e1[1]; pinPtsPos[5] = e1[2];
-    pinLine.geometry.attributes.position.needsUpdate = true;
-    pinPts.geometry.attributes.position.needsUpdate = true;
-    if (wirePin) pinCover = chainCover > 0 ? chainCover : 1;
-  } else if (wirePin && wirePin.surface === "ball") pinCover = 0;
-  pinEp0 = ep0; pinEp1 = ep1; pinBoxA = boxA; pinBoxB = boxB;
-  pinChA = chainA; pinChB = chainB;
   // [issue #85 owner r2] persistent from->to: while a ball pin lives
   // the tip surface carries the pin description. A fresh hover owns
   // the surface until the press hides it; the pin re-asserts next
@@ -5326,7 +5271,14 @@ _JS_PINS = r"""// re-create the records; keys re-resolve against the fresh array
 let wirePin = null;    // {surface:'map'|'ball', kind:'wire'|'trunk'|'link', id, menu} | null
 let pinCover = 0;      // polylines the last paint emphasized (mapInfo probe)
 const wireKeyOf = w => "w|" + w.sf + "|" + w.sfn + "|" + w.df + "|" + w.dfn + "|" + w.ty;
-function wirePinSet(p) { wirePin = p; pinCover = 0; drawMapPane(); }
+function wirePinSet(p) {
+  wirePin = p;
+  // [#196] both covers re-resolve for the new identity; a same-id
+  // re-latch re-applies too (restore nulls the tint key)
+  pinCover = 0; pinCoverX = 0;
+  if (pinTintKey != null) pinTintRestore();
+  drawMapPane();
+}
 // [issue #85 owner r1] pinned-wire emphasis: the app accent (the same
 // teal the search box, focus rows and bus tips use) - white-on-white
 // pins were indistinguishable from the ambient wire mass. One constant
@@ -5336,6 +5288,23 @@ function pinTintRestore() {
   // [issue #85 owner r4] put the corridor instances' colors back. Skips a
   // rebuilt fnBus (indices would mismatch a fresh buffer); the new mesh
   // carries its own colors.
+  // [#196] wire-arc tints restore the same way: per-record originals,
+  // mesh-identity guarded (a rebuilt mesh carries stock colors).
+  for (const r of pinTint2) {
+    const g2 = r.mesh && r.mesh.geometry;
+    if (!g2 || !g2.attributes.instanceColorStart ||
+        !g2.attributes.instanceColorEnd) continue;
+    const cs = g2.attributes.instanceColorStart.array;
+    const ce = g2.attributes.instanceColorEnd.array;
+    for (let q = 0; q < r.segs.length; q++) {
+      const ix = r.segs[q], oc = r.orig[q];
+      cs[ix*3] = oc[0]; cs[ix*3+1] = oc[1]; cs[ix*3+2] = oc[2];
+      ce[ix*3] = oc[3]; ce[ix*3+1] = oc[4]; ce[ix*3+2] = oc[5];
+    }
+    g2.attributes.instanceColorStart.needsUpdate = true;
+    g2.attributes.instanceColorEnd.needsUpdate = true;
+  }
+  pinTint2 = [];
   if (!pinTinted.length) return;
   if (pinTintBus && fnBus && pinTintBus === fnBus && fnBus.instanceColor) {
     const ca = fnBus.instanceColor.array;
@@ -5350,7 +5319,8 @@ function pinTintRestore() {
 function wirePinClear() {
   if (!wirePin) return;
   pinTintRestore();
-  wirePin = null; pinCover = 0;
+  wirePin = null; pinCover = 0; pinCoverX = 0;
+  if (pinPts) pinPts.visible = false;
   // [issue #85 owner r2] the persistent pin tip dies with the pin on
   // every dismissal path (esc, right-click, void, refocus, reap)
   hideWireTip();
@@ -7390,66 +7360,143 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     ctx.lineWidth = 1;
     ctx.stroke();
   });
-  // [issue #82] pinned-wire emphasis: re-stroke the resolved path ON TOP
-  // at full emphasis (the pin is explicit user intent - it outranks the
-  // zoom-gated fine-ink tiers, like structure ink) with white-ringed
-  // endpoint dots. The key re-resolves on every paint, so pan/zoom/
-  // rebuild all keep the highlight alive; nothing here touches the layout.
-  if (wirePin && wirePin.surface === "map") pinCover = 0;
-  if (wirePin && wirePin.surface === "map" && wirePin.kind === "wire" &&
-      wirePin.id.charCodeAt(0) === 83 /* "S" */) {
-    // [issue #84] spine single/leader pair stroke: stroke the spine itself
-    const ps = L.spines.find(x2 => !x2.hub && x2.s === wirePin.s &&
-                                   x2.t === wirePin.t && x2.wty === wirePin.wty);
-    if (ps && ps.pts && ps.pts.length > 1) {
-      ctx.setLineDash([]);
-      // [issue #85 owner r1] emphasis is the accent, not the wire's own
-      // type color (call wires ARE the white mass the pin hides in)
-      seg(ps, PIN_ACCENT, 3, null, Math.max(dim(ps.s, ps.t), 0.95));
-      pinCover = 1;
-      ctx.globalAlpha = 1;
-      ctx.lineWidth = 1.4; ctx.strokeStyle = "#fff"; ctx.fillStyle = PIN_ACCENT;
-      const pe = ps.pts[ps.pts.length - 1];
-      for (const [ex, ey] of [ps.pts[0], pe]) {
-        ctx.beginPath(); ctx.arc(ex, ey, 3.4, 0, Math.PI * 2);
-        ctx.fill(); ctx.stroke();
+  // [issue #82/#196] pinned-wire emphasis: re-stroke the resolved path
+  // ON TOP at full emphasis (the pin is explicit user intent - it
+  // outranks the zoom-gated fine-ink tiers, like structure ink) with
+  // white-ringed endpoint dots. The key re-resolves on every paint, so
+  // pan/zoom/rebuild all keep the highlight alive; nothing here touches
+  // the layout. [#196] the resolver is surface-agnostic: a ball pin's
+  // map twin paints from its pair/fn identity, a map pin paints as
+  // before; the home surface owns pinCover, the other pinCoverX.
+  let pinCovM = 0;
+  const pinTgts = [];
+  if (wirePin && L) {
+    const pid = String(wirePin.id || "");
+    const pfx = pid.charCodeAt(0);
+    if (wirePin.kind === "wire" && pfx !== 83 /* not "S" */) {
+      // map wire pins are "w|..." rows (exact key); ball wire pins are
+      // "F|a|b|ln" - the map row(s) of that fn pair (any wire type),
+      // else the pair's trunk corridors / singles / plain rows
+      if (wirePin.surface === "map") {
+        const pw = L.wires.find(x => wireKeyOf(x) === wirePin.id);
+        if (pw) pinTgts.push({ w: pw });
+      } else {
+        // "F|a|b|ln": a = idp[1], b = idp[2] (idp[3] is the LINE)
+        const idp = pid.split("|");
+        if (fnMeta && +idp[1] >= 0 && +idp[1] < fnMeta.length &&
+            +idp[2] >= 0 && +idp[2] < fnMeta.length &&
+            fnMeta[+idp[1]] && fnMeta[+idp[2]]) {
+          const sf = fnMeta[+idp[1]].file, df = fnMeta[+idp[2]].file;
+          const sfn = fnMeta[+idp[1]].name, dfn = fnMeta[+idp[2]].name;
+          for (const x of L.wires)
+            if (x.sf === sf && x.sfn === sfn && x.df === df && x.dfn === dfn)
+              pinTgts.push({ w: x });
+          if (!pinTgts.length)
+            for (const sp of L.spines)
+              if ((sp.hub === "trunk" || !sp.hub) &&
+                  sp.pts && sp.pts.length > 1 &&
+                  ((sp.s === sf && sp.t === df) ||
+                   (sp.s === df && sp.t === sf))) pinTgts.push({ sp: sp });
+          if (!pinTgts.length)
+            // small pairs draw as plain wire rows (no spine at all)
+            for (const x of L.wires)
+              if ((x.sf === sf && x.df === df) ||
+                  (x.sf === df && x.df === sf)) pinTgts.push({ w: x });
+        }
+      }
+    } else if (wirePin.kind === "wire" && pfx === 83 /* "S" */) {
+      // [issue #84] spine single/leader pair stroke: stroke the spine itself
+      const ps = L.spines.find(x2 => !x2.hub && x2.s === wirePin.s &&
+                                     x2.t === wirePin.t &&
+                                     x2.wty === wirePin.wty &&
+                                     x2.pts && x2.pts.length > 1);
+      if (ps) pinTgts.push({ sp: ps, single: true });
+    } else if (wirePin.kind === "trunk" || wirePin.kind === "link") {
+      // [issue #82] trunk set: the corridor AND its taps. A map trunk
+      // pin keys (s,t,wty) exactly; a ball trunk/link pin is pair-level
+      // ("K|s>t" / link li) and matches every corridor of the pair,
+      // either orientation (deterministic: spine order)
+      let ts = wirePin.s, tt = wirePin.t;
+      if (ts == null && wirePin.k != null) {
+        const pp = String(wirePin.k).split(">"); ts = +pp[0]; tt = +pp[1];
+      }
+      if (ts == null && wirePin.kind === "link" && links &&
+          wirePin.li >= 0 && wirePin.li < links.length) {
+        ts = links[wirePin.li].s; tt = links[wirePin.li].t;
+      }
+      if (ts != null) {
+        if (wirePin.wty != null) {
+          const tr = L.spines.find(sp => sp.hub === "trunk" &&
+            sp.pts && sp.pts.length > 1 &&
+            sp.s === ts && sp.t === tt && sp.wty === wirePin.wty);
+          if (tr) pinTgts.push({ sp: tr });
+        } else {
+          // trunk corridors first; a pair the map drew as singles
+          // (below the trunk admission threshold) still emphasizes -
+          // the pair identity is what the pin carries
+          for (const sp of L.spines)
+            if (sp.hub === "trunk" && sp.pts && sp.pts.length > 1 &&
+                ((sp.s === ts && sp.t === tt) ||
+                 (sp.s === tt && sp.t === ts))) pinTgts.push({ sp: sp });
+          if (!pinTgts.length)
+            for (const sp of L.spines)
+              if (!sp.hub && sp.pts && sp.pts.length > 1 &&
+                  ((sp.s === ts && sp.t === tt) ||
+                   (sp.s === tt && sp.t === ts))) pinTgts.push({ sp: sp });
+          if (!pinTgts.length)
+            // small pairs draw as plain wire rows (no spine at all)
+            for (const x of L.wires)
+              if ((x.sf === ts && x.df === tt) ||
+                  (x.sf === tt && x.df === ts)) pinTgts.push({ w: x });
+        }
       }
     }
   }
-  if (wirePin && wirePin.surface === "map" && wirePin.kind === "wire") {
-    const pw = L.wires.find(x => wireKeyOf(x) === wirePin.id);
-    if (pw) {
+  for (const T of pinTgts) {
+    if (T.w) {
+      const pw = T.w;
       ctx.setLineDash([]);
       // [issue #85 owner r1] accent emphasis (see PIN_ACCENT)
       seg(pw, PIN_ACCENT, 3, pw.back ? [2, 3] : null, Math.max(dim(pw.sf, pw.df), 0.95));
-      pinCover = 1;
+      pinCovM++;
       ctx.globalAlpha = 1;
-      ctx.lineWidth = 1.4;
-      ctx.strokeStyle = "#fff";
-      ctx.fillStyle = PIN_ACCENT;
+      ctx.lineWidth = 1.4; ctx.strokeStyle = "#fff"; ctx.fillStyle = PIN_ACCENT;
       for (const [ex, ey] of [pw.pts[0], [pw.tx, pw.ty]]) {
         ctx.beginPath();
         ctx.arc(ex, ey, 3.4, 0, Math.PI * 2);
         ctx.fill(); ctx.stroke();
       }
-    }
-  } else if (wirePin && wirePin.surface === "map" &&
-             wirePin.kind === "trunk") {
-    // [issue #82] trunk set: the corridor AND its taps — the enumerated
-    // set the pin selected; endpoints ringed like wire pins
-    const tr = mapLayout.spines.find(sp => sp.hub === "trunk" &&
-      sp.s === wirePin.s && sp.t === wirePin.t && sp.wty === wirePin.wty);
-    if (tr) {
+    } else if (T.single || !T.sp.hub) {
+      // [issue #84] spine single/leader pair stroke
+      const ps = T.sp;
+      if (ps && ps.pts && ps.pts.length > 1) {
+        ctx.setLineDash([]);
+        // [issue #85 owner r1] emphasis is the accent, not the wire's own
+        // type color (call wires ARE the white mass the pin hides in)
+        seg(ps, PIN_ACCENT, 3, null, Math.max(dim(ps.s, ps.t), 0.95));
+        pinCovM++;
+        ctx.globalAlpha = 1;
+        ctx.lineWidth = 1.4; ctx.strokeStyle = "#fff"; ctx.fillStyle = PIN_ACCENT;
+        const pe = ps.pts[ps.pts.length - 1];
+        for (const [ex, ey] of [ps.pts[0], pe]) {
+          ctx.beginPath(); ctx.arc(ex, ey, 3.4, 0, Math.PI * 2);
+          ctx.fill(); ctx.stroke();
+        }
+      }
+    } else if (T.sp.hub === "trunk") {
+      // [issue #82] trunk set: the corridor AND its taps - the enumerated
+      // set the pin selected; endpoints ringed like wire pins
+      const tr = T.sp;
       const wT = Math.max(Math.min(2 + 0.85 *
         Math.log2(tr.flowSum || tr.trunkW || 2), 5.5) * 1.6, 5 / mapZ);
       ctx.setLineDash([]);
       // [issue #85 owner r1] accent emphasis (see PIN_ACCENT)
       seg(tr, PIN_ACCENT, wT, [], Math.max(dim(tr.s, tr.t), 0.95));
-      pinCover = 1;
+      pinCovM++;
       mapLayout.spines.forEach(sp2 => {
         if (sp2.hub === "tap" && sp2.tapBus && sp2.tapBus.trunk === tr) {
           seg(sp2, PIN_ACCENT, 2, [], 0.9);
-          pinCover++;
+          pinCovM++;
         }
       });
       ctx.globalAlpha = 1;
@@ -7463,6 +7510,10 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
         ctx.fill(); ctx.stroke();
       }
     }
+  }
+  if (wirePin) {
+    if (wirePin.surface === "map") pinCover = pinCovM;
+    else pinCoverX = pinCovM;
   }
   ctx.globalAlpha = 1;
   ctx.globalAlpha = 1;
@@ -7878,6 +7929,7 @@ const mapInfo = () => {
     // current paint emphasizes (wire: 1; trunk set: trunk + taps)
     pin: wirePin ? { surface: wirePin.surface, kind: wirePin.kind, id: wirePin.id } : null,
     pinCover,
+    pinCoverX,   // [#196] cross-surface emphasis cover
   };
 };
 document.getElementById("bGround").onclick = e => {
@@ -8663,9 +8715,18 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get jDotArrays() { return { of: fnJDotOf, st: fnJDotSt, legs: fnJDotLegs, key: fnJDotKey }; },
   get stubExits() { return stubExits; },  // EXPLAINED EXIT dissolve points
   get anchorBoostArr() { return anchorBoost; },  // corridor-boost px per fi (probe hook)
-  get pinPath() { return pinPathPts; },
   get pinTint() { return { tinted: pinTinted ? pinTinted.slice() : [],
     orig: pinTintOrig ? pinTintOrig.slice() : [], key: pinTintKey }; },  // [issue #85 owner r4] probe hook
+  get pinTint2() { return pinTint2.map(r => ({
+    // exact-match labels; the else arm is unreachable (the frame filter
+    // drops records whose mesh is gone) but self-documents as "gone"
+    mesh: r.mesh === fnLines ? "fnLines" :
+          r.mesh === fnQuiet ? "fnQuiet" :
+          (focusArcs && r.mesh === focusArcs.lines)
+            ? "focusArcs" : "gone",
+    n: r.segs.length })); },   // [#196] wire-arc tint probe
+  get pinCoverX() { return pinCoverX; },   // [#196] cross-surface cover
+  get pinDots() { return pinPts ? pinPts.visible : null; },   // [#196] endpoint-dot visibility probe
   get pinChain() { return { a: pinChA, b: pinChB, boxA: pinBoxA, boxB: pinBoxB, ep0: pinEp0, ep1: pinEp1 }; },  // [issue #84] fn-box endpoint law probe hook
   get degFloorArr() { return degFloor; },  // zoomed-out min diameter px per fi (probe hook)
   get hlArr() { return hlArr; },  // search-highlight flags per fi (probe hook)
