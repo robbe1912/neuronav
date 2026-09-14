@@ -42,6 +42,7 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import nav  # noqa: E402  (the bake lives in the active config's state dir)
+from extractors import is_scene_path  # noqa: E402  (langsep: registry predicate, never a suffix literal)
 from tests._page_harness import launch, open_page, probe_dbg, serve  # noqa: E402
 
 STATE = nav.STATE_DIR
@@ -1020,7 +1021,7 @@ def expand_affordance(spec, base_doc):
         if item in ("tscn", "hubs"):
             for subj, rec in base_doc["views"].items():
                 p = (rec.get("_hub") or {}).get("p", "")
-                if item == "hubs" or (item == "tscn" and p.endswith(".tscn")):
+                if item == "hubs" or (item == "tscn" and is_scene_path(p)):
                     names.add(subj)
         else:
             names.add(item)
