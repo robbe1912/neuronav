@@ -2061,7 +2061,14 @@ def run_tests(port: int):
                             continue
                         rows = page.locator("#mapList .row")
                         if rows.count() >= 2:
-                            rows.nth(0).click()
+                            try:
+                                rows.nth(0).click(timeout=2000)
+                            except PwTimeout:
+                                # the list can flutter closed between the
+                                # open-wait and the click (a mid-tween
+                                # repaint re-anchors and fails) - retry
+                                # the next chip instead of dying
+                                continue
                             try:
                                 page.wait_for_function(
                                     "() => window.__dbg.wirePin &&"
@@ -4981,6 +4988,216 @@ def run_tests(port: int):
                       False, "no chip reports a painted hit rect")
         else:
             print("SKIP chip parity - no off-box chip in this layout")
+
+        # -- #198: chip-ladder pick-vs-paint parity at zoom != 1.
+        # The ladder displaces badges in SCREEN px (paint draws
+        # dyW = dy/mapZ world px = dy screen px), but the pre-fix
+        # hit rect rode dy*mapZ, drifting the click zone
+        # dy*(mapZ-1) px off the painted glyph. Displaced chips
+        # are a data shape, so walk the top wired-degree foci
+        # (the map section's own target rule) in the LOD band
+        # until some layout reports a Y-displaced painted chip,
+        # then click the PAINTED rect center and demand the pin
+        # land on that chip. Loud SKIP if no focus has the shape.
+        foci = page.evaluate(
+            """() => { const d = window.__dbg;
+                 const wd = new Array(d.nodes.length).fill(0);
+                 for (const l of d.links)
+                   if (l.ty === 'call' || l.ty === 'signal')
+                     { wd[l.s]++; wd[l.t]++; }
+                 return wd.map((w, i) => [w, d.nodes[i].path])
+                   .sort((a, b) => b[0] - a[0]).slice(0, 8)
+                   .map(x => x[1]); }"""
+        )
+
+        mbb = page.evaluate(
+            """() => { const r = document.getElementById('mapPane')
+                 .getBoundingClientRect();
+                 return { x: r.left, y: r.top,
+                          w: r.width, h: r.height }; }"""
+        )
+
+        def focus_row(path):
+            stem = path.split("/")[-1].split(".")[0]
+            page.fill("#search", stem)
+            page.dispatch_event("#search", "input")
+            page.wait_for_selector(
+                f"#searchResults .row[title$='{path}']",
+                timeout=4000)
+            page.evaluate(
+                """(p) => { const rows = [...document.querySelectorAll(
+                     "#searchResults .row")];
+                   (rows.find(x => x.getAttribute("title") === p) ||
+                     rows[0]).dispatchEvent(new PointerEvent(
+                     "pointerdown", { bubbles: true })); }""", path)
+            quiesce(page)
+
+        def drag_pane(target):
+            # real divider drag (same idiom as the pane section): the
+            # ladder-collision shape only exists at the boot-default
+            # pane - a wider pane reflows the map layout and the
+            # collided chip never grows
+            db = page.evaluate(
+                """() => { const r = document.getElementById('divider')
+                     .getBoundingClientRect();
+                     return { x: r.x + r.width / 2, y: r.y,
+                              iw: window.innerWidth }; }""")
+            page.mouse.move(db['x'], db['y'] + 100)
+            page.mouse.down()
+            tx = db['iw'] - target
+            for k in range(1, 7):
+                page.mouse.move(db['x'] + (tx - db['x']) * k / 6,
+                                db['y'] + 100)
+                page.wait_for_timeout(30)
+            page.mouse.up()
+            page.wait_for_timeout(500)
+
+        w0 = page.evaluate('() => window.__dbg.paneW')
+        if abs(w0 - 800) > 2:   # PANE_DEFAULT (viz.py)
+            drag_pane(800)
+
+        cand = None
+        walk = []
+        for path in foci:
+            # close any bundle list left open above - a floating
+            # list eats pane-center wheel events
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(200)
+            focus_row(path)
+            # deepest layout: the collided-chip shape lives at depth 3
+            # (a serve-gated escalation can strand the scan at depth 2,
+            # whose smaller layout never grows the colliding chip)
+            page.evaluate(
+                """() => { const el = document.getElementById('depth');
+                     el.value = 3;
+                     el.dispatchEvent(new Event('input')); }""")
+            quiesce(page)
+            focus_row(path)
+            page.wait_for_timeout(300)
+            for zt in (0.66, 0.58):
+                page.mouse.move(mbb['x'] + mbb['w'] / 2,
+                                mbb['y'] + mbb['h'] / 2)
+                for _ in range(30):
+                    z = page.evaluate('() => window.__dbg.mapZ')
+                    if z <= zt + 0.03:
+                        break
+                    page.mouse.wheel(0, 240)
+                    page.wait_for_timeout(60)
+                page.wait_for_timeout(300)
+                r = page.evaluate(
+                    """() => { const d = window.__dbg,
+                         L = d.mapLayout;
+                         if (!L || !L.chips) return null;
+                         const zNow = +d.mapZ.toFixed(3);
+                         const bb = document.getElementById('mapPane')
+                           .getBoundingClientRect();
+                         const vc = d.mapVarsChipRect;
+                         let best = null, seen = 0;
+                         let painted = 0, disp = 0;
+                         for (const ch of L.chips) {
+                           if (!ch.hit || !ch.disp) continue;
+                           painted++;
+                           if (ch.disp.dy || ch.disp.dx) disp++;
+                           if (Math.abs(ch.disp.dy) < 5) continue;
+                           seen++;
+                           // painted screen center = anchor + ladder
+                           // slot, both in screen px
+                           const ax = (ch.x + ch.w / 2 - d.mapPX)
+                             * d.mapZ + ch.disp.dx,
+                                 ay = (ch.y + ch.h / 2 - d.mapPY)
+                             * d.mapZ + ch.disp.dy;
+                           if (ax < 24 || ay < 24 ||
+                               ax > bb.width - 24 ||
+                               ay > bb.height - 24)
+                             continue;
+                           if (vc && ax > vc.x - 4 &&
+                               ax < vc.x + vc.width + 4 &&
+                               ay > vc.y - 4 &&
+                               ay < vc.y + vc.height + 4)
+                             continue;
+                           // the painted point must belong to THIS
+                           // chip alone, else the click is ambiguous
+                           let clash = false;
+                           for (const o of L.chips) {
+                             if (o === ch || !o.hit) continue;
+                             if (ax >= o.hit.x &&
+                                 ax <= o.hit.x + o.hit.w &&
+                                 ay >= o.hit.y &&
+                                 ay <= o.hit.y + o.hit.h)
+                               { clash = true; break; }
+                           }
+                           if (clash) continue;
+                           if (!best || Math.abs(ch.disp.dy) >
+                                 Math.abs(best.disp.dy))
+                             best = ch;
+                         }
+                         if (!best) return {
+                           best: null, seen, painted, disp,
+                           z: zNow, n: L.chips.length };
+                         const px = (best.x + best.w / 2 - d.mapPX)
+                           * d.mapZ + best.disp.dx,
+                               py = (best.y + best.h / 2 - d.mapPY)
+                           * d.mapZ + best.disp.dy;
+                         return { best: { ci: L.chips.indexOf(best),
+                                  dy: best.disp.dy, dx: best.disp.dx,
+                                  z: zNow, px, py,
+                                  hx: best.hit.x + best.hit.w / 2,
+                                  hy: best.hit.y + best.hit.h / 2,
+                                  left: bb.left, top: bb.top },
+                                  seen, painted, disp }; }"""
+                )
+                cand = r["best"] if r else None
+                walk.append((path.split("/")[-1], zt,
+                             round((r or {}).get("z", 0), 2),
+                             (r or {}).get("seen"),
+                             (r or {}).get("painted"),
+                             (r or {}).get("disp")))
+                if cand:
+                    break
+            if cand:
+                break
+        if cand:
+            page.mouse.click(cand['left'] + cand['px'],
+                             cand['top'] + cand['py'])
+            page.wait_for_timeout(400)
+            pin = page.evaluate(
+                "() => ({ open: document.getElementById('mapList')"
+                ".style.display === 'block', "
+                "ci: window.__dbg.mapListChip })"
+            )
+            drift = max(abs(cand['px'] - cand['hx']),
+                        abs(cand['py'] - cand['hy']))
+            check("ladder chip click at zoom!=1 hits the painted glyph "
+                  "(#198)",
+                  drift <= 0.5 and pin['open'] and
+                  pin['ci'] == cand['ci'],
+                  f"focus={path} mapZ={cand['z']:.2f} "
+                  f"dy={cand['dy']:.0f} dx={cand['dx']:.0f} "
+                  f"paint=({cand['px']:.1f},{cand['py']:.1f}) "
+                  f"hit=({cand['hx']:.1f},{cand['hy']:.1f}) "
+                  f"drift={drift:.1f}px pin={pin}")
+        else:
+            print(f"SKIP ladder chip parity - no Y-displaced painted "
+                  f"chip in any top-degree focus "
+                  f"(LOD band) walk={walk}")
+        if abs(w0 - 800) > 2:
+            drag_pane(w0)
+        # canonical hand-off for the sections below: the focus walk
+        # and the probe click leave arbitrary state - restore the
+        # post-#113-3 pose (focus node a, list closed, near-stock
+        # zoom) so #113-5's chip pick is the one it was authored on
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(300)
+        td_focus(td_nodes["a"])
+        map_ready(page)
+        # restore near-stock zoom for the sections below
+        page.mouse.move(pbb['x'] + 200, pbb['y'] + 300)
+        for _ in range(30):
+            if page.evaluate('() => window.__dbg.mapZ') >= 1.0:
+                break
+            page.mouse.wheel(0, -240)
+            page.wait_for_timeout(110)
+        page.wait_for_timeout(200)
 
         # -- #113-5: the bundle list re-anchors (or closes) when the map
         # moves under it — live UI never floats over stale geometry.
