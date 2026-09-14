@@ -11,6 +11,9 @@
 #       background within ~interval + debounce (in-process + stdio e2e)
 #   (d) embed-failure injection -> tool still answers, one stderr
 #       warning, retry cooldown active, recovery after cooldown
+#   (e) store lock held by a fake second process (issue #206) -> one
+#       loud bounded-abort warn naming lock + holder, watcher thread
+#       alive and serving, parked delta indexed on the next tick
 import contextlib
 import io
 import json
@@ -23,6 +26,8 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+
+from filelock import FileLock  # the fake second process's lock holder
 
 HERE = Path(__file__).resolve().parents[1]
 
@@ -106,9 +111,9 @@ def main() -> None:
         calls["walks"] += 1
         return _orig_fp()
 
-    def _rescan_wrap():
+    def _rescan_wrap(*args, **kwargs):
         calls["rescans"] += 1
-        out = _orig_rescan()
+        out = _orig_rescan(*args, **kwargs)
         last_stats.update(out)
         return out
 
@@ -256,7 +261,67 @@ def main() -> None:
     )
     check("watcher: file indexed", nav.count() == 5, f"count={nav.count()}")
 
+    # ---- (e) bounded lock wait (issue #206): a holder parks the gate --
+    # never the watcher thread: one loud abort, cooldown, retry on release
+    nav.rescan = _orig_rescan  # the counting wrap drops rescan's timeout
+    real_wait = server.LOCK_WAIT_S
+    server.LOCK_WAIT_S = 0.5
+    watch_thread = next(
+        (t for t in threading.enumerate() if t.name == "neuronav-watch"), None
+    )
+    check("lock leg: watcher thread located", watch_thread is not None)
+    holder = FileLock(str(nav.DB_DIR / ".write.lock"))  # the other process
+    holder.acquire()  # BEFORE the touch: no tick may win the rescan race
+    lock_err = io.StringIO()
+    try:
+        (TMP / "src" / "held_vise.py").write_text(
+            "def held_vise_clamp(force):\n    return force\n", encoding="utf-8"
+        )
+        with contextlib.redirect_stderr(lock_err):
+            deadline = time.monotonic() + 8.0
+            while time.monotonic() < deadline and (
+                "gave up after" not in lock_err.getvalue()
+            ):
+                time.sleep(0.1)  # the daemon ticks, debounces, then aborts
+            time.sleep(1.0)  # settle: a second abort inside 60s cooldown = bug
+        served = server.search_text("omega_depot_run")
+    finally:
+        holder.release()
+    warns = lock_err.getvalue()
+    check(
+        "lock held: exactly one loud abort naming lock + likely holder",
+        warns.count("gave up after") == 1
+        and ".write.lock" in warns
+        and "another neuronav process" in warns,
+        warns.strip()[-220:],
+    )
+    check("lock held: cooldown armed", server._rescan_failed_at is not None)
+    check(
+        "lock held: watcher thread stayed alive",
+        watch_thread is not None and watch_thread.is_alive(),
+    )
+    check(
+        "lock held: read tools still serve the current index",
+        "omega_depot" in served,
+        served[:160],
+    )
+    check("lock held: dirty file not indexed", nav.count() == 5, f"count={nav.count()}")
+
+    rec_err = io.StringIO()
+    with contextlib.redirect_stderr(rec_err):
+        server._rescan_failed_at = None  # cooldown expiry (leg-d precedent)
+        server._auto_rescan()  # the tick after release: rescan must proceed
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline and nav.count() < 6:
+            time.sleep(0.1)  # the daemon may own the recovery tick
+    check(
+        "released: next tick rescans the parked delta",
+        nav.count() == 6 and "auto-rescan: files" in rec_err.getvalue(),
+        rec_err.getvalue().strip()[-160:],
+    )
+    server.LOCK_WAIT_S = real_wait
     # ---- (a) + (c) stdio end-to-end against a real server.py --------------
+
     e2e_gate()
     e2e_watcher()
 

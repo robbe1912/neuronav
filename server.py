@@ -1023,6 +1023,21 @@ RESCAN_COOLDOWN_S = 60.0  # auto-rescan retry suppression after a failure
 WATCH_DEBOUNCE_S = 2.0  # writer-quiet window before a watcher rescan
 WATCH_DEBOUNCE_MAX_S = 30.0  # cap on waiting for the writer to quiet down
 
+# issue #203/#206: ONE bounded store-lock wait, shared by boot and the
+# auto-rescan gate below — a stale holder (a dead session's MCP server)
+# aborts loudly once this bound expires instead of queueing forever,
+# whether that queue would stall a boot or wedge the watcher thread
+LOCK_WAIT_S = 60.0
+
+
+def _bounded_rescan() -> dict[str, int]:
+    """The one bounded rescan (issues #203/#206): boot and _auto_rescan
+    ride the same wait bound and the same loud abort — nav names the
+    lock file and the likely holder when the wait expires, so no path
+    copies the boot's inline acquire into a private twin."""
+    return nav.rescan(timeout=LOCK_WAIT_S)
+
+
 _rescan_busy = threading.Lock()  # in-flight trigger (cross-process is nav._db_lock's job)
 _rescan_failed_at: float | None = None  # monotonic; None = healthy
 
@@ -1054,7 +1069,7 @@ def _auto_rescan() -> None:
             try:
                 if not nav.stat_scan():
                     return
-                stats = nav.rescan()
+                stats = _bounded_rescan()
                 if stats["added"] or stats["updated"] or stats["deleted"]:
                     _sync_chain(stats)
                     print(
@@ -1064,6 +1079,21 @@ def _auto_rescan() -> None:
                     )
                 nav.stat_mark_synced()
                 _rescan_failed_at = None
+            except SystemExit as e:
+                # issue #206: nav's bounded-lock wait (and its zero-file
+                # walk abort) exit the process by design at boot — in the
+                # auto-rescan path they must degrade to the #19 law
+                # instead of killing the watcher thread: the abort text
+                # names the lock file and likely holder, the cooldown
+                # suppresses the retry, tools keep answering from the
+                # current index
+                _rescan_failed_at = time.monotonic()
+                print(
+                    f"{e} Auto-rescan skipped this round — serving the "
+                    f"current index, retry suppressed for "
+                    f"{RESCAN_COOLDOWN_S:.0f}s.",
+                    file=sys.stderr,
+                )
             except Exception as e:  # embedding backend down etc: degrade loudly
                 _rescan_failed_at = time.monotonic()
                 print(
@@ -1184,12 +1214,6 @@ def rescan(dir: str = "") -> str:
         )
 
 
-# issue #203: the boot store-lock wait is bounded — a wedged holder (a
-# stale MCP server from a dead session) aborts loudly here, never a
-# silent infinite queue that the MCP client reads as a hung server
-BOOT_LOCK_WAIT_S = 60.0
-
-
 def main() -> None:
     """Console-script boot (issue #204) — the historic ``__main__`` body
     behind the ``neuronav-mcp`` entry point, plus the #203 hardening:
@@ -1204,7 +1228,7 @@ def main() -> None:
         print(f"neuronav: config {nav.CONFIG_PATH}", file=sys.stderr)
     else:
         print(f"neuronav: pure defaults, root={nav.ROOT}", file=sys.stderr)
-    stats = nav.rescan(timeout=BOOT_LOCK_WAIT_S)
+    stats = _bounded_rescan()
     g, fns, _ = _sync_chain(stats)
     nav.stat_mark_synced()
     watch_note = ""
