@@ -31,6 +31,7 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
 
       - name: Invoke @openhands on the oldest queued issue
         if: steps.guard.outputs.busy == 'false'
@@ -47,3 +48,4 @@ jobs:
           echo "invoked @openhands on #$ISSUE"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
