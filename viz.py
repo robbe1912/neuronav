@@ -7210,7 +7210,7 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     // home beside the trunk instead of overlapping (D4)
     for (const dy of [0, -10, 10, -20, 20, -30, 30, -40])
       for (const dx of [0, 14, -14, 28, -28, 42, -42]) {
-        const r = { x: x + dx - w / 2, y: y + dy * mapZ - h / 2, w, h };
+        const r = { x: x + dx - w / 2, y: y + dy - h / 2, w, h };
         if (!hit2(r)) { taken2.push(r); return { dy, dx }; }
       }
     return null;   // no room: hide rather than stack
@@ -7255,7 +7255,7 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     top(L.chips.filter(ch => ch.origin), 6);
   }
   L.chips.forEach(ch => {
-    ch.hit = null;   // [issue #113] pick-vs-paint parity: the hit rect is
+    ch.hit = null; ch.disp = null;   // [issue #113] pick-vs-paint parity: the hit rect is
     // exactly what THIS paint draws — every skip below (LOD, out-of-view,
     // no ladder room, zoom fade) leaves it null = unclickable
     if ((ch.peel || ch.origin) && !chipLOD.has(ch)) return;
@@ -7269,7 +7269,9 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     // at overview zoom they were unreadable smudges doubling the wire count
     const zf = Math.max(0, Math.min(1, (mapZ - 0.45) / 0.25));
     if (zf <= 0) return;
-    ch.hit = { x: a.x + p2.dx - sw / 2, y: a.y + p2.dy * mapZ - sh / 2, w: sw, h: sh };
+    ch.disp = p2;   // [issue #198] ladder slot (screen px): paint draws
+    // dyW = dy/mapZ world px = dy screen px, so the hit rect rides plain dy
+    ch.hit = { x: a.x + p2.dx - sw / 2, y: a.y + p2.dy - sh / 2, w: sw, h: sh };
     const dyW = p2.dy / mapZ, dxW = p2.dx / mapZ;  // screen px -> world px
     ctx.globalAlpha = dim(ch.s, ch.t) * zf;
     ctx.fillStyle = "rgba(8,12,16,.85)";
