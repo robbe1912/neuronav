@@ -14,7 +14,7 @@
 # #120 lands (it holds 4 .tscn sites — LJ-4; growing the set is a one-line
 # change and must not be forgotten).
 #
-# Temporary, line-anchored allowlist: viz.py:2838 is queued behind
+# Temporary, line-anchored allowlist: viz.py:2783 is queued behind
 # HarnessPro's #123/#89 and nav's walk filters are config truth (not
 # language truth). clusters.py carried PR-2 deferrals until its cutover
 # landed — it must stay clean now, so its block is GONE and this
@@ -71,12 +71,12 @@ RES_LIT = re.compile(r"""["']res://""")
 RES_VERB = re.compile(
     r"""(?:startswith|endswith|removeprefix|removesuffix|\[len\(|\.replace\(|\.split\(|\.search\(|\.match\(|re\.compile)"""
 )
-# JS-side suffix regexes in the embedded viz template (viz.py:2838 class)
+# JS-side suffix regexes in the embedded viz template (viz.py:2783 class)
 JS_SUFFIX = re.compile(r"""/\\.(?:tscn|gd|tres|res|py|cpp|h|hpp)\b""")
 
 # ---- temporary, line-anchored allowlist (see header) ---------------------------
 ALLOWED = {}
-ALLOWED[("viz.py", 2838)] = "V-1: queued behind #123/#89 (data-flag contract)"
+ALLOWED[("viz.py", 2783)] = "V-1: queued behind #123/#89 (data-flag contract)"
 # config/parametric walk filters — EXTS is the user's config include-set
 # and `suffixes` arrives as a caller argument (registry datum at the call
 # site); neither is a language truth hard-coded in nav
