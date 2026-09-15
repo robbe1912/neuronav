@@ -360,7 +360,8 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool,
     if not fake:
         import httpx
 
-        probe = embed["embed_url"] if embed else "http://127.0.0.1:11434/api/tags"
+        probe = (embed or {}).get("embed_url",
+                                  "http://127.0.0.1:11434/api/tags")
         try:
             httpx.get(probe, timeout=10)
         except Exception as e:
@@ -423,6 +424,7 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool,
                if not fake and nav.EMBED_DOC_PREFIX else {}),
             **({"doc_shape": nav.doc_shape()} if not fake else {}),
             "files": nav.count(),
+            "k": K,
             "golden": fp,
             **{kk: v for kk, v in result.items() if kk != "per_query"},
             "per_query": result["per_query"],
@@ -792,6 +794,30 @@ def _cast_section(recs: dict[str, dict]) -> list[str]:
             lines += chunk + [""]
         lines += _kind_table(prefix, recs)
     lines += _cast_delta_table(recs)
+    lines += [
+        "Verdict (double-run fp-jitter protocol, both runs agree on hit@5",
+        "for every config on both legs; jitter only wobbles hit@1 by one",
+        "rank-1/2 flip and MRR by ≤0.02): the committed `qprefix` baseline",
+        "moves 0.88 → **0.92 hit@5** on `both` (+4.0 pts, MRR 0.672 →",
+        "0.727/0.747) and 0.88 → 0.92 on `twopass`; `gb` rides 0.92 → 0.96.",
+        "The isolated doc-shape effect is the vector leg: castq `vec` hits",
+        "0.80 vs rawq 0.56 (+24 pts) — raw docs at this commit truncate the",
+        "enlarged nav.py/graph.py even harder than at c0343ab (qprefix `vec`",
+        "was 0.60), while the shaped docs keep every file under the 30k cap",
+        "with its symbol surface in the head. The same-commit control also",
+        "separates corpus drift from shaping: rawq `both` measures 0.92 too,",
+        "carried by the lexical side (`bm25` 0.92 on untouched lexical",
+        "machinery vs 0.88 at c0343ab — the corpus grew), so the +4 vs the",
+        "committed baseline conflates the two; at the fused level the shape",
+        "contribution lands in MRR (0.727/0.747 vs 0.654) and hit@1",
+        "(0.56/0.60 vs 0.52), and on `twopass` hit@5 (+8 pts: 0.92 vs 0.84).",
+        "Per-query: the two 30k-truncation victims recover on the vector leg",
+        "(`import_base` ∅→6, the agent-protocol query ∅→in), leaving",
+        "`sync_functions` (6) and `FileSym` (∅) as the residual `both`",
+        "misses. Index growth 1.0x (58 docs, one per file) — inside the ≤2x",
+        "cAST budget by construction.",
+        "",
+    ]
     return lines
 
 def _assert_records_current(recs: dict[str, dict]) -> None:
