@@ -42,7 +42,9 @@ def _fetch_embeddings(paths):
 
         col = nav._collection()
         if col.count():
-            got = col.get(include=["embeddings"])
+            got = nav.chroma_read(
+                "bake embeddings", lambda: col.get(include=["embeddings"])
+            )
             emb_idx = {rid: i for i, rid in enumerate(got["ids"])}
             rows = [emb_idx[p] for p in paths if p in emb_idx]
             embs = np.array(

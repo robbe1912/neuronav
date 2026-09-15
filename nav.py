@@ -719,7 +719,13 @@ def _restamp(col: chromadb.Collection,
     tmp_name = f"{name}-restamp"
     with _db_lock():
         try:
-            data = col.get(include=["embeddings", "documents", "metadatas"])
+            # issue #239 rider: retry the hnsw-settle transient so the
+            # re-stamp heals instead of tripping the raced-collection
+            # fallback on self-healing noise; real failures still fall
+            data = chroma_read(
+                "re-stamp read",
+                lambda: col.get(include=["embeddings", "documents", "metadatas"]),
+            )
         except Exception as e:
             print(f"neuronav: collection '{name}' needs a metadata re-stamp but "
                   f"reading its vectors failed ({e}); metadata left as-is",
@@ -1163,7 +1169,9 @@ def export_base() -> dict[str, object]:
         col = _collection()
         if col.count() == 0:
             raise RuntimeError("nothing indexed — run rescan first")
-        got = col.get(include=["metadatas", "embeddings"])
+        got = chroma_read(
+            "base export", lambda: col.get(include=["metadatas", "embeddings"])
+        )
         embeddings = got.get("embeddings")
         embeddings = [] if embeddings is None else list(embeddings)
         metadatas = got.get("metadatas")
