@@ -61,7 +61,30 @@ import graph
 from extractors import res_to_rel  # noqa: E402
 import nav
 
+def _version() -> str:
+    """The version serverInfo reports (issue #207): the neuronav package
+    version — importlib.metadata answers for any installed copy (uvx/
+    wheel; pyproject.toml is the version's source of truth), a plain
+    checkout falls back to the pyproject beside this file (tomllib,
+    stdlib since 3.11). Same derivation as onboard._uvx_ref, so
+    serverInfo and the uvx tag pin (v<version>) can never disagree."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        return version("neuronav")
+    except PackageNotFoundError:
+        import tomllib
+        with open(Path(__file__).resolve().parent / "pyproject.toml", "rb") as fh:
+            return tomllib.load(fh)["project"]["version"]
+
+
 mcp = FastMCP("neuronav")
+# FastMCP forwards no version to its lowlevel Server (no such kwarg on
+# mcp 1.29.x), and create_initialization_options then falls back to
+# pkg_version("mcp") — serverInfo answered the mcp library's version,
+# not neuronav's. Server.version is a plain attribute read at answer
+# time, so pin it here (issue #207); an mcp that renames it fails
+# loudly at import rather than silently misreporting.
+mcp._mcp_server.version = _version()
 
 # below except rescan is pure read over the local index
 READONLY = ToolAnnotations(readOnlyHint=True)

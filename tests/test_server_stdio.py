@@ -88,6 +88,20 @@ def check(name: str, cond: bool, detail: str = "") -> None:
         FAILS.append(name)
 
 
+def _pkg_version() -> str:
+    """The version serverInfo must report (issue #207) — importlib
+    metadata for an installed copy, else the pyproject beside the
+    checkout. Same derivation as server.py's _version, so the pin
+    tracks the source of truth in either install state."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        return version("neuronav")
+    except PackageNotFoundError:
+        import tomllib
+        with open(HERE / "pyproject.toml", "rb") as fh:
+            return tomllib.load(fh)["project"]["version"]
+
+
 def text_of(result: dict) -> str:
     if result.get("isError"):
         return json.dumps(result)[:400]
@@ -225,6 +239,15 @@ def main() -> None:
             "initialize handshake",
             "result" in init and "protocolVersion" in init.get("result", {}),
             json.dumps(init)[:200],
+        )
+        # issue #207: serverInfo must answer neuronav's package version,
+        # not the mcp library's — the lowlevel Server defaults to
+        # pkg_version("mcp") when nothing pins it
+        sinfo = init.get("result", {}).get("serverInfo", {})
+        check(
+            "serverInfo answers the neuronav version (issue #207)",
+            sinfo.get("name") == "neuronav" and sinfo.get("version") == _pkg_version(),
+            f"serverInfo={sinfo} expected {_pkg_version()}",
         )
         send({"jsonrpc": "2.0", "method": "notifications/initialized"})
 
