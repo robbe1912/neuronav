@@ -650,23 +650,26 @@ def _ab_section(recs: dict[str, dict]) -> list[str]:
         lines += _kind_table(prefix, recs)
     lines += _ab_delta_table(recs)
     lines += [
-        "Verdict (measured at the commit stamped in the records, both batteries",
-        "double-run — every metric line identical across passes; the previously",
-        "observed Ollama fp-jitter flipped nothing this round): the model swap",
-        "FAILS the ≥ +3-point win condition on the shipped `both` config — plain",
-        "jina loses hit@5 by 12.0 pts (0.72 vs 0.84), jinaq by 16.0, and the",
-        "full paper recipe jinap still trails hit@5 by 4.0 (0.80 vs 0.84) despite",
-        "winning hit@1 (+20.0) and MRR (+12.5); the vec-only rows show the same",
-        "shape (jina/vec hit@5 0.44 vs ab/vec 0.52), so the paper's aggregate",
-        "edge does not transfer to whole-file retrieval on this corpus at Q8_0.",
-        "qwen3-embedding:0.6b stays. The free leg wins outright: the nl2code",
-        "query instruction on qwen3 (same store, zero re-index) lifts `both` to",
-        "0.52/0.92/0.96 with MRR 0.674 — +16.0 hit@1 / +8.0 hit@5 / +8.0",
-        "hit@10 / +14.8 MRR over the baseline, and `gb` to 0.64/0.96. Shipping",
-        "the prefix as a recall default is the actionable follow-up (its own",
-        "issue: the instruction text is JCE-trained yet empirically transfers to",
-        "qwen3 here). On the default-off `gb` config jinap tops every column",
-        "(0.72/0.96, MRR 0.817) — noted, not shipped.",
+        "Verdict — two rounds, each double-run (every metric line identical",
+        "across passes; the Ollama fp-jitter flipped nothing in either round).",
+        "Model swap (round 1, measured at 2a1f231): FAILS the ≥ +3-point win",
+        "condition on the shipped `both` config — plain jina loses hit@5 by",
+        "12.0 pts (0.72 vs 0.84), jinaq by 16.0, and the full paper recipe",
+        "jinap still trails hit@5 by 4.0 (0.80 vs 0.84) despite winning hit@1",
+        "(+20.0) and MRR (+12.5); the vec-only rows show the same shape",
+        "(jina/vec hit@5 0.44 vs ab/vec 0.52), so the paper's aggregate edge",
+        "does not transfer to whole-file retrieval on this corpus at Q8_0.",
+        "qwen3-embedding:0.6b stays; jinap topping the default-off `gb` column",
+        "(0.72/0.96, MRR 0.817) is noted, not shipped. Query prefix (round 2,",
+        "measured at the #217 cutover): the free leg wins again, same qwen3",
+        "model, fresh store — the raw-query `ab` baseline runs 0.36/0.76/0.88",
+        "with MRR 0.509 (hit@5 sits 8 pts under round 1's 0.84 on the same",
+        "wire: the corpus moved under the v0.1.2 merge, not the retrieval), and",
+        "the shipped prefix lifts `both` to 0.52/0.88/0.96 with MRR 0.672 —",
+        "+16.0 hit@1 / +12.0 hit@5 / +8.0 hit@10 / +16.3 MRR — plus `gb` to",
+        "0.64/0.92/0.96 (MRR 0.747) and `twopass` to 0.64/0.88/0.92 (MRR",
+        "0.746). `after` is byte-identical to `qprefix` on every config: the",
+        "shipped default wire IS the measured leg. #217 ships the prefix.",
         "",
     ]
     return lines
@@ -718,7 +721,7 @@ def render() -> None:
         "",
     ]
     sets = [
-        ("after", "After — current main (graph-boost winner in `gb`, two-pass in `twopass`)"),
+        ("after", "After — current main (nl2code query prefix default-on per #217; graph-boost winner in `gb`, two-pass in `twopass`)"),
         ("fake", "FAKE mode — `NEURONAV_EMBED_FAKE=1` plumbing battery"),
     ]
     retired = [

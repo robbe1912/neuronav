@@ -1,40 +1,40 @@
 {
  "set": "ab",
  "config": "expand",
- "commit": "2a1f231",
- "dirty": false,
+ "commit": "a97592a",
+ "dirty": true,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
  "files": 58,
  "k": 12,
  "golden": "4daef95861450cd9",
- "hit@1": 0.4,
+ "hit@1": 0.32,
  "hit@5": 0.52,
  "hit@10": 0.64,
- "mrr": 0.459,
+ "mrr": 0.418,
  "reach@5": 0.76,
  "reach@10": 0.76,
  "by_kind": {
   "exact": {
    "n": 10,
-   "hit@1": 0.3,
+   "hit@1": 0.2,
    "hit@5": 0.3,
    "hit@10": 0.5,
-   "mrr": 0.336
+   "mrr": 0.284
   },
   "symbol": {
    "n": 4,
-   "hit@1": 0.25,
+   "hit@1": 0.0,
    "hit@5": 0.5,
    "hit@10": 0.5,
-   "mrr": 0.375
+   "mrr": 0.25
   },
   "prose": {
    "n": 9,
    "hit@1": 0.556,
    "hit@5": 0.667,
    "hit@10": 0.778,
-   "mrr": 0.596
+   "mrr": 0.594
   },
   "cross": {
    "n": 2,
@@ -59,7 +59,7 @@
   },
   {
    "q": "titleize",
-   "rank": 1,
+   "rank": 2,
    "ctx5": false,
    "ctx10": true
   },
@@ -71,7 +71,7 @@
   },
   {
    "q": "sync_functions",
-   "rank": 10,
+   "rank": 9,
    "ctx5": true,
    "ctx10": true
   },
@@ -89,7 +89,7 @@
   },
   {
    "q": "_lexical_fallback",
-   "rank": 6,
+   "rank": 7,
    "ctx5": true,
    "ctx10": true
   },
@@ -107,7 +107,7 @@
   },
   {
    "q": "NoCacheHandler",
-   "rank": 1,
+   "rank": 2,
    "ctx5": false,
    "ctx10": false
   },
@@ -149,7 +149,7 @@
   },
   {
    "q": "how do hermetic suites embed without a live model backend",
-   "rank": 9,
+   "rank": 10,
    "ctx5": true,
    "ctx10": true
   },

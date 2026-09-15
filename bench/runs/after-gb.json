@@ -1,26 +1,27 @@
 {
  "set": "after",
  "config": "gb",
- "commit": "2a1f231",
- "dirty": false,
+ "commit": "a97592a",
+ "dirty": true,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
+ "query_prefix": "Find the most relevant code snippet given the following query:\n",
  "files": 58,
  "k": 12,
  "golden": "4daef95861450cd9",
- "hit@1": 0.56,
- "hit@5": 0.88,
- "hit@10": 0.92,
- "mrr": 0.692,
+ "hit@1": 0.64,
+ "hit@5": 0.92,
+ "hit@10": 0.96,
+ "mrr": 0.747,
  "reach@5": 0.92,
  "reach@10": 0.96,
  "by_kind": {
   "exact": {
    "n": 10,
-   "hit@1": 0.6,
-   "hit@5": 0.8,
-   "hit@10": 0.9,
-   "mrr": 0.719
+   "hit@1": 0.8,
+   "hit@5": 0.9,
+   "hit@10": 1.0,
+   "mrr": 0.867
   },
   "symbol": {
    "n": 4,
@@ -34,7 +35,7 @@
    "hit@1": 0.444,
    "hit@5": 1.0,
    "hit@10": 1.0,
-   "mrr": 0.652
+   "mrr": 0.639
   },
   "cross": {
    "n": 2,
@@ -65,7 +66,7 @@
   },
   {
    "q": "registry_for",
-   "rank": 11,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
@@ -77,13 +78,13 @@
   },
   {
    "q": "fold_continuations",
-   "rank": 2,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "_has_exact",
-   "rank": 10,
+   "rank": 6,
    "ctx5": false,
    "ctx10": false
   },
@@ -137,7 +138,7 @@
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": 5,
+   "rank": 3,
    "ctx5": false,
    "ctx10": false
   },
@@ -161,7 +162,7 @@
   },
   {
    "q": "which module hosts the agent protocol on stdin and stdout",
-   "rank": 2,
+   "rank": 4,
    "ctx5": true,
    "ctx10": true
   },

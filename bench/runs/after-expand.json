@@ -1,47 +1,48 @@
 {
  "set": "after",
  "config": "expand",
- "commit": "2a1f231",
- "dirty": false,
+ "commit": "a97592a",
+ "dirty": true,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
+ "query_prefix": "Find the most relevant code snippet given the following query:\n",
  "files": 58,
  "k": 12,
  "golden": "4daef95861450cd9",
- "hit@1": 0.4,
- "hit@5": 0.52,
- "hit@10": 0.64,
- "mrr": 0.459,
- "reach@5": 0.76,
- "reach@10": 0.76,
+ "hit@1": 0.44,
+ "hit@5": 0.6,
+ "hit@10": 0.8,
+ "mrr": 0.534,
+ "reach@5": 0.84,
+ "reach@10": 0.96,
  "by_kind": {
   "exact": {
    "n": 10,
    "hit@1": 0.3,
-   "hit@5": 0.3,
-   "hit@10": 0.5,
-   "mrr": 0.336
+   "hit@5": 0.6,
+   "hit@10": 0.7,
+   "mrr": 0.413
   },
   "symbol": {
    "n": 4,
-   "hit@1": 0.25,
+   "hit@1": 0.5,
    "hit@5": 0.5,
-   "hit@10": 0.5,
-   "mrr": 0.375
+   "hit@10": 1.0,
+   "mrr": 0.567
   },
   "prose": {
    "n": 9,
    "hit@1": 0.556,
-   "hit@5": 0.667,
+   "hit@5": 0.556,
    "hit@10": 0.778,
-   "mrr": 0.596
+   "mrr": 0.605
   },
   "cross": {
    "n": 2,
    "hit@1": 0.5,
    "hit@5": 1.0,
    "hit@10": 1.0,
-   "mrr": 0.625
+   "mrr": 0.75
   }
  },
  "per_query": [
@@ -59,25 +60,25 @@
   },
   {
    "q": "titleize",
-   "rank": 1,
-   "ctx5": false,
+   "rank": 8,
+   "ctx5": true,
    "ctx10": true
   },
   {
    "q": "registry_for",
-   "rank": null,
+   "rank": 1,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "sync_functions",
-   "rank": 10,
+   "rank": 3,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "fold_continuations",
-   "rank": null,
+   "rank": 3,
    "ctx5": false,
    "ctx10": false
   },
@@ -89,7 +90,7 @@
   },
   {
    "q": "_lexical_fallback",
-   "rank": 6,
+   "rank": 4,
    "ctx5": true,
    "ctx10": true
   },
@@ -113,19 +114,19 @@
   },
   {
    "q": "LabelContext",
-   "rank": 2,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "FileSym",
-   "rank": null,
+   "rank": 6,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "Func",
-   "rank": null,
+   "rank": 10,
    "ctx5": false,
    "ctx10": false
   },
@@ -137,19 +138,19 @@
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": null,
+   "rank": 7,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "what stops two simultaneous rescans from corrupting the store",
-   "rank": null,
+   "rank": 11,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "how do hermetic suites embed without a live model backend",
-   "rank": 9,
+   "rank": 8,
    "ctx5": true,
    "ctx10": true
   },
@@ -161,7 +162,7 @@
   },
   {
    "q": "which module hosts the agent protocol on stdin and stdout",
-   "rank": 4,
+   "rank": 12,
    "ctx5": true,
    "ctx10": true
   },
@@ -185,7 +186,7 @@
   },
   {
    "q": "unreachable deletion candidates and their confidence tiers",
-   "rank": 4,
+   "rank": 2,
    "ctx5": true,
    "ctx10": true
   },

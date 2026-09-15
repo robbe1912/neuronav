@@ -1,40 +1,40 @@
 {
  "set": "ab",
  "config": "bm25",
- "commit": "2a1f231",
- "dirty": false,
+ "commit": "a97592a",
+ "dirty": true,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
  "files": 58,
  "k": 12,
  "golden": "4daef95861450cd9",
  "hit@1": 0.36,
- "hit@5": 0.84,
+ "hit@5": 0.76,
  "hit@10": 0.88,
- "mrr": 0.526,
- "reach@5": 0.84,
+ "mrr": 0.509,
+ "reach@5": 0.76,
  "reach@10": 0.88,
  "by_kind": {
   "exact": {
    "n": 10,
    "hit@1": 0.3,
-   "hit@5": 0.7,
+   "hit@5": 0.6,
    "hit@10": 0.8,
-   "mrr": 0.438
+   "mrr": 0.41
   },
   "symbol": {
    "n": 4,
    "hit@1": 0.5,
-   "hit@5": 0.75,
+   "hit@5": 0.5,
    "hit@10": 0.75,
-   "mrr": 0.55
+   "mrr": 0.536
   },
   "prose": {
    "n": 9,
    "hit@1": 0.444,
    "hit@5": 1.0,
    "hit@10": 1.0,
-   "mrr": 0.619
+   "mrr": 0.609
   },
   "cross": {
    "n": 2,
@@ -77,19 +77,19 @@
   },
   {
    "q": "fold_continuations",
-   "rank": 5,
+   "rank": 6,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "_has_exact",
-   "rank": 12,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "_lexical_fallback",
-   "rank": 2,
+   "rank": 3,
    "ctx5": false,
    "ctx10": false
   },
@@ -125,7 +125,7 @@
   },
   {
    "q": "Func",
-   "rank": 5,
+   "rank": 7,
    "ctx5": false,
    "ctx10": false
   },
@@ -143,7 +143,7 @@
   },
   {
    "q": "what stops two simultaneous rescans from corrupting the store",
-   "rank": 3,
+   "rank": 4,
    "ctx5": false,
    "ctx10": false
   },

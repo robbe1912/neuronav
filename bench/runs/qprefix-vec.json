@@ -1,8 +1,8 @@
 {
  "set": "qprefix",
  "config": "vec",
- "commit": "2a1f231",
- "dirty": false,
+ "commit": "a97592a",
+ "dirty": true,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
  "query_prefix": "Find the most relevant code snippet given the following query:\n",
@@ -12,7 +12,7 @@
  "hit@1": 0.44,
  "hit@5": 0.6,
  "hit@10": 0.8,
- "mrr": 0.537,
+ "mrr": 0.534,
  "reach@5": 0.6,
  "reach@10": 0.8,
  "by_kind": {
@@ -21,7 +21,7 @@
    "hit@1": 0.3,
    "hit@5": 0.6,
    "hit@10": 0.7,
-   "mrr": 0.422
+   "mrr": 0.413
   },
   "symbol": {
    "n": 4,
@@ -90,7 +90,7 @@
   },
   {
    "q": "_lexical_fallback",
-   "rank": 3,
+   "rank": 4,
    "ctx5": false,
    "ctx10": false
   },

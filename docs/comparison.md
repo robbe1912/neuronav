@@ -21,12 +21,16 @@ neuronav are backed by artifacts in this repo (`bench/RESULTS.md`,
 1. **Hybrid recall.** Lexical (BM25F over filename/class/symbols/path/body,
    field-weighted) fused with vector similarity via RRF. Zero-model operation
    is available (`src=bm25`) when no embedding backend is reachable — the
-   semantic layer is additive, not a hard dependency. Measured on the
+   semantic layer is additive, not a hard dependency. Queries are embedded
+   behind the nl2code task instruction (JCE model card, shipped default
+   since #217): prefixing the embedded query only — store-compatible, no
+   re-index, lexical side raw — lifted the same qwen3 store from
+   .36/.76/.88 to .52/.88/.96 hit@1/5/10 with MRR .51→.67. Measured on the
    25-query golden set (`bench/RESULTS.md`), every attribution against the
    `both` (shipped-default) row of the current table, baseline = the
-   vector-only `vec` row: hit@5 .56→.80, exact-name hit@5 .40→.70,
-   MRR .44→.55, hit@1 at parity within the documented embed jitter; the
-   deterministic two-pass retrieve tops the table at hit@5 .88 / MRR .66.
+   vector-only `vec` row: hit@5 .60→.88, exact-name hit@5 .60→.90,
+   MRR .53→.67; the graph-boosted and two-pass retrieves top the table at
+   hit@5 .92 / MRR .75.
    Concept/prose queries
    ("where is X applied") are the query class pure-symbol tools answer only
    if the agent guesses the right noun.
