@@ -275,8 +275,18 @@ def _kilo_mcp_path() -> Path:
     env = os.environ.get(_KILO_MCP_ENV)
     if env:
         return Path(env).expanduser()
-    gs = Path.home() / "AppData" / "Roaming" / "Code" / "User" / "globalStorage" / "saoudrizwan.claude-dev"
-    return gs / "mcp_settings.json"
+    home = Path.home()
+    if sys.platform == "win32":
+        gs = home / "AppData" / "Roaming" / "Code" / "User" / "globalStorage"
+    elif sys.platform == "darwin":
+        gs = home / "Library" / "Application Support" / "Code" / "User" / "globalStorage"
+    elif sys.platform.startswith("linux"):
+        gs = home / ".config" / "Code" / "User" / "globalStorage"
+    else:
+        raise RuntimeError(
+            f"kilocode MCP settings path unknown on platform {sys.platform!r}; "
+            f"set {_KILO_MCP_ENV} to the mcp_settings.json location")
+    return gs / "saoudrizwan.claude-dev" / "mcp_settings.json"
 
 
 def _zcode_mcp_path() -> Path:
