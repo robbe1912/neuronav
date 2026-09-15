@@ -57,7 +57,7 @@ VENDOR_FILES = (
 )
 PY_MODULES = (
     "nav.py", "graph.py", "server.py", "viz.py", "layout.py",
-    "clusters.py", "explore.py", "recall.py", "onboard.py", "memories.py",
+    "clusters.py", "explore.py", "recall.py", "onboard.py", "memories.py", "predicates.py",
 )
 # the repo's dev-only and machine-local trees must NOT ride the wheel
 ABSENT_PREFIXES = ("tests/", "tools/", "config/", "bench/", "docs/", "templates/")
