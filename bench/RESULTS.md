@@ -355,3 +355,40 @@ store, then the jina legs (their own `.tmp/` stores); `jinap` re-embeds
 the corpus with the passage instruction, the others reuse it. Records
 carry a golden fingerprint; a golden edit without a
 re-run makes `--render-only` fail loudly naming the stale records.
+
+
+## Agent-level A/B (issue #72)
+
+Instrument: `bench/agent_ab/` (README there). Scripted, model-free agents —
+grep-only (shell text tools, no index) vs neuronav-wired (`repo_map` /
+`find_functions` / `symbol_graph` / `dead_code`, called direct in-process) —
+answer index-derived tasks over the self-index; the metric is cost-to-answer,
+not LLM cleverness. Records: `bench/runs/agent_ab-selfindex.json`.
+
+Measured on the PR branch (12 tasks: 3 find-symbol, 3 trace-call-path,
+3 locate-refactor-site, 3 dead-code-check; self-index 59 files / 566 fns /
+763 edges, real qwen3-embedding:0.6b, double-run deterministic):
+
+| arm | success | tool calls | files read | KB read | KB returned | ms (sum) |
+|---|---|---|---|---|---|---|
+| grep | 8/12 | 28 | 1,978 | 44,480 | 12.3 | 1,945 |
+| neuronav | 12/12 | 28 | 0 | 0.0 | 55.6 | 1,108 |
+
+Success by class (grep / neuronav): find-symbol 3/3 vs 3/3,
+trace-call-path 1/3 vs 3/3, locate-refactor-site 3/3 vs 3/3,
+dead-code-check 1/3 vs 3/3. Where grep fails it fails structurally:
+trace — def-chasing a called name surfaces every same-named def
+(`dead_code` in three files) where the resolved graph names one target;
+dead-code — entry-rule references (bare idents, test mains) are invisible
+to a call-syntax grep, so it calls live fns dead. Tool calls tie because
+grep burns them def-chasing while the wired arm pays a fixed `repo_map`
+orientation per task.
+
+Limitations, honestly: small sample (12 tasks, first-in-sorted-order — the
+picks skew `bake/*`, alphabetical artifact); wall ms is machine-local
+(neuronav's includes one Ollama query-embed round-trip per find-symbol
+task, ~350 ms warm; grep's excludes process spawn — policies run
+in-process); index build is amortized for the wired arm and unaccounted;
+the corpus is tests+tools aware (grep legitimately scans what a shell
+sees). The dead side thinned 1/2 (second candidate's name not
+checkout-unique). Directional, not statistical.

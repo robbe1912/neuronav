@@ -501,6 +501,10 @@ def _records() -> dict[str, dict]:
     out: dict[str, dict] = {}
     if runs.is_dir():
         for p in sorted(runs.glob("*.json")):
+            if p.name.startswith("agent_ab-"):
+                continue  # agent-level A/B records (issue #72): own schema
+                # and renderer (bench/agent_ab/run.py), not golden-set
+                # evidence — must not trip the issue #104 stale-record gate
             rec = json.loads(p.read_text(encoding="utf-8"))
             out[f"{rec['set']}-{rec['config']}"] = rec
     return out
