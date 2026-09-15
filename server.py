@@ -81,7 +81,24 @@ def _version() -> str:
             return tomllib.load(fh)["project"]["version"]
 
 
-mcp = FastMCP("neuronav")
+# Server instructions (MCP InitializeResult.instructions, issue #237):
+# the agent-facing user manual — cross-tool workflow only, never an echo
+# of tool descriptions (official guidance: concise, operational,
+# model-agnostic; measured +25%% workflow adherence on GitHub's server).
+_INSTRUCTIONS = (
+    "Code-structure intelligence over the session's working directory. "
+    "Workflow: call repo_map once per project for the layout; explore(topic) "
+    "to orient on a subsystem; semantic_search / find_functions for lookups; "
+    "symbol_graph / dead_code / duplicates for structure questions; "
+    "visualize opens the graph.html bake. Tools are read-only except "
+    "rescan (forces reindex) and memory (set/get/list/delete persistent "
+    "project notes - save durable findings there, not transient state). "
+    "Every tool takes an optional dir to target a different repo root. "
+    "The index auto-refreshes on file drift; answers marked 'degraded' "
+    "are exact - trust them over re-reading files."
+)
+
+mcp = FastMCP("neuronav", instructions=_INSTRUCTIONS)
 # FastMCP forwards no version to its lowlevel Server (no such kwarg on
 # mcp 1.29.x), and create_initialization_options then falls back to
 # pkg_version("mcp") — serverInfo answered the mcp library's version,

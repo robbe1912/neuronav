@@ -224,12 +224,24 @@ def _omp_mcp_path() -> Path:
     return Path(env).expanduser() if env else Path.home() / ".omp" / "agent" / "mcp.json"
 
 
+def _omp_shape(entry: dict) -> dict:
+    """omp harness stdio shape (issue #237): the bare command/args dict
+    either never spawns or dies on default timeouts during the cold uvx
+    build — typed+enabled+timeout matches the proven working entries in
+    ~/.omp/agent/mcp.json. env (per-project config pin) rides through."""
+    e = {"type": "stdio", "enabled": True, "timeout": 300_000,
+         "command": entry["command"], "args": entry["args"]}
+    if "env" in entry:
+        e["env"] = entry["env"]
+    return e
+
+
 def _emit_omp(name: str, entry: dict, path: Path) -> None:
     """Write/merge the omp mcpServers fragment. User config merges by server
     name, so multiple projects coexist; other servers are preserved."""
     path.parent.mkdir(parents=True, exist_ok=True)
     doc: dict = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-    doc.setdefault("mcpServers", {})[name] = entry
+    doc.setdefault("mcpServers", {})[name] = _omp_shape(entry)
     path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
@@ -315,7 +327,7 @@ def global_wire(name: str = "neuronav") -> dict[str, Path]:
     omp = _omp_mcp_path()
     omp.parent.mkdir(parents=True, exist_ok=True)
     doc = json.loads(omp.read_text(encoding="utf-8-sig")) if omp.is_file() else {}
-    doc.setdefault("mcpServers", {})[name] = u
+    doc.setdefault("mcpServers", {})[name] = _omp_shape(u)
     _write_json_atomic(omp, doc)
     written["omp"] = omp
 
