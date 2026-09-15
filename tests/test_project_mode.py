@@ -111,6 +111,21 @@ def main() -> None:
         gi2 = (proj / ".gitignore").read_text(encoding="utf-8")
         check("init: idempotent", gi2 == gi)
 
+        # 2a-bis. init scaffolds the memories dir + convention README (issue #67)
+        mdir = proj / ".neuronav" / "memories"
+        mrd = mdir / "README.md"
+        check("init: scaffolds the memories dir + README",
+              mdir.is_dir() and mrd.is_file()
+              and mrd.read_text(encoding="utf-8").startswith("# neuronav memories\n")
+              and "memory(verb" in mrd.read_text(encoding="utf-8"),
+              str(mrd))
+        mrd.write_text("# user rewrote it\n", encoding="utf-8", newline="\n")
+        subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "init"], cwd=proj,
+                       capture_output=True, text=True, check=True)
+        check("init re-run: user-customized memories README preserved",
+              mrd.read_text(encoding="utf-8") == "# user rewrote it\n",
+              repr(mrd.read_text(encoding="utf-8")[:60]))
+
         # 2b. init does NOT clobber a customized config on re-run (issue #121)
         cfg_path.write_text(json.dumps({**cfg, "exclude_dirs": ["build/"], "embed_url": "http://example.invalid/embeddings"}), encoding="utf-8")
         r = subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "init"], cwd=proj,
@@ -333,6 +348,42 @@ def main() -> None:
               "other-server" in json.loads((tmp / "opencode-user.json").read_text(encoding="utf-8"))["mcp"])
         check("global-wire: install stays read-only (no home config writes)",
               (home_mcp.read_bytes() if home_mcp.exists() else None) == home_before)
+
+        # 4g-b. #201: kilocode settings path is platform-branched (no
+        # junk ~/AppData tree on POSIX); env override still wins
+        import sys as _sys
+        _kilo_env = os.environ.pop("NEURONAV_KILO_MCP", None)
+        _saved_plat = _sys.platform
+        try:
+            _sys.platform = "linux"
+            p_lin = str(onboard._kilo_mcp_path())
+            _sys.platform = "darwin"
+            p_mac = str(onboard._kilo_mcp_path())
+            _sys.platform = "win32"
+            p_win = str(onboard._kilo_mcp_path())
+            _sys.platform = "plan9"
+            try:
+                onboard._kilo_mcp_path()
+                refused = False
+            except RuntimeError as e:
+                refused = "NEURONAV_KILO_MCP" in str(e)
+        finally:
+            _sys.platform = _saved_plat
+            if _kilo_env is not None:
+                os.environ["NEURONAV_KILO_MCP"] = _kilo_env
+        _home = str(Path.home())
+        check("kilo path: platform-branched, no ~/AppData on POSIX (#201)",
+              p_lin == os.path.join(_home, ".config", "Code", "User", "globalStorage",
+                                    "saoudrizwan.claude-dev", "mcp_settings.json")
+              and p_mac == os.path.join(_home, "Library", "Application Support", "Code",
+                                        "User", "globalStorage", "saoudrizwan.claude-dev",
+                                        "mcp_settings.json")
+              and p_win == os.path.join(_home, "AppData", "Roaming", "Code", "User",
+                                        "globalStorage", "saoudrizwan.claude-dev",
+                                        "mcp_settings.json"),
+              f"linux={p_lin} darwin={p_mac} win32={p_win}")
+        check("kilo path: unknown platform refused loudly naming the override (#201)",
+              refused, "no RuntimeError naming NEURONAV_KILO_MCP")
 
         # 5. one command end-to-end (fake embeds): index + bake in the project
         p2 = make_project(tmp / "second")
