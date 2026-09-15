@@ -14,15 +14,18 @@ record stamps the golden-set fingerprint it was measured against; render
 refuses to mix in records from a different golden set (issue #104).
 
 Configs: `vec` = cosine only · `bm25` = +BM25F reciprocal-rank fusion ·
-`expand` = +bidirectional 1-hop ctx · `both` = the shipped default ·
-`wfused` = `both` with weighted RRF (vec 1.0 / bm25 0.7) instead of the
-pinned unweighted k=60 · `gb` = `both` + the swept graph-neighbor
-boost (λ winner, see the λ × RRF-k sweep section) · `twopass` =
-`both` + the deterministic second retrieve (issue #74: pass-1
-lexical top hits donate their identifier surface to the
-re-embedded augmented query, 2 embeds/query).
+`expand` = +bidirectional 1-hop ctx · `both` = the shipped default
+(since #228 that includes the graph-neighbor boost λ 0.25 @ rrf_k
+30 — see the ceiling section) · `wfused` = `both` with weighted RRF
+(vec 1.0 / bm25 0.7) instead of the pinned unweighted k=30 · `gb` =
+the boost pinned explicitly (same wire as `both` post-#228) ·
+`twopass` = `both` + the deterministic second retrieve (issue #74:
+pass-1 lexical top hits donate their identifier surface to the
+re-embedded augmented query, 2 embeds/query). Pre-#228 `after`
+records measured the unboosted default; the #228 cutover re-ran
+the set on the shipped wire.
 
-### After — current main (nl2code query prefix default-on per #217; graph-boost winner in `gb`, two-pass in `twopass`)
+### After — current main (nl2code query prefix default-on per #217; graph-boost λ 0.25 @ rrf_k 30 default-on per #228; two-pass in `twopass`)
 
 commit `a97592a` (dirty tree) · mode **real** · model `qwen3-embedding:0.6b` · 58 indexed files · k=12
 
@@ -270,12 +273,16 @@ same cell): λ 0.25 @ rrf_k 30 sits in a three-cell top tier — hit@1
 0.560 here vs 0.600 at gb0.25-k60 and gb0.5-k30, a one-query gap well
 inside the documented jitter — and it carries the tier's best hit@10
 (0.920) with MRR 0.692 vs the k60 cell's 0.702. Every λ ≥ 1 loses
-monotonically (hub files crowd out precise matches). The win stays a
-single-cell-tier result on one corpus, so `recall.GRAPH_BOOST` stays
-0.0 — default-off — and the `gb` config keeps pinning λ 0.25 @
-rrf_k 30 for opted-in evaluation; the after-table `gb` row pins it.
-Cross-store deltas (across commits) carry ±jitter; the same-store `gb`
-vs `both` rows are the attribution.
+monotonically (hub files crowd out precise matches). The tier held
+on one corpus, so #73 kept `recall.GRAPH_BOOST` at 0.0 — the
+opted-in `gb` config pinned λ 0.25 @ rrf_k 30. AMENDED by issue
+#228 (see the ceiling section below): the #228 4λ × 3k ×
+4-weights grid re-swept the question on the prefixed wire and
+cleared the census bar (hit@5 +0.08, MRR +0.075, double-run
+stable) — λ 0.25 @ rrf_k 30 is the shipped default since #228;
+the after-table `both` row now carries it. Cross-store deltas
+(across commits) carry ±jitter; the in-grid ceiling baseline
+gb0-k60-w1-1 vs the boosted cells is the attribution.
 
 | config | hit@1 | hit@5 | hit@10 | MRR | reach@5 | reach@10 |
 |---|---|---|---|---|---|---|
@@ -295,6 +302,164 @@ vs `both` rows are the attribution.
 | gb2-k30 | 0.280 | 0.760 | 0.960 | 0.478 | 0.800 | 0.960 |
 | gb2-k60 | 0.200 | 0.720 | 0.920 | 0.426 | 0.760 | 0.920 |
 | gb2-k120 | 0.160 | 0.720 | 0.880 | 0.389 | 0.760 | 0.880 |
+
+## Recall ceiling push — census exp 1+2 (issue #228)
+
+Grids from `.team_scratch/paper_census.md` (Hydra arXiv 2602.11671;
+RepoBench ICLR 2024; RepoCoder EMNLP 2023). Both ride the shipped
+qprefix wire on the qwen3 store; win bar = hit@5 or MRR lift
+≥ +0.05 over the committed qprefix `both` row (0.520 / 0.880 / 0.960,
+MRR 0.672). Every cell double-run under the fp-jitter protocol.
+
+### Exp 1 — graph-boost fusion grid (λ × RRF-k × vec/bm25 weights)
+
+Set `gbw`, commit 0acdd30 (dirty), real, qwen3-embedding:0.6b, 58 files, k=12.
+λ=0 rows are the pure weights×k fusion sweep; `0 / 60 / (1, 1)` is
+the shipped `both` wire measured in-grid.
+
+| λ | rrf_k | weights | hit@1 | hit@5 | hit@10 | MRR |
+|---|---|---|---|---|---|---|
+| 0 | 30 | (0.7, 1) | 0.520 | 0.880 | 0.960 | 0.660 |
+| 0 | 30 | (1, 0.5) | 0.520 | 0.800 | 0.880 | 0.625 |
+| 0 | 30 | (1, 0.7) | 0.520 | 0.800 | 0.960 | 0.645 |
+| 0 | 30 | (1, 1) | 0.520 | 0.920 | 0.960 | 0.657 |
+| 0 | 60 | (0.7, 1) | 0.560 | 0.920 | 0.960 | 0.681 |
+| 0 | 60 | (1, 0.5) | 0.520 | 0.800 | 0.920 | 0.621 |
+| 0 | 60 | (1, 0.7) | 0.520 | 0.800 | 0.960 | 0.642 |
+| 0 | 60 | (1, 1) | 0.520 | 0.920 | 0.960 | 0.654 |
+| 0 | 120 | (0.7, 1) | 0.560 | 0.880 | 0.960 | 0.681 |
+| 0 | 120 | (1, 0.5) | 0.520 | 0.800 | 0.920 | 0.620 |
+| 0 | 120 | (1, 0.7) | 0.520 | 0.800 | 0.960 | 0.633 |
+| 0 | 120 | (1, 1) | 0.520 | 0.920 | 0.960 | 0.654 |
+| 0.25 | 30 | (0.7, 1) | 0.680 | 0.960 | 0.960 | 0.777 |
+| 0.25 | 30 | (1, 0.5) | 0.600 | 0.880 | 0.960 | 0.716 |
+| 0.25 | 30 | (1, 1) | 0.640 | 0.960 | 0.960 | 0.747 |
+| 0.25 | 60 | (0.7, 1) | 0.600 | 0.960 | 0.960 | 0.735 |
+| 0.25 | 60 | (1, 0.5) | 0.520 | 0.920 | 0.960 | 0.678 |
+| 0.25 | 60 | (1, 0.7) | 0.560 | 0.920 | 0.960 | 0.700 |
+| 0.25 | 60 | (1, 1) | 0.640 | 0.960 | 0.960 | 0.743 |
+| 0.25 | 120 | (0.7, 1) | 0.480 | 0.840 | 0.960 | 0.656 |
+| 0.25 | 120 | (1, 0.5) | 0.440 | 0.880 | 0.960 | 0.620 |
+| 0.25 | 120 | (1, 0.7) | 0.520 | 0.920 | 0.960 | 0.677 |
+| 0.25 | 120 | (1, 1) | 0.520 | 0.880 | 0.960 | 0.679 |
+| 0.5 | 30 | (0.7, 1) | 0.520 | 0.880 | 0.960 | 0.689 |
+| 0.5 | 30 | (1, 0.5) | 0.480 | 0.880 | 0.960 | 0.648 |
+| 0.5 | 30 | (1, 0.7) | 0.520 | 0.920 | 0.960 | 0.678 |
+| 0.5 | 30 | (1, 1) | 0.560 | 0.920 | 0.960 | 0.700 |
+| 0.5 | 60 | (0.7, 1) | 0.440 | 0.840 | 0.960 | 0.635 |
+| 0.5 | 60 | (1, 0.5) | 0.400 | 0.800 | 0.960 | 0.588 |
+| 0.5 | 60 | (1, 0.7) | 0.400 | 0.920 | 0.960 | 0.608 |
+| 0.5 | 60 | (1, 1) | 0.480 | 0.880 | 0.960 | 0.655 |
+| 0.5 | 120 | (0.7, 1) | 0.400 | 0.800 | 0.960 | 0.590 |
+| 0.5 | 120 | (1, 0.5) | 0.400 | 0.800 | 0.960 | 0.574 |
+| 0.5 | 120 | (1, 0.7) | 0.400 | 0.840 | 0.960 | 0.587 |
+| 0.5 | 120 | (1, 1) | 0.440 | 0.840 | 0.960 | 0.615 |
+| 0.75 | 30 | (0.7, 1) | 0.400 | 0.880 | 0.960 | 0.609 |
+| 0.75 | 30 | (1, 0.5) | 0.400 | 0.840 | 0.960 | 0.588 |
+| 0.75 | 30 | (1, 0.7) | 0.440 | 0.920 | 0.960 | 0.626 |
+| 0.75 | 30 | (1, 1) | 0.480 | 0.920 | 0.960 | 0.660 |
+| 0.75 | 60 | (0.7, 1) | 0.360 | 0.800 | 0.960 | 0.570 |
+| 0.75 | 60 | (1, 0.5) | 0.400 | 0.800 | 0.960 | 0.574 |
+| 0.75 | 60 | (1, 0.7) | 0.400 | 0.840 | 0.960 | 0.583 |
+| 0.75 | 60 | (1, 1) | 0.400 | 0.840 | 0.960 | 0.594 |
+| 0.75 | 120 | (1, 0.5) | 0.360 | 0.800 | 0.920 | 0.542 |
+| 0.75 | 120 | (1, 0.7) | 0.360 | 0.840 | 0.920 | 0.543 |
+| 0.75 | 120 | (1, 1) | 0.360 | 0.800 | 0.920 | 0.549 |
+
+### Exp 2 — two-pass RepoCoder loop grid (pool × budget × imports × pass-2 weight)
+
+Set `tps`, commit 0acdd30 (dirty), boost off (the two questions stay isolated). Hard split seeded by
+the in-grid `both` baseline: hard = pass-1 rank miss or > 5 → 2 of 25 queries.
+
+| pool | budget | imports | w2 | hit@5 | MRR | hard h@5 | hard MRR |
+|---|---|---|---|---|---|---|---|
+| 3 | 160 | 0 | 0.5 | 0.880 | 0.761 | 0.000 | 0.056 |
+| 3 | 160 | 0 | 1 | 0.840 | 0.765 | 0.000 | 0.056 |
+| 3 | 160 | 1 | 0.5 | 0.880 | 0.761 | 0.000 | 0.056 |
+| 3 | 160 | 1 | 1 | 0.840 | 0.765 | 0.000 | 0.056 |
+| 3 | 320 | 0 | 0.5 | 0.880 | 0.731 | 0.000 | 0.062 |
+| 3 | 320 | 0 | 1 | 0.880 | 0.743 | 0.000 | 0.062 |
+| 3 | 320 | 1 | 0.5 | 0.880 | 0.731 | 0.000 | 0.062 |
+| 3 | 320 | 1 | 1 | 0.880 | 0.743 | 0.000 | 0.062 |
+| 3 | 640 | 0 | 0.5 | 0.880 | 0.690 | 0.000 | 0.056 |
+| 3 | 640 | 0 | 1 | 0.880 | 0.739 | 0.000 | 0.056 |
+| 3 | 640 | 1 | 0.5 | 0.880 | 0.692 | 0.000 | 0.056 |
+| 3 | 640 | 1 | 1 | 0.880 | 0.739 | 0.000 | 0.056 |
+| 5 | 160 | 0 | 0.5 | 0.880 | 0.761 | 0.000 | 0.056 |
+| 5 | 160 | 0 | 1 | 0.840 | 0.765 | 0.000 | 0.056 |
+| 5 | 160 | 1 | 0.5 | 0.880 | 0.761 | 0.000 | 0.056 |
+| 5 | 160 | 1 | 1 | 0.840 | 0.765 | 0.000 | 0.056 |
+| 5 | 320 | 0 | 0.5 | 0.880 | 0.731 | 0.000 | 0.062 |
+| 5 | 320 | 1 | 0.5 | 0.880 | 0.731 | 0.000 | 0.062 |
+| 5 | 320 | 1 | 1 | 0.880 | 0.743 | 0.000 | 0.062 |
+| 5 | 640 | 0 | 0.5 | 0.880 | 0.690 | 0.000 | 0.056 |
+| 5 | 640 | 1 | 1 | 0.880 | 0.739 | 0.000 | 0.056 |
+| 12 | 160 | 0 | 0.5 | 0.880 | 0.761 | 0.000 | 0.056 |
+| 12 | 160 | 0 | 1 | 0.840 | 0.765 | 0.000 | 0.056 |
+| 12 | 160 | 1 | 0.5 | 0.880 | 0.761 | 0.000 | 0.056 |
+| 12 | 160 | 1 | 1 | 0.840 | 0.765 | 0.000 | 0.056 |
+| 12 | 320 | 0 | 0.5 | 0.880 | 0.731 | 0.000 | 0.062 |
+| 12 | 320 | 1 | 0.5 | 0.880 | 0.731 | 0.000 | 0.062 |
+| 12 | 640 | 0 | 0.5 | 0.880 | 0.690 | 0.000 | 0.056 |
+| 12 | 640 | 0 | 1 | 0.880 | 0.739 | 0.000 | 0.056 |
+| 12 | 640 | 1 | 0.5 | 0.880 | 0.690 | 0.000 | 0.056 |
+| 12 | 640 | 1 | 1 | 0.880 | 0.739 | 0.000 | 0.056 |
+
+Baseline `both` on the same hard 2: hit@5 0.000, MRR 0.062 (0 by construction on hit@5 — hard is defined
+by that record's own rank > 5; MRR still credits rank 6–12).
+
+### Jitter audit (double-run gate)
+
+76 of 84 cells were byte-identical across the two full runs. 8
+cells flipped a ±1-rank near-tie (`_has_exact`, the agent-protocol
+prose query, `find_functions`, `sha256_of`, subsystem-names); a
+third pass settled tps-p12-b640-i1-w1 (kept, pass2 == pass3) and
+left 7 cells still flipping across every re-measure — dropped
+from `runs/` and excluded from arbitration, not reported as
+false precision: gbw-gb0.25-k30-w1-0.7 (both lines ≥ 0.92 h@5,
+0.738–0.741 MRR — would not change any verdict),
+gbw-gb0.75-k120-w0.7-1 (a losing λ anyway), and tps-p5/p12-
+b320-w1 / p5-b640 (all inside the settled b160/b640 tiers' band,
+±0.003 MRR). No winner cell and no baseline was unstable.
+
+### Verdict
+
+**Exp 1 — graph-boost fusion: WIN, shipped.** λ 0.25 @ rrf_k 30,
+weights (1, 1) lifts the in-grid baseline 0.520/0.920/0.960/MRR
+0.654 to 0.640/0.960/0.960/MRR 0.747 — +0.040 hit@1, +0.040
+hit@5, +0.093 MRR, double-run byte-stable, and it recovers one
+of the two hard queries. Against the committed qprefix `both` row
+(0.520/0.880/0.960/0.672, different store — cross-store deltas
+carry ±jitter) the same cell reads +0.120 hit@1 / +0.080 hit@5 /
++0.075 MRR: both bars (hit@5, MRR) clear +0.05. The λ 0.25 tier
+from #73 holds at k30 on the prefixed wire; every λ ≥ 0.5 still
+loses monotonically (hub files crowd out precise matches).
+`recall.GRAPH_BOOST`/`recall.RRF_K` ship 0.25/30.0; `both` and
+`gb` are the same wire post-#228. The grid max λ 0.25 @ k30
+(0.7, 1) (0.680/0.960/0.960/0.777) exceeds the shipped cell by
++0.030 MRR — a vec-downweight, sub-bar single cell, and in the
+jitter-excluded cell's own band; not shipped (same law as #73:
+no sub-bar single-cell ships).
+
+**Exp 2 — two-pass RepoCoder loop: NEGATIVE on its census win
+condition.** The hard split (2 of 25 queries: pass-1 rank miss or
+> 5 in the in-grid baseline) is where RepoCoder promised the
+lift; hard hit@5 stays 0.000 for every cell — no tuning of pool
+(3/5/12), budget (160/320/640), pass-2 weight (0.5/1.0) or
+imports recovers either hard query into the top 5 (hard MRR
+0.050–0.062 = ranks 8–12). The loop does lift easy-query ranks
+(b160 cells: 0.680 hit@1, MRR 0.765 vs baseline 0.520/0.654)
+but drops overall hit@5 to 0.840–0.880 vs 0.920 in-grid — the
+augmented query outranks the prose target's competitors on some
+easy queries. Budget is monotone-better as it shrinks (640 < 320
+< 160 — RepoBench's short-context prior transfers); pool and
+weight are flat. The `imports` axis is a measurement of a
+near-no-op: resolved from-imports already fold into the importer's
+surface via the graph's consts folding, so i0/i1 rows are
+byte-identical almost everywhere (5 residual names corpus-wide).
+TWO_PASS_* stays at #74 values; `two_pass={pool, budget,
+imports, weight}` tuning knobs ship for future sweeps, default
+off. Shipped as a negative result per bench law.
 
 <details><summary>per-query first-target rank (· = not in top-12; c = only via hop ctx)</summary>
 
@@ -333,6 +498,7 @@ vs `both` rows are the attribution.
 ```
 git worktree add --detach ../bench-measure <commit>
 .venv/Scripts/python.exe -X utf8 bench/run_bench.py --set sweep --repo ../bench-measure
+.venv/Scripts/python.exe -X utf8 bench/run_bench.py --set ceiling --repo ../bench-measure
 .venv/Scripts/python.exe -X utf8 bench/run_bench.py --set ab --repo ../bench-measure
 .venv/Scripts/python.exe -X utf8 bench/run_bench.py --set qprefix --repo ../bench-measure
 # JCE legs: serve the official jinaai Q8_0 GGUF first (Ollama imports

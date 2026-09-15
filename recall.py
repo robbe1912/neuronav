@@ -7,11 +7,11 @@ Pure stdlib on the lexical side, no embedding backend dependency:
   x5, symbols x3, path x2, body x1 (body = parsed fn bodies, full
   length — no embed truncation; module-level code and scene XML are
   covered by the structured fields instead).
-- reciprocal-rank fusion (k=60) of chroma vector ranks + BM25 ranks.
-- optional post-fusion graph-neighbor boost (issue #73, default off,
+- reciprocal-rank fusion (k=30) of chroma vector ranks + BM25 ranks.
+- post-fusion graph-neighbor boost (issues #73/#228, default ON,
   ``GRAPH_BOOST``): the fused top-k each promote their 1-hop wire
-  neighbors by a rank-decayed λ·RRF-unit bump — the λ × RRF-k sweep
-  that chose the default lives in bench/RESULTS.md.
+  neighbors by a rank-decayed λ·RRF-unit bump — the λ × RRF-k ×
+  weights grid that chose the default lives in bench/RESULTS.md.
 - task-instruction query prefix (issue #217, default ON): the
   winning ``QUERY_PREFIX`` from the #214/#75 embedding A/B — the
   nl2code instruction from the JCE model card — is prepended to the
@@ -40,15 +40,17 @@ import sys
 from collections import Counter
 import weakref
 
-RRF_K = 60.0
+RRF_K = 30.0
 BM25_K1 = 1.2
 BM25_B = 0.75
 CTX_CAP = 3
-# 1-hop graph-neighbor rank boost, default OFF (issue #73). λ is a
+# 1-hop graph-neighbor rank boost, default ON (issues #73/#228). λ is a
 # multiplier of the RRF unit 1/(rrf_k+1): each fused top-k source adds
-# λ·unit/(source rank) to every distinct 1-hop file neighbor. The swept
-# winner lives in bench/RESULTS.md; 0.0 keeps the pinned hybrid intact.
-GRAPH_BOOST = 0.0
+# λ·unit/(source rank) to every distinct 1-hop file neighbor. λ 0.25 @
+# rrf_k 30 is the #228 grid winner (hit@5 +0.08, MRR +0.075 over the
+# qprefix baseline, double-run stable — bench/RESULTS.md); 0.0 is the
+# explicit off wire.
+GRAPH_BOOST = 0.25
 # char budget for the two-pass augmented query's harvested identifier
 # tail — sized so the original query stays dominant (issue #74 A/B)
 TWO_PASS_BUDGET = 320
@@ -411,12 +413,15 @@ def search(
     ranks, each hit carrying 1-hop graph context labels. ``bm25`` /
     ``expand`` are the bench switches (False, False = the pure-vector
     baseline behavior). ``weights`` = (vec, bm25) list weights for
-    fusion arbitration; None keeps the pinned unweighted RRF k=60.
+    fusion arbitration; None keeps the pinned unweighted RRF (k=30).
     ``graph_boost`` = λ multiplier of the RRF unit 1/(rrf_k+1) — each
     fused top-k source promotes its 1-hop wire neighbors by
     λ·unit/(source rank); None keeps the module default GRAPH_BOOST
-    (0.0 = off). ``rrf_k`` overrides the fusion constant for bench
-    sweeps.
+    (0.25, the #228 grid winner; 0.0 = explicit off). The boost rides
+    the structural wire only — the graph loads for bm25 / expand /
+    two_pass (pure-vector keeps vector ranks untouched), and the
+    degraded BM25F-only contract is served without it. ``rrf_k``
+    overrides the fusion constant for bench sweeps.
 
     ``query_prefix`` (issues #75/#217, JCE card): task-instruction
     text prepended to the EMBEDDED query only — pass 1 and the two-pass
@@ -478,7 +483,7 @@ def search(
 
     g = None
     lex: list[str] = []
-    if bm25 or expand or lam > 0.0 or two_pass:
+    if bm25 or expand or two_pass:
         import graph  # lazy: binding only, attrs read at call time
 
         g = graph.get_graph()
@@ -523,7 +528,7 @@ def search(
                 engaged = True
 
     fused = _rrf(sides, krrf)
-    if lam > 0.0 and g is not None:
+    if reason is None and lam > 0.0 and g is not None:
         fused = _graph_boost(fused, g, k, lam, krrf)
 
     hits: list[dict[str, object]] = []

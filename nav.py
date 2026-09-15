@@ -970,18 +970,20 @@ def search(
     query: str,
     k: int = 12,
     two_pass: bool = False,
-    graph_boost: float = 0.0,
+    graph_boost: float | None = None,
 ) -> list[dict[str, object]]:
     """Hybrid recall: chroma vector ranks fused (reciprocal-rank fusion,
-    k=60) with BM25F lexical ranks over the structural graph; each hit
+    k=30) with BM25F lexical ranks over the structural graph; each hit
     carries bidirectional 1-hop context labels.
 
     Hit keys: file, score, src ("vec"|"bm25"|"both"), ctx (<=3 neighbor
     paths) + class_name/extends/ext. two_pass/graph_boost pass straight
-    through to recall.search (issues #74/#73 — the server's
-    semantic_search exposes them on the wire). If the vector side is
-    unavailable the results degrade LOUDLY to BM25F-only (stderr warning
-    + ``degraded: True`` on every hit) — see recall.search.
+    through to recall.search (issues #74/#73/#228 — the server's
+    semantic_search exposes them on the wire); graph_boost None rides
+    the shipped recall default (λ 0.25 — the #228 grid winner), 0.0 is
+    the explicit off wire. If the vector side is unavailable the results
+    degrade LOUDLY to BM25F-only (stderr warning + ``degraded: True``
+    on every hit) — see recall.search.
     """
     return recall.search(query, k=k, two_pass=two_pass, graph_boost=graph_boost)
 

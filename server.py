@@ -332,7 +332,7 @@ def semantic_search(
     n: int = 8,
     dir: str = "",
     two_pass: bool = False,
-    graph_boost: float = 0.0,
+    graph_boost: float | None = None,
 ) -> str:
     """Find files in this repo by meaning, not keywords.
 
@@ -342,16 +342,17 @@ def semantic_search(
     grep when hunting a concept: input handling, timed effects, save
     system, netcode, AI behavior, item storage.
 
-    Scores are RRF rank-fusion values (1/(60+rank) summed per side that
-    found the file), NOT cosine: ~0.03 is a strong top hit and 1.0 is
-    unreachable — compare rows by order, never against find_functions'
-    0-1 cosine scale (issue #125).
+    Scores are RRF rank-fusion values (1/(30+rank) summed per side that
+    found the file, plus the graph-neighbor boost), NOT cosine: ~0.03 is
+    a strong top hit and 1.0 is unreachable — compare rows by order,
+    never against find_functions' 0-1 cosine scale (issue #125).
 
     two_pass=True runs the RepoCoder second retrieve (issue #74: pass-1
     hits donate identifiers to one re-embedded augmented query; engaged
-    rows are tagged 2pass). graph_boost>0 turns on the 1-hop
-    graph-neighbor rank promotion (issue #73, default off); negative
-    values are rejected loudly.
+    rows are tagged 2pass). graph_boost rides the shipped recall
+    default when omitted (λ 0.25, the #228 grid winner — 1-hop wire
+    neighbors of top hits get a rank-decayed bump); pass 0.0 to disable
+    and larger λ to strengthen; negative values are rejected loudly.
 
     dir="" serves the boot config's repo; any other path routes this one
     call to that checkout (issue #131 — a fresh dir onboards on first

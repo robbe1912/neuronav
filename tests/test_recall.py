@@ -76,10 +76,11 @@ check("fused search surfaces the defining file",
 # this file.
 q = "qw" + "xyz  bl" + "orpt"
 fused = recall.search(q, k=8)
-pure = recall.search(q, k=8, bm25=False, expand=False)
-check("no-overlap query stays vector-served",
-      [h["file"] for h in fused] == [h["file"] for h in pure]
-      and bool(fused) and all(h["src"] == "vec" for h in fused),
+# lexical abstention, not rank freeze: the shipped default boost may
+# reorder wired neighbours (that is its job — issue #228), but the
+# lexical side must still contribute nothing to a zero-overlap query.
+check("no-overlap query: lexical side abstains",
+      bool(fused) and all(h["src"] in ("vec", "graph") for h in fused),
       str([(h["file"], h["src"]) for h in fused]))
 
 # 3. determinism: identical query -> byte-identical results, no dupes
@@ -91,7 +92,7 @@ files = [h["file"] for h in a]
 check("fused results deduped", len(files) == len(set(files)))
 check("contract keys and bounded ctx",
       all({"file", "score", "src", "ctx"} <= set(h) for h in a)
-      and all(h["src"] in ("vec", "bm25", "both") for h in a)
+      and all(h["src"] in ("vec", "bm25", "both", "graph") for h in a)
       and all(len(h["ctx"]) <= 3 for h in a))
 check("healthy mode carries no degraded flag",
       all("degraded" not in h for h in a))
@@ -174,7 +175,8 @@ check("two-pass keeps contract keys and dedup",
       and len({h["file"] for h in tp}) == 12)
 pv = recall.search("qw" + "xyz  bl" + "orpt", k=8, bm25=False, expand=False, two_pass=True)
 check("two-pass works in pure-vector mode",
-      len(pv) == 8 and all(h.get("two_pass") is True and h["src"] == "vec"
+      len(pv) == 8 and all(h.get("two_pass") is True
+                           and h["src"] in ("vec", "graph")
                            and h["ctx"] == [] for h in pv))
 
 # embed budget: at most 2 embed calls per query even with two passes
@@ -371,12 +373,20 @@ for _sk, _dsts in g.edges.items():
             adj2.setdefault(_sf, set()).add(_df)
             adj2.setdefault(_df, set()).add(_sf)
 
-# 8a. explicit λ=0 (and the module default) are byte-identical no-ops —
-# the plumbing lands default-off.
-z = recall.search("graph signal wiring edges", k=12)
-check("graph_boost=0 is a no-op",
-      json.dumps(recall.search("graph signal wiring edges", k=12, graph_boost=0.0))
-      == json.dumps(z))
+# 8a. the module default ships the #228 grid winner (λ 0.25 @ rrf_k 30,
+# double-run stable — bench/RESULTS.md); graph_boost=0.0 is the
+# explicit off wire — byte-stable, never graph-tagged.
+z = recall.search("graph signal wiring edges", k=12, graph_boost=0.0)
+z2 = recall.search("graph signal wiring edges", k=12, graph_boost=0.0)
+zd = recall.search("graph signal wiring edges", k=12)
+check("module default is the swept winner (λ 0.25 @ rrf_k 30, #228)",
+      recall.GRAPH_BOOST == 0.25 and recall.RRF_K == 30.0
+      and json.dumps(zd) == json.dumps(
+          recall.search("graph signal wiring edges", k=12,
+                        graph_boost=recall.GRAPH_BOOST, rrf_k=recall.RRF_K)))
+check("graph_boost=0 is the explicit off wire",
+      json.dumps(z) == json.dumps(z2)
+      and all(h["src"] in ("vec", "bm25", "both") for h in z))
 
 # 8b. λ>0 reranks deterministically: byte-identical double run.
 b1 = recall.search("graph signal wiring edges", k=12, graph_boost=1.0)
@@ -393,16 +403,16 @@ check("boost never lowers an existing score",
       bool(common) and all(boost_scores[f] >= base_scores[f] for f in common))
 
 # 8d. promotion is real AND non-vacuous (GK #166 F2): a 1-hop
-# neighbour of the first WIRED λ=0 hit must STRICTLY RANK UP under
-# λ=16 — its boosted rank beats its λ=0 rank (a neighbour outside the
-# λ=0 top-12 entering the boosted top-12 counts as up). With the boost
-# off the two rank maps are identical (8a pins that byte-identity), so
-# the pin fails — it pins the #73 promotion invariant, not lexical
-# accident. Top-0 itself is corpus-composition-sensitive under FAKE
-# embeds (hash near-ties let a lexically-heavy edgeless file top the
-# list — e.g. a generated-content suite file), so anchor on the first
-# λ=0 hit that actually has neighbours; the boost law is about wired
-# files either way.
+# neighbour of the first WIRED off-wire hit must STRICTLY RANK UP under
+# λ=16 — its boosted rank beats its off-wire rank (a neighbour outside
+# the off-wire top-12 entering the boosted top-12 counts as up). The
+# off-wire rank map is deterministic (8a), so a strictly-lifted
+# neighbour proves promotion rather than lexical accident. Top-0
+# itself is corpus-composition-sensitive under FAKE embeds (hash
+# near-ties let a lexically-heavy edgeless file top the list — e.g. a
+# generated-content suite file), so anchor on the first off-wire hit
+# that actually has neighbours; the boost law is about wired files
+# either way.
 wired0 = next((h["file"] for h in z[:12] if adj2.get(h["file"])), None)
 nb0 = adj2.get(wired0, set())
 strong = recall.search("graph signal wiring edges", k=12, graph_boost=16.0)
@@ -421,13 +431,17 @@ srcs0 = {h["file"] for h in z[:12]}
 bad_g = [h["file"] for h in b1 if h["src"] == "graph"
          and not any(h["file"] in adj2.get(s, set()) for s in srcs0)]
 check("graph-tagged hits are real neighbors of top-k sources", not bad_g, str(bad_g))
-check("no graph tag without boost",
-      all(h["src"] in ("vec", "bm25", "both") for h in z))
-# 8f. rrf_k sweep plumbing: k=30 sharpens the unit; still byte-stable
-# and still a no-op at λ=0 relative to itself.
+srcsd = {h["file"] for h in zd[:12]}
+bad_d = [h["file"] for h in zd if h["src"] == "graph"
+         and not any(h["file"] in adj2.get(s, set()) for s in srcsd)]
+check("default-wire graph tags are real neighbors of top-k sources",
+      not bad_d, str(bad_d))
+# 8f. rrf_k override plumbing (30 is the shipped default since #228):
+# byte-stable, and the explicit override reproduces the default wire.
 s30 = recall.search("graph signal wiring edges", k=12, rrf_k=30.0)
 s30b = recall.search("graph signal wiring edges", k=12, rrf_k=30.0)
-check("rrf_k override byte-stable", json.dumps(s30) == json.dumps(s30b))
+check("rrf_k override byte-stable",
+      json.dumps(s30) == json.dumps(s30b) and json.dumps(s30) == json.dumps(zd))
 
 # 8f'. negative boost is rejected loudly, not silently clamped.
 try:
@@ -437,7 +451,9 @@ except ValueError as e:
     neg_raised = "graph_boost" in str(e)
 check("negative graph_boost raises ValueError", neg_raised)
 
-# 8g. degraded mode + boost stays loud: every hit marked, deterministic.
+# 8g. degraded mode keeps the BM25F-only contract even with the boost
+# knob on: the boost never rides the degraded wire (no graph tags, no
+# two_pass key), every hit still marked, deterministic, loud warning.
 orig = recall._vector_ranks
 recall._vector_ranks = _boom
 try:
@@ -446,8 +462,9 @@ try:
         dgb2 = recall.search("graph signal wiring edges", k=8, graph_boost=1.0)
 finally:
     recall._vector_ranks = orig
-check("degraded + boost marks every hit",
-      bool(dgb) and all(h.get("degraded") is True for h in dgb)
+check("degraded + boost keeps the BM25F-only contract",
+      bool(dgb) and all(h.get("degraded") is True and h["src"] == "bm25"
+                        and "two_pass" not in h for h in dgb)
       and "BM25F-only" in err.getvalue())
 check("degraded + boost deterministic", json.dumps(dgb) == json.dumps(dgb2))
 
