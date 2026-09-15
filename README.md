@@ -91,11 +91,13 @@ is re-embedded once and RRF-fused with the pass-1 ranks. Hard embed
 budget: 2 calls per query.
 Engaged hits carry `two_pass: true` (same marker convention as `degraded`);
 when the vector side is down the feature stays out of the way and the
-BM25F-only degraded contract is served unchanged. Default `false`: the
-A/B beats single-pass on every metric (hit@1 0.40→0.56, hit@5 0.84→0.88,
-hit@10 0.92→0.96, MRR 0.587→0.706 — `bench/RESULTS.md` `twopass`
-column), but it doubles query-side embeds on the shared search path;
-flip per project after trying it.
+BM25F-only degraded contract is served unchanged. Default `false`: on the
+committed self-index bench (real mode, `qwen3-embedding:0.6b`, k=12 — the
+`After — current main` table in `bench/RESULTS.md`) two-pass lifts the
+top of the ranking — hit@1 0.640→0.800 and MRR 0.747→0.837 over the
+shipped default — but trades recall depth for it: hit@5 drops
+0.960→0.880 and hit@10 0.960→0.920. It also doubles query-side embeds
+on the shared search path; flip per project after trying it.
 
 ## Prerequisites
 
