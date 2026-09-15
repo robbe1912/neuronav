@@ -401,7 +401,7 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool,
         def search(query: str):
             if have_recall:
                 kw = {"k": K, "bm25": "bm25" in flags, "expand": "expand" in flags}
-                if not {"bm25", "expand", "gboost", "two_pass"} & flags:
+                if not set(flags) & {"bm25", "expand", "gboost", "two_pass"}:
                     kw["graph_boost"] = 0.0
                 if "weights" in flags:
                     kw["weights"] = WFUSED_WEIGHTS
