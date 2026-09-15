@@ -213,6 +213,85 @@ check("two-pass degraded keeps the BM25F-only contract",
       bool(dtp) and all(h.get("degraded") is True and h["src"] == "bm25"
                         and "two_pass" not in h for h in dtp))
 
+# 7a. two-pass tuning knobs (issue #228, RepoCoder loop): the dict form
+# of two_pass overrides the module defaults per call — pool = harvest
+# donor count, budget = identifier-tail chars, imports = harvested
+# from_imports names, weight = pass-2 RRF side scale. True is exactly
+# the defaults; every knob is deterministic and pinned end-to-end.
+_q0 = "cluster labeling wires"
+_lex0 = [p for p, _s in recall._cached_index(g.files).scores(_q0)[:24]]
+check("harvest donor corpus is non-empty for the pinned query",
+      len(_lex0) >= 3, str(_lex0[:3]))
+_aug1 = recall._augment(_q0, _lex0[:1], g, budget=10 ** 9)
+_aug3 = recall._augment(_q0, _lex0[:3], g, budget=10 ** 9)
+check("pool knob widens the harvested identifier tail",
+      _aug1 != _aug3 and _aug3.startswith(_aug1))
+_full = recall._augment("q", ["clusters.py"], g, budget=10 ** 9)
+_cut = recall._augment("q", ["clusters.py"], g, budget=13)
+check("budget truncates the identifier tail",
+      _cut == "q\n" + _full.split("\n", 1)[1][:13])
+# nav.py keeps a from-import name its own surface lacks: most resolved
+# imports fold into the importer's consts (graph's definer folding), so
+# the imports knob only adds the residual — nav.py/EXTENSIONS is one.
+_fi = sorted({n for _m, n in g.files["nav.py"].from_imports}
+             - set(recall._surface(g.files["nav.py"])))
+_a_plain = recall._augment("q", ["nav.py"], g, budget=10 ** 9)
+_a_imp = recall._augment("q", ["nav.py"], g, budget=10 ** 9, imports=True)
+check("imports=True harvests from_imports names beyond the base surface",
+      bool(_fi) and all(n in _a_imp.split() for n in _fi)
+      and not any(n in _a_plain.split() for n in _fi), str(_fi))
+
+_tuned = recall.search("graph signal wiring edges", k=12,
+                       two_pass={"pool": 4, "budget": 200, "weight": 0.5})
+_tuned2 = recall.search("graph signal wiring edges", k=12,
+                        two_pass={"pool": 4, "budget": 200, "weight": 0.5})
+check("tuned two-pass byte-stable run-to-run",
+      json.dumps(_tuned) == json.dumps(_tuned2) and len(_tuned) == 12)
+check("tuned two-pass marks every hit", all(h.get("two_pass") is True for h in _tuned))
+_dflt = recall.search("graph signal wiring edges", k=12, two_pass={})
+_same = recall.search("graph signal wiring edges", k=12, two_pass=True)
+check("two_pass={} is exactly True (module defaults)",
+      json.dumps(_dflt) == json.dumps(_same))
+
+# the knobs reach the wire: pass 2 embeds exactly prefix + tuned augment,
+# and the pass-2 RRF sides carry the weight scale
+_orig_vr0 = recall._vector_ranks
+_tp_seen: list[str] = []
+
+
+def _tp_capture(q, depth):
+    _tp_seen.append(q)
+    return _orig_vr0(q, depth)
+recall._vector_ranks = _tp_capture
+try:
+    recall.search(_q0, k=6, two_pass={"pool": 2, "budget": 5000, "imports": True})
+finally:
+    recall._vector_ranks = _orig_vr0
+check("pass-2 embeds prefix + pool/budget/imports-tuned augment",
+      len(_tp_seen) == 2
+      and _tp_seen[1] == recall.QUERY_PREFIX
+      + recall._augment(_q0, _lex0[:2], g, budget=5000, imports=True),
+      repr(_tp_seen[1][:120]))
+
+_sides_seen: list[list[float]] = []
+_orig_rrf = recall._rrf
+
+
+def _rrf_capture(sides, rrf_k):
+    _sides_seen.append([w for _t, _l, w in sides])
+    return _orig_rrf(sides, rrf_k)
+
+
+recall._rrf = _rrf_capture
+try:
+    recall.search(_q0, k=6, two_pass={"weight": 0.5})
+    recall.search(_q0, k=6, two_pass=True)
+finally:
+    recall._rrf = _orig_rrf
+check("weight scales exactly the pass-2 RRF sides",
+      len(_sides_seen) == 2 and _sides_seen[0][2:] == [0.5, 0.5]
+      and _sides_seen[1][2:] == [1.0, 1.0], str(_sides_seen))
+
 # 7b. task-instruction query prefix (issue #217): the winning nl2code
 # instruction from the #214/#75 A/B ships default-on — prepended to the
 # EMBEDDED query only (pass 1 AND the two-pass augmented retrieve); the

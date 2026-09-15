@@ -118,6 +118,35 @@ def main() -> int:
         check("A/B delta table credits the jina leg",
               "jina-code-embeddings-0.5b:Q8_0" in text and "-10.0" in text)
 
+    # issue #228: the ceiling grids render with the RepoBench easy/hard
+    # split — hard = pass-1 rank miss or > 5 in the in-grid baseline
+    # (gbw-gb0-k60-w1-1), and _split_metrics credits only rank <= 5
+    base = synth_record(golden, fp)
+    base.update({"set": "gbw", "config": "gb0-k60-w1-1", "gb_lambda": 0.0,
+                 "gb_rrf_k": 60.0, "gb_wv": 1.0, "gb_wl": 1.0})
+    base["per_query"][0]["rank"] = 7   # hard: beyond 5
+    base["per_query"][1]["rank"] = None  # hard: miss
+    cell = synth_record(golden, fp)
+    cell.update({"set": "tps", "config": "p3-b320-i0-w1", "tp_pool": 3,
+                 "tp_budget": 320, "tp_imports": False, "tp_weight": 1.0})
+    cell["per_query"][0]["rank"] = 1   # hard query recovered to rank 1
+    cell["per_query"][1]["rank"] = None  # still missed
+    text, err = render_in_sandbox(
+        {"gbw-gb0-k60-w1-1": base, "tps-p3-b320-i0-w1": cell})
+    check("ceiling section renders from gbw/tps records (issue #228)",
+          err is None and text is not None
+          and "## Recall ceiling push — census exp 1+2 (issue #228)" in text
+          and "### Exp 1" in text and "### Exp 2" in text, repr(err))
+    hard_qs = {golden[0]["q"], golden[1]["q"]}
+    h5, hm, hn = run_bench._split_metrics(cell, hard_qs)
+    check("hard split: n, hit@5 and MRR over the hard subset only",
+          hn == 2 and h5 == 0.5 and hm == 0.5, f"{hn} {h5} {hm}")
+    if text is not None:
+        check("exp-2 rows carry the hard-split columns",
+              "| 3 | 320 | 0 | 1 |" in text and "0.500 | 0.500 |" in text)
+        check("baseline hard row documented (0 by construction on hit@5)",
+              "Baseline `both` on the same hard 2" in text)
+
     print(f"\n{len(FAILURES)} failure(s)")
     return 1 if FAILURES else 0
 

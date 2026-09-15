@@ -70,6 +70,26 @@ GB_LAMBDA = 0.25  # swept winner: λ 0.25 @ rrf_k 30 (h1 +0.08 vs λ=0, double-r
 GB_RRF_K = 30.0  # every λ ≥ 0.5 lost to plain fusion; GRAPH_BOOST default stays 0.0
 GB_LAMBDAS = (0.0, 0.25, 0.5, 1.0, 2.0)
 GB_RRF_KS = (30.0, 60.0, 120.0)
+# --- issue #228 (census exp 1+2): the recall-ceiling grids ---
+# exp 1 — graph-boost fusion grid: λ × RRF-k × (vec, bm25) weights on
+# the golden set, qprefix default wire, real embeds (Hydra arXiv
+# 2602.11671: dependency-aware retrieval fused after similarity beats
+# pure embedding RAG). The λ=0 rows double as the pure weights×k
+# fusion sweep; gb0-k60-w1-1 IS the shipped `both` wire and serves as
+# the in-grid baseline + the exp-2 easy/hard split seed.
+GBC_LAMBDAS = (0.0, 0.25, 0.5, 0.75)
+GBC_RRF_KS = (30.0, 60.0, 120.0)
+GBC_WEIGHTS = ((1.0, 1.0), (1.0, 0.7), (1.0, 0.5), (0.7, 1.0))
+# exp 2 — two-pass RepoCoder loop tuning grid: harvest pool × char
+# budget × imports × pass-2 weight scale (RepoCoder EMNLP 2023:
+# identifiers harvested from retrieved context lift exact-match
+# retrieval; RepoBench ICLR 2024: small kept context beats large).
+# Boost stays OFF here — the two questions are isolated; stacking is
+# measured only if both grids clear their bars.
+TPC_POOLS = (3, 5, 12)
+TPC_BUDGETS = (160, 320, 640)
+TPC_IMPORTS = (False, True)
+TPC_WEIGHTS = (0.5, 1.0)
 # --- issue #75: embedding A/B (jina-code-embeddings-0.5b vs qwen3) ---
 # Task instructions from the JCE model card (arXiv 2508.21290). The
 # nl2code QUERY instruction lives in recall.QUERY_PREFIX and, since
@@ -495,6 +515,108 @@ def sweep(repo: Path) -> int:
     render()
     return 0
 
+def ceiling_sweep(repo: Path) -> int:
+    """Issue #228 grids on the golden set, real embeds, one rescan up
+    front: exp 1 = graph-boost fusion λ × RRF-k × (vec, bm25) weights
+    (set `gbw`), exp 2 = two-pass pool × budget × imports × pass-2
+    weight (set `tps`). Both ride the shipped qprefix wire; the
+    sha-incremental store means cells re-embed queries only.
+    Deterministic grid order (λ outer, k, weights inner; pool outer,
+    budget, imports, weight inner). Records land in
+    bench/runs/gbw-*.json and tps-*.json, rendered into the issue-#228
+    RESULTS.md section with the easy/hard split."""
+    os.environ["NEURONAV_CONFIG"] = str(repo / "config" / "neuronav.json")
+    sys.path.insert(0, str(repo))
+
+    import nav  # noqa: E402  (binds the self-index profile via NEURONAV_CONFIG)
+    import recall  # noqa: E402
+
+    import httpx
+
+    try:
+        httpx.get("http://127.0.0.1:11434/api/tags", timeout=10)
+    except Exception as e:
+        raise RuntimeError(f"ceiling sweep needs Ollama on 11434: {e}") from e
+
+    if verify_golden(repo):
+        return 3
+
+    stats = nav.rescan()  # sha-incremental: docs embed once, cells only re-embed queries
+    print(f"index: {nav.count()} files (rescan {stats['added']}+/{stats['updated']}~/{stats['deleted']}-)")
+    if not _verify_store_vectors(nav):
+        return 4
+
+    queries = _load_golden()
+    commit = _git(repo, "rev-parse", "--short", "HEAD") or "unknown"
+    dirty = bool(_git(repo, "status", "--porcelain"))
+    fp = _golden_fp()
+
+    runs_dir = BENCH_DIR / "runs"
+    runs_dir.mkdir(exist_ok=True)
+
+    def measure(cell_set: str, name: str, search, extra: dict) -> None:
+        result = _run_config(repo, search, name, queries)
+        record = {
+            "set": cell_set,
+            "config": name,
+            "commit": commit,
+            "dirty": dirty,
+            "mode": "real",
+            "model": nav.EMBED_MODEL,
+            "files": nav.count(),
+            "k": K,
+            "golden": fp,
+            **extra,
+            **{key: v for key, v in result.items() if key != "per_query"},
+            "per_query": result["per_query"],
+        }
+        (runs_dir / f"{cell_set}-{name}.json").write_text(
+            json.dumps(record, indent=1) + "\n", encoding="utf-8", newline="\n"
+        )
+        print(
+            f"{cell_set}/{name}: hit@1={result['hit@1']} hit@5={result['hit@5']} "
+            f"hit@10={result['hit@10']} mrr={result['mrr']} "
+            f"reach@5={result['reach@5']} reach@10={result['reach@10']}"
+        )
+
+    # exp 1 — λ × RRF-k × weights; λ=0 rows are the pure fusion sweep
+    for lam in GBC_LAMBDAS:
+        for kk in GBC_RRF_KS:
+            for wv, wl in GBC_WEIGHTS:
+                name = f"gb{lam:g}-k{kk:g}-w{wv:g}-{wl:g}"
+
+                def search(query: str, _lam=lam, _kk=kk, _wv=wv, _wl=wl):
+                    return recall.search(
+                        query, k=K, graph_boost=_lam, rrf_k=_kk, weights=(_wv, _wl)
+                    )
+
+                measure(
+                    "gbw", name, search,
+                    {"gb_lambda": lam, "gb_rrf_k": kk, "gb_wv": wv, "gb_wl": wl},
+                )
+
+    # exp 2 — pool × budget × imports × pass-2 weight, boost OFF
+    for pool in TPC_POOLS:
+        for budget in TPC_BUDGETS:
+            for imports in TPC_IMPORTS:
+                for w2 in TPC_WEIGHTS:
+                    name = f"p{pool}-b{budget}-i{int(imports)}-w{w2:g}"
+
+                    def search(query: str, _pool=pool, _budget=budget,
+                               _imports=imports, _w2=w2):
+                        return recall.search(query, k=K, two_pass={
+                            "pool": _pool, "budget": _budget,
+                            "imports": _imports, "weight": _w2,
+                        })
+
+                    measure(
+                        "tps", name, search,
+                        {"tp_pool": pool, "tp_budget": budget,
+                         "tp_imports": imports, "tp_weight": w2},
+                    )
+    render()
+    return 0
+
 
 def _records() -> dict[str, dict]:
     runs = BENCH_DIR / "runs"
@@ -621,6 +743,96 @@ def _sweep_table(recs: dict[str, dict]) -> list[str]:
         lines.append(_metrics_row(dict(base, config="both (λ=0)")))
     lines += [_metrics_row(r) for r in rows]
     return lines + [""]
+
+CEILING_BASELINE = "gbw-gb0-k60-w1-1"  # the shipped `both` wire, measured in-grid
+
+
+def _split_metrics(rec: dict, hard_qs: set[str]) -> tuple[float, float, int]:
+    """(hit@5, MRR, n) over the hard subset — queries whose pass-1
+    fused rank missed or landed beyond 5 in the in-grid baseline
+    (RepoBench ICLR 2024 easy/hard split, issue #228)."""
+    rows = [r for r in rec["per_query"] if r["q"] in hard_qs]
+    n = len(rows)
+    if not n:
+        return 0.0, 0.0, 0
+    hit5 = sum(1 for r in rows if r["rank"] is not None and r["rank"] <= 5) / n
+    mrr = sum(1 / r["rank"] for r in rows if r["rank"]) / n
+    return round(hit5, 3), round(mrr, 3), n
+
+
+def _ceiling_section(recs: dict[str, dict]) -> list[str]:
+    """Issue #228 evidence section: the two census grids. Tables are
+    record-derived; the verdict prose is appended below the measured
+    numbers when the grids land."""
+    gbw = [r for r in recs.values() if r.get("set") == "gbw"]
+    tps = [r for r in recs.values() if r.get("set") == "tps"]
+    if not gbw and not tps:
+        return []
+    out = [
+        "## Recall ceiling push — census exp 1+2 (issue #228)",
+        "",
+        "Grids from `.team_scratch/paper_census.md` (Hydra arXiv 2602.11671;",
+        "RepoBench ICLR 2024; RepoCoder EMNLP 2023). Both ride the shipped",
+        "qprefix wire on the qwen3 store; win bar = hit@5 or MRR lift",
+        "≥ +0.05 over the committed qprefix `both` row (0.520 / 0.880 / 0.960,",
+        "MRR 0.672). Every cell double-run under the fp-jitter protocol.",
+    ]
+    if gbw:
+        r0 = sorted(gbw, key=lambda r: (r["gb_lambda"], r["gb_rrf_k"], r["gb_wv"], r["gb_wl"]))
+        out += [
+            "",
+            "### Exp 1 — graph-boost fusion grid (λ × RRF-k × vec/bm25 weights)",
+            "",
+            f"Set `gbw`, commit {r0[0]['commit']}{' (dirty)' if r0[0].get('dirty') else ''},"
+            f" {r0[0]['mode']}, {r0[0]['model']}, {r0[0]['files']} files, k={r0[0]['k']}.",
+            "λ=0 rows are the pure weights×k fusion sweep; `0 / 60 / (1, 1)` is",
+            "the shipped `both` wire measured in-grid.",
+            "",
+            "| λ | rrf_k | weights | hit@1 | hit@5 | hit@10 | MRR |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for r in r0:
+            out.append(
+                f"| {r['gb_lambda']:g} | {r['gb_rrf_k']:g}"
+                f" | ({r['gb_wv']:g}, {r['gb_wl']:g}) | {r['hit@1']:.3f}"
+                f" | {r['hit@5']:.3f} | {r['hit@10']:.3f} | {r['mrr']:.3f} |"
+            )
+    if tps:
+        t0 = sorted(tps, key=lambda r: (r["tp_pool"], r["tp_budget"], r["tp_imports"], r["tp_weight"]))
+        base = recs.get(CEILING_BASELINE)
+        hard_qs: set[str] = set()
+        if base:
+            hard_qs = {r["q"] for r in base["per_query"] if r["rank"] is None or r["rank"] > 5}
+        n_all = len(base["per_query"]) if base else len(t0[0]["per_query"])
+        out += [
+            "",
+            "### Exp 2 — two-pass RepoCoder loop grid (pool × budget × imports × pass-2 weight)",
+            "",
+            f"Set `tps`, commit {t0[0]['commit']}{' (dirty)' if t0[0].get('dirty') else ''},"
+            " boost off (the two questions stay isolated). Hard split seeded by",
+            f"the in-grid `both` baseline: hard = pass-1 rank miss or > 5 →"
+            f" {len(hard_qs)} of {n_all} queries.",
+            "",
+            "| pool | budget | imports | w2 | hit@5 | MRR | hard h@5 | hard MRR |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for r in t0:
+            h5, hm, _ = _split_metrics(r, hard_qs) if hard_qs else (0.0, 0.0, 0)
+            out.append(
+                f"| {r['tp_pool']} | {r['tp_budget']} | {int(r['tp_imports'])}"
+                f" | {r['tp_weight']:g} | {r['hit@5']:.3f} | {r['mrr']:.3f}"
+                f" | {h5:.3f} | {hm:.3f} |"
+            )
+        if base and hard_qs:
+            bh5, bhm, bn = _split_metrics(base, hard_qs)
+            out += [
+                "",
+                f"Baseline `both` on the same hard {bn}: hit@5 {bh5:.3f},"
+                f" MRR {bhm:.3f} (0 by construction on hit@5 — hard is defined",
+                "by that record's own rank > 5; MRR still credits rank 6–12).",
+            ]
+    return out + [""]
+
 
 AB_LEGS = [
     ("ab", "A/B baseline — qwen3-embedding:0.6b, raw query pinned (`query_prefix=''`) at the #217 cutover; same store as `qprefix`"),
@@ -788,6 +1000,7 @@ def render() -> None:
     lines += _ab_section(recs)
     lines += retired
     lines += _sweep_table(recs)
+    lines += _ceiling_section(recs)
     lines += _per_query_table("after", recs)
     lines += [
         "## Rerun",
@@ -795,6 +1008,7 @@ def render() -> None:
         "```",
         "git worktree add --detach ../bench-measure <commit>",
         ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set sweep --repo ../bench-measure",
+        ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set ceiling --repo ../bench-measure",
         ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set ab --repo ../bench-measure",
         ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set qprefix --repo ../bench-measure",
         "# JCE legs: serve the official jinaai Q8_0 GGUF first (Ollama imports",
@@ -828,7 +1042,7 @@ def render() -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description="recall benchmark over the self-index")
     ap.add_argument("--repo", default=str(DEFAULT_REPO))
-    ap.add_argument("--set", choices=["after", "fake", "sweep", *SET_FLAGS],
+    ap.add_argument("--set", choices=["after", "fake", "sweep", "ceiling", *SET_FLAGS],
                     default="after")
     ap.add_argument("--configs", default=",".join(CONFIGS))
     ap.add_argument("--fake", action="store_true")
@@ -858,6 +1072,8 @@ def main() -> int:
         return 2
     if args.set == "sweep":
         return sweep(repo)
+    if args.set == "ceiling":
+        return ceiling_sweep(repo)
     flags = SET_FLAGS.get(args.set, {})
     if flags and fake:
         print("ERROR: A/B sets are real-embed legs (no --fake)")
