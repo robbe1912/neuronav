@@ -312,6 +312,12 @@ gate, extractor rules. Every change lands via pull request.
   freshness rescan could not run (embedding backend down); read tools keep
   answering from the current index and retry is suppressed for 60s. Start
   Ollama; the gate recovers by itself or via an explicit `rescan()`.
+- `neuronav: chroma read retry (...)` on stderr - a read landed while
+  chroma's on-disk vector segment was still settling after a rescan's
+  upserts (seen under heavy load, issue #239); the read retries on a short
+  fixed schedule and succeeds on its own — no action needed. Exhausting
+  the schedule surfaces the underlying error instead of degrading
+  silently.
 
 - `NEURONAV_CONFIG points at '<path>', which does not exist` — deliberate
   abort, not a fallback: the explicit var is a contract. Unset it or point

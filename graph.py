@@ -1222,7 +1222,9 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
     def _purge_path(rel: str) -> None:
         """Whole-path fn purge. Caller holds nav._db_lock."""
         nonlocal purged_paths, purged_fns
-        got = col.get(where={"path": rel}, include=[])
+        got = nav.chroma_read(
+            f"fn purge {rel}", lambda: col.get(where={"path": rel}, include=[])
+        )
         if got["ids"]:
             col.delete(ids=got["ids"])
             purged_paths += 1
@@ -1251,7 +1253,10 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
         current: set[str] = set()
         existing: dict[str, dict[str, object]] = {}
         if populated:
-            got = col.get(where={"path": rel}, include=["metadatas"])
+            got = nav.chroma_read(
+                f"fn cache {rel}",
+                lambda: col.get(where={"path": rel}, include=["metadatas"]),
+            )
             existing = {
                 rid: meta or {}
                 for rid, meta in zip(got["ids"], got["metadatas"])
@@ -1305,7 +1310,10 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
                 )
                 added += len(vecs)
             for rid, doc, meta in moved:
-                got = col.get(ids=[rid], include=["embeddings"])
+                got = nav.chroma_read(
+                    f"fn move {rid}",
+                    lambda: col.get(ids=[rid], include=["embeddings"]),
+                )
                 if rid not in got["ids"]:
                     raise RuntimeError(f"fn vector vanished for {rid}")
                 vec = [float(x) for x in got["embeddings"][0]]
@@ -1358,10 +1366,13 @@ def find_functions(query: str, n: int = 6) -> list[dict[str, object]]:
     if count == 0:
         return []
     vector = nav.embed([query])[0]
-    got = col.query(
-        query_embeddings=[vector],
-        n_results=min(3 * n, count),
-        include=["metadatas", "distances"],
+    got = nav.chroma_read(
+        "fn vector ranks",
+        lambda: col.query(
+            query_embeddings=[vector],
+            n_results=min(3 * n, count),
+            include=["metadatas", "distances"],
+        ),
     )
     out = []
     for rid, dist, meta in zip(

@@ -1000,13 +1000,18 @@ def _ctx_semantic(path: str, k: int = 6) -> tuple[list[tuple[float, str]], str |
     masquerade as 'file not embedded — rescan first')."""
     try:
         col = nav._collection()
-        got = col.get(ids=[path], include=["embeddings"])
+        got = nav.chroma_read(
+            "ctx vectors", lambda: col.get(ids=[path], include=["embeddings"])
+        )
         if not got["ids"]:
             return [], None
-        res = col.query(
-            query_embeddings=[got["embeddings"][0]],
-            n_results=k + 1,
-            include=["distances"],
+        res = nav.chroma_read(
+            "ctx neighbors",
+            lambda: col.query(
+                query_embeddings=[got["embeddings"][0]],
+                n_results=k + 1,
+                include=["distances"],
+            ),
         )
         return [
             (round(1.0 - float(d), 3), fid)

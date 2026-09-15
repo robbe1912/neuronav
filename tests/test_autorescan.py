@@ -320,6 +320,9 @@ def main() -> None:
         rec_err.getvalue().strip()[-160:],
     )
     server.LOCK_WAIT_S = real_wait
+    # ---- issue #239 pin: chroma reads survive the hnsw settle ----------
+    chroma_retry_unit()
+
     # ---- (a) + (c) stdio end-to-end against a real server.py --------------
 
     e2e_gate()
@@ -349,6 +352,7 @@ class ServerProc:
         threading.Thread(target=self._drain_out, daemon=True).start()
         threading.Thread(target=self._drain_err, daemon=True).start()
         self._id = 0
+        self.last_raw: dict = {}
 
     def _drain_out(self) -> None:
         for line in self.proc.stdout:
@@ -386,7 +390,9 @@ class ServerProc:
                 "params": {"name": name, "arguments": args},
             }
         )
-        result = self.recv(timeout)["result"]
+        msg = self.recv(timeout)
+        self.last_raw = msg  # issue #239: FAIL details quote what we got
+        result = msg.get("result") or {}
         return "\n".join(
             b.get("text", "") for b in result.get("content", []) if b.get("type") == "text"
         )
@@ -437,8 +443,13 @@ def e2e_gate() -> None:
     sp = ServerProc(_e2e_cfg("e2e", "state_e2e"))
     try:
         sp.handshake()
-        n_before = _file_count(sp.call("repo_map", {"budget_tokens": 256}))
-        check("e2e gate: repo_map header parsed", n_before > 0, f"n={n_before}")
+        out_before = sp.call("repo_map", {"budget_tokens": 256})
+        n_before = _file_count(out_before)
+        check(
+            "e2e gate: repo_map header parsed",
+            n_before > 0,
+            f"n={n_before}; answer={out_before[:200]!r}",
+        )
         (TMP / "src" / "psi_barnacle.py").write_text(
             "def psi_barnacle_anchor(hold):\n    return hold\n", encoding="utf-8"
         )
@@ -447,7 +458,7 @@ def e2e_gate() -> None:
         check(
             "e2e gate: external add reflected in the next read tool",
             _file_count(after) == n_before + 1,
-            f"{n_before} -> {_file_count(after)}",
+            f"{n_before} -> {_file_count(after)}; answer={after[:200]!r}",
         )
         hits = sp.call("semantic_search", {"query": "barnacle", "n": 5})
         check(
@@ -470,8 +481,13 @@ def e2e_watcher() -> None:
     sp = ServerProc(_e2e_cfg("watch", "state_watch", {"watch_interval_s": 0.5}))
     try:
         sp.handshake()
-        n0 = _file_count(sp.call("repo_map", {"budget_tokens": 256}))
-        check("e2e watcher: repo_map header parsed", n0 > 0, f"n={n0}")
+        out0 = sp.call("repo_map", {"budget_tokens": 256})
+        n0 = _file_count(out0)
+        check(
+            "e2e watcher: repo_map header parsed",
+            n0 > 0,
+            f"n={n0}; answer={out0[:200]!r}",
+        )
         t0 = time.monotonic()
         (TMP / "src" / "tau_kiln.py").write_text(
             "def tau_kiln_fire(batch):\n    return batch\n", encoding="utf-8"
@@ -497,10 +513,120 @@ def e2e_watcher() -> None:
             elapsed < 0.5 + server.WATCH_DEBOUNCE_S + 8.0,
             f"{elapsed:.1f}s",
         )
-        n1 = _file_count(sp.call("repo_map", {"budget_tokens": 256}))
-        check("e2e watcher: next read tool sees the indexed file", n1 == n0 + 1, f"{n0} -> {n1}")
+        out1 = sp.call("repo_map", {"budget_tokens": 256})
+        n1 = _file_count(out1)
+        check(
+            "e2e watcher: next read tool sees the indexed file",
+            n1 == n0 + 1,
+            f"{n0} -> {n1}; answer={out1[:200]!r}",
+        )
     finally:
         sp.close()
+
+
+def chroma_retry_unit() -> None:
+    """Issue #239 pin (constructed interleaving — the loaded-battery race
+    is far too rare to wait for): a chroma read that hits the hnsw
+    segment-settling transient retries loudly and serves the read, an
+    unrelated error stays immediate, an always-settling store still
+    raises after the bounded schedule (nothing silently degrades), and
+    recall's vector ranks survive one transient through the real code
+    path with a flaky collection stand-in."""
+    import io
+    import recall
+
+    real_pauses = nav._CHROMA_READ_PAUSES_S
+    nav._CHROMA_READ_PAUSES_S = (0.0, 0.0)  # instant pin, same retry count
+    err = io.StringIO()
+    calls = {"flaky": 0, "other": 0}
+
+    def settling():
+        calls["flaky"] += 1
+        if calls["flaky"] < 3:
+            raise RuntimeError(
+                "Error executing plan: Internal error: Error creating "
+                "hnsw segment reader: Nothing found on disk"
+            )
+        return {"ids": ["src/one.py"]}
+
+    def unrelated():
+        calls["other"] += 1
+        raise ValueError("connection closed")
+
+    def never_settles():
+        calls["other"] += 1
+        raise RuntimeError("Error creating hnsw segment reader: Nothing found on disk")
+    calls = {"flaky": 0, "other": 0, "vec": 0}
+    class FlakyCol:
+        def count(self):
+            return 2
+
+        def query(self, **kwargs):
+            calls["vec"] += 1
+            if calls["vec"] == 1:
+                raise RuntimeError(
+                    "Error creating hnsw segment reader: Nothing found on disk"
+                )
+            return {
+                "ids": [["src/one.py", "src/two.py"]],
+                "metadatas": [[{"path": "src/one.py"}, {"path": "src/two.py"}]],
+            }
+
+    try:
+        with contextlib.redirect_stderr(err):
+            got = nav.chroma_read("pin-settle", settling)
+            check(
+                "settle unit: hnsw transient retries to a clean read",
+                got == {"ids": ["src/one.py"]}
+                and calls["flaky"] == 3
+                and err.getvalue().count("chroma read retry") == 2,
+                err.getvalue().strip()[-200:],
+            )
+            err.truncate(0)
+            err.seek(0)
+            try:
+                nav.chroma_read("pin-unrelated", unrelated)
+                raised = False
+            except ValueError:
+                raised = True
+            check(
+                "settle unit: unrelated errors stay immediate",
+                raised and calls["other"] == 1
+                and "chroma read retry" not in err.getvalue(),
+                err.getvalue().strip()[-200:],
+            )
+            err.truncate(0)
+            err.seek(0)
+            try:
+                nav.chroma_read("pin-exhaust", never_settles)
+                raised = False
+            except RuntimeError:
+                raised = True
+            check(
+                "settle unit: exhaustion raises loud, bounded",
+                raised
+                and calls["other"] == 2 + len(nav._CHROMA_READ_PAUSES_S)
+                and err.getvalue().count("chroma read retry")
+                == len(nav._CHROMA_READ_PAUSES_S),
+                f"attempts={calls['other']} "
+                f"notes={err.getvalue().count('chroma read retry')}",
+            )
+            # consumer leg: recall's vector ranks go through the retry
+            real_col = nav._collection
+            nav._collection = lambda: FlakyCol()
+            try:
+                ids, metas = recall._vector_ranks("kiln fire", 8)
+            finally:
+                nav._collection = real_col
+            check(
+                "settle unit: recall vector ranks survive one transient",
+                ids == ["src/one.py", "src/two.py"]
+                and metas["src/two.py"]["path"] == "src/two.py"
+                and calls["vec"] == 2,
+                f"ids={ids} attempts={calls['vec']}",
+            )
+    finally:
+        nav._CHROMA_READ_PAUSES_S = real_pauses
 
 
 if __name__ == "__main__":
