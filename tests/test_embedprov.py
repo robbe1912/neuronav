@@ -678,7 +678,7 @@ with redirect_stderr(err):
     st = nav.rescan()
 check("229: raw flip re-embeds the shaped store loudly",
       st["updated"] == 3
-      and "docs shaped 'cast1@1' but this rescan shapes 'raw'" in err.getvalue(),
+      and f"docs shaped 'cast{graph.FILE_DOC_REV}@1' but this rescan shapes 'raw'" in err.getvalue(),
       f"{st['updated']}~ stderr={err.getvalue()[:120]!r}")
 check("229: raw store stamps doc_shape=raw",
       (nav._collection().metadata or {}).get("doc_shape") == "raw",
@@ -715,6 +715,31 @@ err = io.StringIO()
 with redirect_stderr(err):
     st = nav.rescan()
 check("229: same-shape rescan stays sha-gated",
+      (st["added"], st["updated"], st["unchanged"]) == (0, 0, 3)
+      and "re-embedding" not in err.getvalue(),
+      f"{st['added']}+/{st['updated']}~/{st['unchanged']}=")
+
+# --- #229 rev lineage: a prior-rev store heals loudly under the new rev --
+# The FILE_DOC_REV bump law (rev 2: the "# imports:" head line): a shaper
+# change must never serve vectors built from the previous doc shape for
+# unchanged bytes. Stamp the store one rev back, then prove the rescan
+# re-embeds loudly and re-stamps the current rev.
+_prev = f"cast{graph.FILE_DOC_REV - 1}@1"
+nav._restamp(nav._collection(), doc_shape=_prev)
+err = io.StringIO()
+with redirect_stderr(err):
+    st = nav.rescan()
+check("229: prior-rev store re-embeds loudly under the bumped rev",
+      st["updated"] == 3 and f"docs shaped {_prev!r}" in err.getvalue(),
+      f"{st['updated']}~ stderr={err.getvalue()[:120]!r}")
+check("229: healed store stamps the current rev",
+      (nav._collection().metadata or {}).get("doc_shape")
+      == f"cast{graph.FILE_DOC_REV}@1",
+      str(nav._collection().metadata))
+err = io.StringIO()
+with redirect_stderr(err):
+    st = nav.rescan()
+check("229: same-rev rescan stays sha-gated after the rev heal",
       (st["added"], st["updated"], st["unchanged"]) == (0, 0, 3)
       and "re-embedding" not in err.getvalue(),
       f"{st['added']}+/{st['updated']}~/{st['unchanged']}=")

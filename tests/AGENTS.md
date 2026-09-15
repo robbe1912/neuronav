@@ -1,6 +1,6 @@
 # AGENTS.md — tests/
 
-Twenty-nine self-contained suites. Each is a standalone script — no pytest — run in
+Thirty self-contained suites. Each is a standalone script — no pytest — run in
 its own process:
 
 ```
@@ -44,6 +44,7 @@ owner-side `test_chunking` and `test_truthful`.
 | `test_tshard` | TS extractor edge cases (grammar split, barrels, aliases, overloads, defaults, decorators, JSX, dead tiers, determinism) | tree-sitter + tree-sitter-typescript wheels (hermetic fixtures) |
 | `test_selfindex` | self-index structural invariants: likely-dead zero, handlers stay review, deterministic rebuild | chromadb import (structural only) |
 | `test_target_regression` | byte-stability over the target repo: floor pins + liveness canaries | chromadb import + the target repo configured in `config.json` |
+| `test_tsregression` | TS target byte-stability + liveness canaries + parse-coverage floors (per-command untracked profile); hermetic section pins the judge-C1 dead-file registry resolution (`.ts` flags like the `.gd` control) + the `# imports:` doc header | chromadb import + the TS target via `NEURONAV_CONFIG` |
 | `test_explore` | explore() happy/degraded/no-hit paths, windowed slices + anchor paging (issue #69) + MCP tool annotations; CI leg self-bootstraps the self-index under FAKE (issue #180) | mcp + chroma + populated self-index (CI: self-populated via FAKE rescan) |
 | `test_server_stdio` | MCP stdio end-to-end: spawns server.py, drives JSON-RPC, asserts the context tool answers; drift/stat-gate, routed-freshness, recall-knobs (graph_boost/two_pass) and degraded-shape scenarios (issue #180) | mcp + default-config target repo (CI: self-index FAKE bootstrap) |
 | `test_autorescan` | auto-rescan stat gate (issue #19): read-tool freshness, TTL burst guard, embed-failure cooldown, `watch_interval_s` watcher — in-process pins + two stdio e2e servers + the #239 chroma hnsw-settle retry pin (constructed interleaving, no real race needed) | mcp + chromadb + numpy/networkx/scipy/scikit-learn (hermetic temp target + `NEURONAV_EMBED_FAKE=1`) |
@@ -140,6 +141,10 @@ Suites pick their own config; the shell must not pre-export one:
   never reads or writes a live store or real baselines.
 - `test_target_regression` uses the default `config.json` — the target
   repo must exist at its configured path.
+- `test_tsregression` hermetic section writes a generated temp config
+  under the system temp dir rooted at `tests/fixtures/tsreg`; its profile
+  legs use whatever `NEURONAV_CONFIG` names (skip loudly without one,
+  issue #97) and rebind via `nav._apply_config` — never export the var.
 
 - Launches real Chrome via `channel="chrome"` (no browser download).
 - Serves the repo root on an **ephemeral loopback port** (issue #132): viz
@@ -174,6 +179,10 @@ Suites pick their own config; the shell must not pre-export one:
   degraded-mode sibling), overload collapse, default exports, decorators,
   super calls, ambient `.d.ts`, and the dead-tier pair (`dead_helpers.ts`
   + mention partners in `barrel_view.tsx`).
+- `fixtures/tsreg/*` — TS dead-share + import-header fixtures: the `.ts`
+  pair (dead-share denominator, resolved import line), a `.gd` control
+  for the judge-C1 registry-resolution pin, and a `.py` pair for the
+  language-neutral `# imports:` doc head.
 - `fixtures/verifier/*` — synthetic annotated fixtures for extractor
   facts with no committed coverage (gd declared surface, tscn PackedScene
   instancing). Goal-comment grammar: `tests/test_verifier.py` header;

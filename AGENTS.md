@@ -67,7 +67,7 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `config/` | named config profiles, machine-portable only (relative `root`s); the root `config.json` is deliberately ABSENT (issue #204 — the repo carries no machine values; consumers pass `NEURONAV_CONFIG` per-command or boot pure-defaults on cwd) |
 | `vendor/three-0.160.0/` | vendored three.js core + 4 addons, embedded at build (see below) |
 | `bench/` | recall benchmark: golden set, `run_bench.py`, committed results (`RESULTS.md`) — the numbers `docs/comparison.md` cites |
-| `tests/` | 29 self-contained suites + committed fixtures (see tests/AGENTS.md) |
+| `tests/` | 30 self-contained suites + committed fixtures (see tests/AGENTS.md) |
 | `docs/map-spec-v2.md` | spec the named-wire map layer implements |
 
 ## viz.py template laws
@@ -137,6 +137,7 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_clusterinv` | cluster partition invariant + crosstalk parity (issue #114): finalize double-assign repaired by weld plurality (identity on healthy input); crosstalk counts only wiring the clusterer's graph sees (tests/ endpoints tallied separately) | numpy + chromadb import only (crafted shapes + stub graph, `NEURONAV_EMBED_FAKE=1`) |
 | `test_selfindex` | neuronav indexes itself | chromadb import (structural only) |
 | `test_target_regression` | byte-stability over the target repo | chromadb import + the target repo via per-command `NEURONAV_CONFIG` (untracked machine-local profile) |
+| `test_tsregression` | TS target byte-stability + liveness canaries + parse-coverage floors (per-command untracked profile) | chromadb import + the TS target via `NEURONAV_CONFIG` |
 | `test_server_stdio` | MCP tool surface end-to-end (JSON-RPC over stdio) | mcp + default-config target repo (CI: self-index FAKE bootstrap, issue #180) |
 | `test_autorescan` | auto-rescan stat gate: freshness, TTL burst guard, failure cooldown, watcher (issue #19) | mcp + chromadb + numpy/networkx/scipy/scikit-learn (hermetic temp target, fake embeds) |
 | `test_searchtext` | capped regex text search tool (issue #68): rows/order, 20-file + 3-line caps, truncation markers, totals, files_only, glob, graceful paths | mcp + chromadb (hermetic temp target, fake embeds) |
