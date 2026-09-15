@@ -686,7 +686,8 @@ def _adopt_orphan(col: chromadb.Collection) -> chromadb.Collection:
         return col
 
 
-def _restamp(col: chromadb.Collection) -> chromadb.Collection:
+def _restamp(col: chromadb.Collection,
+             embed_mode: str | None = None) -> chromadb.Collection:
     """Re-create `col` with the full metadata (issue #103) — the only
     write that keeps hnsw:space, since modify() replaces the dict and
     rejects hnsw:* keys. Build-and-validate before the swap (CodeRabbit
@@ -698,7 +699,10 @@ def _restamp(col: chromadb.Collection) -> chromadb.Collection:
     the precedent). Vectors are provider output, model+provider-gated
     by _check_model; documents included. Chroma's f32 quantization
     settles once on copy (<= 1 ulp, then bit-stable). Under the
-    write lock, reentrant from the export/import callers."""
+    write lock, reentrant from the export/import callers. ``embed_mode``
+    stamps the new collection's vector-space lineage (#220); None (the
+    default) preserves the stored key verbatim, and a store that never
+    carried one stays unstamped — pre-#220 lineage is real."""
     name = col.name
     tmp_name = f"{name}-restamp"
     with _db_lock():
@@ -730,11 +734,13 @@ def _restamp(col: chromadb.Collection) -> chromadb.Collection:
             client().delete_collection(tmp_name)  # stale partial from an earlier crash
         except Exception:
             pass
-        tmp = client().create_collection(
-            name=tmp_name,
-            metadata={"hnsw:space": "cosine", "embed_model": EMBED_MODEL,
-                      "embed_provider": EMBED_PROVIDER},
-        )
+        mode_key = ((col.metadata or {}).get("embed_mode") if embed_mode is None
+                    else embed_mode)
+        stamp = {"hnsw:space": "cosine", "embed_model": EMBED_MODEL,
+                 "embed_provider": EMBED_PROVIDER}
+        if mode_key is not None:
+            stamp["embed_mode"] = mode_key
+        tmp = client().create_collection(name=tmp_name, metadata=stamp)
         try:
             for i in range(0, len(data["ids"]), UPSERT_BATCH):
                 tmp.add(ids=data["ids"][i : i + UPSERT_BATCH],
@@ -781,11 +787,13 @@ def fns_name() -> str:
 def _named_collection(name: str) -> chromadb.Collection:
     """Born-correct metadata — fresh stores never need a re-stamp; an
     existing collection keeps its stored metadata and _check_model
-    heals stale or wiped stamps (#103)."""
+    heals stale or wiped stamps (#103). The born stamp records the
+    embed mode (#220) so a later rescan in the other mode refuses to
+    silently reuse the vectors."""
     col = client().get_or_create_collection(
         name=name,
         metadata={"hnsw:space": "cosine", "embed_model": EMBED_MODEL,
-                  "embed_provider": EMBED_PROVIDER},
+                  "embed_provider": EMBED_PROVIDER, "embed_mode": embed_mode()},
     )
     return _check_model(col)
 
@@ -800,12 +808,23 @@ def fns_collection() -> chromadb.Collection:
     return _named_collection(fns_name())
 
 
+def embed_mode() -> str:
+    """Vector-space lineage of the current process (#220): "fake" under
+    NEURONAV_EMBED_FAKE, else "real". Recorded next to embed_model in
+    the collection stamp so a rescan in the OTHER mode force-re-embeds
+    instead of silently reusing sha-gated vectors from the wrong space
+    (the #219 rig failure: hash-embed bootstrap, real bench, cosine 0)."""
+    return "fake" if os.environ.get("NEURONAV_EMBED_FAKE") else "real"
+
+
 def rescan(timeout: float | None = None) -> dict[str, int]:
     """Incremental index: add/update changed files, purge deleted ones.
     Warm passes skip read+hash via the stat fingerprint (issue #42); the
-    sha stays the content identity. ``timeout`` bounds the cross-process
-    store-lock wait (issue #203): exceeded, the rescan aborts loudly
-    naming the lock and the likely holder instead of queueing forever."""
+    sha stays the content identity, and a mode-mismatched store re-embeds
+    everything regardless of shas (issue #220). ``timeout`` bounds the
+    cross-process store-lock wait (issue #203): exceeded, the rescan
+    aborts loudly naming the lock and the likely holder instead of
+    queueing forever."""
     _memo_drop_current()  # embeddings changed — recompute on demand
     lock = _db_lock(timeout)
     try:
@@ -843,6 +862,19 @@ def _rescan_locked() -> dict[str, int]:
             "python nav.py drop)"
         )
     col = _collection()
+    # issue #220: the stamp carries the embed mode; a store built in the
+    # other mode must re-embed even when file shas are unchanged — an
+    # absent key is pre-#220 real lineage, never a mismatch. Loud, never
+    # silent: quietly reusing the wrong vector space is the #219 failure.
+    stamped_mode = (col.metadata or {}).get("embed_mode", "real")
+    mode = embed_mode()
+    reembed_all = stamped_mode != mode
+    if reembed_all:
+        print(
+            f"neuronav: store '{col.name}' holds {stamped_mode!r}-mode vectors "
+            f"but this rescan embeds {mode!r} — re-embedding every file (#220)",
+            file=sys.stderr,
+        )
     existing: dict[str, dict] = {}
     if col.count():
         got = col.get(include=["metadatas"])
@@ -881,11 +913,12 @@ def _rescan_locked() -> dict[str, int]:
         seen.add(fid)
         old = existing.get(fid)
         st = fp.get(fid)
-        if old is not None and st is not None and _stored_fp(old) == st:
+        if (not reembed_all and old is not None and st is not None
+                and _stored_fp(old) == st):
             stats["unchanged"] += 1
             continue
         digest = sha256_of(path)
-        if old is not None and old.get("sha") == digest:
+        if not reembed_all and old is not None and old.get("sha") == digest:
             # touched but byte-identical: sha-gated, embeds nothing —
             # refresh the stored fingerprint so the next warm pass skips
             stats["unchanged"] += 1
@@ -925,6 +958,9 @@ def _rescan_locked() -> dict[str, int]:
     if deleted:
         col.delete(ids=deleted)
         stats["deleted"] = len(deleted)
+    if reembed_all:
+        # stamp the healed store so the next same-mode pass is cheap again
+        col = _restamp(col, embed_mode=mode)
     stats["changed"] = changed_paths
     stats["deleted_paths"] = deleted
     return stats

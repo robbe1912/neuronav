@@ -12,7 +12,7 @@ import os
 import sys
 import tempfile
 import threading
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -44,7 +44,15 @@ class Stub(BaseHTTPRequestHandler):
         else:
             texts = body["input"]
             if MODE["protocol"] == "ollama":
-                rows = [[float(i), float(i), float(i)] for i in range(len(texts))]
+                if MODE.get("hash_vecs"):  # #220 leg: text-deterministic
+                    import hashlib
+
+                    rows = []
+                    for t in texts:
+                        h = hashlib.sha256(f"stub:{t}".encode()).digest()
+                        rows.append([(b / 255.0) * 2 - 1 for b in h])
+                else:
+                    rows = [[float(i), float(i), float(i)] for i in range(len(texts))]
                 payload = {"model": body.get("model", ""), "embeddings": rows}
             else:
                 order = list(range(len(texts)))
@@ -502,6 +510,146 @@ except RuntimeError as e:
           "999" in str(e) and "run `python nav.py drop`" in str(e), str(e))
     check("manifest refusal prints the raw provider, no 'ollama' default (#159)",
           "provider None" in str(e), str(e))
+
+
+# --- #220: the stamp records embed mode; cross-mode reuse is loud --------
+MODE["hash_vecs"] = True
+C220 = TMP / "corpus220"
+C220.mkdir(exist_ok=True)
+for i in range(3):
+    (C220 / f"f{i}.py").write_text(f"def fn_{i}():\n    return {i}\n",
+                                   encoding="utf-8", newline="\n")
+write_cfg(root=str(C220), state_dir=str(TMP / "state220"), collection="mode220",
+          embed_url=f"http://127.0.0.1:{PORT}/api/embed", embed_model="m-220",
+          embed_provider="ollama", embed_dim=32, include_dirs=["."],
+          extensions=[".py"], exclude_dirs=[])
+
+
+def _cos220(a, b):
+    import math
+
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(x * x for x in b))
+    return dot / (na * nb) if na and nb else 0.0
+
+
+def _docs_and_fresh():
+    got = nav._collection().get(limit=3, include=["embeddings", "documents"])
+    docs = list(got["documents"])
+    texts = ([nav.EMBED_DOC_PREFIX + d for d in docs]
+             if nav.EMBED_DOC_PREFIX else docs)  # mirror rescan's flush()
+    return got, nav.embed(texts)
+
+
+# fake bootstrap (the CI test_recall shape) builds + stamps fake
+os.environ["NEURONAV_EMBED_FAKE"] = "1"
+err = io.StringIO()
+with redirect_stderr(err):
+    st = nav.rescan()
+check("220: fake rescan builds the store",
+      st["added"] == 3 and nav.count() == 3 and err.getvalue() == "",
+      f"{st['added']}+ files, stderr={err.getvalue()[:80]!r}")
+check("220: store stamps embed_mode=fake",
+      (nav._collection().metadata or {}).get("embed_mode") == "fake",
+      str(nav._collection().metadata))
+err = io.StringIO()
+with redirect_stderr(err):
+    st = nav.rescan()
+check("220: fake->fake rescan stays sha-gated (CI pattern unchanged)",
+      (st["added"], st["updated"], st["unchanged"]) == (0, 0, 3)
+      and "re-embedding" not in err.getvalue(),
+      f"{st['added']}+/{st['updated']}~/{st['unchanged']}=")
+
+# real rescan over the fake store: loud full re-embed + heal
+del os.environ["NEURONAV_EMBED_FAKE"]
+err = io.StringIO()
+with redirect_stderr(err):
+    st = nav.rescan()
+check("220: real rescan re-embeds a fake store loudly",
+      st["updated"] == 3
+      and "holds 'fake'-mode vectors but this rescan embeds 'real'"
+      in err.getvalue(),
+      f"{st['updated']}~ stderr={err.getvalue()[:120]!r}")
+col = nav._collection()
+check("220: healed store stamps embed_mode=real",
+      (col.metadata or {}).get("embed_mode") == "real", str(col.metadata))
+got, fresh = _docs_and_fresh()
+sims = [round(_cos220(s, v), 4) for s, v in zip(got["embeddings"], fresh)]
+check("220: healed vectors match fresh real embeds (cosine ~1)",
+      min(sims) > 0.999, str(sims))
+err = io.StringIO()
+with redirect_stderr(err):
+    st = nav.rescan()
+check("220: real->real rescan stays sha-gated",
+      (st["added"], st["updated"], st["unchanged"]) == (0, 0, 3)
+      and "re-embedding" not in err.getvalue(),
+      f"{st['added']}+/{st['updated']}~/{st['unchanged']}=")
+
+# fn store rides the same gate (graph's sha-cache would otherwise reuse
+# fake fn vectors for real queries)
+import graph
+
+os.environ["NEURONAV_EMBED_FAKE"] = "1"
+err = io.StringIO()
+with redirect_stderr(err):
+    fns_fake = graph.sync_functions([], [])  # first build: fake mode
+del os.environ["NEURONAV_EMBED_FAKE"]
+err = io.StringIO()
+with redirect_stderr(err):
+    fns_real = graph.sync_functions([], [])
+check("220: fn store re-embeds across the mode gate too",
+      fns_fake["fns_upserted"] == 3 and fns_real["fns_upserted"] == 3
+      and fns_real["fns_cached"] == 0 and "fn store" in err.getvalue(),
+      f"fake={fns_fake} real={fns_real} stderr={err.getvalue()[:100]!r}")
+check("220: fn store stamps embed_mode=real after heal",
+      (nav.fns_collection().metadata or {}).get("embed_mode") == "real",
+      str(nav.fns_collection().metadata))
+
+# bench guard: healthy store passes, poisoned store refuses loudly
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
+import run_bench  # noqa: E402
+
+check("220: bench guard passes a healthy store",
+      run_bench._verify_store_vectors(nav), "")
+os.environ["NEURONAV_EMBED_FAKE"] = "1"
+nav.client().delete_collection(nav.COLLECTION)
+with redirect_stderr(io.StringIO()):
+    nav.rescan()  # rebuild the poison: fake vectors, real-mode process next
+del os.environ["NEURONAV_EMBED_FAKE"]
+buf = io.StringIO()
+with redirect_stdout(buf):
+    ok = run_bench._verify_store_vectors(nav)
+check("220: bench guard refuses a mode-poisoned store",
+      not ok and str(TMP / "state220" / "chroma") in buf.getvalue()
+      and "embed_mode='fake'" in buf.getvalue() and "#220" in buf.getvalue(),
+      buf.getvalue()[:160].replace("\n", " "))
+
+# pre-#220 lineage: a store with no embed_mode key is real, never a
+# mismatch — owner-rig real stores must not churn
+nav.client().delete_collection(nav.COLLECTION)
+old = nav.client().create_collection(
+    name=nav.COLLECTION,
+    metadata={"hnsw:space": "cosine", "embed_model": "m-220",
+              "embed_provider": "ollama"})
+fps = nav.stat_fingerprint()
+for p in sorted(C220.glob("*.py")):
+    doc_text = p.read_text(encoding="utf-8")
+    fid = nav.file_id(p)
+    m = fps[fid]
+    old.add(ids=[fid], embeddings=nav.embed([doc_text]), documents=[doc_text],
+            metadatas=[{"sha": nav.sha256_of(p), "ext": ".py",
+                        "mtime_ns": m[0], "size": m[1]}])
+err = io.StringIO()
+with redirect_stderr(err):
+    st = nav.rescan()
+check("220: pre-#220 unstamped (real-lineage) store does not churn",
+      (st["added"], st["updated"], st["unchanged"]) == (0, 0, 3)
+      and "re-embedding" not in err.getvalue(),
+      f"{st['added']}+/{st['updated']}~/{st['unchanged']}="
+      f" stderr={err.getvalue()[:80]!r}")
+MODE["hash_vecs"] = False
+os.environ.pop("NEURONAV_EMBED_FAKE", None)
 
 print()
 print(f"{len(FAILS)} failure(s)" + (": " + ", ".join(FAILS) if FAILS else ""))

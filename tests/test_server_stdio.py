@@ -909,14 +909,20 @@ def _drift_scenario() -> None:
 
 def _degraded_scenario() -> None:
     """issue #180 CI-leg (4): degraded semantics end-to-end. A store is
-    built under FAKE embeds via the server's own boot path, then served
-    by a fresh server whose embedding backend is a dead loopback port
-    (FAKE scrubbed from its env): every vector-side surface must answer
-    success-shaped with a truthful degraded reason carried through the
-    MCP response — never a raw error (issues #115/#116 over the wire).
-    Port 9 on loopback refuses instantly; no external network is touched.
+    built by a real-mode server against a live loopback stub embed
+    endpoint (deterministic per-text vectors), then served by a fresh
+    server whose embedding backend is a dead loopback port: every
+    vector-side surface must answer success-shaped with a truthful
+    degraded reason carried through the MCP response — never a raw
+    error (issues #115/#116 over the wire). Port 9 on loopback refuses
+    instantly; no external network is touched. The build cannot use
+    FAKE embeds: a fake-stamped store opened by the real-mode phase-2
+    server trips the #220 mode gate at boot, force-re-embeds into the
+    dead port and dies loudly — exactly the poisoning class #220 ends.
     """
+    import hashlib
     import shutil
+    from http.server import BaseHTTPRequestHandler, HTTPServer
 
     scratch = HERE / ".team_scratch" / "degraded_stdio"
     shutil.rmtree(scratch, ignore_errors=True)
@@ -930,21 +936,55 @@ def _degraded_scenario() -> None:
         "def degraded_net_marker():\n    return 'n'\n",
         encoding="utf-8", newline="\n",
     )
-    cfg = scratch / "degraded.neuronav.json"
-    cfg.write_text(json.dumps({
-        "root": str(proj.resolve()),
-        "collection": "main",
-        "state_dir": "default",
-        "include_dirs": ["."],
-        "extensions": [".py"],
-        "exclude_dirs": [".git", "__pycache__", ".venv", ".neuronav", "node_modules"],
-        "embed_url": "http://127.0.0.1:9/api/embed",
-    }), encoding="utf-8", newline="\n")
 
-    # phase 1: build files + fns under FAKE with the server's own paths
-    env_build = {k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}
+    class _EmbedStub(BaseHTTPRequestHandler):
+        """Ollama-wire stub: same text -> same vector (issue #220 style),
+        dim 32 to match the scratch config below."""
+
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(n))
+            rows = []
+            for t in body["input"]:
+                h = hashlib.sha256(f"stub:{t}".encode()).digest()
+                rows.append([(b / 255.0) * 2 - 1 for b in h])
+            out = json.dumps(
+                {"model": body.get("model", ""), "embeddings": rows}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+    stub = HTTPServer(("127.0.0.1", 0), _EmbedStub)
+    threading.Thread(target=stub.serve_forever, daemon=True).start()
+
+    def _cfg_text(url: str) -> str:
+        return json.dumps({
+            "root": str(proj.resolve()),
+            "collection": "main",
+            "state_dir": "default",
+            "include_dirs": ["."],
+            "extensions": [".py"],
+            "exclude_dirs": [".git", "__pycache__", ".venv", ".neuronav", "node_modules"],
+            "embed_url": url,
+            "embed_dim": 32,
+        })
+
+    cfg = scratch / "degraded.neuronav.json"
+    cfg.write_text(
+        _cfg_text(f"http://127.0.0.1:{stub.server_address[1]}/api/embed"),
+        encoding="utf-8", newline="\n",
+    )
+
+    # phase 1: build files + fns in REAL mode against the live stub
+    env_build = {k: v for k, v in os.environ.items()
+                 if k not in ("NEURONAV_CONFIG", "NEURONAV_EMBED_FAKE")}
     env_build["NEURONAV_CONFIG"] = str(cfg)
-    env_build["NEURONAV_EMBED_FAKE"] = "1"
     srv0 = _spawn(env_build)
     try:
         send0, recv0 = srv0.send, srv0.recv
@@ -955,14 +995,16 @@ def _degraded_scenario() -> None:
         send0({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
             "name": "repo_map", "arguments": {"budget_tokens": 256}}})
         out = text_of(recv0(2)["result"])
-        check("degraded: store built under FAKE (2 files)",
+        check("degraded: store built via live stub (2 files)",
               out.startswith(
                   f"you are here: {proj.resolve().as_posix()} — 2 files,"),
               out[:100])
     finally:
         srv0.kill()
 
-    # phase 2: same store, backend dead, FAKE scrubbed — degraded answers
+    # phase 2: same store, backend dead, still real mode — degraded answers
+    cfg.write_text(_cfg_text("http://127.0.0.1:9/api/embed"),
+                   encoding="utf-8", newline="\n")
     env_dead = {k: v for k, v in env_build.items() if k != "NEURONAV_EMBED_FAKE"}
     srv = _spawn(env_dead)
     send, recv = srv.send, srv.recv

@@ -274,6 +274,44 @@ def _override_config(repo: Path, embed: dict) -> Path:
     out.write_text(json.dumps(cfg, indent=1) + "\n", encoding="utf-8", newline="\n")
     return out
 
+def _verify_store_vectors(nav, sample: int = 5) -> bool:
+    """Issue #220 belt-and-braces: before measuring, re-embed a sample
+    of stored documents and compare against the stored vectors. A
+    coherent store returns ~1.0 cosine per doc (embedding inference is
+    deterministic per text+model); a store whose vectors came from the
+    OTHER embed mode — or any other path that swapped the vector space
+    under sha-gating's feet — lands near 0 and would publish garbage
+    hit rates. Refuse loudly, naming the store path and its stamp."""
+    import math
+
+    col = nav._collection()
+    if col.count() == 0:
+        print(f"ERROR: store {nav.DB_DIR} is empty — rescan produced nothing "
+              "to measure")
+        return False
+    got = col.get(limit=sample, include=["embeddings", "documents"])
+    docs = list(got["documents"])
+    texts = [nav.EMBED_DOC_PREFIX + d for d in docs] if nav.EMBED_DOC_PREFIX else docs
+    fresh = nav.embed(texts)
+
+    def _cos(a, b):
+        dot = sum(x * y for x, y in zip(a, b))
+        na = math.sqrt(sum(x * x for x in a))
+        nb = math.sqrt(sum(x * x for x in b))
+        return dot / (na * nb) if na and nb else 0.0
+
+    sims = [round(_cos(s, v), 4) for s, v in zip(got["embeddings"], fresh)]
+    if min(sims) < 0.5:
+        meta = col.metadata or {}
+        print(f"ERROR: store {nav.DB_DIR} (embed_model={meta.get('embed_model')!r}, "
+              f"embed_mode={meta.get('embed_mode')!r}, "
+              f"embed_provider={meta.get('embed_provider')!r}) holds doc vectors "
+              f"that do not match fresh embeds of the same text (sampled cosines "
+              f"{sims}, expected ~1.0) — poisoned store (#220). Wipe it "
+              "(delete the state dir or `python nav.py drop`) and rescan")
+        return False
+    return True
+
 
 def run(repo: Path, set_name: str, configs: list[str], fake: bool,
         query_prefix: str | None = None, embed: dict | None = None) -> int:
@@ -332,6 +370,8 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool,
 
     stats = nav.rescan()  # coherent index for this mode in this checkout's .neuronav
     print(f"index: {nav.count()} files (rescan {stats['added']}+/{stats['updated']}~/{stats['deleted']}-)")
+    if not _verify_store_vectors(nav):
+        return 4
 
     def make(flags):
         def search(query: str):
@@ -412,6 +452,8 @@ def sweep(repo: Path) -> int:
 
     stats = nav.rescan()  # sha-incremental: docs embed once, cells only re-embed queries
     print(f"index: {nav.count()} files (rescan {stats['added']}+/{stats['updated']}~/{stats['deleted']}-)")
+    if not _verify_store_vectors(nav):
+        return 4
 
     queries = _load_golden()
     commit = _git(repo, "rev-parse", "--short", "HEAD") or "unknown"
