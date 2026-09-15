@@ -189,9 +189,16 @@ check("crafted graph.html never written", not crafted.exists(), "")
 # ---- 6. #64 zeroed store: refuses even under FAKE (wiped = never deliberate)
 wipe(keep=0)
 check("store zeroed for the refusal leg", nav.count() == 0, str(nav.count()))
+# #202: re-capture so html1 IS the pre-refusal file text — section 2's p2
+# rebuild re-stamped graph.html, and pinning the first build's bytes would
+# flake on a second-boundary crossing. The exact byte compare below
+# (generated_at stamp included) is the point: norm() would mask a
+# refusal-path rewrite with a fresh stamp, the atomic-write law's failure
+# mode. norm() stays on the two-builds check, where stamps may differ.
+html1 = p1.read_text(encoding="utf-8")
 refusal(lambda: viz.generate(), "zeroed store refused (even under FAKE)",
         ["0 vectors", f"{walk_n} files", "rescan", "bakeint_fix", str(nav.DB_DIR)])
-check("refusal leaves the old bake untouched", norm(p1.read_text(encoding="utf-8")) == norm(html1), "")
+check("refusal leaves the old bake untouched", p1.read_text(encoding="utf-8") == html1, "")
 nav.rescan()
 
 # ---- 7. #64 partial store: FAKE waiver bakes in-process ---------------------
