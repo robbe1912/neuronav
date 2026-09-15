@@ -1,8 +1,8 @@
 {
  "set": "ab",
  "config": "twopass",
- "commit": "2a1f231",
- "dirty": false,
+ "commit": "a97592a",
+ "dirty": true,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
  "files": 58,

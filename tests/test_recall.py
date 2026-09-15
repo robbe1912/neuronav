@@ -213,6 +213,66 @@ check("two-pass degraded keeps the BM25F-only contract",
       bool(dtp) and all(h.get("degraded") is True and h["src"] == "bm25"
                         and "two_pass" not in h for h in dtp))
 
+# 7b. task-instruction query prefix (issue #217): the winning nl2code
+# instruction from the #214/#75 A/B ships default-on — prepended to the
+# EMBEDDED query only (pass 1 AND the two-pass augmented retrieve); the
+# lexical side keeps the raw query. Deterministic constant (no
+# clock/env input); query_prefix='' is the explicit raw wire.
+seen: list[str] = []
+_orig_vr = recall._vector_ranks
+
+
+def _vr_capture(q, depth):
+    seen.append(q)
+    return _orig_vr(q, depth)
+
+
+recall._vector_ranks = _vr_capture
+try:
+    recall.search("cluster labeling wires", k=6)
+    p1 = list(seen)
+    seen.clear()
+    recall.search("cluster labeling wires", k=6, two_pass=True)
+    p2 = list(seen)
+    seen.clear()
+    recall.search("cluster labeling wires", k=6, query_prefix="")
+    p3 = list(seen)
+finally:
+    recall._vector_ranks = _orig_vr
+Q = "Find the most relevant code snippet given the following query:\n"
+check("query prefix constant is the pinned nl2code instruction",
+      recall.QUERY_PREFIX == Q, repr(recall.QUERY_PREFIX))
+check("default pass-1 embeds prefix + raw query",
+      p1 == [Q + "cluster labeling wires"], repr(p1))
+check("two-pass prefixes both embeds; pass 2 rides the augmented query",
+      len(p2) == 2 and p2[0] == Q + "cluster labeling wires"
+      and p2[1].startswith(Q) and p2[1] != p2[0], repr(p2))
+check("query_prefix='' is the explicit raw wire",
+      p3 == ["cluster labeling wires"], repr(p3))
+
+# lexical side never sees the instruction tokens: wrap the cached BM25F
+# index's scores and pin the exact raw query strings it is fed
+_idx = recall._cached_index(g.files)
+_orig_scores = _idx.scores
+lex_seen: list[str] = []
+
+
+def _scores_capture(q):
+    lex_seen.append(q)
+    return _orig_scores(q)
+
+
+_idx.scores = _scores_capture
+try:
+    recall.search("cluster labeling wires", k=6)
+    recall.search("cluster labeling wires", k=6, two_pass=True)
+finally:
+    _idx.scores = _orig_scores
+check("BM25F side keeps the raw query (both passes, no prefix)",
+      len(lex_seen) == 3 and lex_seen[0] == lex_seen[1] == "cluster labeling wires"
+      and lex_seen[2].startswith("cluster labeling wires") and lex_seen[2] != lex_seen[1]
+      and all(not q.startswith(Q) for q in lex_seen), repr(lex_seen))
+
 # 8. nav.search delegates to the same fused path (server consumes this)
 via_nav = nav.search("graph signal wiring edges", k=6)
 check("nav.search delegates to recall.search",

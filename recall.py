@@ -12,13 +12,12 @@ Pure stdlib on the lexical side, no embedding backend dependency:
   ``GRAPH_BOOST``): the fused top-k each promote their 1-hop wire
   neighbors by a rank-decayed λ·RRF-unit bump — the λ × RRF-k sweep
   that chose the default lives in bench/RESULTS.md.
-- optional second retrieve (issue #74, RepoCoder): the pass-1 top-k
-  hits donate their identifier surface (char-budgeted, harvested from
-  the deterministic lexical top-k) to an augmented query that is
-  re-embedded once and RRF-fused with pass 1 —
-  opt-in via the config knob ``recall_two_pass`` or the ``two_pass``
-  argument; embed budget pinned at 2 calls per query, engaged hits
-  carry ``two_pass: True``.
+- task-instruction query prefix (issue #217, default ON): the
+  winning ``QUERY_PREFIX`` from the #214/#75 embedding A/B — the
+  nl2code instruction from the JCE model card — is prepended to the
+  EMBEDDED query only (semantic pass 1 and the two-pass augmented
+  retrieve). Query-side only: stores stay compatible (no re-index)
+  and the lexical side keeps the raw query.
 - bidirectional 1-hop expansion: each hit carries up to 3 context
   labels — its strongest-wired graph neighbors, never itself.
 
@@ -53,6 +52,12 @@ GRAPH_BOOST = 0.0
 # char budget for the two-pass augmented query's harvested identifier
 # tail — sized so the original query stays dominant (issue #74 A/B)
 TWO_PASS_BUDGET = 320
+# nl2code task-instruction query prefix (issues #75/#217): the winning
+# `qprefix` A/B leg text (JCE model card, arXiv 2508.21290), shipped
+# default-on. Prepended to the EMBEDDED query only, so the store stays
+# compatible (query-side transform, no re-index) and BM25F never sees
+# the instruction tokens. Deterministic constant — no clock/env input.
+QUERY_PREFIX = "Find the most relevant code snippet given the following query:\n"
 
 # (field, weight) — order aligned with BM25F._field_texts
 FIELDS: tuple[tuple[str, float], ...] = (
@@ -379,7 +384,7 @@ def search(
     graph_boost: float | None = None,
     rrf_k: float | None = None,
     two_pass: bool | None = None,
-    query_prefix: str = "",
+    query_prefix: str | None = None,
 ) -> list[dict[str, object]]:
     """Hybrid recall: chroma vector ranks fused with BM25F lexical
     ranks, each hit carrying 1-hop graph context labels. ``bm25`` /
@@ -392,10 +397,12 @@ def search(
     (0.0 = off). ``rrf_k`` overrides the fusion constant for bench
     sweeps.
 
-    ``query_prefix`` (issue #75, JCE card): task-instruction text
-    prepended to the EMBEDDED query only — pass 1 and the two-pass
+    ``query_prefix`` (issues #75/#217, JCE card): task-instruction
+    text prepended to the EMBEDDED query only — pass 1 and the two-pass
     augmented retrieve both; the lexical side keeps the raw query so
-    instruction tokens never pollute BM25F. "" keeps the plain wire.
+    instruction tokens never pollute BM25F. None (the default) ships
+    the winning ``QUERY_PREFIX``; "" is the explicit raw wire (bench
+    unprefixed legs).
 
     ``two_pass`` (issue #74, RepoCoder): deterministic second retrieve —
     the pass-1 top-k hits donate their identifier surface (char-budgeted
@@ -412,6 +419,7 @@ def search(
         raise ValueError(f"graph_boost must be >= 0, got {graph_boost}")
     lam = GRAPH_BOOST if graph_boost is None else graph_boost
     krrf = RRF_K if rrf_k is None else rrf_k
+    pfx = QUERY_PREFIX if query_prefix is None else query_prefix
     depth = max(16, 4 * k)
     if two_pass is None:
         import nav  # lazy: knob follows the active config (see header)
@@ -422,7 +430,7 @@ def search(
     metas: dict[str, dict] = {}
     reason: str | None = None
     try:
-        vec, metas = _vector_ranks(query_prefix + query, depth)
+        vec, metas = _vector_ranks(pfx + query, depth)
         if not vec:
             reason = "vector index is empty (call rescan first)"
     except Exception as exc:  # backend down = degraded, never a crash
@@ -461,7 +469,7 @@ def search(
         aug = _augment(query, pool, g)
         if aug:
             try:
-                vec2, metas2 = _vector_ranks(query_prefix + aug, depth)  # embed 2 of 2
+                vec2, metas2 = _vector_ranks(pfx + aug, depth)  # embed 2 of 2
             except Exception as exc:
                 import nav  # lazy: same truthful classifier as pass 1
 

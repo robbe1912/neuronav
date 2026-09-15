@@ -1,8 +1,8 @@
 {
  "set": "qprefix",
  "config": "wfused",
- "commit": "2a1f231",
- "dirty": false,
+ "commit": "a97592a",
+ "dirty": true,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
  "query_prefix": "Find the most relevant code snippet given the following query:\n",
@@ -12,7 +12,7 @@
  "hit@1": 0.48,
  "hit@5": 0.84,
  "hit@10": 0.96,
- "mrr": 0.631,
+ "mrr": 0.63,
  "reach@5": 0.92,
  "reach@10": 0.96,
  "by_kind": {
@@ -21,7 +21,7 @@
    "hit@1": 0.5,
    "hit@5": 0.8,
    "hit@10": 1.0,
-   "mrr": 0.65
+   "mrr": 0.648
   },
   "symbol": {
    "n": 4,
@@ -96,7 +96,7 @@
   },
   {
    "q": "import_base",
-   "rank": 6,
+   "rank": 7,
    "ctx5": true,
    "ctx10": true
   },

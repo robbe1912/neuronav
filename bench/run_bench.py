@@ -34,7 +34,10 @@ Usage:
              jina | jinaq | jinap (real embeds only; the jina legs ride
              the #17 openai wire against a llama-server hosting the
              official JCE GGUF, and use their own state store under
-             .tmp/ so the qwen3 store stays untouched).
+             .tmp/ so the qwen3 store stays untouched). Since #217 the
+             nl2code query prefix is recall's shipped default: `qprefix`
+             rides the default wire, `ab`/`jina` pin the raw query
+             explicitly (query_prefix="").
 --fake       NEURONAV_EMBED_FAKE=1 (deterministic hash embeddings; coherent
              only against a collection built in the same mode — use a fresh
              checkout/.neuronav per mode).
@@ -68,9 +71,11 @@ GB_RRF_K = 30.0  # every λ ≥ 0.5 lost to plain fusion; GRAPH_BOOST default st
 GB_LAMBDAS = (0.0, 0.25, 0.5, 1.0, 2.0)
 GB_RRF_KS = (30.0, 60.0, 120.0)
 # --- issue #75: embedding A/B (jina-code-embeddings-0.5b vs qwen3) ---
-# Task instructions from the JCE model card (arXiv 2508.21290): the
-# nl2code pair, prepended to the embedded query / embedded document.
-Q_PREFIX = "Find the most relevant code snippet given the following query:\n"
+# Task instructions from the JCE model card (arXiv 2508.21290). The
+# nl2code QUERY instruction lives in recall.QUERY_PREFIX and, since
+# issue #217, ships as recall's default — bench never redefines it. Only
+# the PASSAGE instruction stays bench-local (an index-time A/B knob via
+# embed_doc_prefix, not a shipped default).
 DOC_PREFIX = "Candidate code snippet:\n"
 # JCE-0.5b Q8_0 (official jinaai GGUF) served by llama-server with the
 # card's pooling contract — Ollama imports the same GGUF as a completion
@@ -83,14 +88,16 @@ JINA_EMBED = {
     "embed_dim": 896,
     "state_dir": ".tmp/bench-jina-store",
 }
-# set name -> run() kwargs; every A/B set is a real-embed leg.
+# set name -> run() kwargs; every A/B set is a real-embed leg. Since
+# issue #217 the nl2code prefix is recall's shipped default
+# (query_prefix None), so `qprefix`/`jinaq`/`jinap` ride the default
+# wire while `ab`/`jina` pin query_prefix="" to stay raw-query baselines.
 SET_FLAGS = {
-    "ab": {},
-    "qprefix": {"query_prefix": Q_PREFIX},
-    "jina": {"embed": dict(JINA_EMBED)},
-    "jinaq": {"query_prefix": Q_PREFIX, "embed": dict(JINA_EMBED)},
-    "jinap": {"query_prefix": Q_PREFIX,
-              "embed": {**JINA_EMBED, "tag": "jina-pfx",
+    "ab": {"query_prefix": ""},
+    "qprefix": {},
+    "jina": {"query_prefix": "", "embed": dict(JINA_EMBED)},
+    "jinaq": {"embed": dict(JINA_EMBED)},
+    "jinap": {"embed": {**JINA_EMBED, "tag": "jina-pfx",
                         "embed_doc_prefix": DOC_PREFIX,
                         "state_dir": ".tmp/bench-jinap-store"}},
 }
@@ -269,7 +276,7 @@ def _override_config(repo: Path, embed: dict) -> Path:
 
 
 def run(repo: Path, set_name: str, configs: list[str], fake: bool,
-        query_prefix: str = "", embed: dict | None = None) -> int:
+        query_prefix: str | None = None, embed: dict | None = None) -> int:
     if fake:
         os.environ["NEURONAV_EMBED_FAKE"] = "1"
     if embed:
@@ -294,6 +301,13 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool,
     if query_prefix and not have_recall:
         print("ERROR: query_prefix needs recall.py (vector-side prefixing)")
         return 2
+
+    # effective embedded-query prefix for the record stamp (issue #217):
+    # None = recall's shipped default (QUERY_PREFIX); "" = the explicit
+    # raw leg (ab/jina); a literal = a forced leg.
+    effective_prefix = (
+        recall.QUERY_PREFIX if query_prefix is None else query_prefix
+    ) if have_recall else ""
 
     if not fake:
         import httpx
@@ -330,7 +344,7 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool,
                     kw["rrf_k"] = GB_RRF_K
                 if "two_pass" in flags:
                     kw["two_pass"] = True
-                if query_prefix:
+                if query_prefix is not None:
                     kw["query_prefix"] = query_prefix
                 return recall.search(query, **kw)
             return nav.search(query, n=K)
@@ -354,7 +368,7 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool,
             "dirty": dirty,
             "mode": "fake" if fake else "real",
             "model": "hash-embed" if fake else nav.EMBED_MODEL,
-            **({"query_prefix": query_prefix} if query_prefix else {}),
+            **({"query_prefix": effective_prefix} if effective_prefix else {}),
             **({"doc_prefix": nav.EMBED_DOC_PREFIX}
                if not fake and nav.EMBED_DOC_PREFIX else {}),
             "files": nav.count(),
@@ -540,7 +554,11 @@ def _sweep_table(recs: dict[str, dict]) -> list[str]:
         "double-run — wins inside the documented Ollama ±jitter are treated as",
         "ties.",
         "",
-        "Verdict (re-swept at 2a1f231 on the 58-file index after the issue #75",
+        "Grid measured at 2a1f231 with the RAW query (pre-#217 prefix",
+        "cutover): the sweep arbitrates λ against its own both-baseline",
+        "inside one store, so the cutover does not invalidate the grid,",
+        "but sweep cells are not comparable to the prefixed after/gb",
+        "rows. Verdict (re-swept at 2a1f231 on the 58-file index after the issue #75",
         "golden re-justify — the retired 44-file sweep at 2b9cbbe crowned the",
         "same cell): λ 0.25 @ rrf_k 30 sits in a three-cell top tier — hit@1",
         "0.560 here vs 0.600 at gb0.25-k60 and gb0.5-k30, a one-query gap well",
@@ -563,11 +581,11 @@ def _sweep_table(recs: dict[str, dict]) -> list[str]:
     return lines + [""]
 
 AB_LEGS = [
-    ("ab", "A/B baseline — qwen3-embedding:0.6b at the A/B commit (same store as `qprefix`)"),
-    ("qprefix", "A/B leg 1 — qwen3 + nl2code query instruction (`query_prefix`, embedded query only)"),
-    ("jina", "A/B leg 2 — jina-code-embeddings-0.5b Q8_0 (llama-server `--pooling last`, openai wire), no instructions"),
-    ("jinaq", "A/B leg 2b — jina + nl2code query instruction (same store as `jina`)"),
-    ("jinap", "A/B leg 2c — jina paper recipe: query + `Candidate code snippet:` passage instruction at index time (fresh store)"),
+    ("ab", "A/B baseline — qwen3-embedding:0.6b, raw query pinned (`query_prefix=''`) at the #217 cutover; same store as `qprefix`"),
+    ("qprefix", "A/B leg 1 — qwen3 + the shipped nl2code query-instruction default (#217; these `both` numbers are the shipped baseline)"),
+    ("jina", "A/B leg 2 — jina-code-embeddings-0.5b Q8_0 (llama-server `--pooling last`, openai wire), raw query (measured at 2a1f231, pre-#217)"),
+    ("jinaq", "A/B leg 2b — jina + nl2code query instruction (same store as `jina`; measured at 2a1f231, pre-#217)"),
+    ("jinap", "A/B leg 2c — jina paper recipe: query + `Candidate code snippet:` passage instruction at index time (fresh store; measured at 2a1f231, pre-#217)"),
 ]
 
 
@@ -616,7 +634,11 @@ def _ab_section(recs: dict[str, dict]) -> list[str]:
         "re-index), `jina`/`jinaq` share the JCE store, `jinap` re-indexes with",
         "the passage instruction prepended to embedded docs (stored documents",
         "stay raw — the prefix is an embed-input transform). Records stamp",
-        "`query_prefix`/`doc_prefix` when a leg uses them. Same-store legs are",
+        "the effective `query_prefix`/`doc_prefix`. Since #217 the qprefix",
+        "wire is the shipped recall default and `ab` pins `query_prefix=''`",
+        "as the raw-query baseline; the jina rows stay as measured at",
+        "2a1f231 (pre-#217) — re-running them needs the llama-server",
+        "sidecar, not the cutover. Same-store legs are",
         "the attribution unit; cross-store deltas ride the double-run floors",
         "below.",
         "",
@@ -628,23 +650,26 @@ def _ab_section(recs: dict[str, dict]) -> list[str]:
         lines += _kind_table(prefix, recs)
     lines += _ab_delta_table(recs)
     lines += [
-        "Verdict (measured at the commit stamped in the records, both batteries",
-        "double-run — every metric line identical across passes; the previously",
-        "observed Ollama fp-jitter flipped nothing this round): the model swap",
-        "FAILS the ≥ +3-point win condition on the shipped `both` config — plain",
-        "jina loses hit@5 by 12.0 pts (0.72 vs 0.84), jinaq by 16.0, and the",
-        "full paper recipe jinap still trails hit@5 by 4.0 (0.80 vs 0.84) despite",
-        "winning hit@1 (+20.0) and MRR (+12.5); the vec-only rows show the same",
-        "shape (jina/vec hit@5 0.44 vs ab/vec 0.52), so the paper's aggregate",
-        "edge does not transfer to whole-file retrieval on this corpus at Q8_0.",
-        "qwen3-embedding:0.6b stays. The free leg wins outright: the nl2code",
-        "query instruction on qwen3 (same store, zero re-index) lifts `both` to",
-        "0.52/0.92/0.96 with MRR 0.674 — +16.0 hit@1 / +8.0 hit@5 / +8.0",
-        "hit@10 / +14.8 MRR over the baseline, and `gb` to 0.64/0.96. Shipping",
-        "the prefix as a recall default is the actionable follow-up (its own",
-        "issue: the instruction text is JCE-trained yet empirically transfers to",
-        "qwen3 here). On the default-off `gb` config jinap tops every column",
-        "(0.72/0.96, MRR 0.817) — noted, not shipped.",
+        "Verdict — two rounds, each double-run (every metric line identical",
+        "across passes; the Ollama fp-jitter flipped nothing in either round).",
+        "Model swap (round 1, measured at 2a1f231): FAILS the ≥ +3-point win",
+        "condition on the shipped `both` config — plain jina loses hit@5 by",
+        "12.0 pts (0.72 vs 0.84), jinaq by 16.0, and the full paper recipe",
+        "jinap still trails hit@5 by 4.0 (0.80 vs 0.84) despite winning hit@1",
+        "(+20.0) and MRR (+12.5); the vec-only rows show the same shape",
+        "(jina/vec hit@5 0.44 vs ab/vec 0.52), so the paper's aggregate edge",
+        "does not transfer to whole-file retrieval on this corpus at Q8_0.",
+        "qwen3-embedding:0.6b stays; jinap topping the default-off `gb` column",
+        "(0.72/0.96, MRR 0.817) is noted, not shipped. Query prefix (round 2,",
+        "measured at the #217 cutover): the free leg wins again, same qwen3",
+        "model, fresh store — the raw-query `ab` baseline runs 0.36/0.76/0.88",
+        "with MRR 0.509 (hit@5 sits 8 pts under round 1's 0.84 on the same",
+        "wire: the corpus moved under the v0.1.2 merge, not the retrieval), and",
+        "the shipped prefix lifts `both` to 0.52/0.88/0.96 with MRR 0.672 —",
+        "+16.0 hit@1 / +12.0 hit@5 / +8.0 hit@10 / +16.3 MRR — plus `gb` to",
+        "0.64/0.92/0.96 (MRR 0.747) and `twopass` to 0.64/0.88/0.92 (MRR",
+        "0.746). `after` is byte-identical to `qprefix` on every config: the",
+        "shipped default wire IS the measured leg. #217 ships the prefix.",
         "",
     ]
     return lines
@@ -696,7 +721,7 @@ def render() -> None:
         "",
     ]
     sets = [
-        ("after", "After — current main (graph-boost winner in `gb`, two-pass in `twopass`)"),
+        ("after", "After — current main (nl2code query prefix default-on per #217; graph-boost winner in `gb`, two-pass in `twopass`)"),
         ("fake", "FAKE mode — `NEURONAV_EMBED_FAKE=1` plumbing battery"),
     ]
     retired = [
@@ -744,8 +769,9 @@ def render() -> None:
         "index is never touched and attribution is by commit. Ordering: run real sets",
         "first, fake last — fake mode wipes the worktree store for embed-mode",
         "coherence, and a real run after it would embed queries against sha-equal",
-        "fake docs. A/B legs (issue #75): run `ab` then `qprefix` first (qwen3",
-        "store), then the jina legs (their own `.tmp/` stores); `jinap` re-embeds",
+        "fake docs. A/B legs (issue #75): run `ab` (pins `query_prefix=''`) then",
+        "`qprefix` (the #217 shipped default) first, both on the qwen3",
+        "store, then the jina legs (their own `.tmp/` stores); `jinap` re-embeds",
         "the corpus with the passage instruction, the others reuse it. Records",
         "carry a golden fingerprint; a golden edit without a",
         "re-run makes `--render-only` fail loudly naming the stale records.",
@@ -795,7 +821,7 @@ def main() -> int:
         print("ERROR: A/B sets are real-embed legs (no --fake)")
         return 2
     return run(repo, args.set, configs, fake,
-               flags.get("query_prefix", ""), flags.get("embed"))
+               flags.get("query_prefix"), flags.get("embed"))
 
 
 if __name__ == "__main__":

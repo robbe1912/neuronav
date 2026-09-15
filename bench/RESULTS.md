@@ -22,28 +22,28 @@ boost (λ winner, see the λ × RRF-k sweep section) · `twopass` =
 lexical top hits donate their identifier surface to the
 re-embedded augmented query, 2 embeds/query).
 
-### After — current main (graph-boost winner in `gb`, two-pass in `twopass`)
+### After — current main (nl2code query prefix default-on per #217; graph-boost winner in `gb`, two-pass in `twopass`)
 
-commit `2a1f231` · mode **real** · model `qwen3-embedding:0.6b` · 58 indexed files · k=12
+commit `a97592a` (dirty tree) · mode **real** · model `qwen3-embedding:0.6b` · 58 indexed files · k=12
 
 | config | hit@1 | hit@5 | hit@10 | MRR | reach@5 | reach@10 |
 |---|---|---|---|---|---|---|
-| vec | 0.400 | 0.520 | 0.640 | 0.459 | 0.520 | 0.640 |
-| bm25 | 0.360 | 0.840 | 0.880 | 0.526 | 0.840 | 0.880 |
-| expand | 0.400 | 0.520 | 0.640 | 0.459 | 0.760 | 0.760 |
-| both | 0.360 | 0.840 | 0.880 | 0.526 | 0.880 | 0.920 |
-| wfused | 0.360 | 0.760 | 0.840 | 0.511 | 0.840 | 0.920 |
-| gb | 0.560 | 0.880 | 0.920 | 0.692 | 0.920 | 0.960 |
-| twopass | 0.440 | 0.800 | 0.920 | 0.625 | 0.880 | 0.920 |
+| vec | 0.440 | 0.600 | 0.800 | 0.534 | 0.600 | 0.800 |
+| bm25 | 0.520 | 0.880 | 0.960 | 0.672 | 0.880 | 0.960 |
+| expand | 0.440 | 0.600 | 0.800 | 0.534 | 0.840 | 0.960 |
+| both | 0.520 | 0.880 | 0.960 | 0.672 | 0.960 | 0.960 |
+| wfused | 0.480 | 0.840 | 0.960 | 0.630 | 0.920 | 0.960 |
+| gb | 0.640 | 0.920 | 0.960 | 0.747 | 0.920 | 0.960 |
+| twopass | 0.640 | 0.880 | 0.920 | 0.746 | 0.920 | 0.920 |
 
 by kind (hit@5 / MRR):
 
 | kind | n | vec | bm25 | expand | both | wfused | gb | twopass |
 |---|---|---|---|---|---|---|---|---|
-| exact | 10 | 0.300 / 0.336 | 0.700 / 0.438 | 0.300 / 0.336 | 0.700 / 0.438 | 0.700 / 0.412 | 0.800 / 0.719 | 0.800 / 0.595 |
-| symbol | 4 | 0.500 / 0.375 | 0.750 / 0.550 | 0.500 / 0.375 | 0.750 / 0.550 | 0.500 / 0.531 | 0.750 / 0.562 | 0.500 / 0.500 |
-| prose | 9 | 0.667 / 0.596 | 1.000 / 0.619 | 0.667 / 0.596 | 1.000 / 0.619 | 0.889 / 0.615 | 1.000 / 0.652 | 0.889 / 0.741 |
-| cross | 2 | 1.000 / 0.625 | 1.000 / 0.500 | 1.000 / 0.625 | 1.000 / 0.500 | 1.000 / 0.500 | 1.000 / 1.000 | 1.000 / 0.500 |
+| exact | 10 | 0.600 / 0.413 | 0.900 / 0.653 | 0.600 / 0.413 | 0.900 / 0.653 | 0.800 / 0.648 | 0.900 / 0.867 | 1.000 / 0.800 |
+| symbol | 4 | 0.500 / 0.567 | 0.750 / 0.750 | 0.500 / 0.567 | 0.750 / 0.750 | 0.750 / 0.583 | 0.750 / 0.562 | 0.500 / 0.500 |
+| prose | 9 | 0.556 / 0.605 | 0.889 / 0.698 | 0.556 / 0.605 | 0.889 / 0.698 | 0.889 / 0.605 | 1.000 / 0.639 | 0.889 / 0.849 |
+| cross | 2 | 1.000 / 0.750 | 1.000 / 0.500 | 1.000 / 0.750 | 1.000 / 0.500 | 1.000 / 0.750 | 1.000 / 1.000 | 1.000 / 0.500 |
 
 ### FAKE mode — `NEURONAV_EMBED_FAKE=1` plumbing battery
 
@@ -82,21 +82,25 @@ Every leg is real embeds, double-run, on its own state store: `ab`/
 re-index), `jina`/`jinaq` share the JCE store, `jinap` re-indexes with
 the passage instruction prepended to embedded docs (stored documents
 stay raw — the prefix is an embed-input transform). Records stamp
-`query_prefix`/`doc_prefix` when a leg uses them. Same-store legs are
+the effective `query_prefix`/`doc_prefix`. Since #217 the qprefix
+wire is the shipped recall default and `ab` pins `query_prefix=''`
+as the raw-query baseline; the jina rows stay as measured at
+2a1f231 (pre-#217) — re-running them needs the llama-server
+sidecar, not the cutover. Same-store legs are
 the attribution unit; cross-store deltas ride the double-run floors
 below.
 
-### A/B baseline — qwen3-embedding:0.6b at the A/B commit (same store as `qprefix`)
+### A/B baseline — qwen3-embedding:0.6b, raw query pinned (`query_prefix=''`) at the #217 cutover; same store as `qprefix`
 
-commit `2a1f231` · mode **real** · model `qwen3-embedding:0.6b` · 58 indexed files · k=12
+commit `a97592a` (dirty tree) · mode **real** · model `qwen3-embedding:0.6b` · 58 indexed files · k=12
 
 | config | hit@1 | hit@5 | hit@10 | MRR | reach@5 | reach@10 |
 |---|---|---|---|---|---|---|
-| vec | 0.400 | 0.520 | 0.640 | 0.459 | 0.520 | 0.640 |
-| bm25 | 0.360 | 0.840 | 0.880 | 0.526 | 0.840 | 0.880 |
-| expand | 0.400 | 0.520 | 0.640 | 0.459 | 0.760 | 0.760 |
-| both | 0.360 | 0.840 | 0.880 | 0.526 | 0.880 | 0.920 |
-| wfused | 0.360 | 0.760 | 0.840 | 0.511 | 0.840 | 0.920 |
+| vec | 0.320 | 0.520 | 0.640 | 0.418 | 0.520 | 0.640 |
+| bm25 | 0.360 | 0.760 | 0.880 | 0.509 | 0.760 | 0.880 |
+| expand | 0.320 | 0.520 | 0.640 | 0.418 | 0.760 | 0.760 |
+| both | 0.360 | 0.760 | 0.880 | 0.509 | 0.840 | 0.920 |
+| wfused | 0.360 | 0.720 | 0.840 | 0.506 | 0.840 | 0.920 |
 | gb | 0.560 | 0.880 | 0.920 | 0.692 | 0.920 | 0.960 |
 | twopass | 0.440 | 0.800 | 0.920 | 0.625 | 0.880 | 0.920 |
 
@@ -104,35 +108,35 @@ by kind (hit@5 / MRR):
 
 | kind | n | vec | bm25 | expand | both | wfused | gb | twopass |
 |---|---|---|---|---|---|---|---|---|
-| exact | 10 | 0.300 / 0.336 | 0.700 / 0.438 | 0.300 / 0.336 | 0.700 / 0.438 | 0.700 / 0.412 | 0.800 / 0.719 | 0.800 / 0.595 |
-| symbol | 4 | 0.500 / 0.375 | 0.750 / 0.550 | 0.500 / 0.375 | 0.750 / 0.550 | 0.500 / 0.531 | 0.750 / 0.562 | 0.500 / 0.500 |
-| prose | 9 | 0.667 / 0.596 | 1.000 / 0.619 | 0.667 / 0.596 | 1.000 / 0.619 | 0.889 / 0.615 | 1.000 / 0.652 | 0.889 / 0.741 |
+| exact | 10 | 0.300 / 0.284 | 0.600 / 0.410 | 0.300 / 0.284 | 0.600 / 0.410 | 0.600 / 0.409 | 0.800 / 0.719 | 0.800 / 0.595 |
+| symbol | 4 | 0.500 / 0.250 | 0.500 / 0.536 | 0.500 / 0.250 | 0.500 / 0.536 | 0.500 / 0.525 | 0.750 / 0.562 | 0.500 / 0.500 |
+| prose | 9 | 0.667 / 0.594 | 1.000 / 0.609 | 0.667 / 0.594 | 1.000 / 0.609 | 0.889 / 0.606 | 1.000 / 0.652 | 0.889 / 0.741 |
 | cross | 2 | 1.000 / 0.625 | 1.000 / 0.500 | 1.000 / 0.625 | 1.000 / 0.500 | 1.000 / 0.500 | 1.000 / 1.000 | 1.000 / 0.500 |
 
-### A/B leg 1 — qwen3 + nl2code query instruction (`query_prefix`, embedded query only)
+### A/B leg 1 — qwen3 + the shipped nl2code query-instruction default (#217; these `both` numbers are the shipped baseline)
 
-commit `2a1f231` · mode **real** · model `qwen3-embedding:0.6b` · 58 indexed files · k=12
+commit `a97592a` (dirty tree) · mode **real** · model `qwen3-embedding:0.6b` · 58 indexed files · k=12
 
 | config | hit@1 | hit@5 | hit@10 | MRR | reach@5 | reach@10 |
 |---|---|---|---|---|---|---|
-| vec | 0.440 | 0.600 | 0.800 | 0.537 | 0.600 | 0.800 |
-| bm25 | 0.520 | 0.920 | 0.960 | 0.674 | 0.920 | 0.960 |
-| expand | 0.440 | 0.600 | 0.800 | 0.537 | 0.840 | 0.960 |
-| both | 0.520 | 0.920 | 0.960 | 0.674 | 0.960 | 0.960 |
-| wfused | 0.480 | 0.840 | 0.960 | 0.631 | 0.920 | 0.960 |
-| gb | 0.640 | 0.960 | 0.960 | 0.758 | 0.960 | 0.960 |
+| vec | 0.440 | 0.600 | 0.800 | 0.534 | 0.600 | 0.800 |
+| bm25 | 0.520 | 0.880 | 0.960 | 0.672 | 0.880 | 0.960 |
+| expand | 0.440 | 0.600 | 0.800 | 0.534 | 0.840 | 0.960 |
+| both | 0.520 | 0.880 | 0.960 | 0.672 | 0.960 | 0.960 |
+| wfused | 0.480 | 0.840 | 0.960 | 0.630 | 0.920 | 0.960 |
+| gb | 0.640 | 0.920 | 0.960 | 0.747 | 0.920 | 0.960 |
 | twopass | 0.640 | 0.880 | 0.920 | 0.746 | 0.920 | 0.920 |
 
 by kind (hit@5 / MRR):
 
 | kind | n | vec | bm25 | expand | both | wfused | gb | twopass |
 |---|---|---|---|---|---|---|---|---|
-| exact | 10 | 0.600 / 0.422 | 1.000 / 0.657 | 0.600 / 0.422 | 1.000 / 0.657 | 0.800 / 0.650 | 1.000 / 0.870 | 1.000 / 0.800 |
-| symbol | 4 | 0.500 / 0.567 | 0.750 / 0.750 | 0.500 / 0.567 | 0.750 / 0.750 | 0.750 / 0.583 | 0.750 / 0.625 | 0.500 / 0.500 |
+| exact | 10 | 0.600 / 0.413 | 0.900 / 0.653 | 0.600 / 0.413 | 0.900 / 0.653 | 0.800 / 0.648 | 0.900 / 0.867 | 1.000 / 0.800 |
+| symbol | 4 | 0.500 / 0.567 | 0.750 / 0.750 | 0.500 / 0.567 | 0.750 / 0.750 | 0.750 / 0.583 | 0.750 / 0.562 | 0.500 / 0.500 |
 | prose | 9 | 0.556 / 0.605 | 0.889 / 0.698 | 0.556 / 0.605 | 0.889 / 0.698 | 0.889 / 0.605 | 1.000 / 0.639 | 0.889 / 0.849 |
 | cross | 2 | 1.000 / 0.750 | 1.000 / 0.500 | 1.000 / 0.750 | 1.000 / 0.500 | 1.000 / 0.750 | 1.000 / 1.000 | 1.000 / 0.500 |
 
-### A/B leg 2 — jina-code-embeddings-0.5b Q8_0 (llama-server `--pooling last`, openai wire), no instructions
+### A/B leg 2 — jina-code-embeddings-0.5b Q8_0 (llama-server `--pooling last`, openai wire), raw query (measured at 2a1f231, pre-#217)
 
 commit `2a1f231` · mode **real** · model `jina-code-embeddings-0.5b:Q8_0` · 58 indexed files · k=12
 
@@ -155,7 +159,7 @@ by kind (hit@5 / MRR):
 | prose | 9 | 0.556 / 0.568 | 0.778 / 0.566 | 0.556 / 0.568 | 0.778 / 0.566 | 0.667 / 0.558 | 1.000 / 0.630 | 0.889 / 0.699 |
 | cross | 2 | 0.500 / 0.295 | 1.000 / 0.600 | 0.500 / 0.295 | 1.000 / 0.600 | 1.000 / 0.625 | 1.000 / 1.000 | 1.000 / 0.750 |
 
-### A/B leg 2b — jina + nl2code query instruction (same store as `jina`)
+### A/B leg 2b — jina + nl2code query instruction (same store as `jina`; measured at 2a1f231, pre-#217)
 
 commit `2a1f231` · mode **real** · model `jina-code-embeddings-0.5b:Q8_0` · 58 indexed files · k=12
 
@@ -178,7 +182,7 @@ by kind (hit@5 / MRR):
 | prose | 9 | 0.556 / 0.592 | 0.778 / 0.620 | 0.556 / 0.592 | 0.778 / 0.620 | 0.778 / 0.655 | 1.000 / 0.741 | 0.889 / 0.745 |
 | cross | 2 | 0.500 / 0.167 | 0.500 / 0.583 | 0.500 / 0.167 | 0.500 / 0.583 | 0.500 / 0.571 | 1.000 / 1.000 | 1.000 / 0.750 |
 
-### A/B leg 2c — jina paper recipe: query + `Candidate code snippet:` passage instruction at index time (fresh store)
+### A/B leg 2c — jina paper recipe: query + `Candidate code snippet:` passage instruction at index time (fresh store; measured at 2a1f231, pre-#217)
 
 commit `2a1f231` · mode **real** · model `jina-code-embeddings-0.5b:Q8_0` · 58 indexed files · k=12
 
@@ -206,29 +210,32 @@ the ab row shows absolutes, leg rows show deltas:
 
 | set | model | hit@1 | hit@5 | hit@10 | MRR |
 |---|---|---|---|---|---|
-| ab | `qwen3-embedding:0.6b` | 0.360 | 0.840 | 0.880 | 0.526 |
-| qprefix | `qwen3-embedding:0.6b` | +16.0 | +8.0 | +8.0 | +14.8 |
-| jina | `jina-code-embeddings-0.5b:Q8_0` | +4.0 | -12.0 | +0.0 | +1.2 |
-| jinaq | `jina-code-embeddings-0.5b:Q8_0` | +16.0 | -16.0 | +8.0 | +10.5 |
-| jinap | `jina-code-embeddings-0.5b:Q8_0` | +20.0 | -4.0 | +4.0 | +12.5 |
+| ab | `qwen3-embedding:0.6b` | 0.360 | 0.760 | 0.880 | 0.509 |
+| qprefix | `qwen3-embedding:0.6b` | +16.0 | +12.0 | +8.0 | +16.3 |
+| jina | `jina-code-embeddings-0.5b:Q8_0` | +4.0 | -4.0 | +0.0 | +2.9 |
+| jinaq | `jina-code-embeddings-0.5b:Q8_0` | +16.0 | -8.0 | +8.0 | +12.2 |
+| jinap | `jina-code-embeddings-0.5b:Q8_0` | +20.0 | +4.0 | +4.0 | +14.2 |
 
-Verdict (measured at the commit stamped in the records, both batteries
-double-run — every metric line identical across passes; the previously
-observed Ollama fp-jitter flipped nothing this round): the model swap
-FAILS the ≥ +3-point win condition on the shipped `both` config — plain
-jina loses hit@5 by 12.0 pts (0.72 vs 0.84), jinaq by 16.0, and the
-full paper recipe jinap still trails hit@5 by 4.0 (0.80 vs 0.84) despite
-winning hit@1 (+20.0) and MRR (+12.5); the vec-only rows show the same
-shape (jina/vec hit@5 0.44 vs ab/vec 0.52), so the paper's aggregate
-edge does not transfer to whole-file retrieval on this corpus at Q8_0.
-qwen3-embedding:0.6b stays. The free leg wins outright: the nl2code
-query instruction on qwen3 (same store, zero re-index) lifts `both` to
-0.52/0.92/0.96 with MRR 0.674 — +16.0 hit@1 / +8.0 hit@5 / +8.0
-hit@10 / +14.8 MRR over the baseline, and `gb` to 0.64/0.96. Shipping
-the prefix as a recall default is the actionable follow-up (its own
-issue: the instruction text is JCE-trained yet empirically transfers to
-qwen3 here). On the default-off `gb` config jinap tops every column
-(0.72/0.96, MRR 0.817) — noted, not shipped.
+Verdict — two rounds, each double-run (every metric line identical
+across passes; the Ollama fp-jitter flipped nothing in either round).
+Model swap (round 1, measured at 2a1f231): FAILS the ≥ +3-point win
+condition on the shipped `both` config — plain jina loses hit@5 by
+12.0 pts (0.72 vs 0.84), jinaq by 16.0, and the full paper recipe
+jinap still trails hit@5 by 4.0 (0.80 vs 0.84) despite winning hit@1
+(+20.0) and MRR (+12.5); the vec-only rows show the same shape
+(jina/vec hit@5 0.44 vs ab/vec 0.52), so the paper's aggregate edge
+does not transfer to whole-file retrieval on this corpus at Q8_0.
+qwen3-embedding:0.6b stays; jinap topping the default-off `gb` column
+(0.72/0.96, MRR 0.817) is noted, not shipped. Query prefix (round 2,
+measured at the #217 cutover): the free leg wins again, same qwen3
+model, fresh store — the raw-query `ab` baseline runs 0.36/0.76/0.88
+with MRR 0.509 (hit@5 sits 8 pts under round 1's 0.84 on the same
+wire: the corpus moved under the v0.1.2 merge, not the retrieval), and
+the shipped prefix lifts `both` to 0.52/0.88/0.96 with MRR 0.672 —
++16.0 hit@1 / +12.0 hit@5 / +8.0 hit@10 / +16.3 MRR — plus `gb` to
+0.64/0.92/0.96 (MRR 0.747) and `twopass` to 0.64/0.88/0.92 (MRR
+0.746). `after` is byte-identical to `qprefix` on every config: the
+shipped default wire IS the measured leg. #217 ships the prefix.
 
 ## Retired evidence (issue #104)
 
@@ -253,7 +260,11 @@ same commit and store as the winner. Deterministic grid, every cell
 double-run — wins inside the documented Ollama ±jitter are treated as
 ties.
 
-Verdict (re-swept at 2a1f231 on the 58-file index after the issue #75
+Grid measured at 2a1f231 with the RAW query (pre-#217 prefix
+cutover): the sweep arbitrates λ against its own both-baseline
+inside one store, so the cutover does not invalidate the grid,
+but sweep cells are not comparable to the prefixed after/gb
+rows. Verdict (re-swept at 2a1f231 on the 58-file index after the issue #75
 golden re-justify — the retired 44-file sweep at 2b9cbbe crowned the
 same cell): λ 0.25 @ rrf_k 30 sits in a three-cell top tier — hit@1
 0.560 here vs 0.600 at gb0.25-k60 and gb0.5-k30, a one-query gap well
@@ -268,7 +279,7 @@ vs `both` rows are the attribution.
 
 | config | hit@1 | hit@5 | hit@10 | MRR | reach@5 | reach@10 |
 |---|---|---|---|---|---|---|
-| both (λ=0) | 0.360 | 0.840 | 0.880 | 0.526 | 0.880 | 0.920 |
+| both (λ=0) | 0.520 | 0.880 | 0.960 | 0.672 | 0.960 | 0.960 |
 | gb0-k30 | 0.360 | 0.800 | 0.920 | 0.541 | 0.840 | 0.960 |
 | gb0-k60 | 0.360 | 0.840 | 0.880 | 0.526 | 0.880 | 0.920 |
 | gb0-k120 | 0.360 | 0.840 | 0.880 | 0.519 | 0.920 | 0.920 |
@@ -290,29 +301,29 @@ vs `both` rows are the attribution.
 | query | kind | vec | bm25 | expand | both | wfused | gb | twopass |
 |---|---|---|---|---|---|---|---|---|
 | `parse_tscn` | exact | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| `sha256_of` | exact | 11 | 4 | 11 | 4 | 4 | 1 | 3 |
-| `titleize` | exact | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| `registry_for` | exact | · | · | · | · | · | 11 | 7 |
-| `sync_functions` | exact | 10 | 4 | 10 | 4 | 4 | 1 | 2 |
-| `fold_continuations` | exact | · | 5 | · | 5 | 5 | 2 | 3 |
-| `_has_exact` | exact | · | 12 | · | 12 | · | 10 | 2 |
-| `_lexical_fallback` | exact | 6 | 2 | 6 | 2 | 3 | 1 | 1 |
-| `import_base` | exact | · | 10 | · | 10 | 11 | 2 | 7 |
+| `sha256_of` | exact | 11 | 3 | 11 | 3 | 3 | 1 | 4 |
+| `titleize` | exact | 8 | 1 | 8 | 1 | 1 | 1 | 1 |
+| `registry_for` | exact | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| `sync_functions` | exact | 3 | 3 | 3 | 3 | 3 | 1 | 2 |
+| `fold_continuations` | exact | 3 | 1 | 3 | 1 | 1 | 1 | 1 |
+| `_has_exact` | exact | · | 5 | · | 5 | 6 | 6 | 1 |
+| `_lexical_fallback` | exact | 4 | 2 | 4 | 2 | 2 | 1 | 1 |
+| `import_base` | exact | · | 6 | · | 6 | 7 | 2 | 4 |
 | `find_functions` | exact | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
 | `NoCacheHandler` | symbol | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| `LabelContext` | symbol | 2 | 1 | 2 | 1 | 1 | 1 | 1 |
-| `FileSym` | symbol | · | · | · | · | · | · | · |
-| `Func` | symbol | · | 5 | · | 5 | 8 | 4 | · |
+| `LabelContext` | symbol | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| `FileSym` | symbol | 6 | · | 6 | · | · | · | · |
+| `Func` | symbol | 10 | 1 | 10 | 1 | 3 | 4 | · |
 | `where do godot scene resources get read` | prose | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| `how do cross-module references become caller edges` | prose | · | 5 | · | 5 | 5 | 5 | 1 |
-| `what stops two simultaneous rescans from corrupting the store` | prose | · | 3 | · | 3 | 6 | 1 | 2 |
-| `how do hermetic suites embed without a live model backend` | prose | 9 | 3 | 9 | 3 | 3 | 1 | 1 |
-| `how are subsystem names chosen from member vocabulary` | prose | 1 | 2 | 1 | 2 | 2 | 3 | 2 |
-| `which module hosts the agent protocol on stdin and stdout` | prose | 4 | 5 | 4 | 5 | 3 | 2 | 6 |
+| `how do cross-module references become caller edges` | prose | 7 | 2 | 7 | 2 | 3 | 3 | 1 |
+| `what stops two simultaneous rescans from corrupting the store` | prose | 11 | 1 | 11 | 1 | 3 | 1 | 1 |
+| `how do hermetic suites embed without a live model backend` | prose | 8 | 3 | 8 | 3 | 3 | 1 | 1 |
+| `how are subsystem names chosen from member vocabulary` | prose | 1 | 3 | 1 | 3 | 3 | 3 | 2 |
+| `which module hosts the agent protocol on stdin and stdout` | prose | 12 | 9 | 12 | 9 | 9 | 4 | 7 |
 | `single call that shows a newcomer how the codebase is organized` | prose | 1 | 1 | 1 | 1 | 1 | 3 | 1 |
-| `how is the embedding index archived inside the repository` | prose | 1 | 1 | 1 | 1 | 1 | 1 | 2 |
+| `how is the embedding index archived inside the repository` | prose | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
 | `how is visual clutter of the rendered page measured` | prose | 1 | 1 | 1 | 1 | 1 | 2 | 1 |
-| `unreachable deletion candidates and their confidence tiers` | cross | 4 | 2 | 4 | 2 | 2 | 1 | 2 |
+| `unreachable deletion candidates and their confidence tiers` | cross | 2 | 2 | 2 | 2 | 1 | 1 | 2 |
 | `how are node positions computed reproducibly before baking` | cross | 1 | 2 | 1 | 2 | 2 | 1 | 2 |
 
 </details>
@@ -338,8 +349,9 @@ All sets are measured in a detached worktree (`git worktree add --detach
 index is never touched and attribution is by commit. Ordering: run real sets
 first, fake last — fake mode wipes the worktree store for embed-mode
 coherence, and a real run after it would embed queries against sha-equal
-fake docs. A/B legs (issue #75): run `ab` then `qprefix` first (qwen3
-store), then the jina legs (their own `.tmp/` stores); `jinap` re-embeds
+fake docs. A/B legs (issue #75): run `ab` (pins `query_prefix=''`) then
+`qprefix` (the #217 shipped default) first, both on the qwen3
+store, then the jina legs (their own `.tmp/` stores); `jinap` re-embeds
 the corpus with the passage instruction, the others reuse it. Records
 carry a golden fingerprint; a golden edit without a
 re-run makes `--render-only` fail loudly naming the stale records.
