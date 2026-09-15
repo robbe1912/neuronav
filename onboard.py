@@ -4,11 +4,15 @@ Kept OUT of nav.py on purpose: nav/server/graph are the always-loaded
 core; setup/wiring runs once per project and must not weigh on the hot
 path. Same pattern as explore.py (focused, self-contained).
 
-  python onboard.py init  [--project PATH] [--index]
+  python onboard.py init  [--project PATH] [--index] [--preset NAME]
   python onboard.py wire  [--project PATH] [--index] [--omp [--omp-name NAME]]
 
 - init: write ``<project>/.neuronav/config.json`` (walk-everything
-  defaults, extensions = every registered extractor suffix,
+  defaults, extensions = every registered extractor suffix + the common
+  raw-text web suffixes (issue #240: .ts/.tsx/.js/... index as raw
+  text until extractors land); ``--preset ts|js|python|cpp|gdscript``
+  writes exactly that language's list — extractors.PRESETS is the one
+  home of the suffix facts,
   ``"state_dir": "default"`` opting into the project store — issue #91:
   a state_dir-less config aborts at load, the silent live-store default
   is gone) + the memories dir and its convention README (issue #67) +
@@ -48,17 +52,24 @@ from pathlib import Path
 TOOL_DIR = Path(__file__).resolve().parent
 
 
-def scaffold(project: Path | None = None) -> Path:
+def scaffold(project: Path | None = None, preset: str | None = None) -> Path:
     """Write the project-local config scaffold — no env/config switch.
     Returns the config path. Shared by init() and the universal mount's
     fresh-dir first contact (server.py, issue #131): one literal, so a
     scaffold written mid-call is byte-identical to `onboard.py init`'s.
-    Idempotent on the config (issue #121): an existing config.json is
-    left byte-identical — the same existence guard as .neuroignore, so a
-    re-run never discards user customizations."""
+    preset (issue #240): a named language's extension list
+    (ts|js|python|cpp|gdscript — extractors.PRESETS) instead of the
+    walk-everything default. Idempotent on the config (issue #121): an
+    existing config.json is left byte-identical — the same existence
+    guard as .neuroignore, so a re-run never discards user
+    customizations."""
     import nav
-    from extractors import EXTENSIONS
+    from extractors import EXTENSIONS, PRESETS, RAW_TEXT_EXTS
 
+    if preset is not None and preset not in PRESETS:
+        raise ValueError(
+            f"unknown preset '{preset}' — valid: {', '.join(sorted(PRESETS))}"
+        )
     proj = (project or Path.cwd()).resolve()
     state = proj / ".neuronav"
     state.mkdir(parents=True, exist_ok=True)
@@ -69,7 +80,13 @@ def scaffold(project: Path | None = None) -> Path:
             "collection": "main",
             "state_dir": "default",
             "include_dirs": list(nav.WALK_DEFAULTS["include_dirs"]),
-            "extensions": sorted(EXTENSIONS),
+            # issue #240: the default covers every registered extractor
+            # suffix PLUS the common raw-text web suffixes (they ride
+            # file_doc's raw fallback — searchable, fns 0 — until
+            # extractors land); a preset curates exactly its language's
+            # list instead
+            "extensions": list(PRESETS[preset]) if preset
+            else sorted(set(EXTENSIONS) | set(RAW_TEXT_EXTS)),
             "exclude_dirs": list(nav.WALK_DEFAULTS["exclude_dirs"]),
         }
         cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8", newline="\n")
@@ -99,12 +116,13 @@ def scaffold(project: Path | None = None) -> Path:
     return cfg_path
 
 
-def init(project: Path | None = None, index: bool = False) -> Path:
+def init(project: Path | None = None, index: bool = False,
+         preset: str | None = None) -> Path:
     """scaffold + switch this process (and children, via env) onto the
     new config. Returns the config path."""
     import nav
 
-    cfg_path = scaffold(project)
+    cfg_path = scaffold(project, preset)
     nav.use_config(cfg_path)
     if index:
         _index()
@@ -413,6 +431,10 @@ if __name__ == "__main__":
         i = argv.index("--project")
         proj = Path(argv[i + 1])
     do_index = "--index" in argv
+    preset = None
+    if "--preset" in argv:
+        i = argv.index("--preset")
+        preset = argv[i + 1]
     do_omp = "--omp" in argv
     omp_name = None
     if "--omp-name" in argv:
@@ -420,8 +442,14 @@ if __name__ == "__main__":
         omp_name = argv[i + 1]
     target = (proj or Path.cwd()).resolve()
     if cmd == "init":
-        p = init(proj, index=do_index)
+        try:
+            p = init(proj, index=do_index, preset=preset)
+        except ValueError as e:
+            print(f"onboard: {e}", file=sys.stderr)
+            sys.exit(2)
         print(f"project config: {p}")
+        if preset:
+            print(f"extensions:     preset '{preset}'")
         print(f"state dir:      {target / '.neuronav'}")
         print(f"MCP wiring:     NEURONAV_CONFIG={p}")
         print("next:           onboard.py wire  (agents)  ·  nav.py rescan  ·  viz.py")
@@ -444,5 +472,5 @@ if __name__ == "__main__":
         print(f"universal entry \"neuronav\": uvx --from {_UVX_SOURCE}@{_uvx_ref()} neuronav-mcp")
         print("(per-call dir routing, no config pin — needs uv on PATH and a pushed vX.Y.Z tag)")
     else:
-        print("usage: onboard.py [init|wire|global-wire] [--project PATH] [--index] [--omp [--omp-name NAME]]", file=sys.stderr)
+        print("usage: onboard.py [init|wire|global-wire] [--project PATH] [--index] [--preset NAME] [--omp [--omp-name NAME]]", file=sys.stderr)
         sys.exit(2)

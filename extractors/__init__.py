@@ -56,6 +56,24 @@ EXTENSIONS: dict[str, object] = {
     ".cxx": cpp,
 }
 
+# issue #240: language presets + the raw-text walk suffixes — language
+# facts consumed blind by onboard.py (scaffold/presets) and server.py
+# (degraded-boot guidance), so they live here beside the registry, not
+# in the shared modules. Registered suffixes parse structurally; the
+# rest ride graph.file_doc's raw fallback (embedded + searchable, fns 0)
+# until an extractor lands for them (a TS extractor is the tracked
+# follow-up).
+RAW_TEXT_EXTS = (
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts", ".cts", ".json", ".md",
+)
+PRESETS: dict[str, tuple[str, ...]] = {
+    "ts": RAW_TEXT_EXTS,
+    "js": (".js", ".jsx", ".mjs", ".cjs", ".json", ".md"),
+    "python": (".py", ".pyi", ".json", ".md"),
+    "cpp": (".h", ".hpp", ".cpp", ".cc", ".cxx"),
+    "gdscript": (".gd", ".tscn"),
+}
+
 
 def sync_parseable(suffix: str) -> bool:
     """True when sync_functions may parse the suffix into funcs: an

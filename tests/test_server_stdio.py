@@ -110,9 +110,13 @@ def text_of(result: dict) -> str:
     )
 
 
-def _spawn(env: dict[str, str]) -> SimpleNamespace:
+def _spawn(env: dict[str, str], cwd: Path | None = None) -> SimpleNamespace:
     """Start one stdio server + daemon drain threads; returns
     .proc/.send/.recv/.kill/.stderr_lines.
+
+    cwd defaults to the checkout (the classic boot shape); the #240
+    fresh-folder scenario passes a foreign repo so pure defaults bind
+    to IT, not the neuronav checkout.
 
     The server logs (startup + ollama HTTP) can outgrow the stderr pipe
     buffer and deadlock it if nobody drains — keep daemon readers
@@ -126,12 +130,11 @@ def _spawn(env: dict[str, str]) -> SimpleNamespace:
         stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
-        cwd=HERE,
+        cwd=cwd or HERE,
         env=env,
     )
     stderr_lines: list[str] = []
     _stdout_q: "queue.Queue[str]" = queue.Queue()
-
     def _drain_stderr() -> None:
         assert proc.stderr is not None
         for line in proc.stderr:
@@ -477,6 +480,10 @@ def main() -> None:
         # multi-project isolation, fresh-dir build pinned on fake embeds
         _universal_scenario()
 
+        # issue #240: the fresh-folder onboarding repro — TS-only repo,
+        # pure defaults, guidance + recovery + embedder probe
+        _fresh_folder_scenario()
+
         # issue #67: Serena-style project memories — the mutating tool #2
         _memory_scenario()
 
@@ -658,6 +665,206 @@ def _universal_scenario() -> None:
         if FAILS:
             print("--- universal server stderr (tail) ---")
             print("\n".join(srv.stderr_lines[-15:]))
+
+
+def _fresh_folder_scenario() -> None:
+    """issue #240 acceptance: the owner's live repro (opencode-mobile —
+    TS-only, no .neuronav, pure defaults, v0.1.5 died pre-handshake).
+    The boot must degrade instead: initialize answers, tools/list
+    works, read tools answer first-call guidance naming the scanned
+    extensions + the paste-ready config for the suffixes actually on
+    disk, the explicit rescan TOOL stays loud (#41 law), and the
+    guidance's exact fix (onboard.py init --preset ts) recovers the
+    session in place. Then the embedder-probe contract (no FAKE): dead
+    endpoint + empty store aborts pre-handshake naming the ollama pull
+    fix; a warm store serves degraded from the index."""
+    import shutil
+    import socket
+
+    scratch = HERE / ".team_scratch" / "fresh240"
+    shutil.rmtree(scratch, ignore_errors=True)
+    repo = scratch / "opencodeish"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "main.ts").write_text(
+        "export function greet(): string {\n  return 'hi';\n}\n",
+        encoding="utf-8", newline="\n")
+    (repo / "src" / "util.tsx").write_text(
+        "export const answer = 42;\n", encoding="utf-8", newline="\n")
+    (repo / "package.json").write_text(
+        '{\n  "name": "opencodeish"\n}\n', encoding="utf-8", newline="\n")
+
+    base = {k: v for k, v in os.environ.items()
+            if k not in ("NEURONAV_CONFIG", "NEURONAV_EMBED_FAKE")}
+    env = dict(base)
+    env["NEURONAV_EMBED_FAKE"] = "1"
+    srv = _spawn(env, cwd=repo)
+    send, recv = srv.send, srv.recv
+
+    def call(mid: int, name: str, args: dict) -> dict:
+        send({"jsonrpc": "2.0", "id": mid, "method": "tools/call",
+              "params": {"name": name, "arguments": args}})
+        return recv(mid)["result"]
+
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "fresh", "version": "0"}}})
+        init = recv(1)
+        check("fresh240: TS-only pure-defaults boot answers initialize "
+              "(server stays up — the v0.1.5 fatal)",
+              "result" in init and srv.proc.poll() is None, "")
+        check("fresh240: instructions name the presets (issue #240)",
+              "onboard.py init --preset" in init["result"]["instructions"],
+              init["result"]["instructions"][-120:])
+        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        names = [t["name"] for t in recv(2)["result"]["tools"]]
+        check("fresh240: tools/list works while degraded",
+              "repo_map" in names and "rescan" in names, "")
+
+        g = text_of(call(3, "repo_map", {"budget_tokens": 256}))
+        check("fresh240: repo_map answers guidance naming .ts/.tsx",
+              "EMPTY INDEX" in g and ".ts" in g and ".tsx" in g, g[:160])
+        check("fresh240: guidance carries the paste-ready config "
+              "(state_dir opt-in, issue #91)",
+              '"state_dir": "default"' in g and "config.json" in g, g)
+        check("fresh240: guidance names the preset one-liner",
+              "--preset ts" in g, g)
+        check("fresh240: guidance names the raw-text degradation",
+              "raw text" in g and "find_functions" in g, g)
+        check("fresh240: guidance names extensions actually scanned",
+              "extensions scanned:" in g, g[:300])
+        g2 = text_of(call(4, "semantic_search", {"query": "greet"}))
+        check("fresh240: semantic_search answers the same guidance",
+              "EMPTY INDEX" in g2 and ".ts" in g2, g2[:120])
+
+        # issue #41 law: degraded boot must not neuter the explicit
+        # rescan tool — it errors loudly (names the 0-file walk), never
+        # echoes guidance
+        r = call(5, "rescan", {})
+        check("fresh240: degraded rescan is a loud error (#41 unchanged)",
+              bool(r.get("isError")) and "0 files" in text_of(r)
+              and "EMPTY INDEX" not in text_of(r), text_of(r)[:200])
+
+        # the guidance's exact fix, applied in-session via the CLI
+        subprocess.run(
+            [sys.executable, "-X", "utf8", str(HERE / "onboard.py"),
+             "init", "--project", str(repo), "--preset", "ts"],
+            cwd=repo, env=env, capture_output=True, text=True, check=True)
+        cfg = json.loads((repo / ".neuronav" / "config.json")
+                         .read_text(encoding="utf-8"))
+        check("fresh240: preset ts scaffold pins extensions + state_dir",
+              cfg["extensions"] == [".ts", ".tsx", ".js", ".jsx", ".mjs",
+                                    ".mts", ".cts", ".json", ".md"]
+              and cfg["state_dir"] == "default" and cfg["root"] == str(repo),
+              json.dumps(cfg))
+        rec = text_of(call(6, "rescan", {}))
+        check("fresh240: in-session recovery on the next rescan",
+              "rebound the boot" in rec and "files 3/" in rec, rec[:160])
+        time.sleep(0.3)  # stderr drain settle
+        err = "".join(srv.stderr_lines)
+        check("fresh240: boot banner names the raw-text degradation",
+              "no structural extractor for" in err and ".ts" in err,
+              "\n".join(srv.stderr_lines[-6:]))
+        g3 = text_of(call(7, "semantic_search", {"query": "greet"}))
+        check("fresh240: post-recovery search finds the TS file (raw)",
+              "main.ts" in g3, g3[:200])
+        g4 = text_of(call(8, "repo_map", {"budget_tokens": 256}))
+        check("fresh240: post-recovery repo_map serves with the "
+              "structural degradation visible",
+              g4.startswith(f"you are here: {repo.resolve().as_posix()}")
+              and "0 files" in g4, g4[:120])
+    finally:
+        srv.kill()
+        if FAILS:
+            print("--- fresh240 server stderr (tail) ---")
+            print("\n".join(srv.stderr_lines[-15:]))
+
+    # ---- embedder probe (issue #240 pin 4): no FAKE in these legs ----
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    dead_port = sock.getsockname()[1]
+    sock.close()
+    warm = scratch / "warm"
+    warm.mkdir(parents=True)
+    (warm / "a.py").write_text("def aa():\n    return 1\n",
+                               encoding="utf-8", newline="\n")
+    (warm / "b.py").write_text("def bb():\n    return 2\n",
+                               encoding="utf-8", newline="\n")
+    probe_cfg = scratch / "deadport.json"
+    probe_cfg.write_text(json.dumps({
+        "root": str(warm.resolve()), "collection": "main",
+        "state_dir": "default", "include_dirs": ["."],
+        "extensions": [".py"],
+        "exclude_dirs": [".git", "__pycache__", ".venv", ".neuronav",
+                         "node_modules"],
+        "embed_url": f"http://127.0.0.1:{dead_port}/api/embed",
+    }), encoding="utf-8", newline="\n")
+
+    # empty store + dead endpoint: abort pre-handshake, loud, with the
+    # pull fix — a raw Popen, because _spawn's recv would just time out
+    # on a process that never answers
+    env_abort = dict(base)
+    env_abort["NEURONAV_CONFIG"] = str(probe_cfg)
+    p = subprocess.Popen(
+        [sys.executable, "-X", "utf8", str(HERE / "server.py")],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, encoding="utf-8",
+        cwd=str(scratch), env=env_abort)
+    _, abort_err = p.communicate(input="", timeout=120)
+    check("fresh240: probe fail on an empty store aborts non-zero "
+          "pre-handshake", p.returncode != 0, f"rc={p.returncode}")
+    check("fresh240: abort names model + endpoint + the pull fix",
+          "qwen3-embedding:0.6b" in abort_err and str(dead_port) in abort_err
+          and "ollama pull qwen3-embedding:0.6b" in abort_err,
+          abort_err[-400:])
+
+    # warm the store under FAKE, then serve the same dead endpoint with
+    # the probe failing: initialize still answers, stderr names it
+    env_warm = dict(env_abort)
+    env_warm["NEURONAV_EMBED_FAKE"] = "1"
+    srv2 = _spawn(env_warm, cwd=scratch)
+    try:
+        srv2.send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "fresh", "version": "0"}}})
+        check("fresh240: warm store builds under FAKE",
+              "result" in srv2.recv(1), "")
+        srv2.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        srv2.send({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                   "params": {"name": "rescan", "arguments": {}}})
+        srv2.recv(2)
+    finally:
+        srv2.kill()
+
+    srv3 = _spawn(env_abort, cwd=scratch)
+    try:
+        srv3.send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                   "params": {"protocolVersion": "2024-11-05",
+                              "capabilities": {},
+                              "clientInfo": {"name": "fresh",
+                                             "version": "0"}}})
+        r = srv3.recv(1)
+        check("fresh240: probe fail on a warm store serves degraded",
+              "result" in r, "")
+        srv3.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        srv3.send({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                   "params": {"name": "repo_map",
+                              "arguments": {"budget_tokens": 256}}})
+        out = text_of(srv3.recv(2)["result"])
+        check("fresh240: warm degraded repo_map answers from the index",
+              out.startswith(f"you are here: {warm.resolve().as_posix()}"),
+              out[:120])
+        time.sleep(0.3)
+        err3 = "".join(srv3.stderr_lines)
+        check("fresh240: stderr names the probe failure + degraded serve",
+              "embed probe FAILED" in err3
+              and "Serving the warm index degraded" in err3, err3[-400:])
+    finally:
+        srv3.kill()
+        if FAILS:
+            print("--- fresh240 probe server stderr (tail) ---")
+            print("\n".join(srv3.stderr_lines[-15:]))
 
 
 def _recall_knobs_scenario(srv) -> None:

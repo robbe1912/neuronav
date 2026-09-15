@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
 import re
 import sys
 import threading
@@ -61,7 +62,7 @@ from mcp.types import ToolAnnotations
 
 import explore as _explore
 import graph
-from extractors import res_to_rel  # noqa: E402
+from extractors import PRESETS, registry_for, res_to_rel  # noqa: E402
 import memories
 import nav
 
@@ -96,7 +97,9 @@ _INSTRUCTIONS = (
     "Every tool takes an optional dir to target a different repo root. "
     "The index auto-refreshes on file drift; a tool marked 'degraded' "
     "still answers completely from the current index, though vector "
-    "recall may be unavailable."
+    "recall may be unavailable. An empty index answers with first-call "
+    "guidance; onboard.py init --preset ts|js|python|cpp|gdscript "
+    "scaffolds a config for unmatched file types."
 )
 
 mcp = FastMCP("neuronav", instructions=_INSTRUCTIONS)
@@ -140,6 +143,208 @@ _SCOPE_LOCK = threading.RLock()  # nav globals are process-wide: one routed call
 
 def _at_boot() -> bool:
     return (str(nav.STATE_DIR), nav.COLLECTION) == _BOOT_STORE
+
+
+# ---- degraded boot (issue #240) ----------------------------------------------
+# A boot rescan that matched 0 files (pure defaults on a TS-only repo,
+# or any config whose walk matches nothing) used to raise pre-handshake:
+# the client saw a dead subprocess and the actionable text sat in
+# stderr nobody reads. Instead the boot degrades: an empty store plus
+# this flag, and every tool answers first-call guidance — the
+# extensions actually scanned, a suffix census of the root, and a
+# paste-ready config block for the file types found on disk. nav's
+# 0-file RuntimeError stays the explicit-rescan contract (#41 law);
+# only the boot path degrades, and _boot_recovery re-binds the boot
+# config in-session the moment one appears.
+_BOOT_DEGRADED: str | None = None
+
+# census suffixes suggested in the guidance's config block before the
+# cut — deterministic: ranked by count, ties by name
+_GUIDANCE_SUGGEST_CAP = 8
+# binary/asset suffixes never suggested for indexing: raw-embedding
+# assets pollutes the vector space for no recall value
+_CENSUS_DENY = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".pdf",
+    ".zip", ".gz", ".tar", ".7z", ".rar", ".exe", ".dll", ".so",
+    ".woff", ".woff2", ".ttf", ".otf", ".map", ".lock", ".bin", ".wasm",
+})
+
+
+def _preset_hint(suggestions: list[str]) -> str | None:
+    """The preset covering a guidance's suggested suffixes (issue #240):
+    first hit in a fixed preference order — ts before js, so a mixed web
+    repo suggests the fuller list. None when no preset applies."""
+    for name in ("ts", "js", "python", "cpp", "gdscript"):
+        if set(PRESETS[name]) & set(suggestions):
+            return name
+    return None
+
+
+def _boot_guidance(census: dict[str, int], probe_fail: str | None) -> str:
+    """First-call guidance for a 0-file boot (issue #240): what was
+    scanned, what the root actually holds, the paste-ready fix. A pure
+    function of the census + the boot config — deterministic."""
+    lines = [
+        "neuronav: EMPTY INDEX — the boot walk matched 0 files, so this "
+        "server serves guidance instead of results (issue #240). Every "
+        "tool answers with this text until a config covers the repo.",
+        f"  root: {nav.ROOT.as_posix()}",
+        f"  include_dirs: {list(nav.INCLUDE_DIRS)}",
+        f"  extensions scanned: [{', '.join(sorted(nav.EXTS))}]",
+    ]
+    ranked = sorted(
+        ((s, c) for s, c in census.items()
+         if s.startswith(".") and s not in _CENSUS_DENY),
+        key=lambda kv: (-kv[1], kv[0]),
+    )
+    if ranked:
+        head = ", ".join(f"{s} x{c}" for s, c in ranked[:_GUIDANCE_SUGGEST_CAP])
+        rest = len(ranked) - min(len(ranked), _GUIDANCE_SUGGEST_CAP)
+        lines.append(
+            f"  file types on disk (same walk, any suffix): {head}"
+            + (f" (+{rest} more)" if rest > 0 else "")
+        )
+    else:
+        lines.append(
+            "  file types on disk: NONE under the walk — check root/"
+            "include_dirs (onboard.py init --project <path> scaffolds a "
+            "walk-all config)"
+        )
+    suggestions = [s for s, _ in ranked[:_GUIDANCE_SUGGEST_CAP]
+                   if s not in nav.EXTS]
+    if suggestions:
+        block = {
+            # "root": ".." — a project-local config resolves root against
+            # .neuronav itself (the #240 trap); its parent IS the project
+            "root": "..",
+            "collection": "main",
+            "state_dir": "default",
+            "include_dirs": list(nav.WALK_DEFAULTS["include_dirs"]),
+            "extensions": suggestions,
+            "exclude_dirs": list(nav.WALK_DEFAULTS["exclude_dirs"]),
+        }
+        lines.append("  fix: write .neuronav/config.json under the root with")
+        lines.extend("    " + ln for ln in json.dumps(block, indent=2).splitlines())
+        hint = _preset_hint(suggestions)
+        if hint is not None:
+            lines.append(f"  (or run: onboard.py init --preset {hint})")
+        unreg = [s for s in suggestions if registry_for(s) is None]
+        if unreg:
+            lines.append(
+                f"  note: {', '.join(unreg)} have no structural extractor — "
+                "they index as raw text (semantic_search/search_text work), "
+                "but find_functions/symbol_graph/dead_code return nothing "
+                "for these files until extractors land (TS is the tracked "
+                "follow-up)"
+            )
+        lines.append(
+            "  then call rescan (this session picks the new config up) "
+            "or restart the session"
+        )
+    if probe_fail is not None:
+        lines.append(f"  embed backend: {probe_fail}")
+    return "\n".join(lines)
+
+
+def _probe_embedder() -> str | None:
+    """One 1-token embed against the configured provider at boot (issue
+    #240): a wrong model or dead endpoint dies HERE with the fix in the
+    message, not 200s into the first rescan (a jina GGUF tag routed to
+    a generation runner answers /api/embed with a protocol error — that
+    whole failure class dies at boot now). None = healthy or FAKE."""
+    if os.environ.get("NEURONAV_EMBED_FAKE"):
+        return None  # CI plumbing: no network by contract
+    try:
+        nav.embed(["."])
+        return None
+    except Exception as e:
+        reason = nav.embed_failure_reason(e)
+        if nav.EMBED_PROVIDER == "ollama":
+            fix = f"ollama pull {nav.EMBED_MODEL}"
+        else:
+            fix = (
+                f"check embed_model '{nav.EMBED_MODEL}' at embed_url "
+                f"'{nav.EMBED_URL}' (auth via NEURONAV_EMBED_KEY)"
+            )
+        return (
+            f"embed probe FAILED — model '{nav.EMBED_MODEL}' via "
+            f"{nav.EMBED_PROVIDER} at {nav.EMBED_URL}: {reason}. Fix: {fix}."
+        )
+
+
+def _raw_text_banner(census: dict[str, int]) -> None:
+    """Loud unsupported-language announcement (issue #240): files that
+    MATCH the configured extensions but have no extractor index as raw
+    text — fns 0 is otherwise indistinguishable from an empty repo.
+    stderr at boot and after in-session recovery; the degraded guidance
+    names it too."""
+    hits = sorted(
+        (s, c) for s, c in census.items()
+        if s in nav.EXTS and registry_for(s) is None
+    )
+    if not hits:
+        return
+    named = ", ".join(f"{s} x{c}" for s, c in hits)
+    print(
+        f"neuronav: no structural extractor for {named} — indexed as raw "
+        "text (semantic_search/search_text work), but find_functions/"
+        "symbol_graph/dead_code return nothing for these files "
+        "(onboard.py init --preset ts|js|python|cpp|gdscript curates "
+        "extensions; a TS extractor is the tracked follow-up)",
+        file=sys.stderr,
+    )
+
+
+def _enter_degraded(census: dict[str, int], probe_fail: str | None,
+                    why: str) -> None:
+    """Flip the boot into guidance mode (issue #240): set the flag every
+    tool answers with, plus the stderr banner."""
+    global _BOOT_DEGRADED
+    _BOOT_DEGRADED = _boot_guidance(census, probe_fail)
+    print(
+        f"neuronav: DEGRADED — {why}; serving an empty index, every tool "
+        "answers with first-call guidance",
+        file=sys.stderr,
+    )
+
+
+def _boot_recovery() -> str | None:
+    """In-session re-bind for a degraded pure-defaults boot (issue #240):
+    the guidance says to write <root>/.neuronav/config.json — the next
+    tool call picks it up here instead of demanding a restart. A
+    config-FILE-driven boot stays degraded (its fix is editing that
+    config, then restarting: discovery would hand back the same path).
+    Returns the prelude the call answers with, or None when still
+    degraded."""
+    global _BOOT_DEGRADED, _BOOT_STORE
+    if nav.CONFIG_PATH is not None:
+        return None
+    cfg_path = Path.cwd() / ".neuronav" / "config.json"
+    if not cfg_path.is_file():
+        return None
+    _validate_foreign_config(cfg_path, Path.cwd())
+    try:
+        nav.use_config(cfg_path)
+        _BOOT_STORE = (str(nav.STATE_DIR), nav.COLLECTION)
+        stats = _bounded_rescan()
+        g, fns, note = _sync_chain(stats)
+        nav.stat_mark_synced()
+        _raw_text_banner(nav.suffix_census())
+        _BOOT_DEGRADED = None
+        return (
+            f"config appeared mid-session — rebound the boot to "
+            f"{cfg_path.as_posix()} and indexed: files "
+            f"{stats['added']}/{stats['updated']}/{stats['unchanged']}/"
+            f"{stats['deleted']} (a/u/u/d), fns {fns['fns_upserted']} "
+            f"upserted, graph {len(g.files)} files{note}. Call again to query."
+        )
+    except Exception as e:
+        _BOOT_DEGRADED = (
+            f"neuronav: recovery FAILED — the config at "
+            f"{cfg_path.as_posix()} raised: {e}. Fix it (or the embedding "
+            "backend it names), then restart the session."
+        )
+        return _BOOT_DEGRADED
 
 
 def _validate_foreign_config(cfg_path: Path, target: Path) -> dict:
@@ -236,6 +441,16 @@ def _route(dir: str):
     never rescan a swapped config (RLock: _auto_rescan re-enters)."""
     with _SCOPE_LOCK:
         if not dir:
+            if _BOOT_DEGRADED is not None:
+                # issue #240: degraded boot — every tool answers the
+                # first-call guidance; a config appearing mid-session
+                # (pure-defaults boot) re-binds and builds first
+                rec = _boot_recovery()
+                if rec is not None:
+                    yield rec
+                    return
+                yield _BOOT_DEGRADED
+                return
             yield None
             return
         resolved = Path(dir).expanduser().resolve()
@@ -1274,7 +1489,12 @@ def rescan(dir: str = "") -> str:
     call to that checkout (a fresh dir onboards on first contact).
     """
     with _route(dir) as prelude:
-        if prelude:
+        # issue #41 law: the explicit rescan TOOL stays loud on a 0-file
+        # walk — so the degraded-boot guidance (yielded by identity) is
+        # NOT returned; we fall through to nav.rescan(), whose
+        # RuntimeError names root/extensions. A mid-session recovery
+        # prelude (a different string) still returns.
+        if prelude and prelude is not _BOOT_DEGRADED:
             return prelude
         t0 = time.perf_counter()
         stats = nav.rescan()
@@ -1294,8 +1514,10 @@ def main() -> None:
     """Console-script boot (issue #204) — the historic ``__main__`` body
     behind the ``neuronav-mcp`` entry point, plus the #203 hardening:
     boot state lands on stderr BEFORE any rescan work, and the boot
-    lock wait is bounded. Behavior otherwise identical to the direct
-    ``python server.py`` boot."""
+    lock wait is bounded. #240: a 0-file walk degrades to first-call
+    guidance instead of dying pre-handshake, and one 1-token embed
+    probe fails fast with the fix in the message. Behavior otherwise
+    identical to the direct ``python server.py`` boot."""
     t0 = time.perf_counter()
     # issue #203: first contact must never be silent — name the resolved
     # config (or the pure-defaults root) before the boot rescan starts,
@@ -1304,15 +1526,56 @@ def main() -> None:
         print(f"neuronav: config {nav.CONFIG_PATH}", file=sys.stderr)
     else:
         print(f"neuronav: pure defaults, root={nav.ROOT}", file=sys.stderr)
-    stats = _bounded_rescan()
-    g, fns, _ = _sync_chain(stats)
-    nav.stat_mark_synced()
+    # issue #240: what the root actually holds, extension filter off —
+    # the 0-file verdict, the degraded-boot guidance and the raw-text
+    # banner all read this one census
+    census = nav.suffix_census()
+    probe_fail = _probe_embedder()
+    stats = {"added": 0, "updated": 0, "unchanged": 0, "deleted": 0}
+    fns_up = 0
     watch_note = ""
-    # boot config only by design (issue #131): the watcher drives
-    # _auto_rescan, which is boot-gated — routed dirs refresh explicitly
-    if nav.WATCH_INTERVAL_S > 0:
-        _start_watcher(nav.WATCH_INTERVAL_S)
-        watch_note = f", watcher {nav.WATCH_INTERVAL_S:g}s"
+    if not any(s in nav.EXTS for s in census):
+        _enter_degraded(census, probe_fail, "boot walk matched 0 files")
+    elif probe_fail is not None:
+        if nav.count() == 0:
+            # evidence-based abort (issue #240): an empty store needs
+            # embeds to build — every path from here fails mid-rescan.
+            # Die pre-handshake with the fix in the message instead.
+            raise SystemExit(
+                f"neuronav: {probe_fail} The store is empty and every "
+                "index build embeds — aborting before the handshake so "
+                "the failure carries the fix. Pull the model / start the "
+                "backend, then restart the session."
+            )
+        # warm store: serve it degraded (the #19 law already covers
+        # embed failures mid-serve); skip the boot rescan — it would
+        # die on the first new embed
+        print(
+            f"neuronav: {probe_fail} Serving the warm index degraded; "
+            "rescans that need new embeddings retry with the tool-call "
+            "cooldown until the backend is back.",
+            file=sys.stderr,
+        )
+        graph.get_graph(rebuild=True)
+    else:
+        try:
+            stats = _bounded_rescan()
+        except RuntimeError:
+            # walk emptied between census and rescan — same degraded path
+            _enter_degraded(
+                nav.suffix_census(), None, "boot rescan found the walk empty"
+            )
+        else:
+            g, fns, _ = _sync_chain(stats)
+            nav.stat_mark_synced()
+            fns_up = fns["fns_upserted"]
+            _raw_text_banner(census)
+            # boot config only by design (issue #131): the watcher drives
+            # _auto_rescan, which is boot-gated — routed dirs refresh
+            # explicitly
+            if nav.WATCH_INTERVAL_S > 0:
+                _start_watcher(nav.WATCH_INTERVAL_S)
+                watch_note = f", watcher {nav.WATCH_INTERVAL_S:g}s"
     # warm the clusters stack (networkx/numpy/sklearn/scipy) on the main
     # thread before the event loop serves: importing these C extensions
     # lazily inside a fastmcp tool call (on the anyio loop thread) blocks
@@ -1322,10 +1585,16 @@ def main() -> None:
     import numpy  # noqa: F401
     import scipy.cluster.hierarchy  # noqa: F401
     import sklearn.cluster  # noqa: F401
+    if _BOOT_DEGRADED is not None:
+        state = "DEGRADED, guidance mode, "
+    elif probe_fail is not None:
+        state = "embed probe failed, serving warm index, "
+    else:
+        state = f"fns {fns_up}, "
     print(
         f"neuronav: startup files {stats['added']}/{stats['updated']}/"
         f"{stats['unchanged']}/{stats['deleted']}, "
-        f"fns {fns['fns_upserted']}, "
+        f"{state}"
         f"in {time.perf_counter() - t0:.1f}s{watch_note}",
         file=sys.stderr,
     )
