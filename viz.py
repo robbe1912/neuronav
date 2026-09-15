@@ -7410,8 +7410,10 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   // [#77] band 2 cluster aggregation: per-pair/peel/origin badges merge
   // into ONE count per (source cluster -> target cluster) - at cluster
   // distance the map reads cluster-to-cluster traffic, not pair inventory.
-  // Deterministic (chip order); visual summary - not clickable (hit stays
-  // null = unclickable, #113); wheel in one notch for pair interaction.
+  // Deterministic (chip order); visual summary - not clickable: the agg
+  // recs never join mapLayout.chips, so mapChipAt never sees them (#113)
+  // even though paintChip sets hit on them; wheel in one notch for pair
+  // interaction.
   mapLodAggChips = 0;
   if (mapLodBand === 2) {
     const agg = new Map();
@@ -9186,6 +9188,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get glW() { return glW(); },
   get bucketMesh() { return bucketMesh; }, raycaster, linkFiltered, typeVisible,
   nodeFiltered, fnMode, supMem, strongPair,
+  get cbFn() { return cbFnEl.checked; },   // [#59] live checkbox truth (fnMode above is a boot snapshot)
   get mapLayout() { return mapLayout; },
   get mapRects() { return mapRects; },
   get routeAudit() { return mapLayout && mapLayout.audit; },
