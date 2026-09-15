@@ -249,6 +249,15 @@ def main() -> None:
             sinfo.get("name") == "neuronav" and sinfo.get("version") == _pkg_version(),
             f"serverInfo={sinfo} expected {_pkg_version()}",
         )
+        # issue #237: initialize must carry the agent instructions
+        # (orientation workflow: repo_map -> explore -> lookups -> memory)
+        instr = init.get("result", {}).get("instructions", "")
+        check(
+            "initialize carries agent instructions (issue #237)",
+            bool(instr) and all(k in instr for k in
+                                ("repo_map", "explore", "semantic_search", "memory")),
+            repr(instr[:120]),
+        )
         send({"jsonrpc": "2.0", "method": "notifications/initialized"})
 
         send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})

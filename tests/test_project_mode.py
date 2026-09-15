@@ -315,6 +315,9 @@ def main() -> None:
         check("global-wire: omp universal entry = uvx on the pinned tag, no config pin",
               u_omp["command"] == "uvx" and u_omp["args"] == want_args
               and "env" not in u_omp and "cwd" not in u_omp, str(u_omp))
+        check("global-wire: omp entry shape = typed stdio + enabled + timeout (issue #237)",
+              u_omp.get("type") == "stdio" and u_omp.get("enabled") is True
+              and u_omp.get("timeout") == 300_000, str(u_omp))
         check("global-wire: the entry pins this repo at a vX.Y.Z tag",
               want_args[1].startswith("git+https://github.com/robbe1912/neuronav@v"), want_args[1])
         check("global-wire: per-project omp pins survive beside the universal entry",
