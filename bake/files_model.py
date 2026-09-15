@@ -8,7 +8,6 @@ from pathlib import Path
 from extractors import (  # noqa: E402
     FN_KEY_SEP,
     TSCN_SUFFIX,
-    counts_dead_share,
     is_wiring_only,
     registry_for,
     res_to_rel,
@@ -40,7 +39,9 @@ def _dead_flags(g, tier_weights, share_threshold):
     dead_likely: set[str] = set()
     func_counts: dict[str, int] = {}
     for rel, fs in g.files.items():
-        if counts_dead_share(fs):
+        # registry-resolved like is_wiring_only below — the denominator
+        # rule is per-language surface, not the gdscript module's
+        if registry_for(fs.ext).counts_dead_share(fs):
             func_counts[rel] = len(fs.funcs)
     for cand in dead["candidates"]:
         tier = cand["tier"]

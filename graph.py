@@ -1013,12 +1013,17 @@ def _chunk_plan(fs: FileSym, funcs: dict[str, Func], scale: float = 1.0) -> None
 # visible; graph.py/nav.py/server.py all >50k); fn bodies p50=547 chars,
 # micro (<=220) = 28%, monster (>2000) = 15% — the #76 thresholds already
 # sit at the p25/p90 boundaries, so the file layer reuses them unchanged.
-FILE_DOC_REV = 1        # shaper semantics version — bump whenever the
+FILE_DOC_REV = 2        # shaper semantics version — bump whenever the
                         # shaper changes docs for the same input bytes;
                         # nav's doc_shape stamp rides it so shape-lineaged
                         # stores re-embed loudly instead of serving stale
-                        # vectors under sha-gating (#220 law, doc side)
+                        # vectors under sha-gating (#220 law, doc side).
+                        # rev 2: the "# imports:" head line (#229 extension)
 FILE_SYMBOLS_CAP = 1200  # symbol-surface line budget (chars)
+FILE_IMPORTS_CAP = 400   # import-surface line budget (chars) — the file's
+                         # resolved imports ride the doc head (cAST's
+                         # contextual-awareness gap; RepoCoder context
+                         # augmentation), ~1.3% of the 30k embed budget
 FILE_INTRO_CAP = 400     # module docstring / leading-comment budget
 
 _ENC_RE = re.compile(r"^#.*?coding[:=]")
@@ -1093,7 +1098,8 @@ def file_doc(path: Path, rel: str, text: str, scale: float = 1.0) -> str:
     nav._rescan_locked embeds and stores in place of the raw file text.
     Size-aware, signature-first (cAST 2025; RepoBench):
     - head: path, class/extends, the full symbol surface (every fn name
-      rides the doc, capped), and the module intro;
+      rides the doc, capped), the resolved import surface (`# imports:`,
+      capped — cAST's contextual-awareness gap), and the module intro;
     - micro fns merge into the nearest non-micro fn above them — the
       class-context fold (`_micro_groups`), members as `-- name --`
       banners under their carrier;
@@ -1137,6 +1143,20 @@ def file_doc(path: Path, rel: str, text: str, scale: float = 1.0) -> str:
             used += len(name) + 1
         line = "# symbols: " + " ".join(keep) + f" (+{len(syms) - len(keep)})"
     head.append(line)
+    imps = sorted(fs.imported_modules)
+    if imps:
+        line = "# imports: " + " ".join(imps)
+        if len(line) > FILE_IMPORTS_CAP:
+            keep = []
+            used = len("# imports: ")
+            room = FILE_IMPORTS_CAP - 8  # headroom for the (+N) tail
+            for mod in imps:
+                if used + len(mod) + 1 > room:
+                    break
+                keep.append(mod)
+                used += len(mod) + 1
+            line = "# imports: " + " ".join(keep) + f" (+{len(imps) - len(keep)})"
+        head.append(line)
     intro = _file_intro(text)
     if intro:
         head.append(intro)

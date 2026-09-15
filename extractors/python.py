@@ -981,6 +981,13 @@ def is_wiring_only(fs: FileSym) -> bool:
     return False
 
 
+def counts_dead_share(fs: FileSym) -> bool:
+    """Py files never join the dead-file denominator — today's behavior,
+    made explicit per-language surface now that bake resolves the hook
+    through the registry (judge C1) instead of the gdscript default."""
+    return False
+
+
 def stat_tags(text: str) -> tuple[str, str]:
     """Python has no class_name/extends header notion — empty tags."""
     return ("", "")
