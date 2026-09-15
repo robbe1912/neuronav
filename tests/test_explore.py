@@ -222,10 +222,11 @@ def main() -> int:
     tools = asyncio.run(_tools())
     ann = {t.name: t.annotations for t in tools}
     ro_bad = {k: v for k, v in ann.items()
-              if k != "rescan" and not (v and v.readOnlyHint)}
+              if k not in ("rescan", "memory") and not (v and v.readOnlyHint)}
     check("all read-only tools carry readOnlyHint", not ro_bad, str(ro_bad))
-    check("rescan is the only unannotated (write) tool",
-          ann.get("rescan") is None and len(ann) >= 10)
+    check("rescan and memory are the unannotated (write) tools",
+          ann.get("rescan") is None and ann.get("memory") is None
+          and len(ann) >= 10)
     check("explore tool registered", "explore" in ann)
 
     print(f"\n{len(FAILURES)} failure(s)")
