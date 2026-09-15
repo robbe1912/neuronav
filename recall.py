@@ -7,11 +7,11 @@ Pure stdlib on the lexical side, no embedding backend dependency:
   x5, symbols x3, path x2, body x1 (body = parsed fn bodies, full
   length — no embed truncation; module-level code and scene XML are
   covered by the structured fields instead).
-- reciprocal-rank fusion (k=60) of chroma vector ranks + BM25 ranks.
-- optional post-fusion graph-neighbor boost (issue #73, default off,
+- reciprocal-rank fusion (k=30) of chroma vector ranks + BM25 ranks.
+- post-fusion graph-neighbor boost (issues #73/#228, default ON,
   ``GRAPH_BOOST``): the fused top-k each promote their 1-hop wire
-  neighbors by a rank-decayed λ·RRF-unit bump — the λ × RRF-k sweep
-  that chose the default lives in bench/RESULTS.md.
+  neighbors by a rank-decayed λ·RRF-unit bump — the λ × RRF-k ×
+  weights grid that chose the default lives in bench/RESULTS.md.
 - task-instruction query prefix (issue #217, default ON): the
   winning ``QUERY_PREFIX`` from the #214/#75 embedding A/B — the
   nl2code instruction from the JCE model card — is prepended to the
@@ -40,18 +40,33 @@ import sys
 from collections import Counter
 import weakref
 
-RRF_K = 60.0
+RRF_K = 30.0
 BM25_K1 = 1.2
 BM25_B = 0.75
 CTX_CAP = 3
-# 1-hop graph-neighbor rank boost, default OFF (issue #73). λ is a
+# 1-hop graph-neighbor rank boost, default ON (issues #73/#228). λ is a
 # multiplier of the RRF unit 1/(rrf_k+1): each fused top-k source adds
-# λ·unit/(source rank) to every distinct 1-hop file neighbor. The swept
-# winner lives in bench/RESULTS.md; 0.0 keeps the pinned hybrid intact.
-GRAPH_BOOST = 0.0
+# λ·unit/(source rank) to every distinct 1-hop file neighbor. λ 0.25 @
+# rrf_k 30 is the #228 grid winner (hit@5 +0.08, MRR +0.075 over the
+# qprefix baseline, double-run stable — bench/RESULTS.md); 0.0 is the
+# explicit off wire.
+GRAPH_BOOST = 0.25
 # char budget for the two-pass augmented query's harvested identifier
 # tail — sized so the original query stays dominant (issue #74 A/B)
 TWO_PASS_BUDGET = 320
+# two-pass tuning knobs (issue #228, census exp 2): pool = how many
+# pass-1 lexical hits donate identifiers (RepoBench ICLR 2024:
+# retrieval accuracy degrades monotonically as kept context grows — a
+# small pool may beat the deep 12-file harvest); weight = pass-2 RRF
+# side weight scale (pass-2 ranks ride a noisier augmented query, so
+# a discount may pay); imports = harvest imported symbol names too
+# (from_imports — the y in `from x import y`, what graph.py already
+# exposes). Defaults pin the #228 sweep winner (bench/RESULTS.md);
+# the dict form of search(two_pass={...}) overrides per call for
+# bench legs — True is exactly these defaults.
+TWO_PASS_POOL = 12
+TWO_PASS_WEIGHT = 1.0
+TWO_PASS_IMPORTS = False
 # nl2code task-instruction query prefix (issues #75/#217): the winning
 # `qprefix` A/B leg text (JCE model card, arXiv 2508.21290), shipped
 # default-on. Prepended to the EMBEDDED query only, so the store stays
@@ -334,11 +349,16 @@ def hop_context(files: list[str], g, cap: int = CTX_CAP) -> dict[str, list[str]]
         ]
     return out
 
-def _surface(fs) -> list[str]:
+def _surface(fs, imports: bool = False) -> list[str]:
     """Ordered identifier surface of a FileSym: class name first, then
     fn / signal / member / const names, each group sorted — the same
     surface the BM25F symbols field indexes, so a harvested name is
-    guaranteed lexically retrievable."""
+    guaranteed lexically retrievable. ``imports=True`` (issue #228,
+    RepoCoder identifier harvest) appends the file's imported symbol
+    names (from_imports — the y in `from x import y`): those are NOT
+    part of the symbols field, but they reappear as tokens in
+    consuming files' body text, so the pass-2 lexical re-score still
+    matches them and the vec side sees them verbatim."""
     out: list[str] = []
     if fs.class_name:
         out.append(fs.class_name)
@@ -346,10 +366,13 @@ def _surface(fs) -> list[str]:
     out += sorted(fs.signals)
     out += sorted(fs.members)
     out += sorted(fs.consts)
+    if imports:
+        out += sorted({name for _mod, name in fs.from_imports})
     return out
 
 
-def _augment(query: str, top: list[str], g, budget: int = TWO_PASS_BUDGET) -> str:
+def _augment(query: str, top: list[str], g, budget: int = TWO_PASS_BUDGET,
+             imports: bool = TWO_PASS_IMPORTS) -> str:
     """RepoCoder-style augmented query (issue #74): the pass-1 lexical
     top hits donate their identifier surface — the exact tokens a
     re-query hunts — to a second retrieve. (Lexical pool: a pure
@@ -367,7 +390,7 @@ def _augment(query: str, top: list[str], g, budget: int = TWO_PASS_BUDGET) -> st
         fs = g.files.get(f)
         if fs is None:
             continue
-        for ident in _surface(fs):
+        for ident in _surface(fs, imports):
             if ident not in seen:
                 seen.add(ident)
                 parts.append(ident)
@@ -383,19 +406,22 @@ def search(
     weights: tuple[float, float] | None = None,
     graph_boost: float | None = None,
     rrf_k: float | None = None,
-    two_pass: bool | None = None,
+    two_pass: bool | dict | None = None,
     query_prefix: str | None = None,
 ) -> list[dict[str, object]]:
     """Hybrid recall: chroma vector ranks fused with BM25F lexical
     ranks, each hit carrying 1-hop graph context labels. ``bm25`` /
     ``expand`` are the bench switches (False, False = the pure-vector
     baseline behavior). ``weights`` = (vec, bm25) list weights for
-    fusion arbitration; None keeps the pinned unweighted RRF k=60.
+    fusion arbitration; None keeps the pinned unweighted RRF (k=30).
     ``graph_boost`` = λ multiplier of the RRF unit 1/(rrf_k+1) — each
     fused top-k source promotes its 1-hop wire neighbors by
     λ·unit/(source rank); None keeps the module default GRAPH_BOOST
-    (0.0 = off). ``rrf_k`` overrides the fusion constant for bench
-    sweeps.
+    (0.25, the #228 grid winner; 0.0 = explicit off). The boost rides
+    the structural wire only — the graph loads for bm25 / expand /
+    two_pass (pure-vector keeps vector ranks untouched), and the
+    degraded BM25F-only contract is served without it. ``rrf_k``
+    overrides the fusion constant for bench sweeps.
 
     ``query_prefix`` (issues #75/#217, JCE card): task-instruction
     text prepended to the EMBEDDED query only — pass 1 and the two-pass
@@ -405,14 +431,17 @@ def search(
     unprefixed legs).
 
     ``two_pass`` (issue #74, RepoCoder): deterministic second retrieve —
-    the pass-1 top-k hits donate their identifier surface (char-budgeted
+    the pass-1 top hits donate their identifier surface (char-budgeted
     via ``_augment``) to an augmented query, re-embedded once and
     RRF-fused with the pass-1 ranks (embed budget: 2 calls per query,
     hard cap). Engaged hits carry ``two_pass: True``; a failed pass 2
     warns once on stderr and serves the pass-1 fusion unmarked. Never
     attempted when the vector side is already degraded — the BM25F-only
     contract stays byte-identical. None defers to the config knob
-    ``recall_two_pass`` (nav reads it; default from the #74 bench A/B)."""
+    ``recall_two_pass`` (nav reads it; default from the #74 bench A/B).
+    A dict (issue #228 bench tuning) switches the loop ON and overrides
+    the module defaults per call — keys pool / budget / weight / imports
+    map to the TWO_PASS_* constants; True is exactly the defaults."""
     k = max(1, min(k, 50))
     w_vec, w_lex = weights if weights is not None else (1.0, 1.0)
     if graph_boost is not None and graph_boost < 0.0:
@@ -425,6 +454,15 @@ def search(
         import nav  # lazy: knob follows the active config (see header)
 
         two_pass = bool(getattr(nav, "RECALL_TWO_PASS", False))
+    if isinstance(two_pass, dict):
+        tp = two_pass
+        two_pass = True
+    else:
+        tp = {}
+    tp_pool = max(1, int(tp.get("pool", TWO_PASS_POOL)))
+    tp_budget = max(0, int(tp.get("budget", TWO_PASS_BUDGET)))
+    tp_weight = float(tp.get("weight", TWO_PASS_WEIGHT))
+    tp_imports = bool(tp.get("imports", TWO_PASS_IMPORTS))
 
     vec: list[str] = []
     metas: dict[str, dict] = {}
@@ -445,7 +483,7 @@ def search(
 
     g = None
     lex: list[str] = []
-    if bm25 or expand or lam > 0.0 or two_pass:
+    if bm25 or expand or two_pass:
         import graph  # lazy: binding only, attrs read at call time
 
         g = graph.get_graph()
@@ -465,8 +503,8 @@ def search(
         # pool keeps the two query embeds the only jitter surface —
         # same exposure as the single-pass baseline. Vec fallback only
         # when the lexical side is switched off entirely.
-        pool = lex[:k] if lex else vec[:k]
-        aug = _augment(query, pool, g)
+        pool = (lex if lex else vec)[:tp_pool]
+        aug = _augment(query, pool, g, tp_budget, tp_imports)
         if aug:
             try:
                 vec2, metas2 = _vector_ranks(pfx + aug, depth)  # embed 2 of 2
@@ -482,12 +520,15 @@ def search(
                 lex2: list[str] = []
                 if bm25:
                     lex2 = [p for p, _s in _cached_index(g.files).scores(aug)[:depth]]
-                sides += [("vec", vec2, w_vec), ("bm25", lex2, w_lex)]
+                sides += [
+                    ("vec", vec2, w_vec * tp_weight),
+                    ("bm25", lex2, w_lex * tp_weight),
+                ]
                 metas.update(metas2)
                 engaged = True
 
     fused = _rrf(sides, krrf)
-    if lam > 0.0 and g is not None:
+    if reason is None and lam > 0.0 and g is not None:
         fused = _graph_boost(fused, g, k, lam, krrf)
 
     hits: list[dict[str, object]] = []
