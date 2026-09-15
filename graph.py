@@ -1143,7 +1143,11 @@ def file_doc(path: Path, rel: str, text: str, scale: float = 1.0) -> str:
             used += len(name) + 1
         line = "# symbols: " + " ".join(keep) + f" (+{len(syms) - len(keep)})"
     head.append(line)
-    imps = sorted(fs.imported_modules)
+    # whole-module imports (side-effect/namespace/dynamic) plus the module
+    # side of named imports — the doc head mirrors what the file pulls in,
+    # not the liveness contract (imported_modules alone stays whole-module-
+    # alive facts; from_imports carry the named bindings)
+    imps = sorted(fs.imported_modules | {m for m, _ in fs.from_imports})
     if imps:
         line = "# imports: " + " ".join(imps)
         if len(line) > FILE_IMPORTS_CAP:
