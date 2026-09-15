@@ -1,7 +1,7 @@
 {
  "set": "after",
  "config": "gb",
- "commit": "a97592a",
+ "commit": "4d9d39b",
  "dirty": true,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
@@ -10,32 +10,32 @@
  "k": 12,
  "golden": "4daef95861450cd9",
  "hit@1": 0.64,
- "hit@5": 0.92,
+ "hit@5": 0.96,
  "hit@10": 0.96,
  "mrr": 0.747,
- "reach@5": 0.92,
+ "reach@5": 0.96,
  "reach@10": 0.96,
  "by_kind": {
   "exact": {
    "n": 10,
    "hit@1": 0.8,
-   "hit@5": 0.9,
+   "hit@5": 1.0,
    "hit@10": 1.0,
-   "mrr": 0.867
+   "mrr": 0.875
   },
   "symbol": {
    "n": 4,
-   "hit@1": 0.5,
+   "hit@1": 0.25,
    "hit@5": 0.75,
    "hit@10": 0.75,
-   "mrr": 0.562
+   "mrr": 0.396
   },
   "prose": {
    "n": 9,
-   "hit@1": 0.444,
+   "hit@1": 0.556,
    "hit@5": 1.0,
    "hit@10": 1.0,
-   "mrr": 0.639
+   "mrr": 0.704
   },
   "cross": {
    "n": 2,
@@ -84,7 +84,7 @@
   },
   {
    "q": "_has_exact",
-   "rank": 6,
+   "rank": 4,
    "ctx5": false,
    "ctx10": false
   },
@@ -114,7 +114,7 @@
   },
   {
    "q": "LabelContext",
-   "rank": 1,
+   "rank": 3,
    "ctx5": true,
    "ctx10": true
   },
@@ -138,7 +138,7 @@
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": 3,
+   "rank": 1,
    "ctx5": false,
    "ctx10": false
   },
@@ -156,7 +156,7 @@
   },
   {
    "q": "how are subsystem names chosen from member vocabulary",
-   "rank": 3,
+   "rank": 4,
    "ctx5": true,
    "ctx10": true
   },

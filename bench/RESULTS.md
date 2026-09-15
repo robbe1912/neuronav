@@ -27,26 +27,26 @@ the set on the shipped wire.
 
 ### After — current main (nl2code query prefix default-on per #217; graph-boost λ 0.25 @ rrf_k 30 default-on per #228; two-pass in `twopass`)
 
-commit `a97592a` (dirty tree) · mode **real** · model `qwen3-embedding:0.6b` · 58 indexed files · k=12
+commit `4d9d39b` (dirty tree) · mode **real** · model `qwen3-embedding:0.6b` · 58 indexed files · k=12
 
 | config | hit@1 | hit@5 | hit@10 | MRR | reach@5 | reach@10 |
 |---|---|---|---|---|---|---|
-| vec | 0.440 | 0.600 | 0.800 | 0.534 | 0.600 | 0.800 |
-| bm25 | 0.520 | 0.880 | 0.960 | 0.672 | 0.880 | 0.960 |
-| expand | 0.440 | 0.600 | 0.800 | 0.534 | 0.840 | 0.960 |
-| both | 0.520 | 0.880 | 0.960 | 0.672 | 0.960 | 0.960 |
-| wfused | 0.480 | 0.840 | 0.960 | 0.630 | 0.920 | 0.960 |
-| gb | 0.640 | 0.920 | 0.960 | 0.747 | 0.920 | 0.960 |
-| twopass | 0.640 | 0.880 | 0.920 | 0.746 | 0.920 | 0.920 |
+| vec | 0.320 | 0.560 | 0.760 | 0.450 | 0.560 | 0.760 |
+| bm25 | 0.640 | 0.960 | 0.960 | 0.747 | 0.960 | 0.960 |
+| expand | 0.480 | 0.720 | 0.920 | 0.602 | 0.880 | 0.960 |
+| both | 0.640 | 0.960 | 0.960 | 0.747 | 0.960 | 0.960 |
+| wfused | 0.640 | 0.960 | 0.960 | 0.739 | 0.960 | 0.960 |
+| gb | 0.640 | 0.960 | 0.960 | 0.747 | 0.960 | 0.960 |
+| twopass | 0.800 | 0.880 | 0.920 | 0.837 | 0.920 | 0.920 |
 
 by kind (hit@5 / MRR):
 
 | kind | n | vec | bm25 | expand | both | wfused | gb | twopass |
 |---|---|---|---|---|---|---|---|---|
-| exact | 10 | 0.600 / 0.413 | 0.900 / 0.653 | 0.600 / 0.413 | 0.900 / 0.653 | 0.800 / 0.648 | 0.900 / 0.867 | 1.000 / 0.800 |
-| symbol | 4 | 0.500 / 0.567 | 0.750 / 0.750 | 0.500 / 0.567 | 0.750 / 0.750 | 0.750 / 0.583 | 0.750 / 0.562 | 0.500 / 0.500 |
-| prose | 9 | 0.556 / 0.605 | 0.889 / 0.698 | 0.556 / 0.605 | 0.889 / 0.698 | 0.889 / 0.605 | 1.000 / 0.639 | 0.889 / 0.849 |
-| cross | 2 | 1.000 / 0.750 | 1.000 / 0.500 | 1.000 / 0.750 | 1.000 / 0.500 | 1.000 / 0.750 | 1.000 / 1.000 | 1.000 / 0.500 |
+| exact | 10 | 0.500 / 0.368 | 1.000 / 0.875 | 0.700 / 0.542 | 1.000 / 0.875 | 1.000 / 0.870 | 1.000 / 0.875 | 1.000 / 0.950 |
+| symbol | 4 | 0.250 / 0.348 | 0.750 / 0.396 | 0.250 / 0.175 | 0.750 / 0.396 | 0.750 / 0.375 | 0.750 / 0.396 | 0.500 / 0.500 |
+| prose | 9 | 0.667 / 0.463 | 1.000 / 0.704 | 0.889 / 0.772 | 1.000 / 0.704 | 1.000 / 0.698 | 1.000 / 0.704 | 0.889 / 0.824 |
+| cross | 2 | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 |
 
 ### FAKE mode — `NEURONAV_EMBED_FAKE=1` plumbing battery
 
@@ -286,7 +286,7 @@ gb0-k60-w1-1 vs the boosted cells is the attribution.
 
 | config | hit@1 | hit@5 | hit@10 | MRR | reach@5 | reach@10 |
 |---|---|---|---|---|---|---|
-| both (λ=0) | 0.520 | 0.880 | 0.960 | 0.672 | 0.960 | 0.960 |
+| both (λ=0) | 0.640 | 0.960 | 0.960 | 0.747 | 0.960 | 0.960 |
 | gb0-k30 | 0.360 | 0.800 | 0.920 | 0.541 | 0.840 | 0.960 |
 | gb0-k60 | 0.360 | 0.840 | 0.880 | 0.526 | 0.880 | 0.920 |
 | gb0-k120 | 0.360 | 0.840 | 0.880 | 0.519 | 0.920 | 0.920 |
@@ -465,31 +465,31 @@ off. Shipped as a negative result per bench law.
 
 | query | kind | vec | bm25 | expand | both | wfused | gb | twopass |
 |---|---|---|---|---|---|---|---|---|
-| `parse_tscn` | exact | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| `sha256_of` | exact | 11 | 3 | 11 | 3 | 3 | 1 | 4 |
-| `titleize` | exact | 8 | 1 | 8 | 1 | 1 | 1 | 1 |
+| `parse_tscn` | exact | 1 | 1 | 2 | 1 | 2 | 1 | 1 |
+| `sha256_of` | exact | · | 1 | 6 | 1 | 1 | 1 | 1 |
+| `titleize` | exact | · | 1 | · | 1 | 1 | 1 | 1 |
 | `registry_for` | exact | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| `sync_functions` | exact | 3 | 3 | 3 | 3 | 3 | 1 | 2 |
-| `fold_continuations` | exact | 3 | 1 | 3 | 1 | 1 | 1 | 1 |
-| `_has_exact` | exact | · | 5 | · | 5 | 6 | 6 | 1 |
-| `_lexical_fallback` | exact | 4 | 2 | 4 | 2 | 2 | 1 | 1 |
-| `import_base` | exact | · | 6 | · | 6 | 7 | 2 | 4 |
+| `sync_functions` | exact | 10 | 1 | 1 | 1 | 1 | 1 | 1 |
+| `fold_continuations` | exact | 3 | 1 | 4 | 1 | 1 | 1 | 1 |
+| `_has_exact` | exact | · | 4 | · | 4 | 5 | 4 | 1 |
+| `_lexical_fallback` | exact | 4 | 1 | 1 | 1 | 1 | 1 | 1 |
+| `import_base` | exact | · | 2 | 2 | 2 | 1 | 2 | 2 |
 | `find_functions` | exact | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| `NoCacheHandler` | symbol | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| `LabelContext` | symbol | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| `FileSym` | symbol | 6 | · | 6 | · | · | · | · |
-| `Func` | symbol | 10 | 1 | 10 | 1 | 3 | 4 | · |
+| `NoCacheHandler` | symbol | 1 | 1 | 3 | 1 | 1 | 1 | 1 |
+| `LabelContext` | symbol | 8 | 3 | 7 | 3 | 4 | 3 | 1 |
+| `FileSym` | symbol | 6 | · | 8 | · | · | · | · |
+| `Func` | symbol | 10 | 4 | 10 | 4 | 4 | 4 | · |
 | `where do godot scene resources get read` | prose | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| `how do cross-module references become caller edges` | prose | 7 | 2 | 7 | 2 | 3 | 3 | 1 |
-| `what stops two simultaneous rescans from corrupting the store` | prose | 11 | 1 | 11 | 1 | 3 | 1 | 1 |
-| `how do hermetic suites embed without a live model backend` | prose | 8 | 3 | 8 | 3 | 3 | 1 | 1 |
-| `how are subsystem names chosen from member vocabulary` | prose | 1 | 3 | 1 | 3 | 3 | 3 | 2 |
-| `which module hosts the agent protocol on stdin and stdout` | prose | 12 | 9 | 12 | 9 | 9 | 4 | 7 |
-| `single call that shows a newcomer how the codebase is organized` | prose | 1 | 1 | 1 | 1 | 1 | 3 | 1 |
-| `how is the embedding index archived inside the repository` | prose | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| `how is visual clutter of the rendered page measured` | prose | 1 | 1 | 1 | 1 | 1 | 2 | 1 |
-| `unreachable deletion candidates and their confidence tiers` | cross | 2 | 2 | 2 | 2 | 1 | 1 | 2 |
-| `how are node positions computed reproducibly before baking` | cross | 1 | 2 | 1 | 2 | 2 | 1 | 2 |
+| `how do cross-module references become caller edges` | prose | 2 | 1 | 1 | 1 | 1 | 1 | 1 |
+| `what stops two simultaneous rescans from corrupting the store` | prose | 6 | 1 | 1 | 1 | 1 | 1 | 1 |
+| `how do hermetic suites embed without a live model backend` | prose | · | 1 | 1 | 1 | 1 | 1 | 1 |
+| `how are subsystem names chosen from member vocabulary` | prose | 2 | 4 | 2 | 4 | 4 | 4 | 4 |
+| `which module hosts the agent protocol on stdin and stdout` | prose | · | 4 | 9 | 4 | 5 | 4 | 6 |
+| `single call that shows a newcomer how the codebase is organized` | prose | 2 | 3 | 1 | 3 | 3 | 3 | 1 |
+| `how is the embedding index archived inside the repository` | prose | 2 | 1 | 1 | 1 | 1 | 1 | 1 |
+| `how is visual clutter of the rendered page measured` | prose | 1 | 2 | 3 | 2 | 2 | 2 | 1 |
+| `unreachable deletion candidates and their confidence tiers` | cross | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| `how are node positions computed reproducibly before baking` | cross | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
 
 </details>
 

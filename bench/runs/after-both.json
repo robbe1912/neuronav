@@ -1,7 +1,7 @@
 {
  "set": "after",
  "config": "both",
- "commit": "a97592a",
+ "commit": "4d9d39b",
  "dirty": true,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
@@ -9,40 +9,40 @@
  "files": 58,
  "k": 12,
  "golden": "4daef95861450cd9",
- "hit@1": 0.52,
- "hit@5": 0.88,
+ "hit@1": 0.64,
+ "hit@5": 0.96,
  "hit@10": 0.96,
- "mrr": 0.672,
+ "mrr": 0.747,
  "reach@5": 0.96,
  "reach@10": 0.96,
  "by_kind": {
   "exact": {
    "n": 10,
-   "hit@1": 0.5,
-   "hit@5": 0.9,
+   "hit@1": 0.8,
+   "hit@5": 1.0,
    "hit@10": 1.0,
-   "mrr": 0.653
+   "mrr": 0.875
   },
   "symbol": {
    "n": 4,
-   "hit@1": 0.75,
+   "hit@1": 0.25,
    "hit@5": 0.75,
    "hit@10": 0.75,
-   "mrr": 0.75
+   "mrr": 0.396
   },
   "prose": {
    "n": 9,
    "hit@1": 0.556,
-   "hit@5": 0.889,
+   "hit@5": 1.0,
    "hit@10": 1.0,
-   "mrr": 0.698
+   "mrr": 0.704
   },
   "cross": {
    "n": 2,
-   "hit@1": 0.0,
+   "hit@1": 1.0,
    "hit@5": 1.0,
    "hit@10": 1.0,
-   "mrr": 0.5
+   "mrr": 1.0
   }
  },
  "per_query": [
@@ -54,7 +54,7 @@
   },
   {
    "q": "sha256_of",
-   "rank": 3,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
@@ -67,12 +67,12 @@
   {
    "q": "registry_for",
    "rank": 1,
-   "ctx5": false,
+   "ctx5": true,
    "ctx10": true
   },
   {
    "q": "sync_functions",
-   "rank": 3,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
@@ -84,19 +84,19 @@
   },
   {
    "q": "_has_exact",
-   "rank": 5,
+   "rank": 4,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "_lexical_fallback",
-   "rank": 2,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "import_base",
-   "rank": 6,
+   "rank": 2,
    "ctx5": true,
    "ctx10": true
   },
@@ -114,7 +114,7 @@
   },
   {
    "q": "LabelContext",
-   "rank": 1,
+   "rank": 3,
    "ctx5": true,
    "ctx10": true
   },
@@ -126,7 +126,7 @@
   },
   {
    "q": "Func",
-   "rank": 1,
+   "rank": 4,
    "ctx5": false,
    "ctx10": false
   },
@@ -138,7 +138,7 @@
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": 2,
+   "rank": 1,
    "ctx5": false,
    "ctx10": false
   },
@@ -150,27 +150,27 @@
   },
   {
    "q": "how do hermetic suites embed without a live model backend",
-   "rank": 3,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "how are subsystem names chosen from member vocabulary",
-   "rank": 3,
+   "rank": 4,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "which module hosts the agent protocol on stdin and stdout",
-   "rank": 9,
+   "rank": 4,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "single call that shows a newcomer how the codebase is organized",
-   "rank": 1,
+   "rank": 3,
    "ctx5": false,
-   "ctx10": true
+   "ctx10": false
   },
   {
    "q": "how is the embedding index archived inside the repository",
@@ -180,19 +180,19 @@
   },
   {
    "q": "how is visual clutter of the rendered page measured",
-   "rank": 1,
+   "rank": 2,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "unreachable deletion candidates and their confidence tiers",
-   "rank": 2,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "how are node positions computed reproducibly before baking",
-   "rank": 2,
+   "rank": 1,
    "ctx5": false,
    "ctx10": false
   }
