@@ -240,6 +240,107 @@ the shipped prefix lifts `both` to 0.52/0.88/0.96 with MRR 0.672 —
 0.746). `after` is byte-identical to `qprefix` on every config: the
 shipped default wire IS the measured leg. #217 ships the prefix.
 
+## cAST file-doc shaping (issue #229)
+
+Question: do size-aware, signature-first FILE docs (cAST 2025 — merge
+micro-fns into their carrier, split monsters at block boundaries, keep
+every chunk signature-first) lift recall where the fn-layer chunking
+(#141) could not? The fn collection is invisible to `recall.search` —
+the file collection is what the vector side queries — so #229 shapes
+the docs nav embeds per file instead. Self-index calibration: 12/58
+files exceed the 30k embed cap (viz.py 462k → 6.5% visible; server.py,
+nav.py, graph.py all >50k) and fn bodies sit at p50=547 chars with 28%
+micro / 15% monster — the #76 thresholds (220/2000) already match the
+p25/p90 boundaries, so the file layer reuses them. The head carries the
+path, class/extends, the full symbol surface (capped, `(+N)` tail), and
+the module intro; sections flatten (chunk index, source line) so chunk 1
+of every fn embeds before chunk 2 of any fn; the whole doc assembles
+under the 30k cap. Store lineage rides the #220 law extended to doc
+construction: the `doc_shape` stamp (cast<rev>@<scale>) forces a loud
+full re-embed on shape flips — sha-gating alone would serve stale
+vectors built from the other shape. Doc count is unchanged (one doc
+per file; the shaping rewrites the doc text, not the id grammar) —
+the ≤2x index-growth budget holds trivially at 1.0x.
+
+### cast leg — cAST file docs (chunk_file_doc=1.0, the shipped default; default wire, default store)
+
+commit `a8c5c9e` (dirty tree) · mode **real** · model `qwen3-embedding:0.6b` · 58 indexed files · k=12
+
+| config | hit@1 | hit@5 | hit@10 | MRR | reach@5 | reach@10 |
+|---|---|---|---|---|---|---|
+| vec | 0.440 | 0.800 | 0.960 | 0.598 | 0.800 | 0.960 |
+| bm25 | 0.600 | 0.920 | 0.960 | 0.747 | 0.920 | 0.960 |
+| expand | 0.440 | 0.800 | 0.960 | 0.598 | 0.920 | 1.000 |
+| both | 0.600 | 0.920 | 0.960 | 0.747 | 0.960 | 0.960 |
+| wfused | 0.560 | 0.920 | 0.960 | 0.721 | 0.960 | 0.960 |
+| gb | 0.680 | 0.960 | 0.960 | 0.775 | 0.960 | 0.960 |
+| twopass | 0.600 | 0.920 | 0.920 | 0.743 | 0.920 | 0.920 |
+
+by kind (hit@5 / MRR):
+
+| kind | n | vec | bm25 | expand | both | wfused | gb | twopass |
+|---|---|---|---|---|---|---|---|---|
+| exact | 10 | 0.700 / 0.497 | 0.900 / 0.750 | 0.700 / 0.497 | 0.900 / 0.750 | 0.900 / 0.700 | 1.000 / 0.875 | 1.000 / 0.883 |
+| symbol | 4 | 0.750 / 0.578 | 0.750 / 0.750 | 0.750 / 0.578 | 0.750 / 0.750 | 0.750 / 0.750 | 0.750 / 0.625 | 0.500 / 0.500 |
+| prose | 9 | 0.889 / 0.687 | 1.000 / 0.741 | 0.889 / 0.687 | 1.000 / 0.741 | 1.000 / 0.726 | 1.000 / 0.680 | 1.000 / 0.750 |
+| cross | 2 | 1.000 / 0.750 | 1.000 / 0.750 | 1.000 / 0.750 | 1.000 / 0.750 | 1.000 / 0.750 | 1.000 / 1.000 | 1.000 / 0.500 |
+
+### raw leg — raw file docs (chunk_file_doc=0, own .tmp store; the pre-#229 surface at the same commit)
+
+commit `a8c5c9e` (dirty tree) · mode **real** · model `qwen3-embedding:0.6b` · 58 indexed files · k=12
+
+| config | hit@1 | hit@5 | hit@10 | MRR | reach@5 | reach@10 |
+|---|---|---|---|---|---|---|
+| vec | 0.280 | 0.560 | 0.760 | 0.417 | 0.560 | 0.760 |
+| bm25 | 0.520 | 0.920 | 0.960 | 0.654 | 0.920 | 0.960 |
+| expand | 0.280 | 0.560 | 0.760 | 0.417 | 0.880 | 0.960 |
+| both | 0.520 | 0.920 | 0.960 | 0.654 | 0.960 | 0.960 |
+| wfused | 0.440 | 0.800 | 0.960 | 0.598 | 0.960 | 0.960 |
+| gb | 0.640 | 0.960 | 0.960 | 0.760 | 0.960 | 0.960 |
+| twopass | 0.640 | 0.840 | 0.920 | 0.742 | 0.920 | 0.920 |
+
+by kind (hit@5 / MRR):
+
+| kind | n | vec | bm25 | expand | both | wfused | gb | twopass |
+|---|---|---|---|---|---|---|---|---|
+| exact | 10 | 0.500 / 0.318 | 1.000 / 0.648 | 0.500 / 0.318 | 1.000 / 0.648 | 0.800 / 0.622 | 1.000 / 0.883 | 1.000 / 0.875 |
+| symbol | 4 | 0.250 / 0.348 | 0.750 / 0.458 | 0.250 / 0.348 | 0.750 / 0.458 | 0.750 / 0.438 | 0.750 / 0.396 | 0.500 / 0.500 |
+| prose | 9 | 0.667 / 0.428 | 0.889 / 0.725 | 0.667 / 0.428 | 0.889 / 0.725 | 0.778 / 0.608 | 1.000 / 0.731 | 0.778 / 0.699 |
+| cross | 2 | 1.000 / 1.000 | 1.000 / 0.750 | 1.000 / 1.000 | 1.000 / 0.750 | 1.000 / 0.750 | 1.000 / 1.000 | 1.000 / 0.750 |
+
+Δ vs the committed `qprefix` baseline (`both` config, raw file docs
+at c0343ab), in points (1 pt = 0.010):
+
+| set | docs | hit@1 | hit@5 | hit@10 | MRR |
+|---|---|---|---|---|---|
+| qprefix (baseline) | raw | 0.520 | 0.880 | 0.960 | 0.672 |
+| castq | cast1@1 | +8.0 | +4.0 | +0.0 | +7.5 |
+| rawq | raw | +0.0 | +4.0 | +0.0 | -1.8 |
+
+Verdict (double-run fp-jitter protocol, both runs agree on hit@5
+for every config on both legs; jitter only wobbles hit@1 by one
+rank-1/2 flip and MRR by ≤0.02): the committed `qprefix` baseline
+moves 0.88 → **0.92 hit@5** on `both` (+4.0 pts, MRR 0.672 →
+0.727/0.747) and 0.88 → 0.92 on `twopass`; `gb` rides 0.92 → 0.96.
+The isolated doc-shape effect is the vector leg: castq `vec` hits
+0.80 vs rawq 0.56 (+24 pts) — raw docs at this commit truncate the
+enlarged nav.py/graph.py even harder than at c0343ab (qprefix `vec`
+was 0.60), while the shaped docs keep every file under the 30k cap
+with its symbol surface in the head. The same-commit control also
+separates corpus drift from shaping: rawq `both` measures 0.92 too,
+and the `bm25` leg reads 0.92 vs 0.88 at c0343ab although its
+vector side got no better — the BM25F corpus (graph FileSym
+fields, doc-shape-independent by construction) drifted with the
+enlarged files, so the +4 vs the
+committed baseline conflates the two; at the fused level the shape
+contribution lands in MRR (0.727/0.747 vs 0.654) and hit@1
+(0.56/0.60 vs 0.52), and on `twopass` hit@5 (+8 pts: 0.92 vs 0.84).
+Per-query: the two 30k-truncation victims recover on the vector leg
+(`import_base` ∅→6, the agent-protocol query ∅→in), leaving
+`sync_functions` (6) and `FileSym` (∅) as the residual `both`
+misses. Index growth 1.0x (58 docs, one per file) — inside the ≤2x
+cAST budget by construction.
+
 ## Retired evidence (issue #104)
 
 The pre-boost `before` set (merge-base 63b6f1f) and the two-pass `tp` set
@@ -501,6 +602,10 @@ git worktree add --detach ../bench-measure <commit>
 .venv/Scripts/python.exe -X utf8 bench/run_bench.py --set ceiling --repo ../bench-measure
 .venv/Scripts/python.exe -X utf8 bench/run_bench.py --set ab --repo ../bench-measure
 .venv/Scripts/python.exe -X utf8 bench/run_bench.py --set qprefix --repo ../bench-measure
+# issue #229 doc-shape legs: castq re-embeds the default store once
+# (the doc_shape stamp heals), rawq builds its own .tmp store:
+.venv/Scripts/python.exe -X utf8 bench/run_bench.py --set castq --repo ../bench-measure
+.venv/Scripts/python.exe -X utf8 bench/run_bench.py --set rawq --repo ../bench-measure
 # JCE legs: serve the official jinaai Q8_0 GGUF first (Ollama imports
 # it as a completion model — /api/embed refuses the unpooled GGUF):
 llama-server -m jina-code-embeddings-0.5b-Q8_0.gguf --embeddings --pooling last --host 127.0.0.1 --port 18081 -c 32768

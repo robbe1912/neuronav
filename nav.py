@@ -70,7 +70,7 @@ def _apply_config(path: Path | None) -> None:
     and again by ``nav.py --config <path>`` (which also sets NEURONAV_CONFIG
     so subprocesses and sibling modules like graph.py agree). ``path=None``
     means no config anywhere: pure cwd defaults (issue #27)."""
-    global CONFIG_PATH, ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM, EMBED_DOC_PREFIX, EMBED_PROVIDER, EMBED_API_KEY, WATCH_INTERVAL_S, RECALL_TWO_PASS, CHUNK_CAST, STATE_DIR, DB_DIR, BASE_DIR
+    global CONFIG_PATH, ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM, EMBED_DOC_PREFIX, EMBED_PROVIDER, EMBED_API_KEY, WATCH_INTERVAL_S, RECALL_TWO_PASS, CHUNK_CAST, FILE_DOC_CAST, STATE_DIR, DB_DIR, BASE_DIR
     if path is not None and not path.is_file():
         # issue #41: an explicit config path is a contract, not a hint —
         # silently degrading to walk-all defaults flips the walk identity
@@ -147,6 +147,14 @@ def _apply_config(path: Path | None) -> None:
     # Bench-opt-in, owner's flip after a passing A/B (same law as
     # recall_two_pass).
     CHUNK_CAST = float(cfg.get("chunk_cast", 0.0))
+    # issue #229: cAST file-doc shaping — the graph fn-doc machinery
+    # applied to the FILE docs this nav embeds (micro-fn merge into
+    # class context, monster-fn split at block boundaries, signature
+    # first, everything under MAX_EMBED_CHARS). 1.0 ships ON (the
+    # fresh-store #229 bench A/B is the winning wire); 0.0 = raw file
+    # text, the byte-identical pre-#229 surface; other positives scale
+    # the fn-layer thresholds.
+    FILE_DOC_CAST = float(cfg.get("chunk_file_doc", 1.0))
     # per-project state: chroma store, base shards and the viz bake all
     # derive from one dir — explicit "state_dir" honored; "default" is
     # the opt-in for <root>/.neuronav. Relative values resolve against
@@ -226,6 +234,7 @@ EMBED_API_KEY: str
 WATCH_INTERVAL_S: float
 RECALL_TWO_PASS: bool
 CHUNK_CAST: float
+FILE_DOC_CAST: float
 STATE_DIR: Path
 DB_DIR: Path
 BASE_DIR: Path
@@ -255,6 +264,7 @@ _CONFIG_FIELDS = (
     "ROOT", "COLLECTION", "INCLUDE_DIRS", "EXTS", "EXCLUDE_DIRS",
     "EMBED_URL", "EMBED_MODEL", "EMBED_DIM", "EMBED_DOC_PREFIX", "EMBED_PROVIDER",
     "EMBED_API_KEY", "WATCH_INTERVAL_S", "RECALL_TWO_PASS", "CHUNK_CAST",
+    "FILE_DOC_CAST",
     "STATE_DIR", "DB_DIR", "BASE_DIR",
 )
 _GRAPH_CACHE: dict[tuple, object] = {}  # store key -> graph.py singleton
@@ -687,7 +697,8 @@ def _adopt_orphan(col: chromadb.Collection) -> chromadb.Collection:
 
 
 def _restamp(col: chromadb.Collection,
-             embed_mode: str | None = None) -> chromadb.Collection:
+             embed_mode: str | None = None,
+             doc_shape: str | None = None) -> chromadb.Collection:
     """Re-create `col` with the full metadata (issue #103) — the only
     write that keeps hnsw:space, since modify() replaces the dict and
     rejects hnsw:* keys. Build-and-validate before the swap (CodeRabbit
@@ -702,7 +713,8 @@ def _restamp(col: chromadb.Collection,
     write lock, reentrant from the export/import callers. ``embed_mode``
     stamps the new collection's vector-space lineage (#220); None (the
     default) preserves the stored key verbatim, and a store that never
-    carried one stays unstamped — pre-#220 lineage is real."""
+    carried one stays unstamped — pre-#220 lineage is real. ``doc_shape``
+    is the same law for the doc-construction lineage (#229)."""
     name = col.name
     tmp_name = f"{name}-restamp"
     with _db_lock():
@@ -736,10 +748,14 @@ def _restamp(col: chromadb.Collection,
             pass
         mode_key = ((col.metadata or {}).get("embed_mode") if embed_mode is None
                     else embed_mode)
+        shape_key = ((col.metadata or {}).get("doc_shape") if doc_shape is None
+                     else doc_shape)
         stamp = {"hnsw:space": "cosine", "embed_model": EMBED_MODEL,
                  "embed_provider": EMBED_PROVIDER}
         if mode_key is not None:
             stamp["embed_mode"] = mode_key
+        if shape_key is not None:
+            stamp["doc_shape"] = shape_key
         tmp = client().create_collection(name=tmp_name, metadata=stamp)
         try:
             for i in range(0, len(data["ids"]), UPSERT_BATCH):
@@ -788,12 +804,14 @@ def _named_collection(name: str) -> chromadb.Collection:
     """Born-correct metadata — fresh stores never need a re-stamp; an
     existing collection keeps its stored metadata and _check_model
     heals stale or wiped stamps (#103). The born stamp records the
-    embed mode (#220) so a later rescan in the other mode refuses to
-    silently reuse the vectors."""
+    embed mode (#220) and the doc-construction shape (#229) so a later
+    rescan in the other mode — or under a different doc shaper —
+    refuses to silently reuse the vectors."""
     col = client().get_or_create_collection(
         name=name,
         metadata={"hnsw:space": "cosine", "embed_model": EMBED_MODEL,
-                  "embed_provider": EMBED_PROVIDER, "embed_mode": embed_mode()},
+                  "embed_provider": EMBED_PROVIDER, "embed_mode": embed_mode(),
+                  "doc_shape": doc_shape()},
     )
     return _check_model(col)
 
@@ -815,6 +833,20 @@ def embed_mode() -> str:
     instead of silently reusing sha-gated vectors from the wrong space
     (the #219 rig failure: hash-embed bootstrap, real bench, cosine 0)."""
     return "fake" if os.environ.get("NEURONAV_EMBED_FAKE") else "real"
+
+
+def doc_shape() -> str:
+    """Doc-construction lineage of the current process (#229): "raw"
+    when file-doc shaping is off, else "cast<rev>@<scale>" — the graph
+    shaper revision plus the config scale. Stamped next to embed_mode
+    (same #220 law, doc side): sha-gating skips re-embeds on unchanged
+    BYTES, so a store whose vectors were built from the other doc shape
+    must be re-embedded loudly, never silently reused."""
+    if FILE_DOC_CAST <= 0.0:
+        return "raw"
+    import graph  # lazy: the shaper revision lives with the shaper
+
+    return f"cast{graph.FILE_DOC_REV}@{FILE_DOC_CAST:g}"
 
 
 def rescan(timeout: float | None = None) -> dict[str, int]:
@@ -850,6 +882,8 @@ def _stored_fp(meta: dict) -> tuple[int, int] | None:
 
 
 def _rescan_locked() -> dict[str, int]:
+    import graph as _graph_mod  # lazy: graph imports nav (#229 file-doc shaper)
+
     files = list(iter_files())
     if not files:
         # issue #41: zero files means the config matches nothing (typo'd
@@ -866,13 +900,26 @@ def _rescan_locked() -> dict[str, int]:
     # other mode must re-embed even when file shas are unchanged — an
     # absent key is pre-#220 real lineage, never a mismatch. Loud, never
     # silent: quietly reusing the wrong vector space is the #219 failure.
+    # issue #229 extends the same law to the doc-construction shape: the
+    # shaper rewrites docs for unchanged bytes, so sha-gating alone would
+    # keep serving vectors built from the other shape — an absent key is
+    # pre-#229 raw lineage.
     stamped_mode = (col.metadata or {}).get("embed_mode", "real")
     mode = embed_mode()
-    reembed_all = stamped_mode != mode
+    shape = doc_shape()
+    stamped_shape = (col.metadata or {}).get("doc_shape", "raw")
+    reembed_all = stamped_mode != mode or stamped_shape != shape
     if reembed_all:
+        why = []
+        if stamped_mode != mode:
+            why.append(f"{stamped_mode!r}-mode vectors but this rescan embeds "
+                       f"{mode!r} (#220)")
+        if stamped_shape != shape:
+            why.append(f"docs shaped {stamped_shape!r} but this rescan shapes "
+                       f"{shape!r} (#229)")
         print(
-            f"neuronav: store '{col.name}' holds {stamped_mode!r}-mode vectors "
-            f"but this rescan embeds {mode!r} — re-embedding every file (#220)",
+            f"neuronav: store '{col.name}' re-embedding every file — "
+            + "; ".join(why),
             file=sys.stderr,
         )
     existing: dict[str, dict] = {}
@@ -928,7 +975,11 @@ def _rescan_locked() -> dict[str, int]:
             continue
         text = _read_text(path)
         pending_ids.append(fid)
-        pending_docs.append(text)
+        # issue #229: the embed doc is the cAST-shaped file doc, not the
+        # raw text (raw only under the shape fallbacks). The stored
+        # document equals the embed input, so the bench's #220 store
+        # coherence check (re-embed stored docs) stays truthful.
+        pending_docs.append(_graph_mod.file_doc(path, fid, text, FILE_DOC_CAST))
         # class_name/extends sniffing is gdscript territory — the
         # registry's stat_tags hook answers for whichever language owns
         # the suffix ("" for languages without the notion)
@@ -959,8 +1010,8 @@ def _rescan_locked() -> dict[str, int]:
         col.delete(ids=deleted)
         stats["deleted"] = len(deleted)
     if reembed_all:
-        # stamp the healed store so the next same-mode pass is cheap again
-        col = _restamp(col, embed_mode=mode)
+        # stamp the healed store so the next same-mode/shape pass is cheap
+        col = _restamp(col, embed_mode=mode, doc_shape=shape)
     stats["changed"] = changed_paths
     stats["deleted_paths"] = deleted
     return stats
