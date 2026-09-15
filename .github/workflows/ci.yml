@@ -22,7 +22,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - run: pip install numpy chromadb filelock httpx "mcp<2" networkx scipy scikit-learn tree-sitter==0.26.0 tree-sitter-cpp==0.23.4 build
+      - run: pip install numpy chromadb filelock httpx "mcp<2" networkx scipy scikit-learn tree-sitter==0.26.0 tree-sitter-cpp==0.23.4 tree-sitter-typescript==0.23.2 build
       - name: strata (depth layering, cycles, determinism)
         run: python -X utf8 tests/test_strata.py
       - name: crosslang (self-index integration, deterministic fake embeddings)
@@ -106,7 +106,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - run: pip install numpy chromadb httpx "mcp<2" networkx scipy scikit-learn tree-sitter==0.26.0 tree-sitter-cpp==0.23.4 playwright
+      - run: pip install numpy chromadb httpx "mcp<2" networkx scipy scikit-learn tree-sitter==0.26.0 tree-sitter-cpp==0.23.4 tree-sitter-typescript==0.23.2 playwright
       - run: python -m playwright install --with-deps chromium
       - name: build frozen corpus (git history + fake-embed store + bake)
         run: python -X utf8 tests/vizcorpus_build.py --dest "$HOME/vizcorpus"
