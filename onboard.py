@@ -11,10 +11,9 @@ path. Same pattern as explore.py (focused, self-contained).
   defaults, extensions = every registered extractor suffix,
   ``"state_dir": "default"`` opting into the project store — issue #91:
   a state_dir-less config aborts at load, the silent live-store default
-  is gone) + idempotent ``.neuronav/`` line in the project's
-  .gitignore. Never touches the neuronav install. Re-running init (or
-  wire's init-if-missing) NEVER clobbers an existing config (issue
-  #121) — the same existence guard as .neuroignore: an existing config
+  is gone) + the memories dir and its convention README (issue #67) +
+  an idempotent ``.neuronav/`` line in the project's .gitignore. Never
+  touches the neuronav install. Re-running init (or
   is left byte-identical and the re-run notes it.
 - wire: init if needed, then write/merge the project's ``.mcp.json``
   (and ``opencode.json`` when present) with NEURONAV_CONFIG pinned to
@@ -85,6 +84,12 @@ def scaffold(project: Path | None = None) -> Path:
             ".tmp\n"
             ".team_scratch\n",
             encoding="utf-8", newline="\n")
+    # issue #67: the memories dir + its convention README ride the same
+    # scaffold (existence-guarded like .neuroignore — one literal shared
+    # with any later memories.scaffold call)
+    import memories
+
+    memories.scaffold(state)
     gi = proj / ".gitignore"
     if gi.is_file():
         lines = gi.read_text(encoding="utf-8").splitlines()

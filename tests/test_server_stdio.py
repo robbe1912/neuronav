@@ -183,7 +183,7 @@ def _spawn(env: dict[str, str]) -> SimpleNamespace:
 TOOL_NAMES = (
     "explore", "repo_map", "semantic_search", "find_functions", "search_text",
     "symbol_graph", "dead_code", "duplicates", "clusters", "crosstalk",
-    "context", "visualize", "rescan",
+    "context", "visualize", "rescan", "memory",
 )
 
 
@@ -284,9 +284,9 @@ def main() -> None:
         )
         # issue #131: universal mount — every tool gains the optional dir
         # param (empty = boot config's repo); the suite pins the surface,
-        # so it pins the new parameter on all 13 tools
+        # so it pins the new parameter on all 14 tools
         check(
-            "tools/list advertises exactly the 13 tools",
+            "tools/list advertises exactly the 14 tools",
             sorted(names) == sorted(TOOL_NAMES),
             f"tools={names}",
         )
@@ -467,6 +467,9 @@ def main() -> None:
         # issue #131: universal mount — one server, per-call dir routing,
         # multi-project isolation, fresh-dir build pinned on fake embeds
         _universal_scenario()
+
+        # issue #67: Serena-style project memories — the mutating tool #2
+        _memory_scenario()
 
         # issue #180 CI legs: drift/stat-gate consistency + degraded
         # semantics, both on hermetic scratch trees (run in both modes)
@@ -1070,6 +1073,165 @@ def _degraded_scenario() -> None:
         if FAILS:
             print("--- degraded server stderr (tail) ---")
             print("\n".join(srv.stderr_lines[-15:]))
+def _memory_scenario() -> None:
+    """issue #67: the memory tool contract over stdio — hermetic scratch
+    tree, fake embeds, the boot project plus routed ones, so verb surface,
+    file bytes, routing isolation and loud failures are all pinned."""
+    import shutil
+
+    scratch = HERE / ".team_scratch" / "memory_stdio"
+    shutil.rmtree(scratch, ignore_errors=True)
+    scratch.mkdir(parents=True)
+    boot, pa, pb, fresh = (scratch / n for n in ("boot", "alpha", "beta", "fresh"))
+    for d in (boot, pa, pb, fresh):
+        d.mkdir()
+        (d / "app.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+    cfg = scratch / "boot.neuronav.json"
+    cfg.write_text(json.dumps({
+        "root": str(boot),
+        "collection": "main",
+        "state_dir": "default",
+        "include_dirs": ["."],
+        "extensions": [".py"],
+        "exclude_dirs": [".git", "__pycache__", ".venv", ".neuronav"],
+    }, indent=2) + "\n", encoding="utf-8", newline="\n")
+    env = {k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}
+    env["NEURONAV_CONFIG"] = str(cfg)
+    env["NEURONAV_EMBED_FAKE"] = "1"
+    srv = _spawn(env)
+    send, recv = srv.send, srv.recv
+
+    def call(mid: int, verb: str, args: dict) -> dict:
+        send({"jsonrpc": "2.0", "id": mid, "method": "tools/call",
+              "params": {"name": "memory", "arguments": {"verb": verb, **args}}})
+        return recv(mid)["result"]
+
+    bdir = boot / ".neuronav" / "memories"
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "mem", "version": "0"}}})
+        check("memory: initialize handshake", "result" in recv(1), "")
+
+        send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        tools = recv(2)["result"]["tools"]
+        mem = next(t for t in tools if t["name"] == "memory")
+        ann = mem.get("annotations") or {}
+        check("memory: no readOnlyHint (mutating, like rescan)",
+              not ann.get("readOnlyHint"), str(ann))
+        schema = mem["inputSchema"]
+        check("memory: schema — verb required; name/body/dir optional",
+              set(schema["properties"]) == {"verb", "name", "body", "dir"}
+              and schema.get("required") == ["verb"],
+              f"props={sorted(schema['properties'])} req={schema.get('required')}")
+
+        out = text_of(call(3, "list", {}))
+        check("memory: empty list says so explicitly",
+              out.startswith("no memories yet"), out)
+
+        body = "<!-- login flow quirks -->\nrefresh needs the retry header\nnaïve — café\n"
+        out = text_of(call(4, "set", {"name": "auth", "body": body}))
+        check("memory: set confirms with the exact path",
+              "saved 'auth'" in out
+              and (bdir / "auth.md").as_posix() in out, out)
+        raw = (bdir / "auth.md").read_bytes()
+        check("memory: file bytes — # name H1 + body, LF, no BOM",
+              raw == ("# auth\n" + body).encode() and b"\r" not in raw,
+              repr(raw[:48]))
+
+        out = text_of(call(5, "get", {"name": "auth"}))
+        check("memory: set->get round-trip byte-identical", out == body, repr(out[:60]))
+
+        l1 = text_of(call(6, "list", {}))
+        l2 = text_of(call(7, "list", {}))
+        check("memory: list deterministic (repeat call = identical)", l1 == l2, l1)
+        check("memory: list shows name + one-line summary from the comment",
+              "auth: login flow quirks" in l1, l1)
+
+        # the dir convention is discoverable: hand-written files list too
+        (bdir / "README.md").write_text(
+            "# neuronav memories\nscaffold doc, not a memory\n",
+            encoding="utf-8", newline="\n")
+        (bdir / "hand.md").write_text(
+            "# hand\n<!-- hand-written note -->\nwritten by a human\n",
+            encoding="utf-8", newline="\n")
+        l3 = text_of(call(8, "list", {}))
+        check("memory: hand-written file listed, README skipped",
+              "hand: hand-written note" in l3 and "auth: login flow quirks" in l3
+              and "README" not in l3, l3)
+        out = text_of(call(9, "get", {"name": "hand"}))
+        check("memory: get returns everything after the H1, verbatim",
+              out == "<!-- hand-written note -->\nwritten by a human\n", repr(out))
+
+        (bdir / "bad.md").write_bytes(b"\xff\xfe not utf8\n")
+        r = call(10, "list", {})
+        check("memory: corrupt file is a loud list error naming the file",
+              bool(r.get("isError")) and "bad.md" in text_of(r), text_of(r)[:120])
+        r = call(11, "get", {"name": "bad"})
+        check("memory: corrupt file is a loud get error naming the file",
+              bool(r.get("isError")) and "bad.md" in text_of(r), text_of(r)[:120])
+        (bdir / "bad.md").unlink()
+
+        r = call(12, "get", {"name": "nope"})
+        check("memory: get missing is loud", bool(r.get("isError"))
+              and "nope" in text_of(r), text_of(r)[:120])
+        r = call(13, "delete", {"name": "nope"})
+        check("memory: delete missing refuses loud", bool(r.get("isError"))
+              and "nope" in text_of(r), text_of(r)[:120])
+
+        bads = ["../evil", "a/b", "..", ".hidden", "CON", "trailing.", "README"]
+        for i, bad in enumerate(bads):
+            r = call(14 + i, "set", {"name": bad, "body": "x"})
+            check(f"memory: unsafe name refused: {bad!r}",
+                  bool(r.get("isError")), text_of(r)[:100])
+        check("memory: refused names never escaped the memories dir",
+              not (scratch / "evil.md").exists() and not (scratch / "a").exists(),
+              str(scratch))
+
+        r = call(21, "set", {"name": "empty", "body": ""})
+        check("memory: empty body refused", bool(r.get("isError")),
+              text_of(r)[:100])
+        r = call(22, "purge", {"name": "auth"})
+        check("memory: unknown verb refused, valid verbs named",
+              bool(r.get("isError")) and "list" in text_of(r)
+              and "delete" in text_of(r), text_of(r)[:120])
+
+        out = text_of(call(23, "set", {"name": "alpha-note", "body": "alpha only\n",
+                                       "dir": str(pa)}))
+        check("memory: routed set writes the routed project's dir",
+              (pa / ".neuronav" / "memories" / "alpha-note.md").is_file()
+              and not (pb / ".neuronav" / "memories" / "alpha-note.md").exists(),
+              out[:120])
+        out = text_of(call(24, "list", {"dir": str(pb)}))
+        check("memory: routed list stays project-isolated",
+              "alpha-note" not in out, out[:120])
+        out = text_of(call(25, "list", {"dir": str(pa)}))
+        check("memory: routed list shows the routed project's memory",
+              "alpha-note: alpha only" in out, out[:120])
+        out = text_of(call(26, "list", {}))
+        check("memory: boot store untouched by routed writes",
+              "alpha-note" not in out and "auth: login flow quirks" in out, out)
+
+        out = text_of(call(27, "set", {"name": "first",
+                                       "body": "written mid-onboarding\n",
+                                       "dir": str(fresh)}))
+        check("memory: fresh-dir set onboards AND keeps the write",
+              "onboarded" in out and "saved 'first'" in out
+              and (fresh / ".neuronav" / "memories" / "first.md").is_file()
+              and (fresh / ".neuronav" / "memories" / "README.md").is_file(),
+              out[:200])
+
+        out = text_of(call(28, "delete", {"name": "auth"}))
+        check("memory: delete confirms", "deleted 'auth'" in out, out)
+        out = text_of(call(29, "list", {}))
+        check("memory: gone after delete", "auth" not in out, out)
+    finally:
+        srv.kill()
+        if FAILS:
+            print("--- memory server stderr (tail) ---")
+            print("\n".join(srv.stderr_lines[-15:]))
+
+
 
 
 if __name__ == "__main__":
