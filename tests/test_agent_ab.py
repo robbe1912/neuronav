@@ -205,7 +205,10 @@ def liar(task):
         return exp[:-1], ab_arms.Cost(calls=1)  # plausible but partial
     return "src/fabricated.py", ab_arms.Cost(calls=1)
 
-lie_rows = ab_arms.run_battery(tasks, {"liar": liar})
+lie_rows = []
+for t in tasks:  # liar is CALLED, not passed as a bare value — a value
+    answer, _ = liar(t)  # reference is invisible to the static call graph
+    lie_rows.append({"task": t.tid, "success": bool(t.check(answer))})  # (dead:likely)
 check("teeth:liar-arm-0%",
       bool(lie_rows) and not any(r["success"] for r in lie_rows),
       f"{sum(r['success'] for r in lie_rows)}/{len(lie_rows)} passed")

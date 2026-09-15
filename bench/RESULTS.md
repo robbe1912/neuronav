@@ -371,16 +371,18 @@ Measured on the PR branch (12 tasks: 3 find-symbol, 3 trace-call-path,
 
 | arm | success | tool calls | files read | KB read | KB returned | ms (sum) |
 |---|---|---|---|---|---|---|
-| grep | 8/12 | 28 | 1,978 | 44,480 | 12.3 | 1,945 |
-| neuronav | 12/12 | 28 | 0 | 0.0 | 55.6 | 1,108 |
+| grep | 7/12 | 28 | 1,978 | 44,485 | 12.3 | 1,838 |
+| neuronav | 12/12 | 28 | 0 | 0.0 | 55.4 | 1,194 |
 
 Success by class (grep / neuronav): find-symbol 3/3 vs 3/3,
 trace-call-path 1/3 vs 3/3, locate-refactor-site 3/3 vs 3/3,
-dead-code-check 1/3 vs 3/3. Where grep fails it fails structurally:
+dead-code-check 0/3 vs 3/3. Where grep fails it fails structurally:
 trace — def-chasing a called name surfaces every same-named def
 (`dead_code` in three files) where the resolved graph names one target;
 dead-code — entry-rule references (bare idents, test mains) are invisible
-to a call-syntax grep, so it calls live fns dead. Tool calls tie because
+to a call-syntax grep, so it calls live fns dead, and the one true-dead pick
+is review-tier (dynamic-hint dispatch) where grep's no-tier heuristic answers
+`dead:likely`. Tool calls tie because
 grep burns them def-chasing while the wired arm pays a fixed `repo_map`
 orientation per task.
 
