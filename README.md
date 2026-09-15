@@ -99,26 +99,38 @@ flip per project after trying it.
 
 ## Prerequisites
 
-- Python 3.11+ (venv)
+- Python 3.12+ (venv) — the pinned dependency stack (`numpy==2.5.2`
+  first) does not resolve on 3.11 (issue #247)
 - An embedding backend. Default: Ollama running locally —
   `ollama pull qwen3-embedding:0.6b`. Any OpenAI-compatible
   `/embeddings` endpoint works too (vLLM, LM Studio, llama.cpp server,
   Ollama's own `/v1` layer): point `embed_url` at it and, if it needs a
   key, set `NEURONAV_EMBED_KEY` (env beats the config's `embed_api_key`,
   so secrets stay out of tracked files). See `config/AGENTS.md`.
-- `pip install chromadb filelock httpx "mcp<2" numpy networkx scipy scikit-learn "tree-sitter==0.26.0" "tree-sitter-cpp==0.23.4" "tree-sitter-typescript==0.23.2"` (into the venv; `pyproject.toml` pins the exact versions)
+- `uv pip install -e .` from the checkout (or `pip install -e .` into any
+  3.12 venv) — `pyproject.toml` ==-pins every dependency (issue #247)
 
 The default setup keeps embeddings on the machine; queries and indexing
 both need the backend reachable.
 
 ## Install (standalone checkout)
 
-```powershell
+```bash
 git clone <this repo>
 cd neuronav
-python -m venv .venv
-.venv\Scripts\python.exe -m pip install chromadb httpx "mcp<2" numpy networkx scipy scikit-learn "tree-sitter==0.26.0" "tree-sitter-cpp==0.23.4" "tree-sitter-typescript==0.23.2"
+uv venv                 # .venv on Python >= 3.12 — required by the pin set
+uv pip install -e .     # the exact ==-pin set from pyproject.toml, editable
 ```
+
+No uv? `python -m venv .venv` then
+`.venv/Scripts/python -m pip install -e .` installs the same
+`pyproject.toml` pins (Python >= 3.12 still required — `numpy==2.5.2`
+does not resolve on 3.11).
+
+git-bash/MSYS quirk (issue #247): if exec'ing `.venv/Scripts/python.exe`
+directly fails with `command not found` (exit 127), run the interpreter
+through uv instead: `uv run --no-project python -X utf8
+tests/test_<name>.py`.
 
 ## Wire into a project (one command, any OS)
 

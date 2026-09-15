@@ -21,8 +21,13 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
-      - run: pip install numpy chromadb filelock httpx "mcp<2" networkx scipy scikit-learn tree-sitter==0.26.0 tree-sitter-cpp==0.23.4 tree-sitter-typescript==0.23.2 build
+          python-version: "3.12"
+      # issue #247: install the DECLARED set — the tested matrix is the
+      # pyproject pin set (`pip install -e .`), not a floating unpinned
+      # list that quietly drifts off it (the old 3.11 + unpinned combo
+      # never tested the pins as a set). `build` is the one test-side
+      # append (test_packaging's preferred wheel builder).
+      - run: pip install -e . build
       - name: strata (depth layering, cycles, determinism)
         run: python -X utf8 tests/test_strata.py
       - name: crosslang (self-index integration, deterministic fake embeddings)
@@ -105,8 +110,9 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
-      - run: pip install numpy chromadb httpx "mcp<2" networkx scipy scikit-learn tree-sitter==0.26.0 tree-sitter-cpp==0.23.4 tree-sitter-typescript==0.23.2 playwright
+          python-version: "3.12"
+      # issue #247: declared set via -e . ; playwright is the test-side append
+      - run: pip install -e . playwright
       - run: python -m playwright install --with-deps chromium
       - name: build frozen corpus (git history + fake-embed store + bake)
         run: python -X utf8 tests/vizcorpus_build.py --dest "$HOME/vizcorpus"
