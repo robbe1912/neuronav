@@ -8,8 +8,9 @@ model cleverness, and every run is reproducible (README, "model-free").
 Arm A ("grep"): shell text tools only — grep / cat / ls over the checkout,
 no index, no semantic anything. Arm B ("neuronav"): direct in-process calls
 mirroring the MCP read tools (repo_map / find_functions / symbol_graph /
-dead_code); server.py's tools are thin wrappers over exactly these
-functions, so semantics match the served surface (README, "direct vs stdio").
+dead_code); the MCP layer reshapes some of that output (caps, headers,
+views), so the byte counts here are direct-API bytes, not stdio wire
+bytes (README, "direct vs stdio").
 """
 from __future__ import annotations
 
@@ -209,10 +210,10 @@ class NavTools:
     """The neuronav-wired arm. Direct in-process calls, not a stdio server
     spawn: the harness needs byte-exact double-run determinism and honest
     per-call byte accounting, and a subprocess adds boot/pipe timing noise
-    to exactly the wall-time metric being measured (README, "direct vs
-    stdio"). Semantics match the served tools — server.py's repo_map /
-    find_functions / symbol_graph / dead_code are thin wrappers over these
-    same functions."""
+    (see README, "direct vs stdio"). Counts are direct-API bytes — the
+    server layer caps and reshapes output for several tools, so stdio
+    wire bytes would differ modestly; call semantics mirror the served
+    surface."""
 
     def __init__(self):
         import graph  # binds the harness's booted config (nav already bound)
@@ -228,7 +229,14 @@ class NavTools:
     def find_functions(self, query: str, n: int = 10) -> list[dict]:
         self.cost.calls += 1
         rows = self._graph.find_functions(query, n=n)
-        self.cost.ret_bytes += len(json.dumps(rows, sort_keys=True))
+        # counted bytes exclude the live-embed "score" float — queries
+        # re-embed per call, so fp jitter (5126 vs 5121 observed
+        # cross-run) would leak into the determinism contract — and pin
+        # row order by key so near-tie rank flips don't move the count.
+        stable = sorted(
+            ({k: v for k, v in r.items() if k != "score"} for r in rows),
+            key=lambda r: r.get("key", ""))
+        self.cost.ret_bytes += len(json.dumps(stable, sort_keys=True))
         return rows
 
     def symbol_graph(self, symbol: str, depth: int = 1) -> str:

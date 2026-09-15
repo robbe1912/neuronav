@@ -372,7 +372,7 @@ Measured on the PR branch (12 tasks: 3 find-symbol, 3 trace-call-path,
 | arm | success | tool calls | files read | KB read | KB returned | ms (sum) |
 |---|---|---|---|---|---|---|
 | grep | 7/12 | 28 | 1,978 | 44,485 | 12.3 | 1,838 |
-| neuronav | 12/12 | 28 | 0 | 0.0 | 55.4 | 1,194 |
+| neuronav | 12/12 | 28 | 0 | 0.0 | 54.9 | 1,194 |
 
 Success by class (grep / neuronav): find-symbol 3/3 vs 3/3,
 trace-call-path 1/3 vs 3/3, locate-refactor-site 3/3 vs 3/3,

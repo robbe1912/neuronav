@@ -2,7 +2,7 @@
  "schema": 1,
  "harness": "agent_ab",
  "label": "selfindex",
- "commit": "33d2706",
+ "commit": "a20dac4",
  "dirty": true,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
@@ -21,9 +21,9 @@
    "success": 7,
    "calls": 28,
    "files": 1978,
-   "read_kb": 44485.1,
+   "read_kb": 44496.0,
    "ret_kb": 12.3,
-   "wall_ms": 1837.5
+   "wall_ms": 1393.6
   },
   "neuronav": {
    "tasks": 12,
@@ -31,8 +31,8 @@
    "calls": 28,
    "files": 0,
    "read_kb": 0.0,
-   "ret_kb": 55.4,
-   "wall_ms": 1193.6
+   "ret_kb": 54.9,
+   "wall_ms": 945.5
   }
  },
  "by_class": {
@@ -66,10 +66,10 @@
    "answer": "bake/budget.py",
    "calls": 1,
    "files": 79,
-   "read_bytes": 1821637,
+   "read_bytes": 1822080,
    "ret_bytes": 51,
-   "wall_ms": 69.231,
-   "wall_ms2": 67.678
+   "wall_ms": 47.185,
+   "wall_ms2": 46.582
   },
   {
    "task": "find-symbol:bake/budget.py::_cap_rows",
@@ -80,9 +80,9 @@
    "calls": 3,
    "files": 0,
    "read_bytes": 0,
-   "ret_bytes": 5220,
-   "wall_ms": 373.745,
-   "wall_ms2": 375.934
+   "ret_bytes": 5050,
+   "wall_ms": 326.967,
+   "wall_ms2": 258.2
   },
   {
    "task": "find-symbol:bake/files_model.py::_attach",
@@ -92,10 +92,10 @@
    "answer": "bake/files_model.py",
    "calls": 1,
    "files": 79,
-   "read_bytes": 1821637,
+   "read_bytes": 1822080,
    "ret_bytes": 23,
-   "wall_ms": 69.941,
-   "wall_ms2": 66.011
+   "wall_ms": 51.749,
+   "wall_ms2": 48.08
   },
   {
    "task": "find-symbol:bake/files_model.py::_attach",
@@ -106,9 +106,9 @@
    "calls": 2,
    "files": 0,
    "read_bytes": 0,
-   "ret_bytes": 5199,
-   "wall_ms": 392.7,
-   "wall_ms2": 368.116
+   "ret_bytes": 5030,
+   "wall_ms": 260.011,
+   "wall_ms2": 265.561
   },
   {
    "task": "find-symbol:bake/files_model.py::_build_links",
@@ -118,10 +118,10 @@
    "answer": "bake/files_model.py",
    "calls": 1,
    "files": 79,
-   "read_bytes": 1821637,
+   "read_bytes": 1822080,
    "ret_bytes": 26,
-   "wall_ms": 68.71,
-   "wall_ms2": 61.121
+   "wall_ms": 70.289,
+   "wall_ms2": 47.463
   },
   {
    "task": "find-symbol:bake/files_model.py::_build_links",
@@ -132,9 +132,9 @@
    "calls": 2,
    "files": 0,
    "read_bytes": 0,
-   "ret_bytes": 5126,
-   "wall_ms": 387.59,
-   "wall_ms2": 406.825
+   "ret_bytes": 4957,
+   "wall_ms": 328.644,
+   "wall_ms2": 273.366
   },
   {
    "task": "trace-call-path:bake/files_model.py::_dead_flags",
@@ -149,10 +149,10 @@
    ],
    "calls": 5,
    "files": 317,
-   "read_bytes": 7291210,
+   "read_bytes": 7292982,
    "ret_bytes": 4927,
-   "wall_ms": 249.778,
-   "wall_ms2": 262.172
+   "wall_ms": 192.888,
+   "wall_ms2": 189.31
   },
   {
    "task": "trace-call-path:bake/files_model.py::_dead_flags",
@@ -166,8 +166,8 @@
    "files": 0,
    "read_bytes": 0,
    "ret_bytes": 4064,
-   "wall_ms": 2.463,
-   "wall_ms2": 2.311
+   "wall_ms": 1.516,
+   "wall_ms2": 1.484
   },
   {
    "task": "trace-call-path:bake/fnio.py::_cap_fnio",
@@ -180,10 +180,10 @@
    ],
    "calls": 8,
    "files": 554,
-   "read_bytes": 12753503,
+   "read_bytes": 12756604,
    "ret_bytes": 2161,
-   "wall_ms": 449.417,
-   "wall_ms2": 476.596
+   "wall_ms": 331.089,
+   "wall_ms2": 332.481
   },
   {
    "task": "trace-call-path:bake/fnio.py::_cap_fnio",
@@ -197,8 +197,8 @@
    "files": 0,
    "read_bytes": 0,
    "ret_bytes": 4039,
-   "wall_ms": 1.868,
-   "wall_ms2": 1.764
+   "wall_ms": 1.978,
+   "wall_ms2": 1.459
   },
   {
    "task": "trace-call-path:bake/overlays.py::_cap_highways",
@@ -210,10 +210,10 @@
    ],
    "calls": 6,
    "files": 396,
-   "read_bytes": 9113334,
+   "read_bytes": 9115549,
    "ret_bytes": 5230,
-   "wall_ms": 327.523,
-   "wall_ms2": 315.536
+   "wall_ms": 246.038,
+   "wall_ms2": 232.645
   },
   {
    "task": "trace-call-path:bake/overlays.py::_cap_highways",
@@ -227,8 +227,8 @@
    "files": 0,
    "read_bytes": 0,
    "ret_bytes": 4047,
-   "wall_ms": 1.493,
-   "wall_ms2": 1.474
+   "wall_ms": 1.447,
+   "wall_ms2": 1.973
   },
   {
    "task": "locate-refactor-site:bake/budget.py::_cap_rows",
@@ -242,10 +242,10 @@
    ],
    "calls": 1,
    "files": 79,
-   "read_bytes": 1821637,
+   "read_bytes": 1822080,
    "ret_bytes": 115,
-   "wall_ms": 106.984,
-   "wall_ms2": 111.632
+   "wall_ms": 73.327,
+   "wall_ms2": 73.983
   },
   {
    "task": "locate-refactor-site:bake/budget.py::_cap_rows",
@@ -261,8 +261,8 @@
    "files": 0,
    "read_bytes": 0,
    "ret_bytes": 4082,
-   "wall_ms": 2.356,
-   "wall_ms2": 2.179
+   "wall_ms": 1.486,
+   "wall_ms2": 1.466
   },
   {
    "task": "locate-refactor-site:bake/files_model.py::_attach",
@@ -274,10 +274,10 @@
    ],
    "calls": 1,
    "files": 79,
-   "read_bytes": 1821637,
+   "read_bytes": 1822080,
    "ret_bytes": 52,
-   "wall_ms": 98.814,
-   "wall_ms2": 102.629
+   "wall_ms": 78.095,
+   "wall_ms2": 90.905
   },
   {
    "task": "locate-refactor-site:bake/files_model.py::_attach",
@@ -291,8 +291,8 @@
    "files": 0,
    "read_bytes": 0,
    "ret_bytes": 4021,
-   "wall_ms": 1.581,
-   "wall_ms2": 2.404
+   "wall_ms": 2.031,
+   "wall_ms2": 1.463
   },
   {
    "task": "locate-refactor-site:bake/files_model.py::_build_links",
@@ -304,10 +304,10 @@
    ],
    "calls": 1,
    "files": 79,
-   "read_bytes": 1821637,
+   "read_bytes": 1822080,
    "ret_bytes": 33,
-   "wall_ms": 86.458,
-   "wall_ms2": 104.212
+   "wall_ms": 72.378,
+   "wall_ms2": 71.611
   },
   {
    "task": "locate-refactor-site:bake/files_model.py::_build_links",
@@ -321,8 +321,8 @@
    "files": 0,
    "read_bytes": 0,
    "ret_bytes": 4205,
-   "wall_ms": 2.5,
-   "wall_ms2": 2.514
+   "wall_ms": 1.531,
+   "wall_ms2": 1.521
   },
   {
    "task": "dead-code-check:tests/test_autorescan.py::_drain_out",
@@ -332,10 +332,10 @@
    "answer": "dead:likely",
    "calls": 1,
    "files": 79,
-   "read_bytes": 1821637,
+   "read_bytes": 1822080,
    "ret_bytes": 0,
-   "wall_ms": 99.507,
-   "wall_ms2": 107.908
+   "wall_ms": 79.192,
+   "wall_ms2": 75.186
   },
   {
    "task": "dead-code-check:tests/test_autorescan.py::_drain_out",
@@ -347,8 +347,8 @@
    "files": 0,
    "read_bytes": 0,
    "ret_bytes": 5543,
-   "wall_ms": 7.807,
-   "wall_ms2": 9.01
+   "wall_ms": 5.747,
+   "wall_ms2": 6.776
   },
   {
    "task": "dead-code-check:extractors/__init__.py::_facts_sweep",
@@ -358,10 +358,10 @@
    "answer": "dead:likely",
    "calls": 1,
    "files": 79,
-   "read_bytes": 1821637,
+   "read_bytes": 1822080,
    "ret_bytes": 0,
-   "wall_ms": 96.884,
-   "wall_ms2": 87.238
+   "wall_ms": 78.317,
+   "wall_ms2": 80.483
   },
   {
    "task": "dead-code-check:extractors/__init__.py::_facts_sweep",
@@ -373,8 +373,8 @@
    "files": 0,
    "read_bytes": 0,
    "ret_bytes": 5577,
-   "wall_ms": 9.051,
-   "wall_ms2": 7.231
+   "wall_ms": 8.56,
+   "wall_ms2": 5.703
   },
   {
    "task": "dead-code-check:extractors/cpp.py::_entry_classdb",
@@ -384,10 +384,10 @@
    "answer": "dead:likely",
    "calls": 1,
    "files": 79,
-   "read_bytes": 1821637,
+   "read_bytes": 1822080,
    "ret_bytes": 0,
-   "wall_ms": 114.267,
-   "wall_ms2": 89.397
+   "wall_ms": 73.009,
+   "wall_ms2": 68.682
   },
   {
    "task": "dead-code-check:extractors/cpp.py::_entry_classdb",
@@ -399,8 +399,8 @@
    "files": 0,
    "read_bytes": 0,
    "ret_bytes": 5570,
-   "wall_ms": 10.441,
-   "wall_ms2": 6.455
+   "wall_ms": 5.564,
+   "wall_ms2": 5.575
   }
  ],
  "double_run": true,

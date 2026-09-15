@@ -62,9 +62,13 @@ The neuronav arm calls `graph.repo_map / find_functions / symbol_graph /
 dead_code` **in-process** rather than spawning the stdio MCP server. Why
 direct is the deterministic choice: a subprocess adds boot and pipe timing
 to exactly the wall-time metric being measured, and JSON-RPC framing makes
-byte accounting approximate; server.py's tools are thin wrappers over these
-same functions, so tool semantics are identical, while call/byte counts are
-exact and the double-run comparison is byte-stable. `semantic_search` and
+byte accounting approximate. Direct calls give exact, reproducible counts
+over the payloads the playbooks actually consume — but note these are
+**direct-API bytes, not MCP wire bytes**: the server layer caps and
+reshapes output for several of these tools (view caps, headers), so a
+stdio run would return modestly different payloads; call semantics mirror
+the served surface over the same underlying functions, and the double-run
+comparison stays byte-stable. `semantic_search` and
 `explore` are intentionally unused by the playbooks: their outputs are
 ranked-file lists and LLM-facing prose that cannot answer "which file
 *defines* X" without the exact-match filtering `find_functions` already
