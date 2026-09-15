@@ -13,6 +13,9 @@ parsers live in extractors/, dispatched via the suffix registry):
   load()/preload() string literals in bodies
 - dead code = functions unreachable from roots (two confidence tiers)
 - duplicates = normalized-body hashes + cosine-similar function vectors
+- deep derived facts (dead tiers, duplicates, ranks, reachability) are
+  cached at rescan into .neuronav/predicates.json (predicates.py) so
+  queries read instead of walk (issue #71)
 
 Zero non-vendor deps beyond nav (reuses its file walk + embed).
 """
@@ -26,6 +29,7 @@ from collections import Counter, defaultdict, deque
 from pathlib import Path
 
 import nav
+import predicates
 from extractors import (
     ASSET_SCENE_GLOB,
     BUILD_SEQUENCE,
@@ -80,6 +84,12 @@ DEAD_SHARE_THRESHOLD = 0.4
 
 class Graph:
     """Whole-checkout structural graph. Build once per process (~seconds)."""
+
+    # derived-predicate cache payload (issue #71): None = on-the-fly
+    # paths. A CLASS default, not an __init__ assign: tests build bare
+    # graphs via Graph.__new__ (no __init__ run) and every query must
+    # still find the attribute; build() replaces it via predicates.bind.
+    _pred: dict | None = None
 
     def __init__(self) -> None:
         self.files: dict[str, FileSym] = {}
@@ -153,7 +163,15 @@ class Graph:
             step(self)
         self._find_roots()
         self._reachable()
+        # issue #71: rescan absorbs the deep derivations (dead tiers,
+        # duplicates, ranks, mentions, reachability); queries then read
+        self.predicates_hook()
         return self
+
+    def predicates_hook(self) -> None:
+        """Bind the derived-predicate cache (predicates.py). A thin
+        indirection so tests can force the on-the-fly path."""
+        predicates.bind(self)
 
     def _resolve_definer(self, target: str, nm: str, seen: frozenset[str] = frozenset()) -> str:
         """Rel path of the file that DEFINES `nm` imported from `target`:
@@ -284,6 +302,10 @@ class Graph:
         so determinism is unaffected.
         """
         if self._mentions is None:
+            cached = self._pred.get("mentions") if self._pred is not None else None
+            if cached is not None:  # issue #71: rescan-time corpus pass
+                self._mentions = Counter(cached)
+                return self._mentions
             counts: Counter = Counter()
             for rel in sorted(self.files):
                 try:
@@ -297,6 +319,29 @@ class Graph:
     # -- queries -------------------------------------------------------------------
 
     def dead_code(self, limit: int = 60) -> dict[str, object]:
+        dead = self._dead_rows()
+        by_tier = defaultdict(int)
+        for d in dead:
+            by_tier[d["tier"]] += 1
+        return {
+            "total": len(dead),
+            "by_tier": dict(by_tier),
+            "candidates": dead[:limit],
+            "note": (
+                "candidates only — verify before deleting. 'likely' = file has no "
+                "dynamic dispatch; 'review' = file uses call()/Callable()/connect(), "
+                "string-dispatch may hide callers."
+            ),
+        }
+
+    def _dead_rows(self) -> list[dict[str, object]]:
+        """Dead-candidate rows (tier assembly) — the shared code path
+        behind dead_code and the rescan-time predicate cache
+        (issue #71): what gets cached is by construction what the
+        walk returns. Cached rows are copied defensively; callers
+        may mutate their view without touching the cache."""
+        if self._pred is not None:  # issue #71: rows derived at rescan
+            return [{**d} for d in self._pred["dead"]]
         dead = []
         # wildcard handler refs (*::name, cross-file signal handlers) keep
         # same-named funcs alive; precompute the bare-name set once instead
@@ -369,19 +414,7 @@ class Graph:
                     tier = "review"
                 dead.append({"path": rel, "func": name, "line": fn.line, "tier": tier})
         dead.sort(key=lambda d: (d["tier"], d["path"], d["line"]))
-        by_tier = defaultdict(int)
-        for d in dead:
-            by_tier[d["tier"]] += 1
-        return {
-            "total": len(dead),
-            "by_tier": dict(by_tier),
-            "candidates": dead[:limit],
-            "note": (
-                "candidates only — verify before deleting. 'likely' = file has no "
-                "dynamic dispatch; 'review' = file uses call()/Callable()/connect(), "
-                "string-dispatch may hide callers."
-            ),
-        }
+        return dead
 
     def symbol_graph(self, symbol: str, depth: int = 1, limit: int = 40) -> str:
         depth = max(1, min(depth, 3))
@@ -437,7 +470,20 @@ class Graph:
         a false 'no exact duplicates found' clean bill. C++ `//`
         comments compare as body text (stripping at `//` would truncate
         res:// literals in .gd bodies) — conservative: it can miss a
-        pair, never invent one."""
+        pair, never invent one. Full groups land in the rescan-time
+        predicate cache (issue #71); this slices copies."""
+        return [
+            {"hash": d["hash"], "members": list(d["members"])}
+            for d in self._dup_groups()[:limit]
+        ]
+
+    def _dup_groups(self) -> list[dict[str, object]]:
+        """Full duplicate groups (pre-limit) — the shared code path
+        behind exact_duplicates and the rescan-time predicate cache
+        (issue #71). The cache serves the stored list directly;
+        exact_duplicates copies rows before exposing them."""
+        if self._pred is not None:  # issue #71: groups derived at rescan
+            return self._pred["dups"]
         groups: dict[str, list[str]] = defaultdict(list)
         for rel, fs in self.files.items():
             for name, fn in fs.funcs.items():
@@ -451,7 +497,7 @@ class Graph:
             if len(v) > 1
         ]
         dups.sort(key=lambda d: -len(d["members"]))
-        return dups[:limit]
+        return dups
 
     # -- file importance: pagerank + budgeted repo map -------------------------
 
@@ -461,7 +507,10 @@ class Graph:
         (call/signal/var); self-wires drop, scene pseudo-keys (`rel::tscn`)
         fold onto their scene file. Sorted + deterministic — the single
         implementation shared by pagerank/repo_map and recall's 1-hop
-        expansion."""
+        expansion. Served from the rescan-time predicate cache when
+        present (issue #71), as a defensive copy."""
+        if self._pred is not None:  # issue #71: folded at rescan
+            return {fi: dict(row) for fi, row in self._pred["wires"].items()}
         out: dict[str, dict[str, int]] = {rel: {} for rel in self.files}
         for src in sorted(self.edges):
             sfi = src.partition("::")[0]
@@ -477,7 +526,11 @@ class Graph:
         Deterministic by construction: uniform init, exactly `iters`
         power iterations (fixed cap, no epsilon early-exit), files visited
         in sorted index order; dangling files (no out-wires) spread their
-        mass uniformly so ranks sum to ~1."""
+        mass uniformly so ranks sum to ~1. Default parameters are served
+        from the rescan-time predicate cache (issue #71); other
+        parameterizations recompute as before."""
+        if self._pred is not None and damping == 0.85 and iters == 30:
+            return dict(self._pred["rank"])
         wires = self.file_wires()
         fis = sorted(wires)
         n = len(fis)
@@ -508,7 +561,10 @@ class Graph:
     def _symbol_degrees(self) -> dict[str, dict[str, int]]:
         """Per-file func name -> wire degree (out + in symbol edges).
         SIGNAL:/VAR:/tscn pseudo-key names never match a func name, so
-        they fold out naturally."""
+        they fold out naturally. Served from the rescan-time predicate
+        cache when present (issue #71), as a defensive copy."""
+        if self._pred is not None:  # issue #71: folded at rescan
+            return {rel: dict(row) for rel, row in self._pred["deg"].items()}
         deg = {rel: dict.fromkeys(fs.funcs, 0) for rel, fs in self.files.items()}
         for src in sorted(self.edges):
             sp, _, sn = src.partition("::")
