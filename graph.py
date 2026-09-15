@@ -951,6 +951,20 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
     the parse/read phase runs lock-free, purges and upserts serialize
     with all other writers (server auto-rescan vs CLI rescan)."""
     col = _fn_collection()
+    # issue #220: the fn store stamps its embed mode like the file store;
+    # a pass in the OTHER mode must not reuse sha-cached vectors from the
+    # wrong vector space (sha-gating sees unchanged docs and would skip).
+    # An absent key is pre-#220 real lineage, never a mismatch.
+    stamped_mode = (col.metadata or {}).get("embed_mode", "real")
+    mode_mismatch = stamped_mode != nav.embed_mode()
+    if mode_mismatch:
+        print(
+            f"neuronav: fn store '{col.name}' holds {stamped_mode!r}-mode "
+            f"vectors but this pass embeds {nav.embed_mode()!r} — re-embedding "
+            "every function (#220)",
+            file=sys.stderr,
+        )
+        changed = sorted(rel for rel, fs in _all_filesyms().items() if fs.funcs)
     cast = _cast_scale()  # nav CHUNK_CAST: 0.0 = legacy single-doc pass
     dirty = nav.DB_DIR / "fns.dirty"
     if dirty.is_file() and not changed:
@@ -1023,7 +1037,8 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
                     "line": cline, "sha": sha,
                 }
                 old = existing.get(crid)
-                if old is not None and old.get("sha") == sha:
+                if (not mode_mismatch and old is not None
+                        and old.get("sha") == sha):
                     if old.get("line") == cline:
                         cached += 1
                         continue
@@ -1064,6 +1079,9 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
         dirty.write_text("sync failed", encoding="utf-8")
         raise
     dirty.unlink(missing_ok=True)
+    if mode_mismatch:
+        # stamp the healed fn store so the next same-mode pass caches again
+        nav._restamp(col, embed_mode=nav.embed_mode())
     return {
         "fns_upserted": added,
         "fns_cached": cached,
