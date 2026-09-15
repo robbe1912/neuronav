@@ -23,6 +23,7 @@ import hashlib
 import re
 import sys
 from collections import Counter, defaultdict, deque
+from pathlib import Path
 
 import nav
 from extractors import (
@@ -853,6 +854,28 @@ def _is_micro(fn: Func, scale: float = 1.0) -> bool:
     return 0 < len(body) <= int(MICRO_FN_CHARS * scale)
 
 
+def _micro_groups(funcs: dict[str, Func], scale: float = 1.0) -> dict[str, list[Func]]:
+    """Pure micro-fn grouping shared by the fn layer (#76) and the file
+    layer (#229): each micro fn (see _is_micro) folds into the nearest
+    NON-micro fn above it in source order — the class body document
+    that owns its neighborhood. A micro fn above no non-micro fn stays
+    standalone (nothing to merge into). Deterministic — a pure
+    function of the parsed funcs."""
+    order = sorted(funcs.items(), key=lambda kv: (kv[1].line, kv[0]))
+    groups: dict[str, list[Func]] = {}
+    for name, fn in order:
+        if not _is_micro(fn, scale):
+            continue
+        above = [
+            cn for cn, cfn in order
+            if not _is_micro(cfn, scale) and cfn.line < fn.line
+        ]
+        if not above:
+            continue  # no fn above: nothing to merge into
+        groups.setdefault(above[-1], []).append(fn)
+    return groups
+
+
 def _overlay_class_context(funcs: dict[str, Func], fs: FileSym, scale: float = 1.0) -> None:
     """cAST micro-fn merge (issue #76): fold a class file's micro-functions
     (getters/stubs/one-liners, incl. GDScript property accessors —
@@ -868,18 +891,7 @@ def _overlay_class_context(funcs: dict[str, Func], fs: FileSym, scale: float = 1
     has no class document."""
     if not fs.class_name:
         return
-    order = sorted(funcs.items(), key=lambda kv: (kv[1].line, kv[0]))
-    groups: dict[str, list[Func]] = {}
-    for name, fn in order:
-        if not _is_micro(fn, scale):
-            continue
-        above = [
-            cn for cn, cfn in order
-            if not _is_micro(cfn, scale) and cfn.line < fn.line
-        ]
-        if not above:
-            continue  # no class method above: nothing to merge into
-        groups.setdefault(above[-1], []).append(fn)
+    groups = _micro_groups(funcs, scale)
     for carrier in sorted(groups, key=lambda c: (funcs[c].line, c)):
         add_class_ctx(funcs, carrier, groups[carrier])
 
@@ -931,6 +943,175 @@ def _chunk_plan(fs: FileSym, funcs: dict[str, Func], scale: float = 1.0) -> None
     per-fn _chunked_docs sees stable shapes. Deterministic — pure function
     of the parsed FileSym + funcs."""
     _overlay_class_context(funcs, fs, scale)
+
+
+# -- cAST file-doc shaping (issue #229) ---------------------------------------
+
+# The #76 chunking lifted to the file layer — where recall actually reads
+# it. The fn collection ("-fns") is invisible to recall.search (the #141
+# fresh-store A/B showed no lift), so the size-aware shape earns its keep
+# on the docs nav embeds per FILE: recall's vector side queries exactly
+# that collection. Self-index distribution that calibrates the reuse:
+# 12/58 files exceed nav.MAX_EMBED_CHARS (30k) — their bytes past the
+# truncation are invisible to the vector side today (viz.py 462k = 6.5%
+# visible; graph.py/nav.py/server.py all >50k); fn bodies p50=547 chars,
+# micro (<=220) = 28%, monster (>2000) = 15% — the #76 thresholds already
+# sit at the p25/p90 boundaries, so the file layer reuses them unchanged.
+FILE_DOC_REV = 1        # shaper semantics version — bump whenever the
+                        # shaper changes docs for the same input bytes;
+                        # nav's doc_shape stamp rides it so shape-lineaged
+                        # stores re-embed loudly instead of serving stale
+                        # vectors under sha-gating (#220 law, doc side)
+FILE_SYMBOLS_CAP = 1200  # symbol-surface line budget (chars)
+FILE_INTRO_CAP = 400     # module docstring / leading-comment budget
+
+_ENC_RE = re.compile(r"^#.*?coding[:=]")
+
+
+def _file_intro(text: str) -> str:
+    """The file's big-picture opener (cAST keeps intros on chunks; the
+    file analog): the leading module docstring or `#` comment block,
+    past shebang/encoding lines. '' when the file opens with code.
+    Language-neutral — both block spellings are cross-language text
+    shapes, no suffix dispatch. Deterministic."""
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines) and (
+        not lines[i].strip()
+        or lines[i].startswith("#!")
+        or _ENC_RE.match(lines[i])
+    ):
+        i += 1
+    if i >= len(lines):
+        return ""
+    out: list[str] = []
+    first = lines[i].lstrip()
+    if first.startswith(('"""', "'''")):
+        mark = first[:3]
+        rest = first[3:]
+        close = rest.find(mark)
+        if close >= 0:
+            out.append(rest[:close])
+        else:
+            out.append(rest)
+            i += 1
+            while i < len(lines):
+                ln = lines[i]
+                pos = ln.find(mark)
+                if pos >= 0:
+                    out.append(ln[:pos])
+                    break
+                out.append(ln)
+                i += 1
+    elif first.startswith("#"):
+        while i < len(lines) and lines[i].lstrip().startswith("#"):
+            stripped = lines[i].lstrip().lstrip("#").strip()
+            if stripped:
+                out.append(stripped)
+            i += 1
+    return "\n".join(ln for ln in out if ln.strip())[:FILE_INTRO_CAP]
+
+
+def _fn_sections(fs: FileSym, fn: Func, scale: float = 1.0) -> list[str]:
+    """Signature-first doc sections for ONE fn at file scale (#229): a
+    normal fn is its verbatim body (bodies open at the def line —
+    signature-first by construction); a monster (> MONSTER_FN_CHARS *
+    scale) splits at statement-block boundaries with the FULL signature
+    lines on every chunk plus the body intro — the #76 `_chunked_docs`
+    mechanics reused verbatim, only the signature surface differs (the
+    fn layer's chunks carry the params-only sig; file sections carry
+    the whole def header). Deterministic — pure function of (fn, scale)."""
+    body = fn.body
+    if len(body) <= int(MONSTER_FN_CHARS * scale):
+        return [body]
+    lines = body.splitlines()
+    nb = _fn_body_start(fn)
+    if nb >= len(lines):
+        return [body]  # no body proper past the signature: nothing to split
+    sig = "\n".join(lines[:nb])
+    return [doc for doc, _line, _key in _chunked_docs(fs, fn, sig, scale)]
+
+
+def file_doc(path: Path, rel: str, text: str, scale: float = 1.0) -> str:
+    """The cAST-shaped embed document for one file (issue #229) — what
+    nav._rescan_locked embeds and stores in place of the raw file text.
+    Size-aware, signature-first (cAST 2025; RepoBench):
+    - head: path, class/extends, the full symbol surface (every fn name
+      rides the doc, capped), and the module intro;
+    - micro fns merge into the nearest non-micro fn above them — the
+      class-context fold (`_micro_groups`), members as `-- name --`
+      banners under their carrier;
+    - monster fns split at statement-block boundaries, every chunk
+      signature-first (`_fn_sections`);
+    - sections flatten by (chunk index, source line): chunk 1 of EVERY
+      fn embeds before chunk 2 of ANY fn, so a 460k file no longer
+      buries its later fns under the 30k embed truncation;
+    - assembly stays under nav.MAX_EMBED_CHARS — the embed-side
+      truncation never clips shaped docs blind.
+    Fallbacks keep the raw text verbatim: scale <= 0 (knob off — the
+    byte-identical pre-#229 surface), no parser for the suffix, or a
+    parse with no fns (nothing structural to shape). Deterministic —
+    a pure function of (file bytes, rel, scale); never mutates the
+    parsed FileSym, so BM25F's graph view is untouched."""
+    if scale <= 0.0:
+        return text
+    mod = registry_for(path.suffix)
+    if mod is None:
+        return text
+    fs = mod.parse(path, rel)
+    if not fs.funcs:
+        return text
+    import nav  # lazy: the budget mirrors the embed-side truncation
+
+    head = [f"# {rel}"]
+    if fs.class_name:
+        head.append(f"# class {fs.class_name}"
+                    + (f" extends {fs.extends}" if fs.extends else ""))
+    syms = (sorted(fs.funcs) + sorted(fs.signals)
+            + sorted(fs.members) + sorted(fs.consts))
+    line = "# symbols: " + " ".join(syms)
+    if len(line) > FILE_SYMBOLS_CAP:
+        keep: list[str] = []
+        used = len("# symbols: ")
+        room = FILE_SYMBOLS_CAP - 8  # headroom for the (+N) tail
+        for name in syms:
+            if used + len(name) + 1 > room:
+                break
+            keep.append(name)
+            used += len(name) + 1
+        line = "# symbols: " + " ".join(keep) + f" (+{len(syms) - len(keep)})"
+    head.append(line)
+    intro = _file_intro(text)
+    if intro:
+        head.append(intro)
+    doc_head = "\n".join(head)
+
+    groups = _micro_groups(fs.funcs, scale)
+    folded = {fn.name for micros in groups.values() for fn in micros}
+    per_fn: list[list[str]] = []
+    for name, fn in sorted(fs.funcs.items(), key=lambda kv: (kv[1].line, kv[0])):
+        if name in folded:
+            continue
+        sections = _fn_sections(fs, fn, scale)
+        micros = groups.get(name)
+        if micros:
+            sections[-1] += "\n" + "\n".join(
+                f"-- {m.name} --\n{m.body}" for m in micros
+            )
+        per_fn.append(sections)
+    budget = int(nav.MAX_EMBED_CHARS)
+    parts: list[str] = [doc_head]
+    used = len(doc_head)
+    for idx in range(max((len(s) for s in per_fn), default=0)):
+        for sections in per_fn:
+            if idx >= len(sections):
+                continue
+            part = sections[idx]
+            if used + len(part) + 1 > budget:
+                continue
+            parts.append(part)
+            used += len(part) + 1
+    return "\n".join(parts)
 
 
 def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:

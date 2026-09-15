@@ -568,8 +568,7 @@ with redirect_stderr(err):
     st = nav.rescan()
 check("220: real rescan re-embeds a fake store loudly",
       st["updated"] == 3
-      and "holds 'fake'-mode vectors but this rescan embeds 'real'"
-      in err.getvalue(),
+      and "'fake'-mode vectors but this rescan embeds 'real'" in err.getvalue(),
       f"{st['updated']}~ stderr={err.getvalue()[:120]!r}")
 col = nav._collection()
 check("220: healed store stamps embed_mode=real",
@@ -626,7 +625,10 @@ check("220: bench guard refuses a mode-poisoned store",
       buf.getvalue()[:160].replace("\n", " "))
 
 # pre-#220 lineage: a store with no embed_mode key is real, never a
-# mismatch — owner-rig real stores must not churn
+# MODE mismatch — the mode law alone must not churn owner-rig stores.
+# #229: the same unstamped store still re-embeds ONCE, loudly, for the
+# doc-shape upgrade (raw-doc vectors under a shaping process), then
+# heals stamped and stays gated.
 nav.client().delete_collection(nav.COLLECTION)
 old = nav.client().create_collection(
     name=nav.COLLECTION,
@@ -643,13 +645,79 @@ for p in sorted(C220.glob("*.py")):
 err = io.StringIO()
 with redirect_stderr(err):
     st = nav.rescan()
-check("220: pre-#220 unstamped (real-lineage) store does not churn",
+check("220: unstamped store churns for the #229 shape, never the mode",
+      st["updated"] == 3 and "(#229)" in err.getvalue()
+      and "embed_mode" not in err.getvalue() and "'-mode" not in err.getvalue(),
+      f"{st['added']}+/{st['updated']}~/{st['unchanged']}="
+      f" stderr={err.getvalue()[:100]!r}")
+err = io.StringIO()
+with redirect_stderr(err):
+    st = nav.rescan()
+check("220: healed pre-law store stays gated after the shape upgrade",
       (st["added"], st["updated"], st["unchanged"]) == (0, 0, 3)
-      and "re-embedding" not in err.getvalue(),
+      and "re-embedding" not in err.getvalue()
+      and (nav._collection().metadata or {}).get("doc_shape", "").startswith("cast"),
       f"{st['added']}+/{st['updated']}~/{st['unchanged']}="
       f" stderr={err.getvalue()[:80]!r}")
 MODE["hash_vecs"] = False
 os.environ.pop("NEURONAV_EMBED_FAKE", None)
+
+# --- #229: the doc-shape stamp — cAST-shaped docs re-embed loudly ------
+# The #220 law extended to doc construction: sha-gating skips on
+# unchanged bytes, so a shape flip must force the re-embed instead of
+# serving vectors built from the other doc shape.
+MODE["hash_vecs"] = True  # deterministic 32-dim rows match embed_dim=32
+write_cfg(root=str(C220), state_dir=str(TMP / "state220"), collection="mode220",
+          embed_url=f"http://127.0.0.1:{PORT}/api/embed", embed_model="m-220",
+          embed_provider="ollama", embed_dim=32, include_dirs=["."],
+          extensions=[".py"], exclude_dirs=[], chunk_file_doc=0.0)
+check("229: doc_shape reports raw under the 0.0 knob",
+      nav.doc_shape() == "raw", nav.doc_shape())
+err = io.StringIO()
+with redirect_stderr(err):
+    st = nav.rescan()
+check("229: raw flip re-embeds the shaped store loudly",
+      st["updated"] == 3
+      and "docs shaped 'cast1@1' but this rescan shapes 'raw'" in err.getvalue(),
+      f"{st['updated']}~ stderr={err.getvalue()[:120]!r}")
+check("229: raw store stamps doc_shape=raw",
+      (nav._collection().metadata or {}).get("doc_shape") == "raw",
+      str(nav._collection().metadata))
+_ids = sorted(p.name for p in C220.glob("*.py"))
+got = nav._collection().get(ids=_ids, include=["documents"])
+check("229: raw docs are the file text again",
+      all(d == (C220 / i).read_text(encoding="utf-8")
+          for i, d in zip(_ids, got["documents"])),
+      str(got["documents"])[:100])
+
+write_cfg(root=str(C220), state_dir=str(TMP / "state220"), collection="mode220",
+          embed_url=f"http://127.0.0.1:{PORT}/api/embed", embed_model="m-220",
+          embed_provider="ollama", embed_dim=32, include_dirs=["."],
+          extensions=[".py"], exclude_dirs=[], chunk_file_doc=1.0)
+check("229: doc_shape reports cast<rev>@scale under the 1.0 knob",
+      nav.doc_shape() == f"cast{graph.FILE_DOC_REV}@1", nav.doc_shape())
+err = io.StringIO()
+with redirect_stderr(err):
+    st = nav.rescan()
+check("229: shape flip re-embeds the raw store loudly",
+      st["updated"] == 3 and "docs shaped 'raw'" in err.getvalue(),
+      f"{st['updated']}~ stderr={err.getvalue()[:120]!r}")
+col = nav._collection()
+check("229: healed store stamps the doc shape",
+      (col.metadata or {}).get("doc_shape") == f"cast{graph.FILE_DOC_REV}@1",
+      str(col.metadata))
+got = col.get(ids=_ids, include=["documents"])
+check("229: stored docs are the cAST-shaped docs",
+      all(d.startswith(f"# {i}") and "# symbols: fn_" in d and "def fn_" in d
+          for i, d in zip(_ids, got["documents"])),
+      str(got["documents"])[:100])
+err = io.StringIO()
+with redirect_stderr(err):
+    st = nav.rescan()
+check("229: same-shape rescan stays sha-gated",
+      (st["added"], st["updated"], st["unchanged"]) == (0, 0, 3)
+      and "re-embedding" not in err.getvalue(),
+      f"{st['added']}+/{st['updated']}~/{st['unchanged']}=")
 
 print()
 print(f"{len(FAILS)} failure(s)" + (": " + ", ".join(FAILS) if FAILS else ""))

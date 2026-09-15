@@ -37,7 +37,9 @@ Usage:
              .tmp/ so the qwen3 store stays untouched). Since #217 the
              nl2code query prefix is recall's shipped default: `qprefix`
              rides the default wire, `ab`/`jina` pin the raw query
-             explicitly (query_prefix="").
+             explicitly (query_prefix=""). Issue #229 doc-shape legs:
+             castq (cAST file docs, the shipped default) | rawq (raw
+             file docs, chunk_file_doc=0, own .tmp store).
 --fake       NEURONAV_EMBED_FAKE=1 (deterministic hash embeddings; coherent
              only against a collection built in the same mode — use a fresh
              checkout/.neuronav per mode).
@@ -100,6 +102,14 @@ SET_FLAGS = {
     "jinap": {"embed": {**JINA_EMBED, "tag": "jina-pfx",
                         "embed_doc_prefix": DOC_PREFIX,
                         "state_dir": ".tmp/bench-jinap-store"}},
+    # issue #229: cAST file-doc shaping A/B. castq rides the default
+    # wire and the default store (chunk_file_doc=1.0 ships on); rawq is
+    # the same-commit raw-docs control in its own .tmp store (a shape
+    # flip re-embeds the whole store, so the two legs keep disjoint
+    # vectors like the jina variants).
+    "castq": {},
+    "rawq": {"embed": {"tag": "raw-docs", "chunk_file_doc": 0.0,
+                       "state_dir": ".tmp/bench-rawq-store"}},
 }
 
 
@@ -262,7 +272,7 @@ def _override_config(repo: Path, embed: dict) -> Path:
     each jina variant keep disjoint vectors."""
     cfg = json.loads((repo / "config" / "neuronav.json").read_text(encoding="utf-8"))
     for key in ("embed_url", "embed_model", "embed_dim", "embed_provider",
-                "embed_doc_prefix"):
+                "embed_doc_prefix", "chunk_file_doc"):
         if embed.get(key) is not None:
             cfg[key] = embed[key]
     if embed.get("state_dir"):
@@ -411,8 +421,8 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool,
             **({"query_prefix": effective_prefix} if effective_prefix else {}),
             **({"doc_prefix": nav.EMBED_DOC_PREFIX}
                if not fake and nav.EMBED_DOC_PREFIX else {}),
+            **({"doc_shape": nav.doc_shape()} if not fake else {}),
             "files": nav.count(),
-            "k": K,
             "golden": fp,
             **{kk: v for kk, v in result.items() if kk != "per_query"},
             "per_query": result["per_query"],
@@ -717,6 +727,73 @@ def _ab_section(recs: dict[str, dict]) -> list[str]:
     return lines
 
 
+
+CAST_LEGS = [
+    ("castq", "cast leg — cAST file docs (chunk_file_doc=1.0, the shipped default; default wire, default store)"),
+    ("rawq", "raw leg — raw file docs (chunk_file_doc=0, own .tmp store; the pre-#229 surface at the same commit)"),
+]
+
+
+def _cast_delta_table(recs: dict[str, dict]) -> list[str]:
+    base = recs.get("qprefix-both")
+    legs = [(s, recs[f"{s}-both"]) for s, _ in CAST_LEGS if f"{s}-both" in recs]
+    if not base or not legs:
+        return []
+
+    def pts(leg: dict, key: str) -> str:
+        return f"{(leg[key] - base[key]) * 100:+.1f}"
+
+    return [
+        "Δ vs the committed `qprefix` baseline (`both` config, raw file docs",
+        "at c0343ab), in points (1 pt = 0.010):",
+        "",
+        "| set | docs | hit@1 | hit@5 | hit@10 | MRR |",
+        "|---|---|---|---|---|---|",
+        f"| qprefix (baseline) | raw | {base['hit@1']:.3f} | {base['hit@5']:.3f} "
+        f"| {base['hit@10']:.3f} | {base['mrr']:.3f} |",
+    ] + [
+        f"| {name} | {r.get('doc_shape', 'raw')} | {pts(r, 'hit@1')} | "
+        f"{pts(r, 'hit@5')} | {pts(r, 'hit@10')} | {pts(r, 'mrr')} |"
+        for name, r in legs
+    ] + [""]
+
+
+def _cast_section(recs: dict[str, dict]) -> list[str]:
+    present = [s for s, _ in CAST_LEGS if any(f"{s}-{c}" in recs for c in CONFIGS)]
+    if not present:
+        return []  # no #229 records committed yet (or hermetic sandbox)
+    lines = [
+        "## cAST file-doc shaping (issue #229)",
+        "",
+        "Question: do size-aware, signature-first FILE docs (cAST 2025 — merge",
+        "micro-fns into their carrier, split monsters at block boundaries, keep",
+        "every chunk signature-first) lift recall where the fn-layer chunking",
+        "(#141) could not? The fn collection is invisible to `recall.search` —",
+        "the file collection is what the vector side queries — so #229 shapes",
+        "the docs nav embeds per file instead. Self-index calibration: 12/58",
+        "files exceed the 30k embed cap (viz.py 462k → 6.5% visible; server.py,",
+        "nav.py, graph.py all >50k) and fn bodies sit at p50=547 chars with 28%",
+        "micro / 15% monster — the #76 thresholds (220/2000) already match the",
+        "p25/p90 boundaries, so the file layer reuses them. The head carries the",
+        "path, class/extends, the full symbol surface (capped, `(+N)` tail), and",
+        "the module intro; sections flatten (chunk index, source line) so chunk 1",
+        "of every fn embeds before chunk 2 of any fn; the whole doc assembles",
+        "under the 30k cap. Store lineage rides the #220 law extended to doc",
+        "construction: the `doc_shape` stamp (cast<rev>@<scale>) forces a loud",
+        "full re-embed on shape flips — sha-gating alone would serve stale",
+        "vectors built from the other shape. Doc count is unchanged (one doc",
+        "per file; the shaping rewrites the doc text, not the id grammar) —",
+        "the ≤2x index-growth budget holds trivially at 1.0x.",
+        "",
+    ]
+    for prefix, note in CAST_LEGS:
+        chunk = _set_table(prefix, recs, note)
+        if chunk:
+            lines += chunk + [""]
+        lines += _kind_table(prefix, recs)
+    lines += _cast_delta_table(recs)
+    return lines
+
 def _assert_records_current(recs: dict[str, dict]) -> None:
     """Loud coherence gate (issue #104): a golden swap without re-running
     left records whose per_query rows no longer matched the golden set —
@@ -786,6 +863,7 @@ def render() -> None:
             lines += chunk + [""]
         lines += _kind_table(prefix, recs)
     lines += _ab_section(recs)
+    lines += _cast_section(recs)
     lines += retired
     lines += _sweep_table(recs)
     lines += _per_query_table("after", recs)
@@ -797,6 +875,10 @@ def render() -> None:
         ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set sweep --repo ../bench-measure",
         ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set ab --repo ../bench-measure",
         ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set qprefix --repo ../bench-measure",
+        "# issue #229 doc-shape legs: castq re-embeds the default store once",
+        "# (the doc_shape stamp heals), rawq builds its own .tmp store:",
+        ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set castq --repo ../bench-measure",
+        ".venv/Scripts/python.exe -X utf8 bench/run_bench.py --set rawq --repo ../bench-measure",
         "# JCE legs: serve the official jinaai Q8_0 GGUF first (Ollama imports",
         "# it as a completion model — /api/embed refuses the unpooled GGUF):",
         "llama-server -m jina-code-embeddings-0.5b-Q8_0.gguf --embeddings --pooling last --host 127.0.0.1 --port 18081 -c 32768",

@@ -236,6 +236,146 @@ check("fold is a no-op for unique fns",
       ["a.py::m#chunk1", "b.py::g", "c.py::h#chunk1"],
       str([r["key"] for r in graph._fold_parents([rows[0], rows[2], rows[3]], 4)]))
 
+# ---- #229: cAST file-doc shaping (graph.file_doc) ---------------------------
+import tempfile
+import types
+
+# hermetic nav stub: file_doc lazily `import nav` for MAX_EMBED_CHARS only —
+# no config, no chroma, no index
+_nav_stub = types.ModuleType("nav")
+_nav_stub.MAX_EMBED_CHARS = 30_000
+sys.modules.setdefault("nav", _nav_stub)
+
+_tmp = tempfile.mkdtemp(prefix="nn-cast229-")
+
+
+def _write(name: str, src: str) -> tuple:
+    p = Path(_tmp) / name
+    p.write_text(src, encoding="utf-8")
+    return p, src
+
+
+# micro merge at the file layer: the stub folds into the nearest non-micro
+# fn above, as a `-- name --` banner on the carrier's section — no
+# standalone section of its own
+_p, _src = _write("fold.py", (
+    "def real():\n"
+    "    total = 0\n"
+    "    for i in range(20):\n"
+    "        total += i * 3\n"
+    "        total = total % 71\n"
+    "    parts = [str(total), 'x', 'y', 'z']\n"
+    "    joined = '-'.join(parts)\n"
+    "    checksum = sum(ord(ch) for ch in joined)\n"
+    "    label = f'{checksum:04d}' + joined[:3]\n"
+    "    return label\n"
+    "\n"
+    "\n"
+    "def stub(a):\n"
+    "    return a + 1\n"
+))
+_doc = graph.file_doc(_p, "fold.py", _src)
+check("file doc head carries path + symbols",
+      _doc.splitlines()[0] == "# fold.py"
+      and _doc.splitlines()[1].startswith("# symbols: real stub"),
+      _doc.splitlines()[1])
+check("micro fn folds into carrier with banner",
+      _doc.count("def stub") == 1 and "-- stub --" in _doc,
+      "banner present" if "-- stub --" in _doc else "no banner")
+check("file doc is deterministic",
+      _doc == graph.file_doc(_p, "fold.py", _src))
+
+# monster split at the file layer: every section signature-first, capped,
+# and a LATER fn's signature embeds before the monster's second chunk
+# (chunk-1 of every fn outranks chunk-2 of any fn under the 30k budget)
+_mid = (
+    "def mid_thing(b):\n"
+    "    total = 0\n"
+    "    for i in range(b):\n"
+    "        total += i * i + b\n"
+    "        total = total % 97\n"
+    "        if total > 50:\n"
+    "            total -= 50\n"
+    "    value = str(total) + '-suffix'\n"
+    "    parts = value.split('-')\n"
+    "    return int(parts[0]) + len(parts)\n"
+)
+_mon = (
+    "def monster(a):\n"
+    "    x0 = 0\n"
+    + "".join(f"    v{k} = {k} * 2\n    if v{k} > 4:\n        x0 += v{k}\n"
+              for k in range(1, 120))
+    + "    return x0\n"
+)
+_p, _src = _write("split.py", _mon + "\n\n" + _mid)
+_doc = graph.file_doc(_p, "split.py", _src)
+_mpos = [m.start() for m in __import__("re").finditer(r"def monster", _doc)]
+_imid = _doc.index("def mid_thing")
+check("monster splits into signature-first sections",
+      len(_mpos) >= 2 and all(_doc[c:c + 12] == "def monster(" for c in _mpos),
+      f"{len(_mpos)} sections")
+_fs_split = graph.registry_for(".py").parse(_p, "split.py")
+_secs = graph._fn_sections(_fs_split, _fs_split.funcs["monster"])
+check("every monster section under the cap",
+      len(_secs) >= 2 and all(s.startswith("def monster(") for s in _secs)
+      and all(len(s) <= graph.MONSTER_FN_CHARS for s in _secs),
+      f"{len(_secs)} sections, max {max(len(s) for s in _secs)}")
+check("later fn embeds before monster chunk 2",
+      _mpos[0] < _imid < _mpos[1],
+      f"mid@{_imid} chunks@{_mpos}")
+check("mid_thing not folded (non-micro)", _doc.count("def mid_thing") == 1)
+
+# budget: a file of monsters assembles under nav.MAX_EMBED_CHARS — the
+# embed-side truncation never clips shaped docs blind
+_p, _src = _write("huge.py", "".join(_mon + "\n\n" for _ in range(30)) + _mid)
+_doc = graph.file_doc(_p, "huge.py", _src)
+check("assembly stays under the embed budget",
+      len(_doc) <= _nav_stub.MAX_EMBED_CHARS,
+      f"{len(_doc)} <= {_nav_stub.MAX_EMBED_CHARS}")
+
+# raw fallbacks: knob off / no parser / no fns keep the byte-identical
+# pre-#229 surface
+_p, _src = _write("plain.txt", "just text\nno structure\n")
+check("unknown suffix falls back to raw text",
+      graph.file_doc(_p, "plain.txt", _src) == _src)
+_p, _src = _write("split.py", _mon + "\n\n" + _mid)
+check("scale 0 falls back to raw text",
+      graph.file_doc(_p, "split.py", _src, scale=0.0) == _src)
+_p2, _s2 = _write("empty_mod.py", "VALUE = 3\n")
+check("zero-fn file falls back to raw text",
+      graph.file_doc(_p2, "empty_mod.py", _s2) == _s2)
+
+# intro: shebang/encoding skipped, module docstring rides the head
+_p, _src = _write("intro.py",
+                  "#!/usr/bin/env python3\n# -*- coding: utf-8 -*-\n"
+                  '"""Module prose about widgets."""\n\n'
+                  "def f():\n    return 1\n")
+_doc = graph.file_doc(_p, "intro.py", _src)
+check("intro skips shebang/coding, keeps docstring",
+      "Module prose about widgets." in _doc.split("\ndef")[0]
+      and "#!/usr/bin" not in _doc and "coding:" not in _doc)
+
+# symbol-surface cap: huge name lists truncate with a visible (+N) tail
+_p, _src = _write("wide.py", "".join(
+    f"def fn_with_a_rather_long_{i:03d}(a, b):\n"
+    f"    total = a + b + {i}\n"
+    f"    total = total * 2 + {i}\n"
+    f"    return total - {i}\n\n" for i in range(60)))
+_doc = graph.file_doc(_p, "wide.py", _src)
+_sym = _doc.splitlines()[1]
+check("symbol surface truncates with (+N) tail",
+      len(_sym) <= graph.FILE_SYMBOLS_CAP and "(+" in _sym,
+      f"len={len(_sym)} tail={_sym[-12:]}")
+
+# purity: the shaper never mutates the parsed FileSym (BM25F's graph view
+# is untouched)
+_fs_before = graph.registry_for(".py").parse(_p, "wide.py")
+_doc = graph.file_doc(_p, "wide.py", _src)
+_fs_after = graph.registry_for(".py").parse(_p, "wide.py")
+check("file_doc does not mutate the parse",
+      all(f.kind == "raw" for f in _fs_after.funcs.values())
+      and sorted(_fs_before.funcs) == sorted(_fs_after.funcs))
+
 print()
 if FAILS:
     print(f"{len(FAILS)} failure(s): {FAILS}")
