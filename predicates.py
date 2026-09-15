@@ -1,9 +1,8 @@
 """Derived-predicate cache (issue #71, steal #8 — Glean's derived facts).
 
 The deep tool queries (dead-code tiers, duplicate groups, PageRank,
-symbol degrees, corpus mentions, reverse reachability, SCC membership)
-are pure functions of the built graph, but graph.py recomputed them on
-every call. This module derives them ONCE at build/rescan time and
+symbol degrees, corpus mentions) are pure functions of the built
+graph, but graph.py recomputed them on every call. This module derives them ONCE at build/rescan time and
 persists them under the project state dir (``.neuronav/predicates.json``,
 stdlib json only), so query time becomes dict reads.
 
@@ -34,10 +33,13 @@ from extractors import registry_for
 
 SCHEMA = 1
 NAME = "predicates.json"
-# the predicate families persisted (payload shape contract)
-FAMILIES = frozenset(
-    {"rank", "wires", "deg", "dead", "dups", "mentions", "scc_id", "scc_count", "callers_t"}
-)
+# the predicate families persisted (payload shape contract). Only
+# families a query path actually reads belong here: reverse
+# reachability / SCC / transitive callers have no consumer (a
+# depth-bounded symbol_graph BFS cannot read a closure without
+# changing its output bytes), so caching them was pure byte+Tarjan
+# cost with zero served benefit (review finding, PR #233).
+FAMILIES = frozenset({"rank", "wires", "deg", "dead", "dups", "mentions"})
 
 _code_stamp: str | None = None
 
@@ -107,108 +109,11 @@ def fingerprint(g) -> str:
     return h.hexdigest()
 
 
-def _reachability(g):
-    """SCC membership + transitive callers. Iterative Tarjan (corpus
-    depth never touches the recursion limit); SCC ids canonicalized by
-    sorted representative so the partition is byte-stable regardless of
-    traversal internals. Callers of a key = members of every SCC that
-    can reach its SCC on the condensation, plus its own SCC peers
-    (mutual reachability), itself excluded."""
-    nodes = sorted(set(g.edges) | set(g.reverse))
-    succ = {n: sorted(g.edges.get(n, ())) for n in nodes}
-    index: dict[str, int] = {}
-    low: dict[str, int] = {}
-    on_stack: set[str] = set()
-    stack: list[str] = []
-    comps: list[list[str]] = []
-    for root in nodes:
-        if root in index:
-            continue
-        work: list[list] = [[root, 0]]
-        while work:
-            frame = work[-1]
-            node, pi = frame
-            if pi == 0:
-                index[node] = low[node] = len(index)
-                stack.append(node)
-                on_stack.add(node)
-            descended = False
-            neighbors = succ[node]
-            while pi < len(neighbors):
-                nb = neighbors[pi]
-                pi += 1
-                frame[1] = pi
-                if nb not in index:
-                    work.append([nb, 0])
-                    descended = True
-                    break
-                if nb in on_stack:
-                    low[node] = min(low[node], index[nb])
-            if descended:
-                continue
-            work.pop()
-            if work:
-                parent = work[-1][0]
-                low[parent] = min(low[parent], low[node])
-            if low[node] == index[node]:
-                comp = []
-                while True:
-                    w = stack.pop()
-                    on_stack.discard(w)
-                    comp.append(w)
-                    if w == node:
-                        break
-                comps.append(comp)
-    comps.sort(key=min)
-    comp_of: dict[str, int] = {}
-    for i, comp in enumerate(comps):
-        for k in comp:
-            comp_of[k] = i
-    # reverse condensation: which SCCs can reach which
-    preds_of: list[set[int]] = [set() for _ in comps]
-    for i, comp in enumerate(comps):
-        for k in comp:
-            for nb in succ[k]:
-                j = comp_of[nb]
-                if j != i:
-                    preds_of[j].add(i)
-    members = [sorted(c) for c in comps]
-    callers_t: dict[str, list[str]] = {}
-    for i, comp in enumerate(comps):
-        reach: set[str] = set()
-        seen = {i}
-        todo = [i]
-        while todo:
-            for p in preds_of[todo.pop()]:
-                if p not in seen:
-                    seen.add(p)
-                    todo.append(p)
-        for j in seen - {i}:
-            reach.update(members[j])
-        if len(comp) > 1:
-            for k in comp:
-                callers_t[k] = sorted(reach | (set(comp) - {k}))
-        elif reach:
-            for k in comp:
-                callers_t[k] = sorted(reach)
-    return comp_of, len(comps), callers_t
-
-
 def derive(g) -> dict:
     """Full predicate payload via graph.py's own computation paths
     (single source of truth: what gets cached is by construction what
     the on-the-fly walk returns). ``g._pred`` is None while this runs —
     bind() only sets it after deriving."""
-    try:
-        scc_id, scc_count, callers_t = _reachability(g)
-    except Exception as e:  # reachability is new code with no query-path
-        # twin; a bug there must not take down builds — marked fallback
-        print(
-            f"neuronav: SCC/transitive-caller derivation failed ({e}); "
-            "cached reachability left empty",
-            file=sys.stderr,
-        )
-        scc_id, scc_count, callers_t = {}, 0, {}
     mentions = None
     if any(getattr(registry_for(f.ext), "MENTION_FLOOR", 0) for f in g.files.values()):
         mentions = dict(sorted(g._mention_counts().items()))
@@ -219,9 +124,6 @@ def derive(g) -> dict:
         "dead": g._dead_rows(),
         "dups": g._dup_groups(),
         "mentions": mentions,
-        "scc_id": scc_id,
-        "scc_count": scc_count,
-        "callers_t": callers_t,
     }
 
 
@@ -246,6 +148,8 @@ def _load(state_dir: Path, fp: str) -> dict | None:
         return None
     try:
         doc = json.loads(raw)
+        if not isinstance(doc, dict):  # b"42" / "[1,2]" parse fine
+            raise ValueError(f"cache root is {type(doc).__name__}, not an object")
         seal = doc.pop("seal")
         if doc.get("schema") != SCHEMA:
             raise ValueError(f"schema {doc.get('schema')!r} != {SCHEMA}")
@@ -254,6 +158,9 @@ def _load(state_dir: Path, fp: str) -> dict | None:
         if doc.get("fingerprint") != fp:
             raise ValueError("fingerprint stale (inputs or derivation code changed)")
         pred = doc["pred"]
+        if not isinstance(pred, dict):  # a LIST of family names would
+            # pass set.issubset and then explode at query time
+            raise ValueError(f"'pred' is {type(pred).__name__}, not an object")
         if not FAMILIES.issubset(pred):
             raise ValueError(f"missing families: {sorted(FAMILIES - set(pred))}")
         return pred

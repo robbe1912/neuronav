@@ -13,7 +13,7 @@ parsers live in extractors/, dispatched via the suffix registry):
   load()/preload() string literals in bodies
 - dead code = functions unreachable from roots (two confidence tiers)
 - duplicates = normalized-body hashes + cosine-similar function vectors
-- deep derived facts (dead tiers, duplicates, ranks, reachability) are
+- deep derived facts (dead tiers, duplicates, ranks, mentions) are
   cached at rescan into .neuronav/predicates.json (predicates.py) so
   queries read instead of walk (issue #71)
 
@@ -164,7 +164,7 @@ class Graph:
         self._find_roots()
         self._reachable()
         # issue #71: rescan absorbs the deep derivations (dead tiers,
-        # duplicates, ranks, mentions, reachability); queries then read
+        # duplicates, ranks, mentions); queries then read
         self.predicates_hook()
         return self
 

@@ -40,7 +40,7 @@ PROJ = WORK / "proj"
 
 # fixture wiring:
 #   app.main -> mid.mid -> core.leaf        (transitive caller chain)
-#   app.main -> cyc_a.ping <-> cyc_b.pong   (2-cycle = one SCC)
+#   app.main -> cyc_a.ping <-> cyc_b.pong   (2-cycle pair)
 #   core.orphan, d1.twin, d2.twin           (dead; twins share a body)
 #   dyn.dispatch                            (dead in a .connect( file -> review)
 (PROJ / "core.py").write_text(
@@ -160,22 +160,6 @@ try:
     check("mentions skipped for non-cpp corpus", pred["mentions"] is None)
 
     # -- fixture semantics: the derived facts are the hand-derived truth --------
-    check("transitive callers: leaf",
-          pred["callers_t"].get("core.py::leaf") == ["app.py::main", "mid.py::mid"],
-          str(pred["callers_t"].get("core.py::leaf")))
-    check("transitive callers: mid",
-          pred["callers_t"].get("mid.py::mid") == ["app.py::main"],
-          str(pred["callers_t"].get("mid.py::mid")))
-    # cycle peers count as callers of each other (mutual reachability)
-    check("transitive callers: cycle peers",
-          pred["callers_t"].get("cyc_a.py::ping") == ["app.py::main", "cyc_b.py::pong"]
-          and pred["callers_t"].get("cyc_b.py::pong") == ["app.py::main", "cyc_a.py::ping"],
-          f"{pred['callers_t'].get('cyc_a.py::ping')} / {pred['callers_t'].get('cyc_b.py::pong')}")
-    check("scc: cycle shares one id, singletons apart",
-          pred["scc_id"]["cyc_a.py::ping"] == pred["scc_id"]["cyc_b.py::pong"]
-          and pred["scc_id"]["app.py::main"] != pred["scc_id"]["cyc_a.py::ping"]
-          and pred["scc_count"] == 4,
-          f"scc_count={pred['scc_count']}")
     dead_keys = {f"{r['path']}::{r['func']}": r["tier"] for r in pred["dead"]}
     check("dead tiers: orphan/twins likely, dyn file review",
           dead_keys.get("core.py::orphan") == "likely"
@@ -233,6 +217,27 @@ try:
     with contextlib.redirect_stderr(err):
         g = graph.get_graph(rebuild=True)
     check("garbage bytes: loud rederive, tools correct",
+          "rederiv" in err.getvalue() and g.dead_code() == without_cache[0])
+
+    for bad in (b"42", b"[1, 2]", b'"nice try"'):  # valid JSON, non-object
+        CACHE.write_bytes(bad)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            g = graph.get_graph(rebuild=True)
+        check(f"non-object json root {bad!r}: loud rederive, tools correct",
+              "rederiv" in err.getvalue() and g.dead_code() == without_cache[0])
+
+    # 'pred' shape hole: a LIST of family names passes set.issubset, so
+    # the load must type-check 'pred' itself (real fingerprint + real
+    # seal over the wrong shape — only the type guard stands in the way)
+    fp = json.loads(CACHE.read_bytes())["fingerprint"]
+    core_doc = {"schema": 1, "fingerprint": fp, "pred": sorted(predicates.FAMILIES)}
+    forged = {**core_doc, "seal": predicates._seal(core_doc)}
+    CACHE.write_bytes(json.dumps(forged, sort_keys=True, separators=(",", ":")).encode())
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        g = graph.get_graph(rebuild=True)
+    check("non-object 'pred' with valid seal: loud rederive, tools correct",
           "rederiv" in err.getvalue() and g.dead_code() == without_cache[0])
 
     # -- staleness: input change invalidates -------------------------------------
