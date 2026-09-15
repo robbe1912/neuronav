@@ -119,8 +119,13 @@ def _check_wheel_content(wheel: Path) -> None:
                   f"{len(shipped)} vs {len(committed)} bytes")
         eps = [n for n in names if n.endswith(".dist-info/entry_points.txt")]
         ep_text = zf.read(eps[0]).decode("utf-8") if eps else ""
+        mds = [n for n in names if n.endswith(".dist-info/METADATA")]
+        md_text = zf.read(mds[0]).decode("utf-8") if mds else ""
     check("console script neuronav-mcp = server:main declared",
           "neuronav-mcp = server:main" in ep_text, ep_text.strip())
+    check("wheel METADATA pins tree-sitter-typescript==0.23.2 (issue #245)",
+          "Requires-Dist: tree-sitter-typescript==0.23.2" in md_text,
+          "pin missing from wheel METADATA")
 
 
 def _make_fixture(tmp: Path) -> Path:

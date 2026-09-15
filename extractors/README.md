@@ -23,6 +23,7 @@ virtuals, test prefixes, tool bases) lives only in the per-language module.
 | `.gd`, `.tscn` | `gdscript.py` | `parse_gd`, `parse_tscn`, `parse`, `ENTRY_RULES` |
 | `.py` | `python.py` | `parse`, `ENTRY_RULES` (dunder virtuals, `test_*`, module-level/`__main__`/fixture entry hints, `@property`/`@name.setter` accessors; consts = repo-module imports — AST pass harvests imports anywhere incl. parenthesized/commented/multi-line shapes; graph side: `_scan_body_py` + import refs, re-export rebinding to defining modules) |
 | `.h`, `.hpp`, `.cpp`, `.cc`, `.cxx` | `cpp.py` | `parse`, `ENTRY_RULES` (tree-sitter-cpp front-end + stdlib macro-surface pass: `ClassDB::`/`GDVIRTUAL` registration binds, `ADD_SIGNAL`/`ADD_PROPERTY`, `emit_signal`, `memnew`; `CPP_VIRTUALS` + registration roots; mention-count floor `CPP_MENTION_FLOOR` feeds the dead tier) |
+| `.ts`, `.tsx`, `.mts`, `.cts` | `ts.py` | `parse`, `ENTRY_RULES` (tree-sitter-typescript front-end, grammar split ts/tsx per suffix: `.tsx` adds JSX patterns; overloads collapse to the first declaration line with the implementation body; barrel re-export rebinding to origin definers, tsconfig `paths` alias resolution with JSONC tolerance + one `extends` level, dynamic `import()`/`require()` module liveness, decorators → entry_hints, get/set accessor merge; `TS_BASE_VIRTUALS` + mention floor feed the dead tier) |
 
 ## Interface contract
 
