@@ -94,8 +94,9 @@ _INSTRUCTIONS = (
     "rescan (forces reindex) and memory (set/get/list/delete persistent "
     "project notes - save durable findings there, not transient state). "
     "Every tool takes an optional dir to target a different repo root. "
-    "The index auto-refreshes on file drift; answers marked 'degraded' "
-    "are exact - trust them over re-reading files."
+    "The index auto-refreshes on file drift; a tool marked 'degraded' "
+    "still answers completely from the current index, though vector "
+    "recall may be unavailable."
 )
 
 mcp = FastMCP("neuronav", instructions=_INSTRUCTIONS)
