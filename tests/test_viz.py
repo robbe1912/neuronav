@@ -2172,7 +2172,6 @@ def run_tests(port: int):
                         print("SKIP menu close - no void point")
                 else:
                     print("SKIP menu close - no chip list")
-
                 # ---- [issue #82] 3D surface: corridor/wire click pins ----
                 # scan the 3D canvas (left of the map pane) for a point whose
                 # pickWireMeta resolves a pickable wire; clicking there runs
@@ -5486,6 +5485,50 @@ def run_tests(port: int):
         # artifact: screenshot of the focused fn-layer state
         page.screenshot(path=str(SHOTS / "last_run.png"), scale="css", type="png")
         print("artifact: .tmp/shots/last_run.png")
+        # -- #59: Escape off a pinned map list must leave the functions
+        # checkbox at its boot truth (#31 class: reset == boot; toggles
+        # are not focus state). The lookfeel f10 screenshot read the
+        # post-Escape box as unchecked - it is checked but DISABLED (no
+        # focus renders grayed); this leg pins the DOM truth on the exact
+        # pinned-list path so no dismissal path can silently regress it.
+        # Runs LAST: its Esc x2 ends in clearFocus, and the earlier
+        # click-at-scanned-coordinate tests are camera-pose sensitive.
+        enter_focus_via_row()
+        map_ready(page)
+        pin59 = latch_pin_via_list()
+        if pin59:
+            st59 = page.evaluate("""() => ({
+                dom: document.getElementById('cbFn').checked,
+                probe: window.__dbg.cbFn })""")
+            check("pinned map list keeps functions box checked (#59)",
+                  st59["dom"] is True and st59["probe"] is True,
+                  f"{st59}")
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(250)
+            e1 = page.evaluate("""() => ({
+                dom: document.getElementById('cbFn').checked,
+                probe: window.__dbg.cbFn, pin: window.__dbg.wirePin,
+                list: document.getElementById('mapList').style.display,
+                focus: window.__dbg.focusSeeds.size })""")
+            check("esc off the pin keeps functions box checked (#59)",
+                  e1["dom"] is True and e1["probe"] is True and
+                  e1["pin"] is None and e1["list"] != "block" and
+                  e1["focus"] == 1,
+                  f"{e1}")
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(400)
+            e2 = page.evaluate("""() => ({
+                dom: document.getElementById('cbFn').checked,
+                probe: window.__dbg.cbFn,
+                disabled: document.getElementById('cbFn').disabled,
+                focus: window.__dbg.focusSeeds.size })""")
+            check("esc ladder lands boot cbFn truth (checked, #59)",
+                  e2["dom"] is True and e2["probe"] is True and
+                  e2["focus"] == 0 and e2["disabled"] is True,
+                  f"{e2}")
+        else:
+            print("SKIP #59 cbFn ladder - no chip list")
+
         # #98 watchdog: NO console error and NO uncaught JS error may fire
         # anywhere in the session — boot, search-focus entry, depth
         # escalation, wire/trunk/leg pins (2D + 3D), the stale-reap refocus
