@@ -334,6 +334,42 @@ def main() -> None:
         check("global-wire: install stays read-only (no home config writes)",
               (home_mcp.read_bytes() if home_mcp.exists() else None) == home_before)
 
+        # 4g-b. #201: kilocode settings path is platform-branched (no
+        # junk ~/AppData tree on POSIX); env override still wins
+        import sys as _sys
+        _kilo_env = os.environ.pop("NEURONAV_KILO_MCP", None)
+        _saved_plat = _sys.platform
+        try:
+            _sys.platform = "linux"
+            p_lin = str(onboard._kilo_mcp_path())
+            _sys.platform = "darwin"
+            p_mac = str(onboard._kilo_mcp_path())
+            _sys.platform = "win32"
+            p_win = str(onboard._kilo_mcp_path())
+            _sys.platform = "plan9"
+            try:
+                onboard._kilo_mcp_path()
+                refused = False
+            except RuntimeError as e:
+                refused = "NEURONAV_KILO_MCP" in str(e)
+        finally:
+            _sys.platform = _saved_plat
+            if _kilo_env is not None:
+                os.environ["NEURONAV_KILO_MCP"] = _kilo_env
+        _home = str(Path.home())
+        check("kilo path: platform-branched, no ~/AppData on POSIX (#201)",
+              p_lin == os.path.join(_home, ".config", "Code", "User", "globalStorage",
+                                    "saoudrizwan.claude-dev", "mcp_settings.json")
+              and p_mac == os.path.join(_home, "Library", "Application Support", "Code",
+                                        "User", "globalStorage", "saoudrizwan.claude-dev",
+                                        "mcp_settings.json")
+              and p_win == os.path.join(_home, "AppData", "Roaming", "Code", "User",
+                                        "globalStorage", "saoudrizwan.claude-dev",
+                                        "mcp_settings.json"),
+              f"linux={p_lin} darwin={p_mac} win32={p_win}")
+        check("kilo path: unknown platform refused loudly naming the override (#201)",
+              refused, "no RuntimeError naming NEURONAV_KILO_MCP")
+
         # 5. one command end-to-end (fake embeds): index + bake in the project
         p2 = make_project(tmp / "second")
         r = subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "wire", "--index"], cwd=p2,
