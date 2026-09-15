@@ -188,7 +188,9 @@ Visualizer work also gates through `tools/qa_readability.py` (see
   (absolute path). Relative `"root"` values resolve against the config file's
   directory.
 - An explicit `NEURONAV_CONFIG` pointing at a missing file aborts at load,
-  a rescan matching zero files aborts too (issue #41), and so does a config
+  a rescan matching zero files aborts too (issue #41 — but the server BOOT
+  degrades to first-call guidance instead of dying pre-handshake, issue
+  #240; only the explicit rescan path stays fatal), and so does a config
   without `state_dir` (issue #91: the silent `<root>/.neuronav` default
   reads and writes a store inside the scanned root — the live-store wipe
   door) — an explicit config is a contract, not a hint; no silent fallback

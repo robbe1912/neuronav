@@ -87,15 +87,26 @@ def _apply_config(path: Path | None) -> None:
     cfg: dict = json.loads(path.read_text(encoding="utf-8-sig")) if path is not None else {}
     # lazy import: extractors pulls graph-ish deps only for the suffix list
     from extractors import EXTENSIONS as _REGISTERED
-    ROOT = Path(cfg.get("root") or Path.cwd())
-    if not ROOT.is_absolute():
-        # relative roots resolve against the config file's own directory,
-        # so shipped profiles (config/neuronav.json) stay machine-portable
-        ROOT = (path.parent / ROOT).resolve()
+    # issue #240 (the "." trap): a project-local config's config-dir-
+    # relative "." IS .neuronav/ itself — state-only and on the default
+    # exclude list, so a walk rooted there can match nothing. The
+    # project is the PARENT dir; a missing root and "." both mean it.
+    # Any other explicit root wins verbatim, config-dir-relative as
+    # before (documented beside the config schema: config/AGENTS.md).
+    _project_local = path is not None and path.parent.name == ".neuronav"
+    _root_raw = cfg.get("root")
+    if _project_local and (not _root_raw or Path(_root_raw) == Path(".")):
+        ROOT = path.parent.parent.resolve()
+    else:
+        ROOT = Path(_root_raw) if _root_raw else Path.cwd()
+        if not ROOT.is_absolute():
+            # relative roots resolve against the config file's own directory,
+            # so shipped profiles (config/neuronav.json) stay machine-portable
+            ROOT = (path.parent / ROOT).resolve()
     COLLECTION = str(cfg.get("collection", "main"))
     # project-local / no-config defaults walk everything (issue #27); the
     # legacy install-config default keeps the original target-repo shape
-    _walk_all = path is None or (path.parent.name == ".neuronav")
+    _walk_all = path is None or _project_local
     INCLUDE_DIRS = tuple(cfg.get("include_dirs", WALK_DEFAULTS["include_dirs"] if _walk_all else ("scripts", "scenes", "VFX", "ai", "tests", "tools")))
     EXTS = set(cfg.get("extensions", sorted(_REGISTERED) if _walk_all else WALK_EXTS))
     EXCLUDE_DIRS = frozenset(cfg.get("exclude_dirs", WALK_DEFAULTS["exclude_dirs"] if _walk_all else (".git", "__pycache__")))
@@ -466,7 +477,7 @@ def embed_failure_reason(exc: Exception) -> str:
     return f"embedding backend unreachable ({type(exc).__name__})"
 
 
-def iter_files() -> Iterator[Path]:
+def iter_files(all_suffixes: bool = False) -> Iterator[Path]:
     # os.walk (not rglob) so exclude_dirs are pruned from the traversal —
     # a repo-root include_dir would otherwise walk .venv/.chroma/etc.
     # Overlapping include_dirs ([".", "tests"]) dedupe on the index key
@@ -481,13 +492,38 @@ def iter_files() -> Iterator[Path]:
         for dirpath, dirnames, filenames in os.walk(base):
             dirnames[:] = sorted(dn for dn in dirnames if dn not in EXCLUDE_DIRS)
             for name in sorted(filenames):
-                if Path(name).suffix in EXTS:
+                # all_suffixes (issue #240): same walk rules with the
+                # extension filter off — the degraded-boot suffix census
+                if all_suffixes or Path(name).suffix in EXTS:
                     p = Path(dirpath) / name
                     fid = file_id(p)
                     if fid in seen:
                         continue
                     seen.add(fid)
                     yield p
+
+
+# issue #240: census cap — the boot guidance's on-disk survey stays
+# bounded on huge trees; the sorted walk keeps the cut deterministic
+CENSUS_CAP = 50_000
+
+
+def suffix_census() -> dict[str, int]:
+    """File count per suffix under the active walk rules with the
+    extension filter IGNORED (issue #240): what the root actually holds.
+    Feeds the degraded-boot guidance's paste-ready config and the
+    raw-text degradation banner. Extensionless files key as their whole
+    name; binary-ish noise is filtered by the consumer. Deterministic —
+    sorted walk, capped at CENSUS_CAP files."""
+    counts: dict[str, int] = {}
+    n = 0
+    for p in iter_files(all_suffixes=True):
+        n += 1
+        if n > CENSUS_CAP:
+            break
+        key = p.suffix.lower() or p.name
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 # standard cache prune floor for root-wide wiring walks (issue #117): the

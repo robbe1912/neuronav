@@ -71,7 +71,7 @@ def _wait_listening(proc: subprocess.Popen, port: int, timeout_s: float = 25.0) 
 
 
 def main() -> None:
-    from extractors import EXTENSIONS
+    from extractors import EXTENSIONS, PRESETS, RAW_TEXT_EXTS
 
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
@@ -94,6 +94,10 @@ def main() -> None:
         check("init: project-local config with walk defaults", cfg["root"] == str(proj) and cfg["include_dirs"] == ["."])
         check("init: scaffold opts into the project store (issue #91)",
               cfg.get("state_dir") == "default", str(cfg.get("state_dir")))
+        check("init: scaffold extensions = registered + raw-text web set "
+              "(issue #240 — .ts/.md etc index as raw text until extractors land)",
+              cfg["extensions"] == sorted(set(EXTENSIONS) | set(RAW_TEXT_EXTS)),
+              str(cfg.get("extensions")))
         out3 = run_nav(proj, "import nav; print([str(p) for p in nav.iter_files() if '.tmp' in str(p) or '.team_scratch' in str(p)])")
         check("init: scaffolded .neuroignore prunes .tmp and .team_scratch", out3.strip() == "[]", out3)
         ig = (proj / ".neuronav" / ".neuroignore").read_text(encoding="utf-8")
@@ -139,6 +143,66 @@ def main() -> None:
               "config exists" in r.stdout and "exclude_dirs" not in r.stdout, r.stdout.strip()[:100])
         cfg_path.write_text(json.dumps(cfg), encoding="utf-8")  # restore for later checks
 
+        # 2c. language presets (issue #240): --preset ts scaffolds the
+        # curated extension list + the state_dir opt-in + correct root
+        preset_proj = tmp / "preset_proj"
+        preset_proj.mkdir()
+        subprocess.run(
+            [PY, "-X", "utf8", str(ROOT / "onboard.py"), "init",
+             "--project", str(preset_proj), "--preset", "ts"],
+            cwd=str(preset_proj),
+            env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"},
+                 "NEURONAV_EMBED_FAKE": "1"},
+            capture_output=True, text=True, check=True)
+        pcfg = json.loads((preset_proj / ".neuronav" / "config.json")
+                          .read_text(encoding="utf-8"))
+        check("preset ts: curated extensions + state_dir + root",
+              pcfg["extensions"] == list(PRESETS["ts"])
+              and pcfg["state_dir"] == "default"
+              and pcfg["root"] == str(preset_proj), json.dumps(pcfg))
+        r = subprocess.run(
+            [PY, "-X", "utf8", str(ROOT / "onboard.py"), "init",
+             "--preset", "cobol"], cwd=str(tmp), capture_output=True, text=True)
+        check("preset: unknown name fails loud, names the valid set",
+              r.returncode != 0 and "cobol" in (r.stderr + r.stdout)
+              and "gdscript" in (r.stderr + r.stdout), (r.stderr + r.stdout)[-160:])
+
+        # 2d. project-local root '.' trap (issue #240): root resolves
+        # against the config's own dir — so a .neuronav config's '.'
+        # must mean the PROJECT (its parent), never .neuronav itself
+        trap = tmp / "trap_proj"
+        (trap / ".neuronav").mkdir(parents=True)
+        (trap / "code.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+        (trap / "sub").mkdir()
+        (trap / "sub" / "m.py").write_text("y = 2\n", encoding="utf-8", newline="\n")
+        trap_cfg = trap / ".neuronav" / "config.json"
+        for root_val in (".", None):
+            body = {"state_dir": "default", "extensions": [".py"],
+                    "include_dirs": ["."]}
+            if root_val is not None:
+                body["root"] = root_val
+            trap_cfg.write_text(json.dumps(body), encoding="utf-8")
+            out = run_nav(
+                tmp,
+                "import nav; print(nav.ROOT); "
+                "print(sorted(str(p) for p in nav.iter_files()))",
+                {"NEURONAV_CONFIG": str(trap_cfg)})
+            lines = out.strip().splitlines()
+            label = "root '.'" if root_val else "root absent"
+            check(f"trap: {label} resolves to the parent repo",
+                  bool(lines) and lines[0] == str(trap), out[:160])
+            check(f"trap: {label} walks the parent tree, never .neuronav",
+                  len(lines) > 1 and "code.py" in lines[1]
+                  and "m.py" in lines[1] and ".neuronav" not in lines[1],
+                  lines[-1] if len(lines) > 1 else "")
+        trap_cfg.write_text(
+            json.dumps({"root": "sub", "state_dir": "default",
+                        "extensions": [".py"], "include_dirs": ["."]}),
+            encoding="utf-8")
+        out = run_nav(tmp, "import nav; print(nav.ROOT)",
+                      {"NEURONAV_CONFIG": str(trap_cfg)})
+        check("trap: explicit non-'.' root still wins, config-dir-relative",
+              out.strip() == str((trap / ".neuronav" / "sub").resolve()), out)
         # 3. discovery: project-local beats the install's checkout config
         out = run_nav(proj, "import nav; print(nav.ROOT)")
         check("discovery: project-local config wins from project cwd", out.strip() == str(proj))

@@ -8,7 +8,7 @@ Full field contract: `extractors/README.md`.
 
 | module | role |
 |---|---|
-| `__init__.py` | registry: `EXTENSIONS` maps suffix -> module (`.gd`/`.tscn` -> `gdscript`, `.py` -> `python`, `.h`/`.hpp`/`.cpp`/`.cc`/`.cxx` -> `cpp`); `registry_for(suffix)` returns module or None |
+| `__init__.py` | registry: `EXTENSIONS` maps suffix -> module (`.gd`/`.tscn` -> `gdscript`, `.py` -> `python`, `.h`/`.hpp`/`.cpp`/`.cc`/`.cxx` -> `cpp`); `registry_for(suffix)` returns module or None; `RAW_TEXT_EXTS` = the issue-#240 web set (`.ts .tsx .js .jsx .mjs .mts .cts .json .md`) with no structural extractor — walked/indexed as raw `file_doc` when configured; `PRESETS` = the `onboard.py init --preset ts\|js\|python\|cpp\|gdscript` extension lists (curated; a real TS extractor stays the tracked follow-up) |
 | `model.py` | language-neutral dataclasses `FileSym` / `Func` — the parse output contract |
 | `gdscript.py` | `.gd` + `.tscn` parser, entry-point rules, IO surface scan |
 | `python.py` | `.py` parser, entry-point rules, import/member facts; fn bodies sliced by AST spans (column-0 string lines no longer truncate them) |
