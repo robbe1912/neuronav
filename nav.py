@@ -849,25 +849,6 @@ def doc_shape() -> str:
     return f"cast{graph.FILE_DOC_REV}@{FILE_DOC_CAST:g}"
 
 
-def _collection() -> chromadb.Collection:
-    """Main file-level collection."""
-    return _named_collection(COLLECTION)
-
-
-def fns_collection() -> chromadb.Collection:
-    """Fn-level sibling (graph.sync_functions / find_functions)."""
-    return _named_collection(fns_name())
-
-
-def embed_mode() -> str:
-    """Vector-space lineage of the current process (#220): "fake" under
-    NEURONAV_EMBED_FAKE, else "real". Recorded next to embed_model in
-    the collection stamp so a rescan in the OTHER mode force-re-embeds
-    instead of silently reusing sha-gated vectors from the wrong space
-    (the #219 rig failure: hash-embed bootstrap, real bench, cosine 0)."""
-    return "fake" if os.environ.get("NEURONAV_EMBED_FAKE") else "real"
-
-
 def rescan(timeout: float | None = None) -> dict[str, int]:
     """Incremental index: add/update changed files, purge deleted ones.
     Warm passes skip read+hash via the stat fingerprint (issue #42); the
