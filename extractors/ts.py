@@ -215,9 +215,13 @@ def _load_tsconfig(cfg: Path) -> tuple[dict[str, list[str]], Path] | None:
     """(alias map find->replacements, base dir) or None when unreadable.
 
     One `extends` level, child wins; baseUrl/paths resolve against the
-    tsconfig's own directory. Unreadable => pass-through + exactly one
-    stderr line (test-visible via _reset_tsconfig_warn).
+    tsconfig's own directory. An unreadable extends target (package
+    specifier like "expo/tsconfig.base", or a missing relative path)
+    keeps the config's OWN compilerOptions — only the own file being
+    unparseable degrades the whole tsconfig. Either way: exactly one
+    stderr line (test-visible via the module flags).
     """
+    global _WARNED_TSCONFIG
     if cfg in _TSCONFIG_LOAD:
         return _TSCONFIG_LOAD[cfg]
     loaded: tuple[dict[str, list[str]], Path] | None = None
@@ -226,11 +230,19 @@ def _load_tsconfig(cfg: Path) -> tuple[dict[str, list[str]], Path] | None:
         base = data
         ext = data.get("extends")
         if isinstance(ext, str):
-            ext_path = Path(os.path.normpath(str(cfg.parent / ext)))
-            parent = json.loads(_strip_jsonc(ext_path.read_text(encoding="utf-8", errors="replace")))
-            merged = dict(parent)
-            merged.update(data)
-            base = merged
+            try:
+                ext_path = Path(os.path.normpath(str(cfg.parent / ext)))
+                parent = json.loads(_strip_jsonc(
+                    ext_path.read_text(encoding="utf-8", errors="replace")))
+                merged = dict(parent)
+                merged.update(data)
+                base = merged
+            except (OSError, ValueError):
+                if not _WARNED_TSCONFIG:
+                    _WARNED_TSCONFIG = True
+                    print(f"neuronav: tsconfig extends unreadable at "
+                          f"{cfg.parent} ({ext}): alias resolution "
+                          f"degraded to own paths", file=sys.stderr)
         opts = base.get("compilerOptions") or {}
         base_dir = Path(os.path.normpath(str(cfg.parent / str(opts.get("baseUrl", ".")))))
         paths = opts.get("paths") or {}
@@ -241,7 +253,6 @@ def _load_tsconfig(cfg: Path) -> tuple[dict[str, list[str]], Path] | None:
                     aliases[find] = [str(r) for r in repls if isinstance(r, str)]
         loaded = (aliases, base_dir)
     except (OSError, ValueError):
-        global _WARNED_TSCONFIG
         if not _WARNED_TSCONFIG:
             _WARNED_TSCONFIG = True
             print(f"neuronav: tsconfig unreadable at {cfg.parent}: "
