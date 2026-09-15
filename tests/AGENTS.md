@@ -1,6 +1,6 @@
 # AGENTS.md — tests/
 
-Twenty-eight self-contained suites. Each is a standalone script — no pytest — run in
+Twenty-nine self-contained suites. Each is a standalone script — no pytest — run in
 its own process:
 
 ```
@@ -41,6 +41,7 @@ owner-side `test_chunking` and `test_truthful`.
 | `test_crosslang` | self-index integration: parse + embed + fn search over this repo | chromadb + Ollama (or `NEURONAV_EMBED_FAKE=1` — CI mode) |
 | `test_pyhard` | python extractor edge cases on `fixtures/pyhard` | numpy + chromadb import only (hermetic fixture config) |
 | `test_cpphard` | C++ extractor edge cases on `fixtures/cpp` (issue #13): macro surface, .h/.cpp pairing, registration harvest, dead tiers, determinism | tree-sitter + tree-sitter-cpp import only (hermetic fixture config) |
+| `test_tshard` | TS extractor edge cases (grammar split, barrels, aliases, overloads, defaults, decorators, JSX, dead tiers, determinism) | tree-sitter + tree-sitter-typescript wheels (hermetic fixtures) |
 | `test_selfindex` | self-index structural invariants: likely-dead zero, handlers stay review, deterministic rebuild | chromadb import (structural only) |
 | `test_target_regression` | byte-stability over the target repo: floor pins + liveness canaries | chromadb import + the target repo configured in `config.json` |
 | `test_explore` | explore() happy/degraded/no-hit paths, windowed slices + anchor paging (issue #69) + MCP tool annotations; CI leg self-bootstraps the self-index under FAKE (issue #180) | mcp + chroma + populated self-index (CI: self-populated via FAKE rescan) |
@@ -168,6 +169,11 @@ Suites pick their own config; the shell must not pre-export one:
 - `fixtures/cpp/*.h` + `*.cpp` — C++ extractor fixtures: macro/
   registration surface, `.h`/`.cpp` pairing, dead tiers, and the
   mention-rescue pair (`mention_rescue.cpp` + its caller).
+- `fixtures/ts/*` — TS extractor fixtures (issue #245): grammar-split JSX,
+  barrel re-export chains, tsconfig aliasing (incl. a malformed-tsconfig
+  degraded-mode sibling), overload collapse, default exports, decorators,
+  super calls, ambient `.d.ts`, and the dead-tier pair (`dead_helpers.ts`
+  + mention partners in `barrel_view.tsx`).
 - `fixtures/verifier/*` — synthetic annotated fixtures for extractor
   facts with no committed coverage (gd declared surface, tscn PackedScene
   instancing). Goal-comment grammar: `tests/test_verifier.py` header;

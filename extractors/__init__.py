@@ -16,6 +16,7 @@ from __future__ import annotations
 from extractors import cpp
 from extractors import gdscript
 from extractors import python
+from extractors import ts
 # Re-export surface = consumed surface (#200): every name below has a
 # consumer outside extractors/ (graph.py, clusters.py, nav.py, server.py,
 # bake/*, tools/, the langsep registry pins). Everything else stays on its
@@ -54,6 +55,10 @@ EXTENSIONS: dict[str, object] = {
     ".cpp": cpp,
     ".cc": cpp,
     ".cxx": cpp,
+    ".ts": ts,
+    ".tsx": ts,
+    ".mts": ts,
+    ".cts": ts,
 }
 
 # issue #240: language presets + the raw-text walk suffixes — language
@@ -61,13 +66,10 @@ EXTENSIONS: dict[str, object] = {
 # (degraded-boot guidance), so they live here beside the registry, not
 # in the shared modules. Registered suffixes parse structurally; the
 # rest ride graph.file_doc's raw fallback (embedded + searchable, fns 0)
-# until an extractor lands for them (a TS extractor is the tracked
-# follow-up).
-RAW_TEXT_EXTS = (
-    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts", ".cts", ".json", ".md",
-)
+# until an extractor lands for them (JS is the tracked follow-up).
+RAW_TEXT_EXTS = (".js", ".jsx", ".mjs", ".cjs", ".json", ".md")
 PRESETS: dict[str, tuple[str, ...]] = {
-    "ts": RAW_TEXT_EXTS,
+    "ts": (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".json", ".md"),
     "js": (".js", ".jsx", ".mjs", ".cjs", ".json", ".md"),
     "python": (".py", ".pyi", ".json", ".md"),
     "cpp": (".h", ".hpp", ".cpp", ".cc", ".cxx"),
@@ -106,6 +108,8 @@ BUILD_SEQUENCE = (
     python.rebind_reexports_sweep,
     python.import_liveness_sweep,
     python.arg_refs_sweep,
+    ts.rebind_reexports_sweep,
+    ts.import_liveness_sweep,
 )
 
 WIRE_SEQUENCE = (

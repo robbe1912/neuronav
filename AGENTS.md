@@ -6,8 +6,9 @@ issue #17), call/signal graph, clusters, dead-code tiers, 3D visualizer, stdio
 MCP server. Python 3.11,
 stdlib-first; heavy deps: chromadb/httpx (vector store + embed transport), mcp
 (stdio server), numpy/networkx/scipy/scikit-learn (the cluster/graph math the
-read tools ride), plus the pinned C++ front-end pair tree-sitter==0.26.0 /
-tree-sitter-cpp==0.23.4 (issue #13). Standalone repo — point it
+read tools ride), plus the pinned tree-sitter front-ends tree-sitter==0.26.0 /
+tree-sitter-cpp==0.23.4 (issue #13) and tree-sitter-typescript==0.23.2
+(issue #245). Standalone repo — point it
 at any project via config; nothing is vendored into target projects.
 
 Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`,
@@ -50,7 +51,7 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 |---|---|
 | `nav.py` | config resolution, chroma collection, embed client (provider-pluggable: ollama/openai wires, issue #17), rescan/import/export-base, CLI — the CLI never imports `viz` (bake-free by design, issue #86 R8) |
 | `graph.py` | file/fn symbol graph, per-fn IO extraction, dead-code tiers |
-| `extractors/` | per-language parsers behind a registry (`gdscript.py`, `python.py`, `cpp.py` — tree-sitter-cpp front-end, `model.py` dataclasses) |
+| `extractors/` | per-language parsers behind a registry (`gdscript.py`, `python.py`, `cpp.py` — tree-sitter-cpp front-end, `ts.py` — tree-sitter-typescript front-end, issue #245, `model.py` dataclasses) |
 | `clusters.py` | Louvain + labeler + crosstalk (imported lazily) |
 | `explore.py` | one-call orientation tool (codegraph-discipline: windowed 100-line slices + continuation anchors, issue #69; one `clusters()` pass feeds both stages, issue #44) |
 | `server.py` | FastMCP stdio server; read-only tools carry `readOnlyHint`, `rescan` is the write tool; read tools auto-rescan on worktree drift (stat gate, issue #19) |
@@ -62,7 +63,7 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `config/` | named config profiles, machine-portable only (relative `root`s); the root `config.json` is deliberately ABSENT (issue #204 — the repo carries no machine values; consumers pass `NEURONAV_CONFIG` per-command or boot pure-defaults on cwd) |
 | `vendor/three-0.160.0/` | vendored three.js core + 4 addons, embedded at build (see below) |
 | `bench/` | recall benchmark: golden set, `run_bench.py`, committed results (`RESULTS.md`) — the numbers `docs/comparison.md` cites |
-| `tests/` | 28 self-contained suites + committed fixtures (see tests/AGENTS.md) |
+| `tests/` | 29 self-contained suites + committed fixtures (see tests/AGENTS.md) |
 | `docs/map-spec-v2.md` | spec the named-wire map layer implements |
 
 ## viz.py template laws
@@ -139,6 +140,7 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_repomap` | repo_map budget/determinism/rank ordering on synthetic graphs | stdlib + numpy |
 | `test_cpphard` | C++ extractor edge cases (macro surface, pairing, dead tiers, determinism) | tree-sitter wheels (hermetic fixtures) |
 | `test_recall` | hybrid recall: BM25F/RRF fusion, ctx hops, degraded mode | chromadb import (hermetic, `NEURONAV_EMBED_FAKE=1`) |
+| `test_tshard` | TS extractor edge cases (grammar split, barrels, aliases, overloads, defaults, decorators, JSX, dead tiers, determinism) | tree-sitter + tree-sitter-typescript wheels (hermetic fixtures) |
 | `test_embedprov` | embed provider contract (issue #17) + collection stamp (issue #103): provider select/auto-detect, ollama+openai wire adapters, env-vs-config key precedence, 429 backoff, stamp keeps/heals hnsw:space | stdlib http.server stub + chromadb import |
 | `test_project_mode` | onboarding + config discovery precedence + viz-as-add-on (issue #27) | stdlib + chromadb import (hermetic temp trees) |
 | `test_viz` | 103-check Playwright harness (real Chrome) — CI runs it on the frozen corpus from `tests/vizcorpus_build.py` (issue #100) | playwright + chrome + a fresh bake |

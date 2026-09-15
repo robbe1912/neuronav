@@ -8,11 +8,12 @@ Full field contract: `extractors/README.md`.
 
 | module | role |
 |---|---|
-| `__init__.py` | registry: `EXTENSIONS` maps suffix -> module (`.gd`/`.tscn` -> `gdscript`, `.py` -> `python`, `.h`/`.hpp`/`.cpp`/`.cc`/`.cxx` -> `cpp`); `registry_for(suffix)` returns module or None; `RAW_TEXT_EXTS` = the issue-#240 web set (`.ts .tsx .js .jsx .mjs .mts .cts .json .md`) with no structural extractor — walked/indexed as raw `file_doc` when configured; `PRESETS` = the `onboard.py init --preset ts\|js\|python\|cpp\|gdscript` extension lists (curated; a real TS extractor stays the tracked follow-up) |
+| `__init__.py` | registry: `EXTENSIONS` maps suffix -> module (`.gd`/`.tscn` -> `gdscript`, `.py` -> `python`, `.h`/`.hpp`/`.cpp`/`.cc`/`.cxx` -> `cpp`, `.ts`/`.tsx`/`.mts`/`.cts` -> `ts`); `registry_for(suffix)` returns module or None; `RAW_TEXT_EXTS` = the issue-#240 web set (`.js .jsx .mjs .cjs .json .md`) with no structural extractor — walked/indexed as raw `file_doc` when configured (the TS suffixes gained a structural extractor in issue #245; JS stays the tracked follow-up); `PRESETS` = the `onboard.py init --preset ts\|js\|python\|cpp\|gdscript` extension lists (curated) |
 | `model.py` | language-neutral dataclasses `FileSym` / `Func` — the parse output contract |
 | `gdscript.py` | `.gd` + `.tscn` parser, entry-point rules, IO surface scan |
 | `python.py` | `.py` parser, entry-point rules, import/member facts; fn bodies sliced by AST spans (column-0 string lines no longer truncate them) |
 | `cpp.py` | `.h`/`.hpp`/`.cpp`/`.cc`/`.cxx` parser: tree-sitter-cpp front-end + stdlib macro-surface pass (ClassDB/GDVIRTUAL registration harvest, ADD_SIGNAL/ADD_PROPERTY, emit_signal, memnew) |
+| `ts.py` | `.ts`/`.tsx`/`.mts`/`.cts` parser: tree-sitter-typescript front-end with the ts/tsx grammar split (`.tsx` adds JSX patterns; byte-offset line numbers — never `start_point`, py-tree-sitter #472); overloads collapse to one Func at the first declaration, barrel re-exports rebind to origin definers, tsconfig `paths` aliases (JSONC-tolerant, one `extends` level) resolve only inside this module |
 
 ## The contract
 

@@ -668,16 +668,20 @@ def _universal_scenario() -> None:
 
 
 def _fresh_folder_scenario() -> None:
-    """issue #240 acceptance: the owner's live repro (opencode-mobile —
-    TS-only, no .neuronav, pure defaults, v0.1.5 died pre-handshake).
-    The boot must degrade instead: initialize answers, tools/list
-    works, read tools answer first-call guidance naming the scanned
-    extensions + the paste-ready config for the suffixes actually on
-    disk, the explicit rescan TOOL stays loud (#41 law), and the
-    guidance's exact fix (onboard.py init --preset ts) recovers the
-    session in place. Then the embedder-probe contract (no FAKE): dead
-    endpoint + empty store aborts pre-handshake naming the ollama pull
-    fix; a warm store serves degraded from the index."""
+    """issue #240 acceptance, post-#245 shape: the owner's live repro
+    (opencode-mobile — TS-only, no .neuronav, pure defaults, v0.1.5 died
+    pre-handshake). A TS-only repo now boots STRUCTURAL (the ts
+    extractor landed, #245), so that half pins the structural boot:
+    initialize answers, tools/list works, repo_map serves the real map.
+    The degraded-boot guidance UX lives on for raw-text-only repos (JS
+    is the tracked follow-up): a js-only sibling pins the #240/#41/#91
+    contract verbatim — read tools answer first-call guidance naming
+    the scanned extensions + the paste-ready config for the suffixes
+    actually on disk, the explicit rescan TOOL stays loud (#41 law),
+    and the guidance's exact fix (onboard.py init --preset ts)
+    recovers the session in place. Then the embedder-probe contract
+    (no FAKE): dead endpoint + empty store aborts pre-handshake naming
+    the ollama pull fix; a warm store serves degraded from the index."""
     import shutil
     import socket
 
@@ -695,16 +699,17 @@ def _fresh_folder_scenario() -> None:
 
     base = {k: v for k, v in os.environ.items()
             if k not in ("NEURONAV_CONFIG", "NEURONAV_EMBED_FAKE")}
-    env = dict(base)
-    env["NEURONAV_EMBED_FAKE"] = "1"
-    srv = _spawn(env, cwd=repo)
-    send, recv = srv.send, srv.recv
 
     def call(mid: int, name: str, args: dict) -> dict:
         send({"jsonrpc": "2.0", "id": mid, "method": "tools/call",
               "params": {"name": name, "arguments": args}})
         return recv(mid)["result"]
 
+    # --- ts repo: pure-defaults boot is structural now (#245) ---
+    env = dict(base)
+    env["NEURONAV_EMBED_FAKE"] = "1"
+    srv = _spawn(env, cwd=repo)
+    send, recv = srv.send, srv.recv
     try:
         send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
             "protocolVersion": "2024-11-05", "capabilities": {},
@@ -719,24 +724,74 @@ def _fresh_folder_scenario() -> None:
         send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = [t["name"] for t in recv(2)["result"]["tools"]]
+        check("fresh240: tools/list works on the structural ts boot",
+              "repo_map" in names and "rescan" in names, "")
+
+        g = text_of(call(3, "repo_map", {"budget_tokens": 256}))
+        check("fresh240: ts boot serves the structural map, not guidance",
+              g.startswith(f"you are here: {repo.resolve().as_posix()}")
+              and "main.ts" in g and "EMPTY INDEX" not in g, g[:160])
+        g2 = text_of(call(4, "semantic_search", {"query": "greet"}))
+        check("fresh240: ts boot semantic_search serves, not guidance",
+              "main.ts" in g2 and "EMPTY INDEX" not in g2, g2[:160])
+
+        # the structural boot indexes on its own: explicit rescan is a
+        # normal success, no degraded mode to protect (#41 applies to
+        # the js-only leg below)
+        r = call(5, "rescan", {})
+        check("fresh240: ts boot rescan succeeds (structural, #245)",
+              not bool(r.get("isError")) and "files" in text_of(r),
+              text_of(r)[:200])
+    finally:
+        srv.kill()
+        if FAILS:
+            print("--- fresh240 ts server stderr (tail) ---")
+            print("\n".join(srv.stderr_lines[-15:]))
+
+    # --- js-only sibling: the raw-text degraded-boot UX (issue #240,
+    #     preserved verbatim for the languages without an extractor) ---
+    jsrepo = scratch / "jsonly"
+    (jsrepo / "src").mkdir(parents=True)
+    (jsrepo / "src" / "main.js").write_text(
+        "export function jgreet() {\n  return 'yo';\n}\n",
+        encoding="utf-8", newline="\n")
+    (jsrepo / "package.json").write_text(
+        '{\n  "name": "jsonly"\n}\n', encoding="utf-8", newline="\n")
+
+    jsenv = dict(base)
+    jsenv["NEURONAV_EMBED_FAKE"] = "1"
+    srv = _spawn(jsenv, cwd=jsrepo)
+    send, recv = srv.send, srv.recv
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "fresh", "version": "0"}}})
+        init = recv(1)
+        check("fresh240: js-only pure-defaults boot answers initialize "
+              "(server stays up — the v0.1.5 fatal)",
+              "result" in init and srv.proc.poll() is None, "")
+        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        names = [t["name"] for t in recv(2)["result"]["tools"]]
         check("fresh240: tools/list works while degraded",
               "repo_map" in names and "rescan" in names, "")
 
         g = text_of(call(3, "repo_map", {"budget_tokens": 256}))
-        check("fresh240: repo_map answers guidance naming .ts/.tsx",
-              "EMPTY INDEX" in g and ".ts" in g and ".tsx" in g, g[:160])
+        check("fresh240: repo_map answers guidance naming .js",
+              "EMPTY INDEX" in g and ".js" in g, g[:160])
         check("fresh240: guidance carries the paste-ready config "
               "(state_dir opt-in, issue #91)",
               '"state_dir": "default"' in g and "config.json" in g, g)
-        check("fresh240: guidance names the preset one-liner",
+        check("fresh240: guidance names the preset one-liner "
+              "(the ts preset covers .js — ts hints first)",
               "--preset ts" in g, g)
         check("fresh240: guidance names the raw-text degradation",
               "raw text" in g and "find_functions" in g, g)
         check("fresh240: guidance names extensions actually scanned",
               "extensions scanned:" in g, g[:300])
-        g2 = text_of(call(4, "semantic_search", {"query": "greet"}))
+        g2 = text_of(call(4, "semantic_search", {"query": "jgreet"}))
         check("fresh240: semantic_search answers the same guidance",
-              "EMPTY INDEX" in g2 and ".ts" in g2, g2[:120])
+              "EMPTY INDEX" in g2 and ".js" in g2, g2[:120])
 
         # issue #41 law: degraded boot must not neuter the explicit
         # rescan tool — it errors loudly (names the 0-file walk), never
@@ -749,35 +804,36 @@ def _fresh_folder_scenario() -> None:
         # the guidance's exact fix, applied in-session via the CLI
         subprocess.run(
             [sys.executable, "-X", "utf8", str(HERE / "onboard.py"),
-             "init", "--project", str(repo), "--preset", "ts"],
-            cwd=repo, env=env, capture_output=True, text=True, check=True)
-        cfg = json.loads((repo / ".neuronav" / "config.json")
+             "init", "--project", str(jsrepo), "--preset", "ts"],
+            cwd=jsrepo, env=jsenv, capture_output=True, text=True, check=True)
+        cfg = json.loads((jsrepo / ".neuronav" / "config.json")
                          .read_text(encoding="utf-8"))
         check("fresh240: preset ts scaffold pins extensions + state_dir",
-              cfg["extensions"] == [".ts", ".tsx", ".js", ".jsx", ".mjs",
-                                    ".mts", ".cts", ".json", ".md"]
-              and cfg["state_dir"] == "default" and cfg["root"] == str(repo),
+              cfg["extensions"] == [".ts", ".tsx", ".mts", ".cts",
+                                    ".js", ".jsx", ".mjs",
+                                    ".json", ".md"]
+              and cfg["state_dir"] == "default" and cfg["root"] == str(jsrepo),
               json.dumps(cfg))
         rec = text_of(call(6, "rescan", {}))
         check("fresh240: in-session recovery on the next rescan",
-              "rebound the boot" in rec and "files 3/" in rec, rec[:160])
+              "rebound the boot" in rec and "files 2/" in rec, rec[:160])
         time.sleep(0.3)  # stderr drain settle
         err = "".join(srv.stderr_lines)
         check("fresh240: boot banner names the raw-text degradation",
-              "no structural extractor for" in err and ".ts" in err,
+              "no structural extractor for" in err and ".js" in err,
               "\n".join(srv.stderr_lines[-6:]))
-        g3 = text_of(call(7, "semantic_search", {"query": "greet"}))
-        check("fresh240: post-recovery search finds the TS file (raw)",
-              "main.ts" in g3, g3[:200])
+        g3 = text_of(call(7, "semantic_search", {"query": "jgreet"}))
+        check("fresh240: post-recovery search finds the js file (raw)",
+              "main.js" in g3, g3[:200])
         g4 = text_of(call(8, "repo_map", {"budget_tokens": 256}))
         check("fresh240: post-recovery repo_map serves with the "
               "structural degradation visible",
-              g4.startswith(f"you are here: {repo.resolve().as_posix()}")
+              g4.startswith(f"you are here: {jsrepo.resolve().as_posix()}")
               and "0 files" in g4, g4[:120])
     finally:
         srv.kill()
         if FAILS:
-            print("--- fresh240 server stderr (tail) ---")
+            print("--- fresh240 js server stderr (tail) ---")
             print("\n".join(srv.stderr_lines[-15:]))
 
     # ---- embedder probe (issue #240 pin 4): no FAKE in these legs ----

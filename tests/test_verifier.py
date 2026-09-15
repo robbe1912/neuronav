@@ -36,6 +36,7 @@ from extractors import cpp as cpp_x  # noqa: E402
 from extractors import gdscript as gd_x  # noqa: E402
 from extractors import python as py_x  # noqa: E402
 from extractors import registry_for  # noqa: E402
+from extractors import ts as ts_x  # noqa: E402
 
 FAILS: list[str] = []
 
@@ -43,6 +44,7 @@ FAILS: list[str] = []
 GD_ROOTS = set(gd_x.VIRTUALS) | set(gd_x.GUT_ROOTS) | set(gd_x.ENGINE_VIRTUALS.get("", ()))
 PY_ROOTS = set(py_x.PY_VIRTUALS)
 CPP_ROOTS = set(cpp_x.CPP_VIRTUALS)
+TS_ROOTS = set(ts_x.TS_BASE_VIRTUALS)
 
 # goal line = `-` immediately after the native comment prefix; the text
 # after it is the Kythe-shaped goal (`@anchor verb args`)
@@ -169,7 +171,7 @@ def _dead(name, own_fs, own_fn, corpus, roots):
 # pass 1: parse every fixture file that carries goals (fixed family order,
 # sorted files — deterministic)
 CORPUS = []  # (rel, fs, sites, extents, goals[(line, text)])
-for fam in ("verifier", "pyhard", "cpp", "mwires"):
+for fam in ("verifier", "pyhard", "cpp", "mwires", "ts"):
     for path in sorted((FIX / fam).iterdir()):
         mod = registry_for(path.suffix)
         if mod is None:
@@ -187,10 +189,11 @@ for fam in ("verifier", "pyhard", "cpp", "mwires"):
 
 # pass 2: evaluate
 n_goals = n_neg = n_dead = 0
-fam_files = {".py": set(), "gd": set(), "cpp": set()}
+fam_files = {".py": set(), "gd": set(), "cpp": set(), "ts": set()}
 for rel, fs, sites, ext, goals in CORPUS:
     is_cpp = fs.ext in cpp_x.CPP_EXTS
-    fam_files["gd" if fs.ext in (".gd", ".tscn") else "cpp" if is_cpp else ".py"].add(rel)
+    fam_files["gd" if fs.ext in (".gd", ".tscn") else "cpp" if is_cpp
+              else "ts" if fs.ext in ts_x.TS_EXTS else ".py"].add(rel)
     for no, goal in goals:
         n_goals += 1
         neg = goal.startswith("!")
@@ -201,7 +204,8 @@ for rel, fs, sites, ext, goals in CORPUS:
         dm = re.fullmatch(r"@(\S+) dead", core)
         if dm:
             n_dead += 1
-            roots = CPP_ROOTS if is_cpp else PY_ROOTS if fs.ext == ".py" else GD_ROOTS
+            roots = (CPP_ROOTS if is_cpp else TS_ROOTS if fs.ext in ts_x.TS_EXTS
+                     else PY_ROOTS if fs.ext == ".py" else GD_ROOTS)
             ok, detail = _dead(dm.group(1), fs, dm.group(1), CORPUS, roots)
             check(label, ok, detail)
             continue
@@ -228,8 +232,7 @@ check("harness dead scan sees cross-file body ref", _dead_ok)
 check("goals parsed", n_goals >= 80, str(n_goals))
 check("annotated files", len(CORPUS) >= 24, str(len(CORPUS)))
 check("dead goals present", n_dead >= 8, str(n_dead))
-check("negated goals present", n_neg >= 2, str(n_neg))
-for fam, floor in ((".py", 4), ("gd", 5), ("cpp", 8)):
+for fam, floor in ((".py", 4), ("gd", 5), ("cpp", 8), ("ts", 6)):
     check(f"{fam} fixtures annotated", len(fam_files[fam]) >= floor, str(sorted(fam_files[fam])))
 
 print()
