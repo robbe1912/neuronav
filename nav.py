@@ -826,6 +826,36 @@ def fns_collection() -> chromadb.Collection:
     return _named_collection(fns_name())
 
 
+def chroma_read(what: str, read):
+    """Run a chroma read, retrying only the hnsw-settling transient
+    (issue #239): right after embedding upserts — the boot rescan or a
+    watcher tick — chroma's on-disk hnsw segment can lag the sqlite
+    metadata for a moment under load, and a read then fails with
+    "Error creating hnsw segment reader: Nothing found on disk" from
+    the Rust executor. The segment settles by itself, so the read is
+    retried on exactly that signature: a loud stderr note per retry;
+    anything else — or exhaustion — raises unchanged. No silent
+    degradation, no changed auto-rescan semantics."""
+    for pause in _CHROMA_READ_PAUSES_S:
+        try:
+            return read()
+        except Exception as exc:
+            if _HNSW_SETTLING not in str(exc):
+                raise
+            print(
+                f"neuronav: chroma read retry ({what}): hnsw segment still "
+                f"settling after upserts — next try in {pause:g}s "
+                f"({len(_CHROMA_READ_PAUSES_S)} retries max)",
+                file=sys.stderr,
+            )
+            time.sleep(pause)
+    return read()
+
+
+_HNSW_SETTLING = "hnsw segment reader"
+_CHROMA_READ_PAUSES_S = (0.5, 1.0, 2.0, 4.0)
+
+
 def embed_mode() -> str:
     """Vector-space lineage of the current process (#220): "fake" under
     NEURONAV_EMBED_FAKE, else "real". Recorded next to embed_model in
@@ -1073,7 +1103,7 @@ def clusters(
     col = _collection()
     if col.count() == 0:
         return []
-    got = col.get(include=["metadatas", "embeddings"])
+    got = chroma_read("clusters", lambda: col.get(include=["metadatas", "embeddings"]))
     # issue #118: chroma returns ids in insertion order — a function of
     # store HISTORY, not data (a fresh store and a grown one over the
     # same files disagree). Sort every column by id so union-find roots,

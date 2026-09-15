@@ -236,10 +236,13 @@ def _vector_ranks(query: str, depth: int) -> tuple[list[str], dict[str, dict]]:
     if count == 0:
         return [], {}
     vector = nav.embed([query])[0]
-    got = col.query(
-        query_embeddings=[vector],
-        n_results=min(depth, count),
-        include=["metadatas"],
+    got = nav.chroma_read(
+        "vector ranks",
+        lambda: col.query(
+            query_embeddings=[vector],
+            n_results=min(depth, count),
+            include=["metadatas"],
+        ),
     )
     ids = list(got["ids"][0])
     metas = {fid: (m or {}) for fid, m in zip(ids, got["metadatas"][0])}

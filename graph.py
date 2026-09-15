@@ -1358,10 +1358,13 @@ def find_functions(query: str, n: int = 6) -> list[dict[str, object]]:
     if count == 0:
         return []
     vector = nav.embed([query])[0]
-    got = col.query(
-        query_embeddings=[vector],
-        n_results=min(3 * n, count),
-        include=["metadatas", "distances"],
+    got = nav.chroma_read(
+        "fn vector ranks",
+        lambda: col.query(
+            query_embeddings=[vector],
+            n_results=min(3 * n, count),
+            include=["metadatas", "distances"],
+        ),
     )
     out = []
     for rid, dist, meta in zip(
