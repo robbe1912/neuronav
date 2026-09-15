@@ -36,7 +36,7 @@ scratch store via `NEURONAV_CONFIG`.
 | `clusters.py` | Louvain communities, labels, crosstalk |
 | `explore.py` | one-call agent orientation tool |
 | `onboard.py` | one-command project onboarding (issue #27): init/wire — install stays read-only, cross-platform |
-| `server.py` | FastMCP stdio server (13 tools) |
+| `server.py` | FastMCP stdio server (14 tools) |
 | `viz.py` | optional add-on: data build + embedded three.js template -> `graph.html` |
 | `layout.py` | pure strata/layout math for the viz bake (stdlib + numpy only) |
 | `bake/` | pure per-job transforms for the viz DATA pipeline (g/clusters in, DATA rows out) |

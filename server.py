@@ -32,6 +32,9 @@ Tools:
 - visualize(): generate the interactive 3D graph (graph.html) and return path
 - rescan(): incremental re-index of everything above; appends a capped
   changed/deleted path list when anything moved
+- memory(verb, name, body): Serena-style project memories (issue #67) —
+  durable cross-session notes as plain .neuronav/memories/*.md files;
+  verbs list/get/set/delete; mutating (like rescan), not read-only
 every tool also takes dir="<checkout>" (issue #131): routes that one call
 to another repo's index — one server entry per harness instead of one per
 project. A fresh dir onboards on first contact (the build answers in
@@ -59,6 +62,7 @@ from mcp.types import ToolAnnotations
 import explore as _explore
 import graph
 from extractors import res_to_rel  # noqa: E402
+import memories
 import nav
 
 def _version() -> str:
@@ -86,7 +90,7 @@ mcp = FastMCP("neuronav")
 # loudly at import rather than silently misreporting.
 mcp._mcp_server.version = _version()
 
-# below except rescan is pure read over the local index
+# below except rescan and memory is pure read over the local index
 READONLY = ToolAnnotations(readOnlyHint=True)
 
 # ---- universal mount (issue #131): one server entry, per-call dir ---------
@@ -1205,6 +1209,36 @@ def _rescan_paths(stats: dict) -> str:
             )
     return "\n" + "\n".join(lines) if lines else ""
 
+
+@mcp.tool()
+def memory(verb: str, name: str = "", body: str = "", dir: str = "") -> str:
+    """Project memories — durable notes kept across sessions (issue #67).
+
+    Memories answer "what we LEARNED" where the index answers "what IS":
+    the flaky test, the deploy entry point, the quirk that cost a day.
+    Plain markdown files in .neuronav/memories/ (this repo's project
+    store — a dir= routes to that project's memories).
+
+    Verbs:
+    - "list": names + one-line summaries, sorted by name
+    - "get": one memory's full body (name required) — verbatim
+    - "set": create/overwrite (name + body required). The file starts
+      with "# <name>"; the body is stored byte-verbatim (UTF-8, LF,
+      atomic write) — start the body with a one-line
+      "<!-- summary -->" comment to give list a summary line
+    - "delete": remove (name required); a missing name fails loud
+
+    Names are one safe filename component: 1-128 chars of
+    letters/digits/._- starting alphanumeric (path shapes like "../x"
+    are refused). This tool mutates state, like rescan — no read-only
+    hint.
+    """
+    with _route(dir) as prelude:
+        out = memories.run(verb, name, body)
+        # a routed fresh dir onboards mid-call; unlike read tools we do
+        # NOT return the prelude alone — dropping a mutating op to
+        # report the build would silently lose the write
+        return f"{prelude}\n{out}" if prelude else out
 
 @mcp.tool()
 def rescan(dir: str = "") -> str:

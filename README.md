@@ -34,7 +34,7 @@ no machine values (issue #204): the root `config.json` is deliberately
 absent (never restored); consumers pass `NEURONAV_CONFIG` per-command or
 rely on the pure-defaults cwd boot.
 
-## Tools (stdio MCP, 13)
+## Tools (stdio MCP, 14)
 
 | tool | use |
 |---|---|
@@ -51,8 +51,10 @@ rely on the pure-defaults cwd boot.
 | `duplicates(n)` | exact-clone function bodies across all indexed languages — .gd/.py/C++ (dedup targets) |
 | `visualize()` | generate interactive 3D graph.html (open the baked file directly — see [3D visualizer](#3d-visualizer-optional-add-on)) |
 | `rescan()` | incremental re-index (vectors + functions + graph) — the explicit always-sync variant; read tools already auto-rescan on worktree drift; appends a capped changed/deleted path list (10 shown, `+N more` past it) when anything moved |
+| `memory(verb, name, body)` | Serena-style project memories (issue #67) — durable cross-session notes as plain `.neuronav/memories/<name>.md` files: `list` (names + one-line summaries), `get` (full body), `set` (atomic create/overwrite), `delete`; names are validated to a safe filename charset, UTF-8/LF/no BOM, sorted listings; rides `dir` routing so each project keeps its own memories |
 
-All read-only tools carry `readOnlyHint`; `rescan` is the one mutating tool.
+All read-only tools carry `readOnlyHint`; `rescan` and `memory` are the two
+mutating tools.
 
 Every tool also takes an optional trailing `dir` (issue #131): empty
 serves the boot config's repo; any other path routes that one call to

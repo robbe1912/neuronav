@@ -111,6 +111,21 @@ def main() -> None:
         gi2 = (proj / ".gitignore").read_text(encoding="utf-8")
         check("init: idempotent", gi2 == gi)
 
+        # 2a-bis. init scaffolds the memories dir + convention README (issue #67)
+        mdir = proj / ".neuronav" / "memories"
+        mrd = mdir / "README.md"
+        check("init: scaffolds the memories dir + README",
+              mdir.is_dir() and mrd.is_file()
+              and mrd.read_text(encoding="utf-8").startswith("# neuronav memories\n")
+              and "memory(verb" in mrd.read_text(encoding="utf-8"),
+              str(mrd))
+        mrd.write_text("# user rewrote it\n", encoding="utf-8", newline="\n")
+        subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "init"], cwd=proj,
+                       capture_output=True, text=True, check=True)
+        check("init re-run: user-customized memories README preserved",
+              mrd.read_text(encoding="utf-8") == "# user rewrote it\n",
+              repr(mrd.read_text(encoding="utf-8")[:60]))
+
         # 2b. init does NOT clobber a customized config on re-run (issue #121)
         cfg_path.write_text(json.dumps({**cfg, "exclude_dirs": ["build/"], "embed_url": "http://example.invalid/embeddings"}), encoding="utf-8")
         r = subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "init"], cwd=proj,
