@@ -13,6 +13,22 @@
 #   python -X utf8 tools/qa_readability.py --after [--base .tmp/qa/declutter_base.json]
 #     Same battery against the current build; prints a per-metric delta table
 #     vs the baseline and exits 1 on any clutter regression.
+#     Median-of-N measurement (issue #216): the battery is captured --passes
+#     times (default 5, fresh page load per pass); the reported value is
+#     the per-cell MEDIAN and the VERDICT reads the observed range —
+#     max<=limit ok, min>limit REGRESS, a range straddling the limit is
+#     AT-THRESHOLD, reported loudly with no pass/fail verdict (some cells
+#     are load-bimodal: hub7_quests/overview chevCrowdHard reads exactly
+#     6 or 11 per page load, so a point estimate coin-flips forever).
+#     Totals get the same range law over per-pass sums, and a pending
+#     REGRESS/VIOLATED verdict escalates passes up to ESCALATE_CAP (20):
+#     a skewed bimodal cell (high mode ~p of loads) fools a small N into
+#     an all-high range (p^N) — one demoting draw ends escalation.
+#   python -X utf8 tools/qa_readability.py --repeat-probe [--base ...]
+#     Repeatability self-check (216): run the stabilized measurement TWICE on
+#     the same bake and demand identical per-cell verdicts; exit 0 = stable,
+#     1 = verdict flip, 2 = broken. --declutter stays single-pass — the
+#     baseline battery semantics are unchanged (216 acceptance).
 #   (both need a python with playwright; PIL NOT required — PNG ink analysis
 #   decodes the CDP quarter-scale capture in pure stdlib)
 #
@@ -33,6 +49,7 @@ import hashlib
 import json
 import os
 import re
+import statistics
 import sys
 import urllib.request
 from pathlib import Path
@@ -327,6 +344,29 @@ JS_2D = r"""() => {
 # instead of silently degrading. Bump on any change to the metric set,
 # probe semantics, angles, or hub selection.
 BATTERY_SCHEMA = 1
+
+# Median-of-N capture (issue #216): capture noise, not ink, coin-flipped the
+# ratchet — GK grounds_215 measured hub3_world chevCrowdHard 11->15 on one
+# rig against a 0-violation rig on the same head; the wt-216 probe then
+# caught hub7_quests/overview chevCrowdHard reading EXACTLY 6 or 11 per
+# page load (~coin-flip), i.e. genuinely load-bimodal, not +-1 grazing.
+# The --after measurement captures the battery N times — one FRESH page
+# load per pass, because the noise lives across loads (label-collision
+# history), not within one settled double-read. Values gate on per-cell
+# passes: medians for values; observed [min, max] ranges per cell AND per
+# total drive verdicts: max<=limit ok, min>limit REGRESS/VIOLATED, a
+# straddling range is AT-THRESHOLD — loud, NO pass/fail verdict (a
+# median alone re-flips the bimodal coin; GK grounds_223: totals flapped
+# 3/4 runs on the point median — hence the per-pass-sum range law).
+# Skewed bimodal cells (high mode ~p of loads, GK grounds_223 measured
+# p~0.8 => p^5 ~ 33% all-high battery) still commit a false REGRESS
+# against a low-mode baseline when the N draws miss the low mode —
+# bounded escalation doubles down (up to ESCALATE_CAP passes) while a
+# REGRESS/VIOLATED commit is pending; one demoting draw ends it.
+# Determinism law intact: median and range are pure functions of the
+# ordered captures; no unordered iteration enters any path. --declutter
+# stays single-pass: the baseline battery semantics are unchanged (216).
+CAPTURE_PASSES = 5
 
 # top-N hubs by baked connection count (undirected adj degree), deterministic
 # tiebreak on path
@@ -975,8 +1015,24 @@ def get_metric(view, key):
     return view.get(key)
 
 
-def gate_declut(base_doc, after_doc, afford=frozenset()):
-    rows, violations = [], []
+def gate_verdicts(base_doc, after_doc, afford=frozenset()):
+    """Pure comparison of one after-capture against the baseline (no
+    printing): cell rows (subj, ang, key, base, after, state, limit, obs)
+    and total rows (key, base, after, tol, violated). Split out of
+    gate_declut so the repeatability probe (issue #216) can compare two
+    captures' verdicts without re-deriving them.
+
+    Verdicts (issue #216): when the after doc carries per-cell observed
+    ranges (median-of-N capture, doc["_obs"]), the verdict reads the
+    distribution, not the point: max<=limit ok, min>limit REGRESS, and a
+    range STRADDLING the limit is AT-THRESHOLD — load-dependent paint
+    (hub7_quests/overview chevCrowdHard reads exactly 6 or 11 per page
+    load, ~coin-flip), reported loudly with no pass/fail verdict instead
+    of coin-flipping the ratchet. Without _obs (single pass, or a
+    pre-#216 after doc) the point comparison stands — passes=1 reproduces
+    the original semantics exactly."""
+    rows, total_rows = [], []
+    obs_tree = (after_doc.get("_obs") or {}).get("views", {})
     totals = {"base": {}, "after": {}}
     for subj, angles in after_doc["views"].items():
         base_subj = base_doc["views"].get(subj)
@@ -984,21 +1040,19 @@ def gate_declut(base_doc, after_doc, afford=frozenset()):
             if ang.startswith("_"):
                 continue
             base_m = (base_subj or {}).get(ang)
+            obs = obs_tree.get(subj, {}).get(ang) or {}
             for key, label, tol, bar in GATE_KEYS:
                 a = get_metric(m, key)
                 b = get_metric(base_m, key) if base_m else None
                 if a is None:
-                    rows.append((subj, ang, key, b, a, "MISSING"))
-                    violations.append(f"{subj}/{ang}/{key}: probe missing value (after={a})")
+                    rows.append((subj, ang, key, b, a, "MISSING", None, None))
                     continue
                 if b is None:
                     # identity+schema binding (issue #120) means a matched
                     # baseline carries every cell; a missing one is a stale
                     # or hand-edited baseline — loud violation, never a
                     # silent degrade to hard-bar-only checks
-                    rows.append((subj, ang, key, b, a, "NOBASE"))
-                    violations.append(f"{subj}/{ang}/{key}: baseline cell "
-                                      f"missing (stale or edited baseline)")
+                    rows.append((subj, ang, key, b, a, "NOBASE", None, None))
                     continue
                 exempt = subj in afford and key in AFFORD_KEYS
                 if key in TOTAL_TOL and not exempt:
@@ -1009,12 +1063,85 @@ def gate_declut(base_doc, after_doc, afford=frozenset()):
                     limit = max(limit, bar)
                 ok = a <= limit
                 if not ok and exempt:
-                    rows.append((subj, ang, key, b, a, "AFFORD"))
+                    rows.append((subj, ang, key, b, a, "AFFORD", limit, None))
                     continue
-                rows.append((subj, ang, key, b, a, "ok" if ok else "REGRESS"))
-                if not ok:
-                    violations.append(
-                        f"{subj}/{ang}/{label}: {b} -> {a} (limit {limit})")
+                state, seen = ("ok" if ok else "REGRESS"), None
+                if key in obs:
+                    lo, hi = obs[key]
+                    seen = (lo, hi)
+                    if hi <= limit:
+                        state = "ok"       # every pass read within limit
+                    elif lo > limit:
+                        state = "REGRESS"  # every pass read over the limit
+                    else:
+                        # straddles: the bake paints both sides of the
+                        # limit depending on load — no verdict, loudly
+                        state = "AT-THRESHOLD"
+                rows.append((subj, ang, key, b, a, state, limit, seen))
+    obs_totals = (after_doc.get("_obs") or {}).get("totals", {})
+    for key, ttol in TOTAL_TOL.items():
+        ba = totals["base"].get(key)
+        af = totals["after"].get(key)
+        if ba is None or af is None:
+            continue  # missing cells already flagged above
+        limit = ba + ttol
+        span = obs_totals.get(key)
+        if span:
+            # same range law as cells (GK grounds_223 F1 mechanism 2: a
+            # median-derived total flapped violated in 3 of 4 runs while
+            # the per-pass sums straddled the limit)
+            lo, hi = span
+            state = ("ok" if hi <= limit else
+                     "VIOLATED" if lo > limit else "AT-THRESHOLD")
+            total_rows.append((key, ba, af, ttol, state, (lo, hi)))
+        else:
+            state = "VIOLATED" if af > limit else "ok"
+            total_rows.append((key, ba, af, ttol, state, None))
+    return rows, total_rows
+
+
+def _violation_lines(rows, total_rows):
+    """Loud one-liners for every failing cell state and net-total
+    regression. AT-THRESHOLD rows are NOT violations (issue #216: a
+    load-bimodal cell has no verdict to give) — _threshold_lines carries
+    them."""
+    labels = {key: label for key, label, _tol, _bar in GATE_KEYS}
+    out = []
+    for subj, ang, key, b, a, st, limit, _seen in rows:
+        if st == "REGRESS":
+            out.append(f"{subj}/{ang}/{labels[key]}: {b} -> {a} (limit {limit})")
+        elif st == "MISSING":
+            out.append(f"{subj}/{ang}/{key}: probe missing value (after={a})")
+        elif st == "NOBASE":
+            out.append(f"{subj}/{ang}/{key}: baseline cell missing "
+                       f"(base={b}) — stale or edited baseline")
+    for key, ba, af, ttol, state, _span in total_rows:
+        if state == "VIOLATED":
+            out.append(f"TOTAL/{key}: {ba} -> {af} (net regression, tol +{ttol})")
+    return out
+
+
+def _threshold_lines(rows, total_rows=()):
+    """Loud no-verdict lines for load-bimodal cells and totals (issue
+    #216, GK grounds_223 F1): a range straddling its limit has no
+    verdict to give."""
+    out = []
+    for subj, ang, key, b, a, st, limit, seen in rows:
+        if st == "AT-THRESHOLD" and seen:
+            out.append(f"{subj}/{ang}/{key}: reads {seen[0]}..{seen[1]} "
+                       f"straddle limit {limit} (median {a}) — the same "
+                       f"bake paints both sides depending on load; no verdict")
+    for key, ba, af, ttol, state, span in total_rows:
+        if state == "AT-THRESHOLD" and span:
+            out.append(f"TOTAL/{key}: pass sums {span[0]}..{span[1]} "
+                       f"straddle limit {ba + ttol} (median {af}) — no "
+                       f"verdict; the net clutter flaps with load")
+    return out
+
+
+def gate_declut(base_doc, after_doc, afford=frozenset()):
+    rows, total_rows = gate_verdicts(base_doc, after_doc, afford)
+    violations = _violation_lines(rows, total_rows)
     for subj, angles in after_doc["views"].items():
         base_subj = base_doc["views"].get(subj)
         for ang, m in angles.items():
@@ -1026,23 +1153,25 @@ def gate_declut(base_doc, after_doc, afford=frozenset()):
                 print(f"  INFO   {subj}/{ang} chevBollardTouch: {b} -> {a} "
                       f"(informational: lifted chevrons near their junctions; "
                       f"gated via chevObs/jClear in the rubric)")
-    for key, ttol in TOTAL_TOL.items():
-        ba = totals["base"].get(key)
-        af = totals["after"].get(key)
-        if ba is None or af is None:
-            continue  # missing cells already flagged above
-        if af > ba + ttol:
-            violations.append(
-                f"TOTAL/{key}: {ba} -> {af} (net regression, tol +{ttol})")
+    for key, ba, af, ttol, state, _span in total_rows:
+        if state == "VIOLATED":
             print(f"  REGRESS TOTAL/{key}: {ba} -> {af} (tol +{ttol})")
+    at_threshold = _threshold_lines(rows, total_rows)
+    for line in at_threshold:
+        print(f"  AT-THRESHOLD (no verdict) {line}")
     print(f"== gate: {len(rows)} cell checks + {len(TOTAL_TOL)} total checks,"
           f" {len(violations)} violations"
-          f" (+{sum(1 for r in rows if r[5] == 'AFFORD')} affordance-exempt) ==")
-    for subj, ang, key, b, a, st in rows:
+          f" (+{sum(1 for r in rows if r[5] == 'AFFORD')} affordance-exempt,"
+          f" +{len(at_threshold)} at-threshold no-verdict) ==")
+    for subj, ang, key, b, a, st, _limit, _seen in rows:
         if st != "ok":
-            print(f"  {st:7s} {subj}/{ang} {key}: {b} -> {a}")
+            print(f"  {st:12s} {subj}/{ang} {key}: {b} -> {a}")
     if not violations:
-        print("  all cells within tolerance, totals at-or-below baseline")
+        if at_threshold:
+            print(f"  no violations; {len(at_threshold)} cell(s)/total(s) sit "
+                  f"at-threshold with no verdict (see above)")
+        else:
+            print("  all cells within tolerance, totals at-or-below baseline")
     return 1 if violations else 0
 
 
@@ -1103,17 +1232,275 @@ def served_bake_identity(port: int) -> dict:
             "bake_sha": bake_data_sha(served)}
 
 
-def run_declut_battery(prefix: str, port: int):
+def _leaf_kind(v):
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return "num"
+    if isinstance(v, dict):
+        return "dict"
+    if isinstance(v, list):
+        return "list"
+    return "flat"
+
+
+def _median_merge(vals, where):
+    """Median one cell across the capture passes (issue #216). Numeric
+    leaves take the median (odd N: an observed value; even N: the
+    mean-of-middles), elementwise for same-length all-numeric lists.
+    Informational leaves — strings, bools, Nones, and diagnostic string
+    lists such as labelWireSites, whose membership flaps capture-to-capture
+    exactly like the grazing metrics it explains — keep the FIRST pass;
+    nothing gated reads them. Captures disagreeing on a cell's kind or on a
+    dict's key set are a BROKEN measurement: exit 2, never a silent pick
+    that could hide a flaky read."""
+    kinds = {_leaf_kind(v) for v in vals}
+    if len(kinds) != 1:
+        print(f"BROKEN merge at {where}: captures disagree on value kind "
+              f"{[repr(v)[:40] for v in vals]}")
+        sys.exit(2)
+    first = vals[0]
+    if kinds == {"num"}:
+        return statistics.median(vals)
+    if kinds == {"dict"}:
+        for v in vals[1:]:
+            if set(v) != set(first):
+                print(f"BROKEN merge at {where}: captures disagree on keys "
+                      f"{sorted(set(v) ^ set(first))}")
+                sys.exit(2)
+        return {k: _median_merge([v[k] for v in vals], f"{where}.{k}")
+                for k in first}
+    if kinds == {"list"}:
+        if len({len(v) for v in vals}) == 1 and \
+                all(_leaf_kind(x) == "num" for x in first):
+            return [_median_merge([v[i] for v in vals], f"{where}[{i}]")
+                    for i in range(len(first))]
+        return list(first)
+    return first
+
+def _observed_ranges(docs, afford=frozenset()):
+    """Observed [min, max] across the capture passes (issue #216): per
+    cell for every gated metric, via the same get_metric accessor the
+    gate uses (chevCrowdHard synthesis and ink nesting included), and
+    per-pass TOTAL sums with the gate's exemption rules (GK grounds_223
+    F1 mechanism 2: totals need the range law too). Order follows the
+    first pass — deterministic."""
+    views = {}
+    for subj, angles in docs[0]["views"].items():
+        for ang, m in angles.items():
+            if ang.startswith("_"):
+                continue
+            for key, _label, _tol, _bar in GATE_KEYS:
+                reads = []
+                for d in docs:
+                    v = get_metric((d["views"].get(subj) or {}).get(ang), key)
+                    reads.append(v)
+                if any(v is None for v in reads):
+                    continue  # MISSING rows carry the loud failure instead
+                views.setdefault(subj, {}).setdefault(ang, {})[key] = \
+                    [min(reads), max(reads)]
+    totals = {}
+    for key in TOTAL_TOL:
+        sums = []
+        counted = 0
+        for d in docs:
+            total, usable = 0, True
+            for subj, angles in docs[0]["views"].items():
+                for ang in angles:
+                    if ang.startswith("_"):
+                        continue
+                    if subj in afford and key in AFFORD_KEYS:
+                        continue  # exempt cells leave the sum, as at the gate
+                    v = get_metric((d["views"].get(subj) or {}).get(ang), key)
+                    if v is None:
+                        usable = False
+                        break
+                    total += v
+                    counted += 1
+                if not usable:
+                    break
+            if usable:
+                sums.append(total)
+        # a key whose every cell is exempt (or missing) carries no sum at all,
+        # mirroring gate_verdicts, which never rows such keys into totals
+        if sums and counted:
+            totals[key] = [min(sums), max(sums)]
+    return {"views": views, "totals": totals}
+
+
+def merge_median(docs):
+    """One battery doc from N captures of the same bake (issue #216):
+    per-cell medians, shape-identical to a single-capture doc. The docs
+    share structure by construction (same bake, same roster, same battery)."""
+    if len(docs) == 1:
+        return docs[0]
+    return _median_merge(list(docs), "battery")
+
+
+def _battery_pass(browser, port: int, prefix: str):
+    """One battery capture on a FRESH page load (issue #216): the noise
+    lives across loads (label-collision history is per-load), so
+    re-probing the already-settled page would sample a fixed point, not
+    the run-to-run distribution the gate must survive."""
+    page = open_page(browser, port)
+    try:
+        if not probe_dbg(page):
+            print("BROKEN BUILD: window.__dbg missing/null at boot")
+            sys.exit(2)
+        return run_declut(page, QA, prefix)
+    finally:
+        page.close()
+
+
+def run_declut_battery(prefix: str, port: int, passes: int = 1):
+    """The battery captured `passes` times and medianed per cell (issue
+    #216). passes=1 is the pre-#216 single-capture behavior — still what
+    --declutter uses (baseline battery semantics frozen)."""
     with sync_playwright() as pw:
         browser = launch(pw)
         try:
-            page = open_page(browser, port)
-            if not probe_dbg(page):
-                print("BROKEN BUILD: window.__dbg missing/null at boot")
-                sys.exit(2)
-            return run_declut(page, QA, prefix)
+            docs = []
+            for i in range(1, passes + 1):
+                if passes > 1:
+                    print(f"== capture pass {i}/{passes} (median-of-{passes}) ==")
+                docs.append(_battery_pass(browser, port, prefix))
+            merged = merge_median(docs)
+            if passes > 1:
+                # observed ranges ride the after doc (never the
+                # single-pass --declutter baseline: its shape is frozen)
+                merged["_obs"] = _observed_ranges(docs)
+            return merged
         finally:
             browser.close()
+
+
+# Bounded escalation (GK grounds_223 F1 mechanism 1): a skewed bimodal
+# cell (high mode on ~p of loads) escapes its low mode with probability
+# p^N, so a 5-pass range can be all-high by luck (p^5 ~ 33% at p~0.8)
+# and commit a false REGRESS against a baseline that drew the low mode.
+# While any cell would commit REGRESS or any total VIOLATED, keep
+# sampling — one draw on the far side of the limit demotes the commit to
+# AT-THRESHOLD permanently — up to this cap; at the cap the commit
+# stands, bounding the flip probability at p^cap instead of p^passes.
+ESCALATE_CAP = 20
+
+
+def run_after_battery(base_doc, afford, port: int, prefix: str, passes: int):
+    """The --after/--repeat-probe measurement (issue #216): `passes`
+    fresh-page passes, per-cell medians, observed [min, max] ranges per
+    cell AND per total, plus bounded escalation (ESCALATE_CAP) while a
+    REGRESS/VIOLATED commit is pending. passes<=1 returns the bare
+    single capture (pre-#216 point semantics). Roster mismatch vs the
+    baseline REFUSES (exit 2) after the first pass — same law as main."""
+    base_hub = (base_doc.get("identity") or {}).get("hub_subjects")
+    cap = max(ESCALATE_CAP, passes)
+    docs = []
+    with sync_playwright() as pw:
+        browser = launch(pw)
+        try:
+            n = 0
+            while True:
+                n += 1
+                print(f"== capture pass {n}/{passes if n <= passes else cap} ==")
+                doc = _battery_pass(browser, port, prefix)
+                if n == 1 and base_hub != sorted(doc["views"]):
+                    print("REFUSED: the baseline's hub roster does not match "
+                          f"this bake (issue #120)\n  baseline:  {base_hub}\n"
+                          f"  this bake: {sorted(doc['views'])}")
+                    sys.exit(2)
+                docs.append(doc)
+                if passes <= 1:
+                    return docs[0]
+                if n < passes:
+                    continue
+                merged = merge_median(docs)
+                merged["_obs"] = _observed_ranges(docs, afford)
+                rows, total_rows = gate_verdicts(base_doc, merged, afford)
+                commit = (any(r[5] == "REGRESS" for r in rows)
+                          or any(t[4] == "VIOLATED" for t in total_rows))
+                if not commit or n >= cap:
+                    if commit and n >= cap and n > passes:
+                        print(f"  escalation cap {cap} reached with a pending "
+                              "REGRESS/VIOLATED commit — committing (residual "
+                              f"low-mode miss risk ~p^{cap}); rerun with a "
+                              "higher --passes if this is unexpected")
+                    merged["capture"] = {"passes": n, "requested": passes,
+                                         "merge": "median+range",
+                                         "escalated": n > passes}
+                    return merged
+                if n == passes:
+                    print(f"  escalating: a REGRESS/VIOLATED verdict is pending "
+                          f"— sampling up to {cap} passes for a demoting draw "
+                          "(issue #216 skewed-bimodal guard, GK grounds_223)")
+        finally:
+            browser.close()
+
+
+def run_repeat_probe(base_doc, afford, port: int, passes: int):
+    """Repeatability self-check (issue #216): measure the SAME bake twice
+    with the stabilized (median-of-N + observed-range + escalation) path
+    and demand IDENTICAL gate verdicts against the baseline. Before #216
+    a single capture's noise coin-flipped grazing cells (chevCrowdHard
+    hub3_world 11->15 on one rig, 0 violations on another, same head); a
+    flip here means the measurement still coin-flips — exit 1. A STABLE
+    regression is reported loudly but does not fail the probe: this
+    gates repeatability; gate_declut gates ink."""
+    gates = []
+    for tag in ("A", "B"):
+        print(f"== repeat-probe capture {tag}/2 ({passes}-pass median) ==")
+        doc = run_after_battery(base_doc, afford, port, f"probe{tag}", passes)
+        gates.append(gate_verdicts(base_doc, doc, afford))
+    (rows_a, tot_a), (rows_b, tot_b) = gates
+    va = {(s, ang, k): st for s, ang, k, _b, _a, st, _l, _o in rows_a}
+    vb = {(s, ang, k): st for s, ang, k, _b, _a, st, _l, _o in rows_b}
+    na = {(s, ang, k): a for s, ang, k, _b, a, _st, _l, _o in rows_a}
+    nb = {(s, ang, k): a for s, ang, k, _b, a, _st, _l, _o in rows_b}
+    ta = {key: state for key, _ba, _af, _t, state, _sp in tot_a}
+    tb = {key: state for key, _ba, _af, _t, state, _sp in tot_b}
+    if set(va) != set(vb) or set(ta) != set(tb):
+        print(f"BROKEN repeat-probe: captures disagree on cell coverage "
+              f"({len(va)} vs {len(vb)} cells) — refusing to compare")
+        sys.exit(2)
+    VIOLATING = {"REGRESS", "MISSING", "NOBASE"}
+    diffs = [c for c in sorted(va) if va[c] != vb[c]]
+    # a differing verdict flips the gate only when either side violates;
+    # ok <-> AT-THRESHOLD moves no gate decision (both are no-violation
+    # classes — a grazing cell's N draws sometimes all land under the
+    # limit), but the movement is reported, never swallowed.
+    flip_cells = {c for c in diffs
+                  if va[c] in VIOLATING or vb[c] in VIOLATING}
+    flips = [f"{s}/{ang}/{k}: {va[(s, ang, k)]} vs {vb[(s, ang, k)]}"
+             for s, ang, k in diffs if (s, ang, k) in flip_cells]
+    drift = [f"{s}/{ang}/{k}: {va[(s, ang, k)]} vs {vb[(s, ang, k)]}"
+             for s, ang, k in diffs if (s, ang, k) not in flip_cells]
+    tflips = [f"TOTAL/{k}: {ta[k]} vs {tb[k]}"
+              for k in ta if ta[k] != tb[k]]
+    noisy = [k for k in sorted(va) if na[k] != nb[k]]
+    print(f"== repeat-probe: 2 captures x {passes} passes,"
+          f" {len(va)} cell verdicts + {len(ta)} totals ==")
+    print(f"  median residual: {len(noisy)} cell(s) read different medians "
+          f"across the two captures")
+    # P3 (GK grounds_223): print agreement claims only for cells that
+    # actually agree — filter the capture-A views to the capture-B verdicts
+    # before printing, so a cell can never appear as both STABLE and UNSTABLE.
+    agreed_rows = [r for r in rows_a
+                   if vb.get((r[0], r[1], r[2])) == r[5]]
+    agreed_tots = [t for t in tot_a if tb.get(t[0]) == t[4]]
+    for line in _violation_lines(agreed_rows, agreed_tots):
+        print(f"  STABLE-VIOLATION {line}  (both captures agree — ink, not noise)")
+    for line in _threshold_lines(agreed_rows, agreed_tots):
+        print(f"  STABLE at-threshold (no verdict): {line}")
+    for line in drift:
+        print(f"  at-threshold drift (no verdict either way): {line}")
+    if flips or tflips:
+        for line in flips:
+            print(f"  UNSTABLE {line}")
+        for line in tflips:
+            print(f"  UNSTABLE {line}")
+        print("  repeat-probe: VERDICT FLIP — capture noise still coin-flips "
+              f"the gate at N={passes} (issue #216)")
+        return 1
+    print("  repeat-probe: STABLE — identical gate verdicts "
+          "(violations, exemptions, totals) on both captures")
+    return 0
 
 
 def main():
@@ -1123,14 +1510,29 @@ def main():
                     help="capture the declutter baseline battery")
     ap.add_argument("--after", action="store_true",
                     help="run the battery and gate it against the baseline")
+    ap.add_argument("--repeat-probe", action="store_true",
+                    help="repeatability self-check (issue #216): capture the "
+                         "battery TWICE with the median-of-N path and demand "
+                         "identical per-cell verdicts vs the baseline; exit 0 "
+                         "= stable, 1 = verdict flip, 2 = broken. The stable "
+                         "verdict's violations (if any) are printed loudly")
     ap.add_argument("--base", default=".tmp/qa/declutter_base.json",
-                    help="baseline JSON for --after (default %(default)s)")
+                    help="baseline JSON for --after/--repeat-probe "
+                         "(default %(default)s)")
+    ap.add_argument("--passes", type=int, default=CAPTURE_PASSES, metavar="N",
+                    help="capture passes per --after/--repeat-probe "
+                         "measurement, medianed per cell (issue #216); "
+                         "default %(default)s. --declutter always captures "
+                         "once (baseline battery semantics unchanged)")
     ap.add_argument("--affordance", default="", metavar="SUBJECTS",
-                    help="with --after: comma list of subjects whose sanctioned "
-                         "hub-affordance ink (labelLabelPairs/labelWireLabels/"
-                         "inkCentral) is exempt from the gate; 'tscn' expands to "
-                         "all .tscn hub subjects, 'hubs' to all hub subjects")
+                    help="with --after/--repeat-probe: comma list of subjects "
+                         "whose sanctioned hub-affordance ink (labelLabelPairs/"
+                         "labelWireLabels/inkCentral) is exempt from the gate; "
+                         "'tscn' expands to all .tscn hub subjects, 'hubs' to "
+                         "all hub subjects")
     args = ap.parse_args()
+    if args.passes < 1:
+        ap.error("--passes must be >= 1")
     QA.mkdir(parents=True, exist_ok=True)
     httpd, port = serve(STATE)
     try:
@@ -1148,7 +1550,7 @@ def main():
             else:
                 print(f"wrote {out} (no git sha; snapshot skipped)")
             return
-        if args.after:
+        if args.after or args.repeat_probe:
             basep = (ROOT / args.base).resolve()
             if not Path(args.base).is_absolute() and not basep.exists():
                 basep = Path(args.base).resolve()
@@ -1166,16 +1568,13 @@ def main():
             afford = expand_affordance(args.affordance, base_doc)
             if afford:
                 print(f"affordance-exempt subjects: {', '.join(sorted(afford))}")
-            doc = run_declut_battery("after", port)
-            if base_id.get("hub_subjects") != sorted(doc["views"]):
-                print("REFUSED: the baseline's hub roster does not match "
-                      "this bake (issue #120)\n"
-                      f"  baseline:  {base_id.get('hub_subjects')}\n"
-                      f"  this bake: {sorted(doc['views'])}")
-                sys.exit(2)
-            (QA / "declutter_after.json").write_text(
-                json.dumps(doc, indent=1), encoding="utf-8")
-            sys.exit(gate_declut(base_doc, doc, afford))
+            if args.after:
+                doc = run_after_battery(base_doc, afford, port, "after",
+                                        args.passes)
+                (QA / "declutter_after.json").write_text(
+                    json.dumps(doc, indent=1), encoding="utf-8")
+                sys.exit(gate_declut(base_doc, doc, afford))
+            sys.exit(run_repeat_probe(base_doc, afford, port, args.passes))
         run(QA, port)
     finally:
         httpd.shutdown()
