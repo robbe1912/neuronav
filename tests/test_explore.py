@@ -71,9 +71,30 @@ def main() -> int:
     finally:
         s.graph.find_functions = orig
 
-    # Unknown concept: guidance, not failure.
-    out3 = s.explore("zzz_no_such_concept_qq", n=3)
-    check("no-hit returns next-step guidance", "rescan" in out3 or "grep" in out3.lower(), out3[:150])
+    # Unknown concept: guidance, not failure. Deterministic no-hit
+    # construction (issue #249): a fixed nonsense string does NOT
+    # guarantee no hits — find_functions has no relevance floor, so on
+    # a populated fn store it returns top-n cosine neighbors for EVERY
+    # query (0.08 under FAKE hash vectors, 0.549 against real embeds
+    # on the recreated venv — the standing red; CI's pass was a
+    # neighbor slice happening to contain 'rescan'). Force the vector
+    # side's real empty-index contract instead (find_functions returns
+    # [] when the fn collection is empty) and use absent tokens so the
+    # lexical fallback misses provably on any platform.
+    nohit_q = "qqzzxxwwyy_no_such_token_kkvvp"
+    check("no-hit query is lexically absent (lexical fallback: zero hits)",
+          bool(xp._tokens(nohit_q)) and xp._lexical_fallback(nohit_q, 3) == [])
+    _ff = s.graph.find_functions
+    s.graph.find_functions = lambda *a, **k: []
+    try:
+        seeds, degraded, reason = xp._seed_hits(nohit_q, 3)
+        check("no-hit seeds empty under the empty-index contract",
+              (seeds, degraded, reason) == ([], True, None),
+              f"{seeds[:1]} degraded={degraded} reason={reason}")
+        out3 = s.explore(nohit_q, n=3)
+        check("no-hit returns next-step guidance", "no hits for" in out3, out3[:150])
+    finally:
+        s.graph.find_functions = _ff
 
     # Funnel shape: constant repo-map preamble and cluster map precede the
     # query-dependent file shortlist and symbol slices. Preamble must not
@@ -106,9 +127,14 @@ def main() -> int:
           f"{len(sec(out4))} vs {len(sec(out4b))}")
     check("orientation=True stays the default (preamble present)",
           out4b.startswith("== repo map =="))
-    out5 = s.explore("zzz_no_such_concept_qq", n=3, orientation=False)
+    _ff = s.graph.find_functions
+    s.graph.find_functions = lambda *a, **k: []
+    try:
+        out5 = s.explore(nohit_q, n=3, orientation=False)
+    finally:
+        s.graph.find_functions = _ff
     check("orientation=False no-hit path drops the preamble too",
-          not out5.startswith("== repo map ==") and "rescan" in out5, out5[:120])
+          not out5.startswith("== repo map ==") and "no hits for" in out5, out5[:120])
     check("orientation=False output still budget-capped",
           len(out4) <= 22000, f"{len(out4)} chars")
 
