@@ -977,6 +977,34 @@ def crosstalk(dir: str = "") -> str:
         return _clusters.fmt_crosstalk(rep, top_n=2)
 
 
+@mcp.tool(annotations=READONLY)
+def arch_check(dir: str = "") -> str:
+    """Architecture-contract check: project rules over cluster crosstalk.
+
+    Reads <state_dir>/arch-rules.json and evaluates each rule against
+    the same partition + wiring the crosstalk tool reports — `forbid`
+    (cluster A must send zero wires to cluster B) and `budget` (at most
+    `max` wires), optionally narrowed to edge types call/var/signal/
+    inst/attach/alias. Clusters are named by label or the cN id the
+    clusters tool prints. Use before splitting/merging modules to prove
+    a boundary still holds, or in review to catch new forbidden
+    coupling with the offending file pairs. No rules file configured
+    answers with how to write one; a typo'd rule file is reported
+    loudly (unknown kind/cluster/type), never silently skipped.
+
+    dir="" serves the boot config's repo; any other path routes this one
+    call to that checkout (issue #131 — a fresh dir onboards on first
+    contact).
+    """
+    with _route(dir) as prelude:
+        if prelude:
+            return prelude
+        _auto_rescan()
+        import archrules as _arch
+
+        return _arch.run(nav.clusters(), graph.get_graph())
+
+
 def _ctx_adjacency(g) -> tuple[dict, dict]:
     """File-level adjacency (both directions, per edge-type counts) and
     cross-file in-degree, aggregated once from the func-level edge set."""
