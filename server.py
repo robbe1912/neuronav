@@ -851,7 +851,7 @@ def symbol_graph(symbol: str, depth: int = 1, dir: str = "") -> str:
 
 
 @mcp.tool(annotations=READONLY)
-def dead_code(n: int = 40, dir: str = "") -> str:
+def dead_code(n: int = 100, dir: str = "") -> str:
     """Functions unreachable from any entry point — deletion candidates.
 
     Entry points: autoloads, virtuals (_ready/_process/...), signal handlers
@@ -859,6 +859,10 @@ def dead_code(n: int = 40, dir: str = "") -> str:
     'likely' (no dynamic dispatch in file — strong candidate) and 'review'
     (file uses call()/Callable()/connect() — verify manually). NEVER delete
     without reading the file and running tests.
+
+    Lists at most n rows (default 100, clamp 1..100); 'likely' rows come
+    first, so a cut is never silent — the footer names how many of each
+    tier you got (issue #266).
 
     dir="" serves the boot config's repo; any other path routes this one
     call to that checkout (issue #131 — a fresh dir onboards on first
@@ -880,6 +884,17 @@ def dead_code(n: int = 40, dir: str = "") -> str:
         ]
         for d in res["candidates"]:
             lines.append(f"[{d['tier']:6}] {d['path']}:{d['line']}  {d['func']}")
+        shown = res["candidates"]
+        if len(shown) < res["total"]:
+            n_lik = sum(1 for d in shown if d["tier"] == "likely")
+            n_rev = sum(1 for d in shown if d["tier"] == "review")
+            lines.append("")
+            lines.append(
+                f"… truncated at {len(shown)} rows: showing "
+                f"{n_lik} of {res['by_tier'].get('likely', 0)} likely + "
+                f"{n_rev} of {res['by_tier'].get('review', 0)} review"
+                " — pass n= for the rest"
+            )
         return "\n".join(lines)
 
 
@@ -895,6 +910,10 @@ def duplicates(n: int = 20, dir: str = "") -> str:
     first. Cross-file groups are refactoring gold (extract shared helper);
     same-file groups are quick wins.
 
+    Pure-delegate groups (a null-guard + single forwarding call — thin
+    wrappers around a shared helper) are skipped, not reported as
+    duplication; the footer counts them (issue #268).
+
     dir="" serves the boot config's repo; any other path routes this one
     call to that checkout (issue #131 — a fresh dir onboards on first
     contact).
@@ -905,15 +924,29 @@ def duplicates(n: int = 20, dir: str = "") -> str:
         _auto_rescan()
         n = max(1, min(n, 50))
         g = graph.get_graph()
-        groups = g.exact_duplicates(limit=n)
+        rep = g.duplicates_report(limit=n)
+        groups = rep["groups"]
+        skipped = rep["delegate_skipped"]
+        skip_note = (
+            f"{skipped} pure-delegate group(s) skipped"
+            " — thin delegates, not duplicated logic"
+        )
         if not groups:
             scanned = sum(1 for fs in g.files.values() if fs.funcs)
-            return f"no exact duplicates found ({scanned} files with functions scanned)"
+            tail = f"; {skip_note}" if skipped else ""
+            return f"no exact duplicates found ({scanned} files with functions scanned{tail})"
         lines = [f"{len(groups)} duplicate group(s):", ""]
-        for g in groups:
-            lines.append(f"group {g['hash']} ({len(g['members'])} copies):")
-            lines.extend(f"  - {m.replace('::', '#')}" for m in g["members"])
+        for grp in groups:
+            lines.append(f"group {grp['hash']} ({len(grp['members'])} copies):")
+            lines.extend(f"  - {m.replace('::', '#')}" for m in grp["members"])
             lines.append("")
+        if len(groups) < rep["groups_total"]:
+            lines.append(
+                f"… truncated at {len(groups)} of {rep['groups_total']}"
+                " groups — pass n= for the rest"
+            )
+        if skipped:
+            lines.append(skip_note)
         return "\n".join(lines)
 
 

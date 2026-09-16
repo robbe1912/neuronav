@@ -470,34 +470,61 @@ class Graph:
         a false 'no exact duplicates found' clean bill. C++ `//`
         comments compare as body text (stripping at `//` would truncate
         res:// literals in .gd bodies) — conservative: it can miss a
-        pair, never invent one. Full groups land in the rescan-time
-        predicate cache (issue #71); this slices copies."""
+        pair, never invent one. Pure-delegate groups (thin wrappers,
+        issue #268) drop before anything is cached or served;
+        duplicates_report carries the skip count."""
+        groups, _skipped = self._dup_groups()
         return [
             {"hash": d["hash"], "members": list(d["members"])}
-            for d in self._dup_groups()[:limit]
+            for d in groups[:limit]
         ]
 
-    def _dup_groups(self) -> list[dict[str, object]]:
-        """Full duplicate groups (pre-limit) — the shared code path
-        behind exact_duplicates and the rescan-time predicate cache
-        (issue #71). The cache serves the stored list directly;
-        exact_duplicates copies rows before exposing them."""
-        if self._pred is not None:  # issue #71: groups derived at rescan
-            return self._pred["dups"]
+    def duplicates_report(self, limit: int = 30) -> dict[str, object]:
+        """The full duplicates answer (issue #268): genuine groups plus
+        the count of pure-delegate groups skipped — callers surface the
+        skip, never hide it."""
+        groups, skipped = self._dup_groups()
+        return {
+            "groups": [
+                {"hash": d["hash"], "members": list(d["members"])}
+                for d in groups[:limit]
+            ],
+            "groups_total": len(groups),
+            "delegate_skipped": skipped,
+        }
+
+    def _dup_groups(self) -> tuple[list[dict[str, object]], int]:
+        """(kept groups, skipped pure-delegate count) — the shared code
+        path behind exact_duplicates/duplicates_report and the rescan-
+        time predicate cache (issue #71). The delegate filter runs
+        HERE, before the cache stores anything, so the cached list and
+        every direct read are one truth — a stale-cache serve of an
+        unfiltered list would be a bug. Dropped groups are pure-delegate
+        wrappers only (#268): conservative like #116 — it can miss a
+        wrapper, never drop real duplicated logic."""
+        if self._pred is not None:  # issue #71: derived at rescan
+            return self._pred["dups"], self._pred["dup_skips"]
         groups: dict[str, list[str]] = defaultdict(list)
+        norms: dict[str, str] = {}
         for rel, fs in self.files.items():
             for name, fn in fs.funcs.items():
                 norm = _normalize_body(fn.body)
                 if len(norm.splitlines()) < 3:
                     continue  # trivial
-                groups[hashlib.sha1(norm.encode()).hexdigest()].append(fn.key)
-        dups = [
-            {"hash": h[:8], "members": sorted(v)}
-            for h, v in groups.items()
-            if len(v) > 1
-        ]
+                h = hashlib.sha1(norm.encode()).hexdigest()
+                groups[h].append(fn.key)
+                norms[h] = norm
+        dups: list[dict[str, object]] = []
+        skipped = 0
+        for h, v in groups.items():
+            if len(v) < 2:
+                continue
+            if _pure_delegate(norms[h]):
+                skipped += 1  # issue #268: thin wrapper, not logic
+                continue
+            dups.append({"hash": h[:8], "members": sorted(v)})
         dups.sort(key=lambda d: -len(d["members"]))
-        return dups
+        return dups, skipped
 
     # -- file importance: pagerank + budgeted repo map -------------------------
 
@@ -630,6 +657,42 @@ def _normalize_body(body: str) -> str:
             continue
         out.append("  " + s.strip())  # unify indent
     return "\n".join(out)
+
+
+_SIG_LINE_RE = re.compile(r"^(?:async\s+)?(?:def|func|fn)\s+\w+")
+_GUARD_RE = re.compile(r"^(?:el)?if\s+[^():]+:$")
+_GUARD_RET_RE = re.compile(r"^return\s+[^()]*$")
+_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*(?:\.\w+)* = [^()=]+$")
+_FORWARD_RE = re.compile(r"^return\s+(?:await\s+)?[A-Za-z_][\w.]*\([\w\s,]*\)$")
+
+
+def _pure_delegate(norm: str) -> bool:
+    """True for thin delegation wrappers (issue #268): after an
+    optional signature line, the body is only call-free guards (if/elif
+    whose one-line body is a call-free return — an early-out — or a
+    call-free assignment — arg normalization; at most two), at most one
+    call-free assignment, and a single forwarding `return call(args)`.
+    The regexes carry #116's conservatism — parens in guards/
+    assignments, operators in the forwarding call's args, any extra
+    statement, or a brace-language body never classify, so the filter
+    can miss a wrapper but never drops real duplicated logic."""
+    # _normalize_body emits a uniform two-space indent; strip it so the
+    # statement regexes match shape, not indentation
+    lines = [ln.strip() for ln in norm.splitlines()]
+    if lines and _SIG_LINE_RE.match(lines[0]):
+        lines = lines[1:]  # python bodies keep their signature line
+    if not 2 <= len(lines) <= 5:
+        return False
+    i = 0
+    while i + 1 < len(lines) and _GUARD_RE.match(lines[i]):
+        if not (
+            _GUARD_RET_RE.match(lines[i + 1]) or _ASSIGN_RE.match(lines[i + 1])
+        ):
+            break
+        i += 2
+    if i < len(lines) and _ASSIGN_RE.match(lines[i]):
+        i += 1
+    return i == len(lines) - 1 and _FORWARD_RE.match(lines[i]) is not None
 
 
 # -- function-level vector index (chroma "<collection>-fns") -------------------

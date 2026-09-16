@@ -39,7 +39,9 @@ NAME = "predicates.json"
 # depth-bounded symbol_graph BFS cannot read a closure without
 # changing its output bytes), so caching them was pure byte+Tarjan
 # cost with zero served benefit (review finding, PR #233).
-FAMILIES = frozenset({"rank", "wires", "deg", "dead", "dups", "mentions"})
+FAMILIES = frozenset(
+    {"rank", "wires", "deg", "dead", "dups", "dup_skips", "mentions"}
+)
 
 _code_stamp: str | None = None
 
@@ -117,12 +119,18 @@ def derive(g) -> dict:
     mentions = None
     if any(getattr(registry_for(f.ext), "MENTION_FLOOR", 0) for f in g.files.values()):
         mentions = dict(sorted(g._mention_counts().items()))
+    dups, dup_skips = g._dup_groups()
+    # issue #268 cache boundary: _dup_groups already applied the
+    # pure-delegate filter, so the cache stores the filtered list plus
+    # its skip count — one truth. Storing unfiltered here would make a
+    # cached serve report wrappers a direct (cache-miss) read drops.
     return {
         "rank": g.pagerank(),
         "wires": g.file_wires(),
         "deg": g._symbol_degrees(),
         "dead": g._dead_rows(),
-        "dups": g._dup_groups(),
+        "dups": dups,
+        "dup_skips": dup_skips,
         "mentions": mentions,
     }
 
