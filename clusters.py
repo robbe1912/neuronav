@@ -1566,29 +1566,34 @@ def coarse_groups(fine: list[dict], ids: list[str], mat, cut: float = 0.45) -> l
     return out
 
 
-def crosstalk(cs: list[dict], g=None) -> dict:
-    """Coupling-hotspot report: structural (call/signal/var/inst/attach)
-    edges that cross cluster boundaries. Generic over languages — cluster
-    membership comes from `cs` (nav.clusters() output), edges from the
-    structural graph of the active config. Answers "which subsystems are
-    wired together despite clustering apart" and "which clusters are
-    internally hollow". Mirrors the clusterer's graph shape: tests/
-    endpoints and unclustered endpoints are tallied separately and feed
-    no cluster number (#114)."""
+def cross_tallies(cs: list[dict], g=None) -> dict:
+    """The ONE cross-cluster wire tally: `crosstalk()` and the arch-rule
+    engine (archrules.py, issue #70) both read this, so a rule sees
+    exactly the wiring the report counts (#114 parity by construction).
+    Cluster membership comes from `cs` (nav.clusters() output), edges
+    from the structural graph of the active config. Mirrors the
+    clusterer's graph shape: tests/ endpoints and unclustered endpoints
+    are tallied separately and feed no cluster number (#114).
+
+    `pair_wires` adds what the rule engine needs on top: per ORDERED
+    cluster pair (from -> to) one (src_file, dst_file, edge_types)
+    record per cross edge — crosstalk() itself ignores it.
+    """
     import graph
 
     if g is None:
         g = graph.get_graph()
+    etypes = getattr(g, "edge_types", None)
     file_cluster: dict[str, int] = {}
     for c in cs:
         for p, _cls in c["paths"]:
             file_cluster[p] = c["id"]
-    by_id = {c["id"]: c for c in cs}
     internal_by: Counter = Counter()
     cluster_out: Counter = Counter()
     cluster_in: Counter = Counter()
     pair_edges: Counter = Counter()  # (min_id, max_id) -> cross func pairs
     pair_files: dict[tuple[int, int], Counter] = defaultdict(Counter)
+    pair_wires: dict[tuple[int, int], list[tuple[str, str, tuple]]] = defaultdict(list)
     unclustered = 0
     tests_edges = 0
     for src, dsts in g.edges.items():
@@ -1618,6 +1623,37 @@ def crosstalk(cs: list[dict], g=None) -> dict:
             key = (min(a, b), max(a, b))
             pair_edges[key] += 1
             pair_files[key][f"{sf} -> {df}"] += 1
+            tys = tuple(sorted(etypes.get((src, dst), ()))) if etypes is not None else (None,)
+            pair_wires[(a, b)].append((sf, df, tys))
+    return {
+        "file_cluster": file_cluster,
+        "internal_by": internal_by,
+        "cluster_out": cluster_out,
+        "cluster_in": cluster_in,
+        "pair_edges": pair_edges,
+        "pair_files": dict(pair_files),
+        "pair_wires": dict(pair_wires),
+        "unclustered": unclustered,
+        "tests_edges": tests_edges,
+    }
+
+
+def crosstalk(cs: list[dict], g=None) -> dict:
+    """Coupling-hotspot report: structural (call/signal/var/inst/attach)
+    edges that cross cluster boundaries. Generic over languages — cluster
+    membership comes from `cs` (nav.clusters() output), edges from the
+    structural graph of the active config. Answers "which subsystems are
+    wired together despite clustering apart" and "which clusters are
+    internally hollow". Mirrors the clusterer's graph shape: tests/
+    endpoints and unclustered endpoints are tallied separately and feed
+    no cluster number (#114)."""
+    t = cross_tallies(cs, g)
+    by_id = {c["id"]: c for c in cs}
+    internal_by = t["internal_by"]
+    cluster_out = t["cluster_out"]
+    cluster_in = t["cluster_in"]
+    pair_edges = t["pair_edges"]
+    pair_files = t["pair_files"]
     ext_total = int(sum(pair_edges.values()))
     int_total = int(sum(internal_by.values()))
     by_cluster = []
@@ -1657,8 +1693,8 @@ def crosstalk(cs: list[dict], g=None) -> dict:
         "internal_edges": int_total,
         "external_edges": ext_total,
         "external_ratio": round(ext_total / max(ext_total + int_total, 1), 3),
-        "unclustered_endpoint_edges": unclustered,
-        "tests_endpoint_edges": tests_edges,
+        "unclustered_endpoint_edges": t["unclustered"],
+        "tests_endpoint_edges": t["tests_edges"],
         "by_cluster": by_cluster,
         "worst_pairs": worst_pairs,
     }
