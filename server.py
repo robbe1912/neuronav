@@ -166,6 +166,21 @@ def _at_boot() -> bool:
 # only the boot path degrades, and _boot_recovery re-binds the boot
 # config in-session the moment one appears.
 _BOOT_DEGRADED: str | None = None
+# ---- handshake-first boot (issue #273) ----------------------------------------
+# The harness must connect near-instantly: connection time may not include
+# opening/building the chroma store, the embed probe, the boot rescan, or
+# the warm C-extension imports. main() therefore enters the stdio loop
+# immediately and _boot_sequence does that work on a daemon thread; every
+# tool call passes through _await_boot() (via _route) before touching nav
+# state. The wait is bounded — a wedged boot fails the call loudly instead
+# of hanging the session — and a fatal boot sets _BOOT_FATAL so waiters
+# raise the reason.
+_BOOT_READY = threading.Event()
+_BOOT_FATAL: str | None = None
+_BOOT_WAIT_S = 300.0
+_BOOT_THREAD: threading.Thread | None = None
+_BOOT_START_LOCK = threading.Lock()
+
 
 # census suffixes suggested in the guidance's config block before the
 # cut — deterministic: ranked by count, ties by name
@@ -440,6 +455,33 @@ def _first_contact() -> str | None:
     )
 
 
+def _await_boot() -> None:
+    """Handshake-first gate (issue #273): block this tool call until the
+    boot thread finished (store open/build, graph, watcher). Waiting on
+    the anyio loop thread is safe — Event.wait releases the GIL. An
+    in-process import that never ran main() has no boot work to wait
+    for — the gate closes over whatever nav state the host set up, so
+    tests and scripts keep the pre-#273 semantics (no surprise boot
+    rescan racing their fixtures); only main() starts the boot thread.
+    Bounded and loud either way: timeout or _BOOT_FATAL raise, never a
+    silent hang."""
+    if _BOOT_THREAD is None:
+        _BOOT_READY.set()
+        return
+    if _BOOT_READY.is_set():
+        if _BOOT_FATAL is not None:
+            raise ValueError(f"neuronav: boot failed fatally — {_BOOT_FATAL}")
+        return
+    if not _BOOT_READY.wait(timeout=_BOOT_WAIT_S):
+        raise ValueError(
+            f"neuronav: boot still incomplete after {_BOOT_WAIT_S:g}s — "
+            "see the neuronav: stderr lines (embed backend or store "
+            "lock?); restart the session if it is wedged."
+        )
+    if _BOOT_FATAL is not None:
+        raise ValueError(f"neuronav: boot failed fatally — {_BOOT_FATAL}")
+
+
 @contextmanager
 def _route(dir: str):
     """Serve this call under dir's index (issue #131). Yields None to run
@@ -448,6 +490,7 @@ def _route(dir: str):
     because nav's config globals are process-wide: routed calls must not
     interleave, and boot calls take the same lock so the watcher can
     never rescan a swapped config (RLock: _auto_rescan re-enters)."""
+    _await_boot()  # issue #273: never touch nav state mid-boot
     with _SCOPE_LOCK:
         if not dir:
             if _BOOT_DEGRADED is not None:
@@ -1589,81 +1632,78 @@ def rescan(dir: str = "") -> str:
         )
 
 
-def main() -> None:
-    """Console-script boot (issue #204) — the historic ``__main__`` body
-    behind the ``neuronav-mcp`` entry point, plus the #203 hardening:
-    boot state lands on stderr BEFORE any rescan work, and the boot
-    lock wait is bounded. #240: a 0-file walk degrades to first-call
-    guidance instead of dying pre-handshake, and one 1-token embed
-    probe fails fast with the fix in the message. Behavior otherwise
-    identical to the direct ``python server.py`` boot."""
-    t0 = time.perf_counter()
-    # issue #203: first contact must never be silent — name the resolved
-    # config (or the pure-defaults root) before the boot rescan starts,
-    # so a long first-contact build is visible from its first second
-    if nav.CONFIG_PATH is not None:
-        print(f"neuronav: config {nav.CONFIG_PATH}", file=sys.stderr)
-    else:
-        print(f"neuronav: pure defaults, root={nav.ROOT}", file=sys.stderr)
-    # issue #240: what the root actually holds, extension filter off —
-    # the 0-file verdict, the degraded-boot guidance and the raw-text
-    # banner all read this one census
-    census = nav.suffix_census()
-    probe_fail = _probe_embedder()
+def _boot_sequence(t0: float) -> None:
+    """The boot work main() used to run before the handshake (#273):
+    census, embed probe, boot rescan, graph rebuild, raw-text banner.
+    Serialized on _SCOPE_LOCK so routed dir= calls (which swap nav's
+    process-wide config scope) never interleave with a boot-config
+    rescan. The empty-store + dead-embedder abort raises SystemExit —
+    the _boot_thread wrapper decides per context: os._exit(1) when the
+    stdio session owns the process (#240's fix-in-the-message exit),
+    _BOOT_FATAL when server was imported in-process (#273 lazy boot)."""
     stats = {"added": 0, "updated": 0, "unchanged": 0, "deleted": 0}
     fns_up = 0
     watch_note = ""
-    if not any(s in nav.EXTS for s in census):
-        _enter_degraded(census, probe_fail, "boot walk matched 0 files")
-    elif probe_fail is not None:
-        if nav.count() == 0:
-            # evidence-based abort (issue #240): an empty store needs
-            # embeds to build — every path from here fails mid-rescan.
-            # Die pre-handshake with the fix in the message instead.
-            raise SystemExit(
-                f"neuronav: {probe_fail} The store is empty and every "
-                "index build embeds — aborting before the handshake so "
-                "the failure carries the fix. Pull the model / start the "
-                "backend, then restart the session."
-            )
-        # warm store: serve it degraded (the #19 law already covers
-        # embed failures mid-serve); skip the boot rescan — it would
-        # die on the first new embed
-        print(
-            f"neuronav: {probe_fail} Serving the warm index degraded; "
-            "rescans that need new embeddings retry with the tool-call "
-            "cooldown until the backend is back.",
-            file=sys.stderr,
-        )
-        graph.get_graph(rebuild=True)
-    else:
-        try:
-            stats = _bounded_rescan()
-        except RuntimeError:
-            # walk emptied between census and rescan — same degraded path
-            _enter_degraded(
-                nav.suffix_census(), None, "boot rescan found the walk empty"
+    want_watch = False
+    with _SCOPE_LOCK:
+        # issue #240: what the root actually holds, extension filter
+        # off — the 0-file verdict, the degraded-boot guidance and
+        # the raw-text banner all read this one census
+        census = nav.suffix_census()
+        probe_fail = _probe_embedder()
+        if not any(s in nav.EXTS for s in census):
+            _enter_degraded(census, probe_fail, "boot walk matched 0 files")
+        elif probe_fail is not None:
+            if nav.count() == 0:
+                # evidence-based abort (issue #240): an empty store
+                # needs embeds to build — every path from here fails
+                # mid-rescan. Exit with the fix in the message; the
+                # handshake is already up, so the harness sees the
+                # drop and stderr carries the fix.
+                raise SystemExit(
+                    f"neuronav: {probe_fail} The store is empty and every "
+                    "index build embeds — aborting the session so the "
+                    "failure carries the fix. Pull the model / start "
+                    "the backend, then restart the session."
+                )
+            # warm store: serve it degraded (the #19 law already
+            # covers embed failures mid-serve); skip the boot rescan
+            # — it would die on the first new embed
+            print(
+                f"neuronav: {probe_fail} Serving the warm index degraded; "
+                "rescans that need new embeddings retry with the "
+                "tool-call cooldown until the backend is back.",
+                file=sys.stderr,
             )
         else:
-            g, fns, _ = _sync_chain(stats)
-            nav.stat_mark_synced()
-            fns_up = fns["fns_upserted"]
-            _raw_text_banner(census)
-            # boot config only by design (issue #131): the watcher drives
-            # _auto_rescan, which is boot-gated — routed dirs refresh
-            # explicitly
-            if nav.WATCH_INTERVAL_S > 0:
-                _start_watcher(nav.WATCH_INTERVAL_S)
-                watch_note = f", watcher {nav.WATCH_INTERVAL_S:g}s"
-    # warm the clusters stack (networkx/numpy/sklearn/scipy) on the main
-    # thread before the event loop serves: importing these C extensions
-    # lazily inside a fastmcp tool call (on the anyio loop thread) blocks
-    # the stdio server indefinitely on Windows — clusters/context/crosstalk
-    # all ride these imports
-    import networkx  # noqa: F401
-    import numpy  # noqa: F401
-    import scipy.cluster.hierarchy  # noqa: F401
-    import sklearn.cluster  # noqa: F401
+            try:
+                stats = _bounded_rescan()
+            except RuntimeError:
+                # walk emptied between census and rescan — same
+                # degraded path
+                _enter_degraded(
+                    nav.suffix_census(), None,
+                    "boot rescan found the walk empty",
+                )
+            else:
+                g, fns, _ = _sync_chain(stats)
+                nav.stat_mark_synced()
+                fns_up = fns["fns_upserted"]
+                _raw_text_banner(census)
+                # boot config only by design (issue #131): the
+                # watcher drives _auto_rescan, which is boot-gated —
+                # routed dirs refresh explicitly
+                want_watch = nav.WATCH_INTERVAL_S > 0
+    # the boot gate opens with the store work done: imports are NOT
+    # warmed here — scipy/sklearn on a side thread while the anyio
+    # stdio loop runs deadlocks on Windows (the documented law),
+    # so main() warms them on the main thread before the loop
+    _BOOT_READY.set()
+    # started strictly after _BOOT_READY so a fast first tick can
+    # never race the boot rescan it would duplicate
+    if want_watch:
+        _start_watcher(nav.WATCH_INTERVAL_S)
+        watch_note = f", watcher {nav.WATCH_INTERVAL_S:g}s"
     if _BOOT_DEGRADED is not None:
         state = "DEGRADED, guidance mode, "
     elif probe_fail is not None:
@@ -1677,7 +1717,81 @@ def main() -> None:
         f"in {time.perf_counter() - t0:.1f}s{watch_note}",
         file=sys.stderr,
     )
+
+
+def _boot_thread(t0: float) -> None:
+    """_boot_sequence wrapper: owns the loud failure contract so the
+    sequence body stays linear. SystemExit (the #240 empty-store abort)
+    ends the process — the stdio session owns it; any other exception
+    converts to _BOOT_FATAL so gated tool calls fail loudly, never a
+    silent thread death."""
+    global _BOOT_FATAL
+    try:
+        _boot_sequence(t0)
+    except SystemExit as e:
+        print(str(e), file=sys.stderr, flush=True)
+        os._exit(1)
+    except Exception as e:  # noqa: BLE001 — loud, never a silent thread death
+        _BOOT_FATAL = (
+            f"{type(e).__name__}: {e} — see the neuronav: stderr lines "
+            "above; fix and restart the session."
+        )
+        print(f"neuronav: BOOT FAILED — {_BOOT_FATAL}", file=sys.stderr, flush=True)
+        _BOOT_READY.set()
+
+
+def _start_boot(t0: float) -> threading.Thread:
+    """Exactly-once boot thread start (idempotent under the start lock);
+    only main() starts it — in-process imports close the gate without
+    boot work instead (_await_boot)."""
+    global _BOOT_THREAD
+    with _BOOT_START_LOCK:
+        if _BOOT_THREAD is None:
+            _BOOT_THREAD = threading.Thread(
+                target=_boot_thread, args=(t0,),
+                name="neuronav-boot", daemon=True,
+            )
+            _BOOT_THREAD.start()
+        return _BOOT_THREAD
+
+
+def main() -> None:
+    """Console-script boot (issue #204) — the historic ``__main__`` body
+    behind the ``neuronav-mcp`` entry point. #273 handshake-first: the
+    config banner lands on stderr (#203 law — before any rescan work),
+    then the stdio loop serves; census/probe/rescan/graph work runs on
+    the daemon boot thread (_boot_sequence) and every tool call gates on
+    the boot-ready event (bounded, loud on fatality or timeout) —
+    connection time never includes opening or building the chroma store.
+    The C-stack warm imports (networkx/numpy/scipy/sklearn, ~1.3s) stay
+    on THIS thread before the loop: importing them on any side thread
+    while the anyio loop serves deadlocks stdio on Windows, and they are
+    cheap next to the store build the handshake no longer waits for.
+    #240: a 0-file walk degrades to first-call guidance, and the
+    empty-store + dead-embedder abort exits the session after the
+    handshake with the fix on stderr."""
+    t0 = time.perf_counter()
+    if nav.CONFIG_PATH is not None:
+        print(f"neuronav: config {nav.CONFIG_PATH}", file=sys.stderr)
+    else:
+        print(f"neuronav: pure defaults, root={nav.ROOT}", file=sys.stderr)
+    # warm the clusters stack on the main thread BEFORE the event loop:
+    # clusters/context/crosstalk all ride these imports, and importing
+    # them inside a fastmcp tool call (anyio loop thread) — or on any
+    # side thread while the loop serves — blocks the stdio server
+    # indefinitely on Windows
+    import networkx  # noqa: F401
+    import numpy  # noqa: F401
+    import scipy.cluster.hierarchy  # noqa: F401
+    import sklearn.cluster  # noqa: F401
+    _start_boot(t0)
     mcp.run(transport="stdio")
+    # the client closed stdin: a pending boot abort must still land (the
+    # daemon thread would otherwise die with the interpreter) — boot is
+    # bounded by LOCK_WAIT_S + embed timeouts, so this join cannot wedge
+    _BOOT_THREAD.join()
+    if _BOOT_FATAL is not None:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
