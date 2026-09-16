@@ -860,6 +860,9 @@ const basePos = Float32Array.from(pos);
 let spread = 1;
 const supMem = new Uint8Array(N);
 let fnMode = false;   // hoisted: the eval-time syncFileMesh() call below reads it via sphR
+let focusHull = null;   // [#12] fn-tier focus container: {fill, rim, R, fi, boxes}
+let _oHull = 0;         // effective hull rim opacity (lod fade, via __dbg)
+let __routeFns = null;  // [#10] page probe surface: {turnsOf, mergeBends}
 // satellite allowance: files with many fn boxes grow the sphere so the box
 // ring keeps readable spacing (user call: bigger sphere, not smaller boxes).
 // Threshold mirrors AGG_MAX (fn-layer local). Deterministic: pure fn of DATA.
@@ -1046,7 +1049,10 @@ function syncFileMesh() {
     // label boxes and degFloor sizes; a multiplier here keeps both stable)
     const lift = a * (1 + 0.35 * (hoverScale[i] - 1)) * (i === fnOwner ? 1.9 : 1) *
                  (hlArr[i] ? 1.8 : 1);
-    const r = colArr[i*3] * lift, g = colArr[i*3+1] * lift, b = colArr[i*3+2] * lift;
+    // [#12] the focused file dims to a core inside its container hull
+    const hullDim = focusHull && i === focusHull.fi ? 0.62 : 1;
+    const r = colArr[i*3] * lift * hullDim, g = colArr[i*3+1] * lift * hullDim,
+          b = colArr[i*3+2] * lift * hullDim;
     _dummy.position.set(x, y, z);
     _dummy.scale.setScalar(sc);
     _dummy.updateMatrix();
@@ -1988,7 +1994,14 @@ function tick() {
     if (fnArrows) fnArrows.material.opacity = 0.9 * lod;
     _oDot = fnJDot ? 0.35 + 0.55 * lod : 0;
     _oArrow = fnArrows ? 0.9 * lod : 0;
-  } else { _oDot = 0; _oArrow = 0; }
+    // [#12] the container is focus-tier ink: served = full glass, far zoom
+    // fades it to nothing — the file node collapses back to its dot
+    if (focusHull) {
+      focusHull.fill.material.opacity = 0.05 * lod;
+      focusHull.rim.material.opacity = 0.16 * lod;
+      _oHull = 0.16 * lod;
+    } else _oHull = 0;
+  } else { _oDot = 0; _oArrow = 0; _oHull = 0; }
   // conduit width is SCREEN-CONSTANT per segment: radius ∝ each segment's own
   // distance to the camera (~2.4px on screen at every depth, next to 1px wires)
   fnLodV = { bollardsShown: 0, bollardsGated: 0, conduitsShown: 0, conduitsGated: 0,
@@ -3973,6 +3986,13 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
   if (fnArrowHalo) { scene.remove(fnArrowHalo); fnArrowHalo.geometry.dispose(); fnArrowHalo.material.dispose(); fnArrowHalo = null; }
   fnArrowLeg = null;
   if (fnStalks) { scene.remove(fnStalks); fnStalks.geometry.dispose(); fnStalks = null; }
+  if (focusHull) {
+    scene.remove(focusHull.fill);
+    scene.remove(focusHull.rim);
+    focusHull.fill.geometry.dispose(); focusHull.fill.material.dispose();
+    focusHull.rim.geometry.dispose(); focusHull.rim.material.dispose();
+    focusHull = null; _oHull = 0;
+  }
   fnMeta = [];
   rosterGen++;   // stale ball pins die with their roster (#16)
   if (!fnMode || !focusing) return;
@@ -4142,6 +4162,46 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
     stk[o+5] = collapsed ? m.p[2] : pos[m.file*3+2] + uz / ul * oR;
     for (let v = 0; v < 6; v += 3) {
       stc[o+v] = fcol[i*3]; stc[o+v+1] = fcol[i*3+1]; stc[o+v+2] = fcol[i*3+2];
+    }
+  }
+  // [#12] translucent focus container: the focused file renders as a glass
+  // hull HOLDING its fn boxes — radius = farthest rendered box corner +
+  // margin, centered on the file sphere (the dimmed core). Faint front-side
+  // fill + back-side rim (the cheap fresnel: only the silhouette reads).
+  // depthWrite off + renderOrder -1: fn ink inside draws over it, corridor
+  // geometry (stations/bollards sit at ringOut+STATION_R, beyond this
+  // radius) stays outside — corridor-complete law and pick parity intact.
+  // No raycast targets include the hull: the sphere behind it keeps the
+  // file card pick, boxes stay pickable (glass does not steal clicks).
+  if (focusFileIdx >= 0) {
+    let hR = 0, hN = 0;
+    for (const m of fnMeta) {
+      if (m.file !== focusFileIdx) continue;
+      if (m.agg && !m.count) continue;   // collapsed member: no ink
+      hN++;
+      const half = m.count ? 3 : 2;      // rendered box scales 6 / 4
+      const d = Math.hypot(m.p[0] - pos[focusFileIdx*3],
+                           m.p[1] - pos[focusFileIdx*3+1],
+                           m.p[2] - pos[focusFileIdx*3+2]) + half;
+      if (d > hR) hR = d;
+    }
+    if (hN && hR > 0) {
+      const hGeom = new THREE.SphereGeometry(hR + 8, 28, 20);
+      const mkHull = (side, op) => {
+        const mm = new THREE.Mesh(hGeom, new THREE.MeshBasicMaterial(
+          { color: new THREE.Color().setHSL(0.10, 0.10, 0.86),
+            transparent: true, opacity: op, depthWrite: false, side,
+            fog: false }));
+        mm.position.set(pos[focusFileIdx*3], pos[focusFileIdx*3+1],
+                        pos[focusFileIdx*3+2]);
+        mm.frustumCulled = false;
+        mm.renderOrder = -1;
+        scene.add(mm);
+        return mm;
+      };
+      focusHull = { fill: mkHull(THREE.FrontSide, 0.05),
+                    rim: mkHull(THREE.BackSide, 0.16),
+                    R: hR + 8, fi: focusFileIdx, boxes: hN };
     }
   }
   const g3 = new THREE.BufferGeometry();
@@ -6518,6 +6578,97 @@ function mapRender() {
       a.forEach((rec, ix2) => portXY.set(k + "|" + rec.id, inset + pitch * (ix2 + 0.5)));
     });
   }
+  // [#10] bend census + merger. The router's chamfers and lane-clearing
+  // jogs paint serial same-direction bends that read as ONE path on long
+  // hauls (the staircase class: a 6-band haul carried ~30 counted turns).
+  // turnsOf counts direction changes over ~10deg (45deg chamfer legs
+  // count); mergeBends is the deterministic post-pass the issue asks for:
+  // collinear points drop, corner-cut diagonals flatten to right angles
+  // on over-budget polylines, and micro-jogs (a short cross-run flanked
+  // by same-direction runs) consolidate into the through-line. Endpoints
+  // never move - terminators, arrowheads and the #63 rebuild-parity pins
+  // anchor on them, and the merged ink stays inside the union of the
+  // cleared column spans (the diagonal's own bounding box).
+  const TURN_FLAT = 12;   // flatten diagonals only on over-budget hauls
+  const JOG_PX = 6;       // cross-run short enough to read as one line
+  const JOG_MIN_SLANT = 0.10;  // merged jog diagonal >= ~5.7deg off axis
+  const turnsOf = pts => {
+    let n = 0;
+    for (let k = 2; k < pts.length; k++) {
+      const ax = pts[k - 1][0] - pts[k - 2][0], ay = pts[k - 1][1] - pts[k - 2][1];
+      const bx = pts[k][0] - pts[k - 1][0], by = pts[k][1] - pts[k - 1][1];
+      const la = Math.hypot(ax, ay) || 1, lb = Math.hypot(bx, by) || 1;
+      if ((ax * bx + ay * by) / (la * lb) < 0.984) n++;
+    }
+    return n;
+  };
+  const mergeBends = pts => {
+    if (!pts || pts.length < 3) return pts;
+    let q = pts;
+    for (let round = 0; round < 6; round++) {
+      // 1) collinear/zero-length collapse (endpoints kept)
+      const c = [q[0]];
+      for (let k = 1; k < q.length - 1; k++) {
+        const a = c[c.length - 1], b = q[k], e = q[k + 1];
+        const d1x = b[0] - a[0], d1y = b[1] - a[1];
+        const d2x = e[0] - b[0], d2y = e[1] - b[1];
+        if (Math.abs(d1x * d2y - d1y * d2x) < 1e-9 && d1x * d2x + d1y * d2y > 0)
+          continue;
+        c.push(b);
+      }
+      c.push(q[q.length - 1]);
+      // 2) flatten the corner-cut diagonals on over-budget polylines: a
+      // chamfer leg becomes the right angle at its corner (2 turns -> 1)
+      let r = c;
+      if (turnsOf(c) > TURN_FLAT) {
+        const f = [c[0]];
+        for (let k = 1; k < c.length; k++) {
+          const a = c[k - 1], b = c[k];
+          const dx = b[0] - a[0], dy = b[1] - a[1];
+          if (dx !== 0 && dy !== 0 &&
+              Math.abs(Math.abs(dx) - Math.abs(dy)) < 0.01 &&
+              Math.abs(dx) <= 8)
+            f.push([a[0], b[1]]);
+          f.push(b);
+        }
+        // an S-pair of chamfers flattens 3 turns into 4 - keep the cut
+        // only when the whole path reads fewer bends afterwards
+        if (turnsOf(f) < turnsOf(c)) r = f;
+      }
+      // 3) micro-jog consolidation: a cross-run of <= JOG_PX flanked by
+      // same-direction runs on the through axis collapses to the single
+      // diagonal the eye already reads (within half the jog of the
+      // original everywhere). Shallow result diagonals stay jogs - at
+      // JOG_MIN_SLANT they would parallel the corridor lanes (np metric).
+      const m = [r[0]];
+      let j = 1;
+      while (j < r.length - 2) {
+        const a = m[m.length - 1], b = r[j], e = r[j + 1], e2 = r[j + 2];
+        const d1x = b[0] - a[0], d1y = b[1] - a[1];
+        const d2x = e[0] - b[0], d2y = e[1] - b[1];
+        const d3x = e2[0] - e[0], d3y = e2[1] - e[1];
+        const jogV = d1x === 0 && d2y === 0 && d3x === 0 &&
+          Math.sign(d1y) === Math.sign(d3y) &&
+          Math.abs(d2x) > 0.5 && Math.abs(d2x) <= JOG_PX &&
+          Math.abs(d2x) / Math.max(1, Math.abs(e2[1] - a[1])) >= JOG_MIN_SLANT;
+        const jogH = d1y === 0 && d2x === 0 && d3y === 0 &&
+          Math.sign(d1x) === Math.sign(d3x) &&
+          Math.abs(d2y) > 0.5 && Math.abs(d2y) <= JOG_PX &&
+          Math.abs(d2y) / Math.max(1, Math.abs(e2[0] - a[0])) >= JOG_MIN_SLANT;
+        if (jogV || jogH) { j += 2; continue; }   // drop b and e: a -> e2
+        m.push(b);
+        j++;
+      }
+      m.push(r[r.length - 2], r[r.length - 1]);
+      // monotone: the merger may never ADD a bend or a point. The old
+      // accept-on-length-only let a flattened S-pair (3 turns -> 4) slip
+      // through and lengthen the staircase class it exists to shorten.
+      if (turnsOf(m) > turnsOf(q) || m.length >= q.length) return m;
+      q = m;
+    }
+    return q;
+  };
+  __routeFns = { turnsOf, mergeBends };   // [#10] probe surface for the pins
   const underlays = [], spines = [], wires = [];
   const routeOrtho = (A, B, sy, ty, sameRow, sx0, tx0, bus, lanePad, yPad) => {
     // long hauls cross every chunk between the two rows — hand the router
@@ -7095,6 +7246,13 @@ function mapRender() {
     }
     w.pts = q;
   });
+  // [#10] bend merger application: every routed polyline that paints gets
+  // the post-pass - underlays, spines (stroked + riders ride the trunk),
+  // wires and bus stubs. Deterministic pure function of pts, so the #63
+  // rebuild-parity pins (trunk geometry across zoom rebuilds) hold.
+  [underlays, spines, wires].forEach(arr => arr.forEach(rec => {
+    if (rec.pts && rec.pts.length > 2) rec.pts = mergeBends(rec.pts);
+  }));
   mapRects = [];
   place.forEach((p, i) => {
     const g = geo.get(i);
@@ -7143,7 +7301,11 @@ function mapRender() {
     trunkGroups, buses: buses.length,
     busW: buses.reduce((s, b) => s + b.n, 0),
     hubTrunks, hubTaps, hubRiders, hubPeels,
-    bez: 0, back: 0, down: 0, up: 0, sameRow: 0 };
+    bez: 0, back: 0, down: 0, up: 0, sameRow: 0,
+    // [#10] post-merge turn census over STROKED ink (named wires + spines
+    // that paint; riders ride trunks and count via their trunk): the
+    // staircase-class metric, readable from routeAudit by the pins.
+    maxTurns: 0, over20: 0, turnsSum: 0, turnsN: 0, maxTrunkTurns: 0 };
   // stroked spines only (riders carry pts:[] - their ink rides the trunk)
   spines.forEach(sp => { if (!sp.con && sp.pts.length) audit.spines++; });
   [underlays, spines, wires].forEach(arr => arr.forEach(rec => {
@@ -7153,6 +7315,23 @@ function mapRender() {
     if (rec.flow === "same") audit.sameRow++;
     else if (rec.flow) audit[rec.flow]++;
   }));
+  // [#10] turn census over stroked ink (post-merge geometry): the numbers
+  // the staircase-class pins read.
+  wires.forEach(w => {
+    if (!w.pts || w.pts.length < 2) return;
+    const t = turnsOf(w.pts);
+    audit.turnsN++; audit.turnsSum += t;
+    if (t > audit.maxTurns) audit.maxTurns = t;
+    if (t > 20) audit.over20++;
+  });
+  spines.forEach(sp => {
+    if (sp.con || !sp.pts || sp.pts.length < 2) return;
+    const t = turnsOf(sp.pts);
+    audit.turnsN++; audit.turnsSum += t;
+    if (t > audit.maxTurns) audit.maxTurns = t;
+    if (t > 20) audit.over20++;
+    if (sp.hub === "trunk" && t > audit.maxTrunkTurns) audit.maxTrunkTurns = t;
+  });
   mapLayout = {
     key, sig, lit, edges, E, place, geo, rects, wires, spines, underlays,
     chips, rosterRows, expandedSet: expand, worldH, worldW: cwL, capNote,
@@ -9307,6 +9486,19 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get camTween() { return camTween; }, get focusStack() { return focusStack; },
   get focusFileIdx() { return focusFileIdx; }, get compactAnim() { return !!compactAnim; },
   get focusFold() { return { ...flabFoldState, unfold: flabUnfold }; },   // [#8] super-hub fold probe
+  get focusHullProbe() {
+    if (!focusHull) return null;
+    return { fi: focusHull.fi, R: focusHull.R, boxes: focusHull.boxes,
+      pos: [focusHull.fill.position.x, focusHull.fill.position.y,
+            focusHull.fill.position.z],
+      fillO: focusHull.fill.material.opacity,
+      rimO: focusHull.rim.material.opacity, oHull: _oHull,
+      transparent: focusHull.rim.material.transparent,
+      depthWrite: focusHull.rim.material.depthWrite,
+      ro: focusHull.rim.renderOrder,
+      boxRO: fnMesh ? fnMesh.renderOrder : null };
+  },
+  get routeFns() { return __routeFns; },   // [#10] {turnsOf, mergeBends}
   get posSavedLive() { return posSaved !== null; },
   posAt: i => [pos[i*3], pos[i*3+1], pos[i*3+2]],
   compactTgtAt: i => compactTgt ? [compactTgt[i*3], compactTgt[i*3+1], compactTgt[i*3+2]] : null,
