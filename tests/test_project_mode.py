@@ -416,6 +416,43 @@ def main() -> None:
         check("global-wire: install stays read-only (no home config writes)",
               (home_mcp.read_bytes() if home_mcp.exists() else None) == home_before)
 
+        # 4g-a. issue #252: a checkout's pyproject outranks the venv's
+        # installed dist-info (baked at install time, lags a pull — the
+        # 0.1.7 cut re-pinned v0.1.6); installs without an adjacent
+        # pyproject keep the metadata path
+        import importlib.metadata as _imeta
+        import importlib.util as _ilu
+        import tomllib as _tomllib
+        with open(ROOT / "pyproject.toml", "rb") as _fh:
+            _pyproject_ref = "v" + _tomllib.load(_fh)["project"]["version"]
+        _real_version = _imeta.version
+        try:
+            _imeta.version = lambda _dist: "0.1.6"  # the stale dist-info
+            check("uvx ref: checkout pyproject beats stale dist-info (#252)",
+                  onboard._universal_entry()["args"][1] == f"{onboard._UVX_SOURCE}@{_pyproject_ref}",
+                  onboard._uvx_ref())
+            _inst = tmp / "installed"
+            _inst.mkdir()
+            (_inst / "onboard.py").write_bytes((ROOT / "onboard.py").read_bytes())
+            _spec_i = _ilu.spec_from_file_location("onboard_installed", str(_inst / "onboard.py"))
+            _onboard_i = _ilu.module_from_spec(_spec_i)
+            _spec_i.loader.exec_module(_onboard_i)
+            check("uvx ref: install (no adjacent pyproject) uses dist metadata (#252)",
+                  _onboard_i._uvx_ref() == "v0.1.6", _onboard_i._uvx_ref())
+            from importlib.metadata import PackageNotFoundError as _PNF
+            def _no_dist(_dist):
+                raise _PNF(_dist)
+            _imeta.version = _no_dist
+            try:
+                _onboard_i._uvx_ref()
+                check("uvx ref: no pyproject AND no dist fails loud (#252)",
+                      False, "returned without a version source")
+            except _PNF:
+                check("uvx ref: no pyproject AND no dist fails loud (#252)",
+                      True, "PackageNotFoundError")
+        finally:
+            _imeta.version = _real_version
+
         # 4g-b. #201: kilocode settings path is platform-branched (no
         # junk ~/AppData tree on POSIX); env override still wins
         import sys as _sys

@@ -269,17 +269,19 @@ _UVX_SOURCE = "git+https://github.com/robbe1912/neuronav"
 
 def _uvx_ref() -> str:
     """Git tag the uvx entry pins: ``v`` + the package version (issue
-    #204). importlib.metadata answers for any installed copy (uvx/wheel
-    — pyproject.toml is the version's source of truth); a plain checkout
-    falls back to reading the pyproject beside this file (tomllib,
-    stdlib since 3.11)."""
-    try:
-        from importlib.metadata import PackageNotFoundError, version
-        return "v" + version("neuronav")
-    except PackageNotFoundError:
+    #204). The pyproject beside this file answers FIRST when present:
+    a pulled checkout can be newer than the venv's installed dist-info
+    (baked at install time — issue #252 bit exactly there: the 0.1.7
+    cut re-pinned v0.1.6 into every harness config); installed copies
+    (uvx/wheel — no pyproject rides beside the modules) answer via
+    importlib.metadata (tomllib is stdlib since 3.11)."""
+    pyproject = TOOL_DIR / "pyproject.toml"
+    if pyproject.is_file():
         import tomllib
-        with open(TOOL_DIR / "pyproject.toml", "rb") as fh:
+        with open(pyproject, "rb") as fh:
             return "v" + tomllib.load(fh)["project"]["version"]
+    from importlib.metadata import version
+    return "v" + version("neuronav")
 
 
 def _universal_entry() -> dict:
