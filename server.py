@@ -174,7 +174,7 @@ def _preset_hint(suggestions: list[str]) -> str | None:
     """The preset covering a guidance's suggested suffixes (issue #240):
     first hit in a fixed preference order — ts before js, so a mixed web
     repo suggests the fuller list. None when no preset applies."""
-    for name in ("ts", "js", "python", "cpp", "gdscript"):
+    for name in ("ts", "js", "python", "cpp", "gdscript", "rust"):
         if set(PRESETS[name]) & set(suggestions):
             return name
     return None

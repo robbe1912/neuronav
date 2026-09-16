@@ -42,6 +42,7 @@ owner-side `test_chunking` and `test_truthful`.
 | `test_pyhard` | python extractor edge cases on `fixtures/pyhard` | numpy + chromadb import only (hermetic fixture config) |
 | `test_cpphard` | C++ extractor edge cases on `fixtures/cpp` (issue #13): macro surface, .h/.cpp pairing, registration harvest, dead tiers, determinism | tree-sitter + tree-sitter-cpp import only (hermetic fixture config) |
 | `test_tshard` | TS extractor edge cases (grammar split, barrels, aliases, overloads, defaults, decorators, JSX, dead tiers, determinism) | tree-sitter + tree-sitter-typescript wheels (hermetic fixtures) |
+| `test_rusthard` | Rust extractor edge cases (pub-mod API closure, `pub use` rebinding, trait dispatch, test attrs, macros, dead tiers, sabotage leg, determinism) | tree-sitter + tree-sitter-rust wheels (hermetic fixtures) |
 | `test_selfindex` | self-index structural invariants: likely-dead zero, handlers stay review, deterministic rebuild | chromadb import (structural only) |
 | `test_target_regression` | byte-stability over the target repo: floor pins + liveness canaries | chromadb import + the target repo configured in `config.json` |
 | `test_tsregression` | TS target byte-stability + liveness canaries + parse-coverage floors (per-command untracked profile); hermetic section pins the judge-C1 dead-file registry resolution (`.ts` flags like the `.gd` control) + the `# imports:` doc header | chromadb import + the TS target via `NEURONAV_CONFIG` |
