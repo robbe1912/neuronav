@@ -300,6 +300,45 @@ try:
 finally:
     nav.STATE_DIR = saved
 
+# --------------------- 11. scene->scene wiring feeds no rule number (#267)
+# cross_tallies carves scene->scene resource references (pack composition)
+# into their own counter; rules read the same tallies, so a rule sees no
+# composition wiring either — while scene<->script wiring (attach) stays
+# rule-visible, mirroring the crosstalk report exactly (#114).
+CS_SC = [
+    cluster(5, "Hub", ["main.tscn", "hub/ctl.gd"]),
+    cluster(6, "Pack", ["pack/a.tscn", "pack/s.gd"]),
+]
+G_SC = SimpleNamespace(
+    edges={
+        "main.tscn::tscn": {
+            "pack/a.tscn::tscn": 1,  # scene -> scene inst: composition
+            "pack/s.gd::ready": 1,  # scene -> script attach: coupling
+        },
+    },
+    edge_types={
+        ("main.tscn::tscn", "pack/a.tscn::tscn"): {"inst"},
+        ("main.tscn::tscn", "pack/s.gd::ready"): {"attach"},
+    },
+)
+t_sc = C.cross_tallies(CS_SC, G_SC)
+check("tallies: scene->scene carved into own counter (#267)",
+      t_sc.get("scene_scene") == 1 and len(t_sc["pair_wires"].get((5, 6), [])) == 1,
+      str(t_sc.get("scene_scene")))
+rep_sc = C.crosstalk(CS_SC, G_SC)
+check("crosstalk: scene composition feeds no cluster number",
+      rep_sc["external_edges"] == 1 and rep_sc.get("scene_scene_edges") == 1,
+      f"ext {rep_sc['external_edges']}")
+write_rules([
+    {"id": "sc-inst", "kind": "forbid", "from": "Hub", "to": "Pack", "types": ["inst"]},
+    {"id": "sc-any", "kind": "forbid", "from": "Hub", "to": "Pack"},
+])
+rep = A.check(CS_SC, G_SC)
+by_rule = {x["rule"]: x["wires"] for x in rep["violations"]}
+check("rules see no scene->scene wires but keep scene->script (#267/#114)",
+      by_rule.get("sc-any") == 1 and "sc-inst" not in by_rule,
+      str(rep["violations"])[:120])
+
 print()
 if FAILS:
     print(f"{len(FAILS)} FAIL: {FAILS}")
