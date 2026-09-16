@@ -10,7 +10,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neuronav"
-version = "0.1.6"
+version = "0.1.7"
 description = "Local code-intelligence for AI coding agents: vector recall, call/signal graph, clusters, dead code, 3D visualizer - stdio MCP server"
 readme = "README.md"
 # numpy==2.5.2 — with it the whole pinned math stack — needs >=3.12; a 3.11
