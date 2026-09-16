@@ -9,7 +9,7 @@ server. MIT. Python 3.12+, stdlib-first.
 git clone https://github.com/robbe1912/neuronav
 cd neuronav
 uv venv && uv pip install -e .   # Python >= 3.12; the committed ==-pin set
-uv pip install playwright        # only for local test_viz runs
+uv pip install playwright        # local test_viz runs + test_qa_smoke leg B (the qa_readability gate drives a real browser)
 ollama pull qwen3-embedding:0.6b          # default embedding backend; any OpenAI-compatible /embeddings endpoint also works (config/AGENTS.md)
 ```
 
