@@ -5230,6 +5230,17 @@ let mapLodSpinesPainted = 0;   // [#77] spine strokes this frame (probe)
 let mapLodRosterShown = 0;     // [#77] roster rows painted this frame (probe)
 let mapLodAggChips = 0;        // [#77] cluster-aggregate badges painted (probe)
 let mapLodUnbundled = 0;       // [#77] riders painted unbundled (probe)
+// [#61] hub-tap legibility floor: a tap is a 1-world-px access road; below
+// MAP_TAP_FOLD_Z its stroke renders under half a screen px - illegible
+// full fidelity on a super-hub fan. The tap folds (paint + pick parity)
+// and the floored trunk + peel dots carry the read - the #77 band law
+// extended to the aggregated hub tier.
+const MAP_TAP_FOLD_Z = 0.5;
+let mapLodInstAfford = 0;    // [#60] sole-relation underlays at affordance alpha (probe)
+let mapLodInstAffordAlpha = 0;   // [#60/#210] max seg() alpha issued for afford ink (probe)
+let mapLodInstAffordWidth = 0;   // [#60/#210] max seg() width issued for afford ink, screen px (probe)
+let mapLodTapsPainted = 0;   // [#61] hub taps stroked this frame (probe)
+let mapLodTapsFolded = 0;    // [#61] taps folded below the floor this frame (probe)
 const mapLodEval = () => {
   if (mapLodBand === 0 && mapZ < MAP_LOD_Z1) mapLodBand = 1;
   else if (mapLodBand === 1 && mapZ >= MAP_LOD_Z1X) mapLodBand = 0;
@@ -7156,11 +7167,36 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   // layers (underlays, named wires, port dots/arrowheads) hide when zoomed
   // out - PAINT-ONLY, the layout never changes (mapInkEval hysteresis).
   // Structure (spines, buses, junction dots, boxes, chips) stays on always.
-  if (mapInkOn) L.underlays.forEach(u => {
-    seg(u, MGLYPH[u.ty0] ? MGLYPH[u.ty0].c : MGLYPH.attach.c, 1,
-        MGLYPH.attach.dash, 0.12 * dim(u.s, u.t));   // [issue #78] ink budget
+  // [#60] sole-relation underlays are STRUCTURE, not declutter ink: a pair
+  // with no stroked spine and no named wire (an inst/attach-only pair - the
+  // whole wiring of an inst-dominant hub) has nothing else to demote under,
+  // so it paints at the section-1 affordance alpha with a 1-screen-px width
+  // floor, exempt from the fine-ink tier (the map twin of the 3D zero-wire
+  // affordance ruling, C2.2). Band-2 intra-cluster fold applies with parity
+  // to the spine law (#77).
+  mapLodInstAfford = 0;
+  mapLodInstAffordAlpha = 0;
+  mapLodInstAffordWidth = 0;
+  const namedPairs = new Set(L.wires.map(w => w.sf + "_" + w.df));
+  L.underlays.forEach(u => {
+    const afford = !L.pairW.has(u.s + "_" + u.t) &&
+                   !namedPairs.has(u.s + "_" + u.t);   // [#60]
+    if (mapLodBand === 2 && nodes[u.s].cluster === nodes[u.t].cluster)
+      return;   // [#77] cluster-distance fold (parity with spines)
+    if (!afford && !mapInkOn) return;   // demoted ink keeps the fine-ink tier
+    const ua = (afford ? 0.40 : 0.12) * dim(u.s, u.t);   // [#60]/[#78]
+    const uw = afford ? Math.max(1, 1 / mapZ) : 1;   // [#60] countable at any zoom
+    if (afford) {
+      mapLodInstAfford++;
+      // [#210] probe the ISSUED ink, not the code path: capture what
+      // seg() receives so the gate fails under paint-parameter sabotage
+      mapLodInstAffordAlpha = Math.max(mapLodInstAffordAlpha, ua);
+      mapLodInstAffordWidth = Math.max(mapLodInstAffordWidth, uw);
+    }
+    seg(u, MGLYPH[u.ty0] ? MGLYPH[u.ty0].c : MGLYPH.attach.c,
+        uw, MGLYPH.attach.dash, ua);
     // T-junction terminator: short tick across the entry, no arrow
-    ctx.globalAlpha = 0.12 * dim(u.s, u.t);   // [issue #78] ink budget
+    ctx.globalAlpha = ua;
     ctx.setLineDash([]);
     ctx.beginPath();
     ctx.moveTo(u.tx - 4, u.ty); ctx.lineTo(u.tx + 4, u.ty);
@@ -7168,6 +7204,8 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   });
   const pinPair = mapLodPinPair();   // [#77] pair unbundled this frame (or null)
   mapLodSpinesPainted = 0;
+  mapLodTapsPainted = 0;
+  mapLodTapsFolded = 0;
   L.spines.forEach(sp => {
     if (sp.con || !sp.pts.length) return;  // riders: ink rides the trunk
     // [#77] band 2 folds intra-cluster corridors (same cluster both ends):
@@ -7180,6 +7218,10 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
     // its riders draw straight (pass below); trunks carry other pairs too
     // and stay
     if (pinPair && sp.pair === pinPair && !sp.hub) return;
+    // [#61] tap legibility floor: below MAP_TAP_FOLD_Z a 1-world-px tap
+    // renders sub-half-pixel - fold it; the floored trunk + peel dots
+    // carry the read (paint + pick parity, #113)
+    if (sp.hub === "tap" && mapZ < MAP_TAP_FOLD_Z) { mapLodTapsFolded++; return; }
     mapLodSpinesPainted++;
     // wire color = TYPE (Blueprint law); wty carries it (the old build let
     // the y-coordinate overwrite the type, painting everything call-gray)
@@ -7191,12 +7233,17 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
       seg(sp, color, Math.max(Math.min(2 + 0.85 * Math.log2(sp.flowSum), 5.5), 1.3 / mapZ),
           sp.back ? [2, 3] : null, 0.78 * dim(sp.s, sp.t));
     } else if (sp.hub === "tap") {
+      mapLodTapsPainted++;
       // thin tap at the rider's type color: access road, not corridor
       seg(sp, color, 1, null, 0.6 * dim(sp.s, sp.t));
     } else {
       // single spine / L-C trunk leader
       const lead = sp.trunkW >= 2;
-      seg(sp, color, Math.min(2 + 0.85 * Math.log2(sp.flowSum), 5.5),
+      // [#61] leaders are trunks: the 1.3-screen-px floor extends from hub
+      // trunks so a fan-in super-hub's L-C leaders stay legible zoomed out
+      seg(sp, color, lead
+          ? Math.max(Math.min(2 + 0.85 * Math.log2(sp.flowSum), 5.5), 1.3 / mapZ)
+          : Math.min(2 + 0.85 * Math.log2(sp.flowSum), 5.5),
           sp.back ? [2, 3] : null, (lead ? 0.78 : 0.45) * dim(sp.s, sp.t));
     }
   });
@@ -7917,6 +7964,9 @@ mapPane.addEventListener("click", e => {
       if (mapLodBand === 2 && !sp.hub &&
           nodes[sp.s].cluster === nodes[sp.t].cluster) return;
       if (pp && sp.pair === pp && !sp.hub) return;
+      // [#61] pick-vs-paint parity: taps folded below the legibility
+      // floor carry no hit target
+      if (sp.hub === "tap" && mapZ < MAP_TAP_FOLD_Z) return;
       for (let k = 1; k < sp.pts.length; k++) {
         const d = segDist(w.x, w.y, sp.pts[k-1][0], sp.pts[k-1][1],
                              sp.pts[k][0], sp.pts[k][1]);
@@ -8101,6 +8151,11 @@ const mapInfo = () => {
     rosterShown: mapLodRosterShown,   // rows painted THIS frame (band 1 folds)
     lodHiddenSpines: mapLayout.spines.filter(sp => !sp.con && sp.pts.length &&
       !sp.hub && nodes[sp.s].cluster === nodes[sp.t].cluster).length,
+    instAfford: mapLodInstAfford,   // [#60] sole-relation underlays painted
+    instAffordAlpha: mapLodInstAffordAlpha,   // [#60/#210] issued seg alpha
+    instAffordWidth: mapLodInstAffordWidth,   // [#60/#210] issued seg width (screen px)
+    tapsPainted: mapLodTapsPainted,   // [#61] hub taps stroked this frame
+    tapsFolded: mapLodTapsFolded,     // [#61] taps folded below the floor
   };
 };
 document.getElementById("bGround").onclick = e => {
@@ -9183,7 +9238,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get mapLodBand() { return mapLodBand; },   // [#77] 0 full / 1 thinned / 2 cluster
   get mapLodFitZ() { return mapLodFitZ; },   // [#77]
   get mapLodThresholds() { return { z1: MAP_LOD_Z1, z1x: MAP_LOD_Z1X,
-    z2: MAP_LOD_Z2, z2x: MAP_LOD_Z2X }; },   // [#77] band gates (probe)
+    z2: MAP_LOD_Z2, z2x: MAP_LOD_Z2X, tapFold: MAP_TAP_FOLD_Z }; },   // [#77]/[#61] band + tap gates (probe)
   get mapCenterReq() { return mapCenterReq; }, get mapPulse() { return mapPulse; },
   get pickWireZ() { return pickWireZ; },   // [issue #87] ink depth at last pick
   get paneW() { return paneW; }, setMapVisible, divider,
