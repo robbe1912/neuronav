@@ -15,7 +15,7 @@
 # qa_readability's affordance subject filter — routes through the registry
 # predicate is_scene_path; tools/ carries no allowlist entries).
 #
-# Temporary, line-anchored allowlist: viz.py:2785 is queued behind
+# Temporary, line-anchored allowlist: viz.py:2790 is queued behind
 # HarnessPro's #123/#89 and nav's walk filters are config truth (not
 # language truth). clusters.py carried PR-2 deferrals until its cutover
 # landed — it must stay clean now, so its block is GONE and this
@@ -78,7 +78,7 @@ JS_SUFFIX = re.compile(r"""/\\.(?:tscn|gd|tres|res|py|cpp|h|hpp)\b""")
 
 # ---- temporary, line-anchored allowlist (see header) ---------------------------
 ALLOWED = {}
-ALLOWED[("viz.py", 2785)] = "V-1: queued behind #123/#89 (data-flag contract)"
+ALLOWED[("viz.py", 2790)] = "V-1: queued behind #123/#89 (data-flag contract)"
 # config/parametric walk filters — EXTS is the user's config include-set
 # and `suffixes` arrives as a caller argument (registry datum at the call
 # site); neither is a language truth hard-coded in nav

@@ -245,9 +245,9 @@ def run_tests(port: int):
             # the fn tier renders the wires that exist within depth N. A
             # depth-1 ball can be wire-free; step the slider 1->2->3 until
             # cross-file fn wires light (bounded, deterministic).
-            # converge on a state with both fn wires AND the serve gate
-            # on: serveAll needs the camera inside 2.2 ball radii, and only
-            # a click re-frames the camera after the ball grows
+            # on: serveAll needs the camera inside 2.2 ball radii; the
+            # depth input itself re-frames with the ball now (#62), and
+            # the re-click below re-runs the full focus() framing besides
             for dv in (2, 3):
                 st = page.evaluate(
                     """() => { const d = window.__dbg;
@@ -5528,6 +5528,179 @@ def run_tests(port: int):
                   f"{e2}")
         else:
             print("SKIP #59 cbFn ladder - no chip list")
+
+        # -- #62: depth-slider truth. The crumb's lit count used to
+        # recount the 1-hop ball (frozen at landing size) while the real
+        # lit set grew with the slider, and the camera never re-framed -
+        # served content sat off-screen until a re-click. Both must track
+        # the slider. Data-gate: a seed whose 2-hop set actually grows;
+        # an index without that shape skips loudly.
+        depth62 = page.evaluate(
+            """() => { const d = window.__dbg;
+                 let best = null;
+                 for (let s = 0; s < d.nodes.length; s++) {
+                   if (!d.adj[s] || !d.adj[s].length) continue;
+                   const seen = new Set([s]);
+                   for (const v of d.adj[s]) if (!seen.has(v)) seen.add(v);
+                   const n1 = seen.size;
+                   for (const u of [...seen])
+                     for (const v of d.adj[u]) if (!seen.has(v)) seen.add(v);
+                   const g = seen.size - n1;
+                   if (!best || g > best.g)
+                     best = { i: s, path: d.nodes[s].path, g };
+                 }
+                 return best; }"""
+        )
+        if not depth62 or depth62["g"] <= 0:
+            print(f"SKIP #62 depth-slider truth - no 2-hop growth "
+                  f"(g={depth62 and depth62['g']})")
+        else:
+            page.fill("#search", depth62["path"].rsplit("/", 1)[-1].split(".")[0])
+            page.dispatch_event("#search", "input")
+            wait_rows(page, depth62["path"])
+            page.locator(f"#searchResults .row[title='{depth62['path']}']").click()
+            quiesce(page)
+
+            def crumb62():
+                return page.evaluate(
+                    """() => { const d = window.__dbg;
+                         const t = document.getElementById('crumb').textContent || '';
+                         const m = t.match(/depth (\\d+).*?(\\d+) files lit/);
+                         return { crumb: m ? +m[2] : null,
+                                  lit: d.alphaTgt.reduce(
+                                    (s, a) => s + (a > 0.5 ? 1 : 0), 0),
+                                  cam: [d.camera.position.x, d.camera.position.y,
+                                        d.camera.position.z] }; }"""
+                )
+
+            c1 = crumb62()
+            check("[#62] crumb lit-count equals the live lit set",
+                  c1["crumb"] == c1["lit"], str(c1))
+            page.evaluate(
+                """() => { const el = document.getElementById('depth');
+                     el.value = 2; el.dispatchEvent(new Event('input')); }""")
+            quiesce(page)
+            c2 = crumb62()
+            check("[#62] crumb lit-count tracks the depth-grown set",
+                  c2["crumb"] == c2["lit"] and c2["lit"] > c1["lit"], str(c2))
+            drift = sum(abs(a - b) for a, b in zip(c2["cam"], c1["cam"]))
+            check("[#62] camera re-frames on depth growth",
+                  drift > 1.0, f"pose drift {drift:.1f}")
+            frame62 = page.evaluate(
+                """() => { const d = window.__dbg;
+                     let out = 0, n = 0;
+                     for (let i = 0; i < d.nodes.length; i++) {
+                       if (d.alphaTgt[i] <= 0.5) continue;
+                       n++;
+                       const p = d.posAt(i);
+                       const v = new d.THREE.Vector3(p[0], p[1], p[2])
+                         .project(d.camera);
+                       if (Math.abs(v.x) > 1.05 || Math.abs(v.y) > 1.05) out++;
+                     }
+                     return { n, out }; }"""
+            )
+            check("[#62] grown lit set stays in frame",
+                  frame62["out"] == 0, str(frame62))
+            page.keyboard.press("Escape")
+            quiesce(page)
+
+        # -- #8: super-hub landing degrade. Past SUPER_DEG (weight-sum
+        # degree, the number the hub chip shows) a landing folds its 1-hop
+        # chip fan to the top-weight few + ONE count chip (the #77
+        # magnitude tier applied to the 3D chip plane; #261 tap-fold
+        # precedent). Labels only: the lit ball, budget arcs and corridor
+        # census are untouched. Data-gate on the index shipping a
+        # deg>100 hub; smaller indexes skip loudly.
+        sup8 = page.evaluate(
+            """() => { const d = window.__dbg;
+                 let best = 0;
+                 for (let i = 1; i < d.nodes.length; i++)
+                   if (d.degree[i] > d.degree[best]) best = i;
+                 return { path: d.nodes[best].path,
+                          deg: +d.degree[best].toFixed(0),
+                          super: d.degree[best] > 100 }; }"""
+        )
+        if not sup8["super"]:
+            print(f"SKIP #8 super-hub fold - max degree {sup8['deg']} "
+                  f"(tier needs > 100)")
+        else:
+            page.fill("#search", sup8["path"].rsplit("/", 1)[-1].split(".")[0])
+            page.dispatch_event("#search", "input")
+            wait_rows(page, sup8["path"])
+            page.locator(f"#searchResults .row[title='{sup8['path']}']").click()
+            quiesce(page)
+            fold8 = page.evaluate(
+                """() => { const d = window.__dbg;
+                     const vis = [...document.querySelectorAll('.flab')]
+                       .filter(e => e.offsetParent !== null);
+                     const fc = document.querySelector('.flab.fold');
+                     let under = 0;
+                     for (const e of vis) {
+                       if (e.getBoundingClientRect().left < 310) under++;
+                     }
+                     const lab = d.nodes[d.focusFileIdx].label;
+                     const hc = [...document.querySelectorAll('#hubs .hub')]
+                       .find(e => e.offsetParent !== null
+                              && e.textContent.startsWith(lab + " "));
+                     let halo = !!hc;
+                     if (hc) {
+                       const hr = hc.getBoundingClientRect();
+                       for (const e of vis) {
+                         if (e.classList.contains('fold')) continue;
+                         const r = e.getBoundingClientRect();
+                         const sep = r.left > hr.right + 20 ||
+                           hr.left > r.right + 20 ||
+                           r.top > hr.bottom + 20 ||
+                           hr.top > r.bottom + 20;
+                         if (!sep) { halo = false; break; }
+                       }
+                     }
+                     return { st: d.focusFold,
+                              foldText: fc ? fc.textContent : null,
+                              foldVis: !!(fc && fc.offsetParent !== null),
+                              vis: vis.length, under, halo }; }"""
+            )
+            st8 = fold8["st"]
+            check("[#8] super-hub landing folds the 1-hop chip fan",
+                  st8["super"] and st8["folded"] > 0 and st8["shown"] <= 17
+                  and fold8["foldVis"] and fold8["vis"] <= st8["shown"] + 1,
+                  str(fold8))
+            check("[#8] fold chip names the folded count",
+                  fold8["foldText"] == f"+{st8['folded']} more", str(fold8))
+            check("[#8] folded landing keeps chips off the control panel",
+                  fold8["under"] == 0, str(fold8))
+            check("[#8] clean halo band around the focused hub chip",
+                  fold8["halo"], str(fold8))
+            ink8 = page.evaluate(
+                """() => { const d = window.__dbg;
+                     return {
+                       lit: d.alphaTgt.reduce(
+                         (s, a) => s + (a > 0.5 ? 1 : 0), 0),
+                       ball: d.compactBall.nOthers,
+                       budget: d.rfwProbe.budgetN }; }"""
+            )
+            check("[#8] fold is labels-only (ball + budget arcs intact)",
+                  ink8["lit"] >= ink8["ball"] + 1 and ink8["budget"] > 0,
+                  str(ink8))
+            page.locator(".flab.fold").click()
+            quiesce(page)
+            unf8 = page.evaluate("() => window.__dbg.focusFold")
+            check("[#8] fold chip click unfolds the fan",
+                  unf8["unfold"] and unf8["folded"] == 0
+                  and unf8["shown"] > 17, str(unf8))
+            page.keyboard.press("Escape")
+            quiesce(page)
+            page.fill("#search", sup8["path"].rsplit("/", 1)[-1].split(".")[0])
+            page.dispatch_event("#search", "input")
+            wait_rows(page, sup8["path"])
+            page.locator(f"#searchResults .row[title='{sup8['path']}']").click()
+            quiesce(page)
+            ref8 = page.evaluate("() => window.__dbg.focusFold")
+            check("[#8] a fresh landing refolds",
+                  ref8["super"] and ref8["folded"] > 0 and not ref8["unfold"],
+                  str(ref8))
+            page.keyboard.press("Escape")
+            quiesce(page)
 
         # #98 watchdog: NO console error and NO uncaught JS error may fire
         # anywhere in the session — boot, search-focus entry, depth
