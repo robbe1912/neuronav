@@ -78,7 +78,7 @@ JS_SUFFIX = re.compile(r"""/\\.(?:tscn|gd|tres|res|py|cpp|h|hpp)\b""")
 
 # ---- temporary, line-anchored allowlist (see header) ---------------------------
 ALLOWED = {}
-ALLOWED[("viz.py", 2803)] = "V-1: queued behind #123/#89 (data-flag contract)"
+ALLOWED[("viz.py", 2963)] = "V-1: queued behind #123/#89 (data-flag contract)"
 # config/parametric walk filters — EXTS is the user's config include-set
 # and `suffixes` arrives as a caller argument (registry datum at the call
 # site); neither is a language truth hard-coded in nav

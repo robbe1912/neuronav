@@ -662,6 +662,119 @@ def run_tests(port: int):
         check("conduits arc over the crowd (+Y, tiered)",
               cond["trunks"] > 0 and len(cond["bad"]) == 0, str(cond))
 
+        # 4c-bis. corridor ink laws (#5/#7): bollards must clear fn-box
+        # ink ON SCREEN (jClearMinPx >= 0 — the qa_readability formula:
+        # min over on-screen bollards of dist-to-box-ink minus bollard r;
+        # the render-time dodge slides dots along their own ink), and
+        # conduit MIDSPAN ink must route outside served fn boxes
+        # (conduitBoxViol4px <= 3 distinct chain~box pairs; midspan per
+        # the issue's own wording — edge segments are the lawful
+        # draws-to-anchor/fan-out ink, absorbed by the ceiling). Both
+        # need a corridor-shaped lit set: data-gate loudly, never pass
+        # silently on a shape that cannot exercise the floor.
+        ink5 = page.evaluate(
+            """() => { const d = window.__dbg;
+                 if (!d.fnMeta || !d.fnJDot || !d.fnJDotR) return { skip: 'no fn layer' };
+                 const cv = d.renderer.domElement;
+                 const r = cv.getBoundingClientRect();
+                 const W = r.width, H = r.height;
+                 const fovY = d.camera.fov * Math.PI / 180;
+                 const V3 = (x, y, z) => new d.THREE.Vector3(x, y, z);
+                 const P = p => { const q = V3(p[0], p[1], p[2]).project(d.camera);
+                   return { x: (q.x*0.5+0.5)*W + r.left, y: (-q.y*0.5+0.5)*H + r.top }; };
+                 const camD = p => d.camera.position.distanceTo(V3(p[0], p[1], p[2]));
+                 const pxwu = p => ((cv.clientHeight || 900)/2) /
+                   (Math.tan(fovY/2) * Math.max(camD(p), 1));
+                 const on = q => q.x > -40 && q.x < W + 40 && q.y > -40 && q.y < H + 40;
+                 const boxes = [];
+                 for (const m of d.fnMeta) {
+                   if (m.agg && !m.count) continue;
+                   const q = P(m.p);
+                   if (!on(q)) continue;
+                   boxes.push({ x: q.x, y: q.y, r: (m.count ? 3 : 2) * pxwu(m.p) });
+                 }
+                 const fm = d.fnJDot.instanceMatrix.array;
+                 let jClear = null, bolls = 0;
+                 for (let i = 0; i < d.fnJDotR.length; i++) {
+                   const p = [fm[i*16+12], fm[i*16+13], fm[i*16+14]];
+                   const q = P(p);
+                   if (!on(q)) continue;
+                   bolls++;
+                   const jr = (d.fnJDotR[i] || 0) * pxwu(p);
+                   for (const b of boxes) {
+                     const c = Math.hypot(q.x - b.x, q.y - b.y) - b.r - jr;
+                     if (jClear === null || c < jClear) jClear = c;
+                   }
+                 }
+                 return { boxes: boxes.length, bolls,
+                          jClear: jClear === null ? null : +jClear.toFixed(1),
+                          tgt: !!(d.jDotArrays && d.jDotArrays.tgt) }; }"""
+        )
+        if ink5.get("skip") or not ink5["boxes"] or not ink5["bolls"]:
+            print(f"SKIP jClear law - corridor shape: {ink5}")
+        else:
+            check("junction bollards clear fn-box ink (#5 jClearMinPx >= 0)",
+                  ink5["jClear"] is not None and ink5["jClear"] >= 0, str(ink5))
+            check("bollard dodge axes exported (jDotArrays.tgt)",
+                  ink5["tgt"], str(ink5))
+
+        ink7 = page.evaluate(
+            """() => { const d = window.__dbg;
+                 if (!d.busPts || !d.fnBus || !d.fnBus.instanceMatrix)
+                   return { skip: 'no corridor layer' };
+                 const cv = d.renderer.domElement;
+                 const r = cv.getBoundingClientRect();
+                 const W = r.width, H = r.height;
+                 const fovY = d.camera.fov * Math.PI / 180;
+                 const V3 = (x, y, z) => new d.THREE.Vector3(x, y, z);
+                 const P = p => { const q = V3(p[0], p[1], p[2]).project(d.camera);
+                   return { x: (q.x*0.5+0.5)*W + r.left, y: (-q.y*0.5+0.5)*H + r.top }; };
+                 const camD = p => d.camera.position.distanceTo(V3(p[0], p[1], p[2]));
+                 const pxwu = p => ((cv.clientHeight || 900)/2) /
+                   (Math.tan(fovY/2) * Math.max(camD(p), 1));
+                 const boxes = [];
+                 for (const m of d.fnMeta) {
+                   if (m.agg && !m.count) continue;
+                   if ((d.alphaTgt[m.file] || 0) < 0.5) continue;
+                   const q = P(m.p);
+                   boxes.push({ x: q.x, y: q.y, r: (m.count ? 3 : 2) * pxwu(m.p) });
+                 }
+                 const fa = d.fnBus.instanceMatrix.array;
+                 const chains = new Map();
+                 for (let i = 0; i < d.busPts.length; i++) {
+                   if (Math.hypot(fa[i*16], fa[i*16+1], fa[i*16+2]) <= 0.001) continue;
+                   const s = d.busPts[i];
+                   const dx = fa[i*16+12] - (s.a[0]+s.b[0])/2,
+                         dy = fa[i*16+13] - (s.a[1]+s.b[1])/2,
+                         dz = fa[i*16+14] - (s.a[2]+s.b[2])/2;
+                   const a = P([s.a[0]+dx, s.a[1]+dy, s.a[2]+dz]),
+                         b = P([s.b[0]+dx, s.b[1]+dy, s.b[2]+dz]);
+                   if (!chains.has(s.k)) chains.set(s.k, []);
+                   chains.get(s.k).push([a.x, a.y, b.x, b.y]);
+                 }
+                 const distSeg = (px, py, s) => {
+                   const ex = s[2]-s[0], ey = s[3]-s[1], L2 = ex*ex+ey*ey;
+                   let t = L2 ? ((px-s[0])*ex + (py-s[1])*ey)/L2 : 0;
+                   t = Math.max(0, Math.min(1, t));
+                   return Math.hypot(px-(s[0]+t*ex), py-(s[1]+t*ey)); };
+                 let viol = 0; const sites = [];
+                 for (const [k, all] of chains) {
+                   if (all.length < 3) continue;        // need real midspan
+                   const segs = all.slice(1, -1);       // edge segs = anchor ink
+                   for (const b of boxes)
+                     if (segs.some(s => distSeg(b.x, b.y, s) < b.r + 4)) {
+                       viol++;
+                       if (sites.length < 4) sites.push(k);
+                     }
+                 }
+                 return { boxes: boxes.length, chains: chains.size, viol, sites }; }"""
+        )
+        if ink7.get("skip") or not ink7["boxes"] or ink7["chains"] < 3:
+            print(f"SKIP conduit midspan law - corridor shape: {ink7}")
+        else:
+            check("conduit midspan clears fn boxes (#7 <= 3 crossings)",
+                  ink7["viol"] <= 3, str(ink7))
+
         # 4d. pin topology: budgeted wires attach at DISTINCT rim points —
         # each budget wire's hub attachment bearing must deviate from the
         # direct center-to-center bearing (Rodrigues fan, ±0.22 rad)
