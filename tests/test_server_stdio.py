@@ -329,6 +329,18 @@ def main() -> None:
                 and "dir" not in schema.get("required", []),
                 json.dumps(schema)[:200],
             )
+        # issue #266: the default cap is part of the tool's honesty
+        # contract — n=40 starved the review tier silently; the clamp
+        # max (100) is the new default
+        dc_schema = next(
+            (t.get("inputSchema") or {} for t in tools if t["name"] == "dead_code"),
+            {},
+        )
+        check(
+            "dead_code: inputSchema advertises default n=100 (issue #266)",
+            dc_schema.get("properties", {}).get("n", {}).get("default") == 100,
+            str(dc_schema.get("properties", {}).get("n")),
+        )
         # ---- issue #253: MCP spec/best-practice compliance pins ----
         # The audit (.team_scratch/mcp_audit.md, untracked) judged
         # most of the surface compliant; these pins hold the
@@ -775,6 +787,10 @@ def main() -> None:
         # issue #67: Serena-style project memories — the mutating tool #2
         _memory_scenario()
 
+        # issues #266 + #268: truncation/skip honesty on dead_code and
+        # duplicates output
+        _truncation_scenario()
+
         # issue #180 CI legs: drift/stat-gate consistency + degraded
         # semantics, both on hermetic scratch trees (run in both modes)
         _drift_scenario()
@@ -952,6 +968,132 @@ def _universal_scenario() -> None:
         srv.kill()
         if FAILS:
             print("--- universal server stderr (tail) ---")
+            print("\n".join(srv.stderr_lines[-15:]))
+
+
+def _truncation_scenario() -> None:
+    """issues #266 + #268: honest truncation and skip counts on the
+    dead_code/duplicates tool output. A scratch corpus with known tier
+    totals (7 likely + 2 review dead funcs) pins: default n serves every
+    row with no footer, a small n ends in a footer naming the per-tier
+    shown/total counts (at HEAD the likely-first ordering starved the
+    review tier silently), and a routed second corpus pins duplicates —
+    the identical thin-delegate pair (null guard + one forwarding call)
+    drops with an honest skip footer while the genuine duplicated-logic
+    pair stays listed."""
+    import shutil
+
+    scratch = HERE / ".team_scratch" / "honesty266"
+    shutil.rmtree(scratch, ignore_errors=True)
+
+    def mkproj(name: str, files: dict[str, str]) -> Path:
+        p = scratch / name
+        p.mkdir(parents=True)
+        for fn, body in files.items():
+            (p / fn).write_text(body, encoding="utf-8", newline="\n")
+        return p
+
+    dead_corp = mkproj("dead", {
+        "big1.py": "".join(
+            f"def d{i}():\n    return {100 + i}\n\n" for i in range(7)
+        ),
+        "big2.py": (
+            'def main():\n    t = Hub()\n    t.connect("sig")\n    return t\n\n'
+            "def r00():\n    return 200\n"
+        ),
+    })
+    wrap = (
+        "def _wrap(v):\n    if v is None:\n        return None\n"
+        "    return _shared(v)\n"
+    )
+    twin = "def twin():\n    alpha = 10\n    beta = 20\n    return alpha + beta\n"
+    dup_corp = mkproj("dups", {
+        "w1.py": wrap, "w2.py": wrap, "t1.py": twin, "t2.py": twin,
+    })
+    wrap_only = mkproj("wraps", {"w1.py": wrap, "w2.py": wrap})
+
+    cfg = scratch / "honesty.neuronav.json"
+    cfg.write_text(json.dumps({
+        "root": str(dead_corp.resolve()),
+        "collection": "honesty",
+        "state_dir": "default",
+        "include_dirs": ["."],
+        "extensions": [".py"],
+        "exclude_dirs": [".git", "__pycache__", ".venv", ".neuronav", "node_modules"],
+    }), encoding="utf-8", newline="\n")
+
+    env = {k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}
+    env["NEURONAV_CONFIG"] = str(cfg)
+    env["NEURONAV_EMBED_FAKE"] = "1"
+    srv = _spawn(env)
+    send, recv = srv.send, srv.recv
+
+    def call(mid: int, name: str, args: dict) -> dict:
+        send({"jsonrpc": "2.0", "id": mid, "method": "tools/call",
+              "params": {"name": name, "arguments": args}})
+        return recv(mid)["result"]
+
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "honesty", "version": "0"}}})
+        check("honesty: initialize handshake", "result" in recv(1), "")
+
+        # default n: every candidate listed (9 total), no footer
+        out = text_of(call(2, "dead_code", {}))
+        rows = [ln for ln in out.splitlines() if ln.startswith("[")]
+        check("honesty: dead_code default serves full corpus header",
+              out.splitlines()[0]
+              == "dead-code candidates: 9 total  (likely: 7, review: 2)",
+              out.splitlines()[:1])
+        check("honesty: dead_code default lists every row incl. review",
+              len(rows) == 9 and sum(1 for r in rows if "[review]" in r) == 2,
+              f"rows={len(rows)}")
+        check("honesty: no footer when nothing is truncated",
+              "truncated" not in out, out.splitlines()[-1:])
+
+        # small n: likely-first ordering starves review — the footer
+        # must name both tiers' shown/total counts (issue #266)
+        out5 = text_of(call(3, "dead_code", {"n": 5}))
+        rows5 = [ln for ln in out5.splitlines() if ln.startswith("[")]
+        check("honesty: dead_code n=5 lists 5 rows, all likely",
+              len(rows5) == 5 and all("[likely]" in r for r in rows5),
+              f"rows={len(rows5)}")
+        check("honesty: dead_code n=5 footer names tier counts (issue #266)",
+              out5.splitlines()[-1]
+              == "… truncated at 5 rows: showing 5 of 7 likely + 0 of 2 review"
+                 " — pass n= for the rest",
+              out5.splitlines()[-1:])
+
+        # routed dups corpus: first contact onboards, then the report
+        on = text_of(call(4, "duplicates", {"dir": str(dup_corp)}))
+        check("honesty: dups corpus onboards on first contact",
+              on.startswith(f"onboarded {dup_corp.resolve().as_posix()} — index built:"),
+              on[:80])
+        outd = text_of(call(5, "duplicates", {"dir": str(dup_corp)}))
+        check("honesty: duplicates lists the genuine pair only (issue #268)",
+              outd.splitlines()[0] == "1 duplicate group(s):"
+              and "t1.py#twin" in outd and "t2.py#twin" in outd
+              and "_wrap" not in outd,
+              outd)
+        check("honesty: duplicates footer counts skipped delegates (issue #268)",
+              outd.splitlines()[-1]
+              == "1 pure-delegate group(s) skipped — thin delegates, not"
+                 " duplicated logic",
+              outd.splitlines()[-1:])
+
+        # all-delegate corpus: the clean bill must still count the skips
+        call(6, "duplicates", {"dir": str(wrap_only)})
+        outw = text_of(call(7, "duplicates", {"dir": str(wrap_only)}))
+        check("honesty: no-dups line names the skipped delegates (issue #268)",
+              outw == "no exact duplicates found (2 files with functions"
+                      " scanned; 1 pure-delegate group(s) skipped — thin"
+                      " delegates, not duplicated logic)",
+              outw)
+    finally:
+        srv.kill()
+        if FAILS:
+            print("--- honesty server stderr (tail) ---")
             print("\n".join(srv.stderr_lines[-15:]))
 
 
