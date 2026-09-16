@@ -94,6 +94,18 @@ Suites pick their own config; the shell must not pre-export one:
   `NEURONAV_EMBED_FAKE=1` it self-populates an empty self-index store
   (issue #180: one FAKE rescan + fn sync when count == 0, the #166
   pattern) — a populated real store is never touched.
+- `test_explore`'s no-hit legs are deterministic by construction
+  (issue #249 decode): `find_functions` has no relevance floor — on any
+  populated fn store it returns top-n cosine neighbors for EVERY query,
+  so a nonsense string's score is embed-space-dependent (0.08 under
+  FAKE hash vectors, 0.549 against real embeds on the recreated venv)
+  and "no hits" is unreachable through query choice alone. The legs
+  force the empty-index contract (`find_functions` -> `[]`, the
+  `count == 0` branch) and assert the scoring internals first —
+  absent-token query -> `_lexical_fallback == []` and
+  `_seed_hits == ([], True, None)` — then pin the guidance marker
+  `no hits for` (the old `rescan` substring also matched repo-map
+  signatures like `rescan(timeout)`: vacuous passes).
 - `test_pyhard` / `test_mwires` write a generated temp config under the
   system temp dir pointing at `tests/fixtures/<name>` only — they never touch
   the real index.
