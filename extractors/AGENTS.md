@@ -8,12 +8,13 @@ Full field contract: `extractors/README.md`.
 
 | module | role |
 |---|---|
-| `__init__.py` | registry: `EXTENSIONS` maps suffix -> module (`.gd`/`.tscn` -> `gdscript`, `.py` -> `python`, `.h`/`.hpp`/`.cpp`/`.cc`/`.cxx` -> `cpp`, `.ts`/`.tsx`/`.mts`/`.cts` -> `ts`); `registry_for(suffix)` returns module or None; `RAW_TEXT_EXTS` = the issue-#240 web set (`.js .jsx .mjs .cjs .json .md`) with no structural extractor — walked/indexed as raw `file_doc` when configured (the TS suffixes gained a structural extractor in issue #245; JS stays the tracked follow-up); `PRESETS` = the `onboard.py init --preset ts\|js\|python\|cpp\|gdscript` extension lists (curated) |
+| `__init__.py` | registry: `EXTENSIONS` maps suffix -> module (`.gd`/`.tscn` -> `gdscript`, `.py` -> `python`, `.h`/`.hpp`/`.cpp`/`.cc`/`.cxx` -> `cpp`, `.ts`/`.tsx`/`.mts`/`.cts` -> `ts`, `.rs` -> `rust`); `registry_for(suffix)` returns module or None; `RAW_TEXT_EXTS` = the issue-#240 web set (`.js .jsx .mjs .cjs .json .md`) with no structural extractor — walked/indexed as raw `file_doc` when configured (the TS suffixes gained a structural extractor in issue #245; JS stays the tracked follow-up); `PRESETS` = the `onboard.py init --preset ts\|js\|python\|cpp\|gdscript\|rust` extension lists (curated) |
 | `model.py` | language-neutral dataclasses `FileSym` / `Func` — the parse output contract |
 | `gdscript.py` | `.gd` + `.tscn` parser, entry-point rules, IO surface scan |
 | `python.py` | `.py` parser, entry-point rules, import/member facts; fn bodies sliced by AST spans (column-0 string lines no longer truncate them) |
 | `cpp.py` | `.h`/`.hpp`/`.cpp`/`.cc`/`.cxx` parser: tree-sitter-cpp front-end + stdlib macro-surface pass (ClassDB/GDVIRTUAL registration harvest, ADD_SIGNAL/ADD_PROPERTY, emit_signal, memnew) |
 | `ts.py` | `.ts`/`.tsx`/`.mts`/`.cts` parser: tree-sitter-typescript front-end with the ts/tsx grammar split (`.tsx` adds JSX patterns; byte-offset line numbers — never `start_point`, py-tree-sitter #472); overloads collapse to one Func at the first declaration, barrel re-exports rebind to origin definers, tsconfig `paths` aliases (JSONC-tolerant, one `extends` level) resolve only inside this module |
+| `rust.py` | `.rs` parser: tree-sitter-rust front-end (byte-offset line numbers — never `start_point`, py-tree-sitter #472); `fn main`/`#[test]`/`#[tokio::test]` entry rules (a bare `#[cfg(test)]` gate marks nothing), lib.rs pub-fn + `pub mod` closure = exported-API roots, `pub use` re-exports rebind to origin definers (barrel analogue), impl/trait methods collapse to the first declaration, trait default-method dispatch, `mod` namespaces, macros recorded as call-sites (name_literals) never expanded |
 
 ## The contract
 
@@ -73,6 +74,12 @@ sets ship with the language module:
   still mentioned elsewhere in the corpus at least
   `cpp.CPP_MENTION_FLOOR` (2) times stays `review` — names cited via
   strings/macros are not deletion fodder.
+- `rust.RUST_STD_TRAIT_METHODS` — std-trait impl methods (`fmt`, `drop`,
+  `hash`, `next`, operator impls, ...): operator/format/loop-dispatched
+  with no textual call site, like the .gd VIRTUALS rule.
+- Rust macros are never expanded: a fn referenced only from a
+  `macro_rules!` template stays dead, but the template text feeds the
+  mention floor, so it lands in `review` — deletion fodder it is not.
 
 `test_selfindex.py` pins the meta-invariant: on this repo, `likely`-dead is
 zero and server.py's MCP handlers stay in `review`.

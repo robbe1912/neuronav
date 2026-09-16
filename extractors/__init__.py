@@ -16,6 +16,7 @@ from __future__ import annotations
 from extractors import cpp
 from extractors import gdscript
 from extractors import python
+from extractors import rust
 from extractors import ts
 # Re-export surface = consumed surface (#200): every name below has a
 # consumer outside extractors/ (graph.py, clusters.py, nav.py, server.py,
@@ -59,6 +60,7 @@ EXTENSIONS: dict[str, object] = {
     ".tsx": ts,
     ".mts": ts,
     ".cts": ts,
+    ".rs": rust,
 }
 
 # issue #240: language presets + the raw-text walk suffixes — language
@@ -74,6 +76,7 @@ PRESETS: dict[str, tuple[str, ...]] = {
     "python": (".py", ".pyi", ".json", ".md"),
     "cpp": (".h", ".hpp", ".cpp", ".cc", ".cxx"),
     "gdscript": (".gd", ".tscn"),
+    "rust": (".rs", ".json", ".md"),
 }
 
 
@@ -110,6 +113,8 @@ BUILD_SEQUENCE = (
     python.arg_refs_sweep,
     ts.rebind_reexports_sweep,
     ts.import_liveness_sweep,
+    rust.rebind_reexports_sweep,
+    rust.import_liveness_sweep,
 )
 
 WIRE_SEQUENCE = (

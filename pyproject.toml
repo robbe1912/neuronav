@@ -31,6 +31,7 @@ dependencies = [
     "tree-sitter==0.26.0",
     "tree-sitter-cpp==0.23.4",
     "tree-sitter-typescript==0.23.2",
+    "tree-sitter-rust==0.24.2",
 ]
 
 [project.scripts]

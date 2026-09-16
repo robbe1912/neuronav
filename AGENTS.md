@@ -8,7 +8,8 @@ stdlib-first; heavy deps: chromadb/httpx (vector store + embed transport), mcp
 (stdio server), numpy/networkx/scipy/scikit-learn (the cluster/graph math the
 read tools ride), plus the pinned tree-sitter front-ends tree-sitter==0.26.0 /
 tree-sitter-cpp==0.23.4 (issue #13) and tree-sitter-typescript==0.23.2
-(issue #245). Standalone repo — point it
+(issue #245) and tree-sitter-rust==0.24.2 (issue #244). Standalone repo —
+point it
 at any project via config; nothing is vendored into target projects.
 
 Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`,
@@ -146,6 +147,7 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_cpphard` | C++ extractor edge cases (macro surface, pairing, dead tiers, determinism) | tree-sitter wheels (hermetic fixtures) |
 | `test_recall` | hybrid recall: BM25F/RRF fusion, ctx hops, degraded mode | chromadb import (hermetic, `NEURONAV_EMBED_FAKE=1`) |
 | `test_tshard` | TS extractor edge cases (grammar split, barrels, aliases, overloads, defaults, decorators, JSX, dead tiers, determinism) | tree-sitter + tree-sitter-typescript wheels (hermetic fixtures) |
+| `test_rusthard` | Rust extractor edge cases (pub-mod API closure, `pub use` re-export rebinding, trait default-method dispatch, test-attribute entry rules, macro call-site recording, wiring-only barrels, dead tiers, determinism) | tree-sitter + tree-sitter-rust wheels (hermetic fixtures) |
 | `test_embedprov` | embed provider contract (issue #17) + collection stamp (issue #103): provider select/auto-detect, ollama+openai wire adapters, env-vs-config key precedence, 429 backoff, stamp keeps/heals hnsw:space | stdlib http.server stub + chromadb import |
 | `test_project_mode` | onboarding + config discovery precedence + viz-as-add-on (issue #27) | stdlib + chromadb import (hermetic temp trees) |
 | `test_viz` | 103-check Playwright harness (real Chrome) — CI runs it on the frozen corpus from `tests/vizcorpus_build.py` (issue #100) | playwright + chrome + a fresh bake |

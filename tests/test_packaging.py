@@ -126,6 +126,9 @@ def _check_wheel_content(wheel: Path) -> None:
     check("wheel METADATA pins tree-sitter-typescript==0.23.2 (issue #245)",
           "Requires-Dist: tree-sitter-typescript==0.23.2" in md_text,
           "pin missing from wheel METADATA")
+    check("wheel METADATA pins tree-sitter-rust==0.24.2 (issue #244)",
+          "Requires-Dist: tree-sitter-rust==0.24.2" in md_text,
+          "pin missing from wheel METADATA")
 
 
 def _make_fixture(tmp: Path) -> Path:
