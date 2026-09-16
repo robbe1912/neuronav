@@ -507,6 +507,19 @@ def build_files() -> dict[str, str]:
     # -- ui extras: hud (signal wiring) -----------------------------------
     f["ui/hud.gd"] = _hud_src()
 
+    # -- fx super-hub: vfx_preload instances one scene per particle lane
+    # (issue #8 shape: a deg>100 landing whose 1-hop chip fan is a wall).
+    # 120 distinct leaves, one inst edge each -- degree lands ~120, past
+    # the super tier, without touching any other leg's neighborhood.
+    lanes = []
+    for i in range(120):
+        rel = f"fx/particles/p{i:03d}.tscn"
+        ty = ["GPUParticles2D", "GPUParticles3D", "CPUParticles2D"][i % 3]
+        f[rel] = _tscn(f"Lane{i:03d}",
+                       [f'[node name="P{i:03d}" type="{ty}" parent="."]'])
+        lanes.append("res://" + rel)
+    f["fx/vfx_preload.tscn"] = _instanced_tscn("VFXPreload", lanes)
+
     # -- legacy: the dead island (own cluster, no links anywhere) --------
     for i in range(10):
         cls = f"Legacy{i:02d}"

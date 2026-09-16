@@ -410,6 +410,11 @@ _HTML_HEAD = r"""<!DOCTYPE html>
     text-shadow:0 1px 2px #000; }
   .flab:hover { color:#fff; background:rgba(20,30,38,.92); }
   .flab.fn { font-size:10px; color:#8fa3ad; background:rgba(8,12,16,.6); }
+  /* [#8] super-hub fold chip: the count that replaces the folded 1-hop
+     fan — dashed reads as an aggregate, not a file */
+  .flab.fold { color:#9fb3bc; background:rgba(13,20,26,.85);
+    border:1px dashed #607d8b; }
+  .flab.fold:hover { color:#fff; background:rgba(20,30,38,.95); }
   /* search matches (issue #51): hubs + fn labels carrying .hl lift to the
      accent — the toggles existed but no rule backed them (dead ink) */
   .hub.hl, .flab.hl { color:#1de9b6; background:#1de9b626;
@@ -3100,7 +3105,7 @@ function applyVisibility() {
   rebuildFocusWires();   // budget arcs track budgetLit + live pos
   if (focusing) {
     let lit = 0;
-    for (let i = 0; i < N; i++) if (level[i] >= 0 && level[i] <= 1 && nodeVisible(nodes[i])) lit++;
+    for (let i = 0; i < N; i++) if (alphaTgt[i] > 0.5) lit++;   // [#62] live lit set (level <= depth, filters folded in) — was pinned to the 1-hop ball, so the count went stale the moment the depth slider grew the set
     const first = focusSeeds.values().next().value;
     const label = focusSeeds.size === 1 ? esc(nodes[first].label)
       : focusSeeds.size + " files";
@@ -3315,6 +3320,19 @@ function armLabelDrag(el) {
 const HUB_N = 12;
 const HUB_MAX = 40;
 let hubCapNow = HUB_N;   // live zoom-driven cap, exposed via __dbg.hubCap
+// [#8] super-hub landing degrade: past SUPER_DEG (weight-sum degree —
+// the number the hub chip shows) a landing folds its 1-hop label fan —
+// the magnitude tier behind the #77 band law, applied to the 3D chip
+// plane. Labels only: spheres, wires and the corridor census are
+// untouched (corridor-complete law); the fold chip is the folded set's
+// affordance and one click unfolds the full fan for this landing.
+const SUPER_DEG = 100;
+const SUPER_FLAB_N = 16;   // top-weight neighbor chips the fold keeps
+const SUPER_HALO = 24;     // clean band (px) around the focused hub chip
+let flabUnfold = false;    // the fold chip's one-click expansion state
+let flabFoldSig = "";      // seed signature the unfold belongs to
+let flabFoldState = { super: false, shown: 0, folded: 0 };   // __dbg.focusFold
+let focusHubBox = null;    // focused hub's placed chip rect this frame
 const hubsEl = document.getElementById("hubs");
 let hubs = [];
 const hubV = new THREE.Vector3();
@@ -3387,6 +3405,7 @@ function updateHubs() {
   // vertical rows first (keeps label near its node), then sideways nudges
   hubBoxes.length = 0;   // this frame's placed boxes — the module-level
                          // array the other placers collide against
+  focusHubBox = null;    // [#8] refreshed below when the focused hub places
   const fixed = hubBoxes;
   for (let hi = 0; hi < hubs.length; hi++) {
     const { i, el } = hubs[hi];
@@ -3406,7 +3425,7 @@ function updateHubs() {
     const prev = hubOff.get(i);
     if (prev) {
       const res = placeLabels(el, x, y, [[prev.dx, prev.dy]], "-50%,0", 0, ok);
-      if (res.hit) { fixed.push(res.r); continue; }
+      if (res.hit) { fixed.push(res.r); if (i === focusFileIdx) focusHubBox = res.r; continue; }
     }
     const offs = [];
     for (const dy of [-19, 17, -42, 41, -65, 65, -88, 88])
@@ -3414,6 +3433,7 @@ function updateHubs() {
     const res = placeLabels(el, x, y, offs, "-50%,0", 0, ok);
     if (res.hit) hubOff.set(i, { dx: res.o[0], dy: res.o[1] });
     fixed.push(res.r);
+    if (i === focusFileIdx) focusHubBox = res.r;
   }
 }
 let stubExits = [];     // EXPLAINED EXIT dissolve points this frame (focus-file
@@ -3776,11 +3796,31 @@ let fLabs = [];
 function rebuildFocusLabels(focusing) {
   fLabs = [];
   flabsEl.innerHTML = "";
+  const sig = [...focusSeeds].join(",");
+  if (sig !== flabFoldSig) { flabFoldSig = sig; flabUnfold = false; }
+  const fi = focusFileIdx;
+  const superHub = fi >= 0 && degree[fi] > SUPER_DEG && !flabUnfold;
+  flabFoldState = { super: superHub, shown: 0, folded: 0 };
   if (!focusing) return;
-  // every directly-connected file node gets its name back (hubs own theirs)
+  // every directly-connected file node gets its name back (hubs own
+  // theirs); on a super-hub landing only the top SUPER_FLAB_N by link
+  // weight survive — the rest fold into one count chip
   const hubIdx = new Set(hubs.map(h => h.i));
-  for (let i = 0; i < N; i++) {
-    if (level[i] !== 1 || hubIdx.has(i) || alphaTgt[i] <= 0.5) continue;
+  const nbrs = [];
+  for (let i = 0; i < N; i++)
+    if (level[i] === 1 && !hubIdx.has(i) && alphaTgt[i] > 0.5) nbrs.push(i);
+  if (superHub) {
+    const wgt = new Map();   // weight ranking mirrors the budget-arc pass
+    links.forEach(l => {
+      if (!typeVisible(l.ty)) return;
+      const o = l.s === fi ? l.t : l.t === fi ? l.s : -1;
+      if (o >= 0) wgt.set(o, (wgt.get(o) || 0) + l.w);
+    });
+    nbrs.sort((a, b) => (wgt.get(b) || 0) - (wgt.get(a) || 0) || a - b);
+  }
+  const shown = superHub ? nbrs.slice(0, SUPER_FLAB_N) : nbrs;
+  flabFoldState.shown = shown.length;
+  for (const i of shown) {
     const el = document.createElement("div");
     el.className = "flab";
     el.textContent = nodes[i].label;
@@ -3789,6 +3829,19 @@ function rebuildFocusLabels(focusing) {
     el.onclick = () => { pushFocusState(); focusSeeds.clear(); focusSeeds.add(i); showInfo(i); buildContainment(); applyVisibility(); focus(i); };
     flabsEl.appendChild(el);
     fLabs.push({ kind: 0, i, ix: -1, el });
+  }
+  if (superHub && nbrs.length > shown.length) {
+    flabFoldState.folded = nbrs.length - shown.length;
+    const el = document.createElement("div");
+    el.className = "flab fold";
+    el.textContent = "+" + flabFoldState.folded + " more";
+    const names = nbrs.slice(SUPER_FLAB_N).map(i => nodes[i].label);
+    el.title = flabFoldState.folded + " folded neighbors\n" +
+      names.slice(0, 12).join(", ") +
+      (names.length > 12 ? " +" + (names.length - 12) + " more" : "");
+    el.onclick = () => { flabUnfold = true; rebuildFocusLabels(focusSeeds.size > 0); };
+    flabsEl.appendChild(el);
+    fLabs.push({ kind: 0, i: fi, ix: -1, el, fold: true });
   }
   // function satellites: focused file's own fns first, then one hop out —
   // capped so the layer stays readable
@@ -3866,6 +3919,7 @@ function updateFocusLabels() {
         stPts.push([(_flabV.x * 0.5 + 0.5) * w, (-_flabV.y * 0.5 + 0.5) * h]);
     }
   }
+  const superHub = focusFileIdx >= 0 && degree[focusFileIdx] > SUPER_DEG;   // [#8] halo tier
   for (const f of fLabs) {
     const p = f.kind === 1 ? fnMeta[f.ix].p : null;
     _flabV.set(
@@ -3890,8 +3944,16 @@ function updateFocusLabels() {
       taken.push(r1);
       continue;
     }
-    const res = placeLabels(f.el, x, y, [[0, 0], ...[16, -14, 32, -30].map(dy => [0, dy])],
-      "-50%,-100%", 1, r => hubRects.every(hr => separate(r, hr, 2)) && taken.every(t => separate(r, t, 2)) && clearDots(r));
+    // the fold count chip anchors at the hub itself — it is hub metadata,
+    // not part of the neighbor wall, so the halo band does not apply to it;
+    // its offset ladder adds sideways rungs so it can clear the hub chip
+    const offs = f.fold
+      ? [[0, -16], [0, 18], [0, -38], [0, 40], [130, -16], [-130, -16], [0, -62], [0, 64]]
+      : [[0, 0], ...[16, -14, 32, -30].map(dy => [0, dy])];
+    const res = placeLabels(f.el, x, y, offs,
+      "-50%,-100%", 1, r => r.left >= 310 &&   // [#8] never under the left panel (the hub-chip law)
+        hubRects.every(hr => separate(r, hr, superHub && hr === focusHubBox && !f.fold ? SUPER_HALO : 2)) &&
+        taken.every(t => separate(r, t, 2)) && clearDots(r));
     if (res.hit) taken.push(res.r); else { f.el.style.display = "none"; continue; }
   }
 }
@@ -8182,7 +8244,7 @@ searchEl.oninput = e => {
 };
 searchEl.onblur = () => setTimeout(hideSearchResults, 120);
 searchEl.onfocus = () => { if (query) buildSearchResults(); };
-depthEl.oninput = e => { depth = +e.target.value; document.getElementById("depthVal").textContent = depth; applyVisibility(); };
+depthEl.oninput = e => { depth = +e.target.value; document.getElementById("depthVal").textContent = depth; applyVisibility(); reframeOnDepth(); };   // [#62] crumb refreshes in applyVisibility; camera tracks the lit set
 document.getElementById("spread").oninput = e => {
   const v = +e.target.value / 100;
   document.getElementById("spreadVal").textContent = v.toFixed(1);
@@ -8434,6 +8496,40 @@ function focus(i) {
     }
   }
   tweenCamTo(to, to.clone().addScaledVector(dir, Math.max(320, r * 2.1)));
+}
+// [#62] depth-slider camera nudge: growing (or shrinking) the radius
+// mid-focus changes the lit set past the framing focus() computed for
+// the 1-hop ball — level 2-3 nodes sit at their frozen layout positions,
+// map-scale away, so served content left the frame until a re-click.
+// Mirror focus()'s tween around the live lit set (level <= depth), but
+// distance from the ACTIVE half-fov: the map pane can narrow the canvas
+// below square (aspect < 1), making the horizontal half-fov the tighter
+// one — r*2.1 lands the silhouette edge on the vertical border (asin(1/2.1)
+// = 28.4° vs 27.5°) and overflows horizontally when pane-narrowed; the
+// ball's small radius hides this from focus()'s 320 floor. A user grab
+// cancels it like any tween.
+function reframeOnDepth() {
+  if (!focusSeeds.size) return;
+  let cx = 0, cy = 0, cz = 0, n0 = 0;
+  for (let i = 0; i < N; i++) if (level[i] === 0) {
+    cx += pos[i*3]; cy += pos[i*3+1]; cz += pos[i*3+2]; n0++;
+  }
+  if (!n0) return;
+  const to = new THREE.Vector3(cx / n0, cy / n0, cz / n0);
+  const dir = new THREE.Vector3(camera.position.x - to.x,
+    camera.position.y - to.y, camera.position.z - to.z);
+  if (dir.lengthSq() < 1) dir.set(0.42, 0.5, 0.76);
+  dir.normalize();
+  let r = 0;
+  for (let i = 0; i < N; i++) {
+    if (level[i] < 0 || level[i] > depth || alphaTgt[i] <= 0.5) continue;
+    const dd = Math.hypot(pos[i*3] - to.x, pos[i*3+1] - to.y, pos[i*3+2] - to.z) + sphR(i);
+    if (dd > r) r = dd;
+  }
+  const vHalf = camera.fov * Math.PI / 360;
+  const hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
+  const fit = r / Math.sin(Math.min(vHalf, hHalf)) * 1.02;
+  tweenCamTo(to, to.clone().addScaledVector(dir, Math.max(320, fit)));
 }
 
 function showFnInfo(k) {
@@ -9210,6 +9306,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get overlaps() { return compactOverlaps; },
   get camTween() { return camTween; }, get focusStack() { return focusStack; },
   get focusFileIdx() { return focusFileIdx; }, get compactAnim() { return !!compactAnim; },
+  get focusFold() { return { ...flabFoldState, unfold: flabUnfold }; },   // [#8] super-hub fold probe
   get posSavedLive() { return posSaved !== null; },
   posAt: i => [pos[i*3], pos[i*3+1], pos[i*3+2]],
   compactTgtAt: i => compactTgt ? [compactTgt[i*3], compactTgt[i*3+1], compactTgt[i*3+2]] : null,
