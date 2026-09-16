@@ -143,8 +143,12 @@ Suites pick their own config; the shell must not pre-export one:
   repo must exist at its configured path.
 - `test_tsregression` hermetic section writes a generated temp config
   under the system temp dir rooted at `tests/fixtures/tsreg`; its profile
-  legs use whatever `NEURONAV_CONFIG` names (skip loudly without one,
-  issue #97) and rebind via `nav._apply_config` — never export the var.
+  legs rebind via `nav._apply_config` to whatever `NEURONAV_CONFIG` names
+  (skip loudly without one, issue #97) — never export the var. The named
+  profile owns the numbers: the parse-coverage floor is read from its
+  `ts_regression.parse_floor` key and liveness canaries from its
+  `regression_canaries` block (dead `[path, func]` pairs, alive name
+  tokens) — both machine-local, never tracked.
 
 - Launches real Chrome via `channel="chrome"` (no browser download).
 - Serves the repo root on an **ephemeral loopback port** (issue #132): viz
