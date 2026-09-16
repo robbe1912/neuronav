@@ -91,6 +91,22 @@ check("judge C1: .ts with dead share >= threshold flags dead-file",
       "deadshare.ts" in g.files and "deadshare.ts" in dead_flag,
       f"in-graph={'deadshare.ts' in g.files} flagged={sorted(dead_flag)}")
 
+amb = "ambient_dead.d.ts"
+check("callable-bearing .d.ts is logic, not wiring",
+      amb in g.files and g.files[amb].funcs
+      and not registry_for(".ts").is_wiring_only(g.files[amb]),
+      f"in-graph={amb in g.files}"
+      f" funcs={sorted(g.files[amb].funcs) if amb in g.files else []}")
+check("judge C1: ambient .d.ts dead share flags dead-file",
+      amb in g.files and amb in dead_flag, f"flagged={sorted(dead_flag)}")
+typ = "ambient_types.d.ts"
+check("zero-callable .d.ts stays wiring-only and out of the dead tier",
+      typ in g.files
+      and registry_for(".ts").is_wiring_only(g.files[typ])
+      and typ not in dead_flag,
+      f"in-graph={typ in g.files}"
+      f" funcs={len(g.files[typ].funcs) if typ in g.files else '-'}")
+
 py_rel = "py_importer.py"
 doc = graph.file_doc(nav.ROOT / py_rel, py_rel,
                      nav._read_text(nav.ROOT / py_rel), nav.FILE_DOC_CAST)
