@@ -189,7 +189,7 @@ def _spawn(env: dict[str, str], cwd: Path | None = None) -> SimpleNamespace:
 TOOL_NAMES = (
     "explore", "repo_map", "semantic_search", "find_functions", "search_text",
     "symbol_graph", "dead_code", "duplicates", "clusters", "crosstalk",
-    "context", "visualize", "rescan", "memory",
+    "arch_check", "context", "visualize", "rescan", "memory",
 )
 
 
@@ -297,11 +297,27 @@ def main() -> None:
             bool(st_ann and st_ann.get("readOnlyHint") is True),
             json.dumps(st_ann),
         )
+        # issue #70: arch_check joins the surface — same deliberate pin
+        # (advertisement + readOnlyHint; the call legs run further down,
+        # once the serving index has answered something real)
+        check(
+            "tools/list advertises arch_check",
+            "arch_check" in names,
+            f"tools={names}",
+        )
+        ac_ann = next(
+            (t.get("annotations") for t in tools if t["name"] == "arch_check"), None
+        )
+        check(
+            "arch_check: readOnlyHint set",
+            bool(ac_ann and ac_ann.get("readOnlyHint") is True),
+            json.dumps(ac_ann),
+        )
         # issue #131: universal mount — every tool gains the optional dir
         # param (empty = boot config's repo); the suite pins the surface,
-        # so it pins the new parameter on all 14 tools
+        # so it pins the new parameter on all 15 tools
         check(
-            "tools/list advertises exactly the 14 tools",
+            "tools/list advertises exactly the 15 tools",
             sorted(names) == sorted(TOOL_NAMES),
             f"tools={names}",
         )
@@ -488,6 +504,116 @@ def main() -> None:
             or st.startswith("no matches for "),
             st.splitlines()[:2],
         )
+
+        # issue #70: arch_check call legs, riding the serving project's
+        # own partition. (1) no rules file in the state dir -> the
+        # how-to-write-one answer, never an error. (2) forbid rules
+        # planted over a REAL cross-wired pair — taken from the
+        # crosstalk tool's own answer, so the leg is config-agnostic —
+        # must be caught; the rules file lands in the gitignored state
+        # dir, which is excluded from walks, so the stat gate never
+        # rescans on it. (3) a typo'd cluster name is loud. Removed
+        # after, restoring the no-rules answer.
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 21,
+                "method": "tools/call",
+                "params": {"name": "arch_check", "arguments": {}},
+            }
+        )
+        ac = text_of(recv(21)["result"])
+        check(
+            "arch_check: absent rules file answers how-to, not error",
+            "no arch rules configured" in ac and "arch-rules.json" in ac
+            and '"forbid"' in ac,
+            ac[:120],
+        )
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 22,
+                "method": "tools/call",
+                "params": {"name": "crosstalk", "arguments": {}},
+            }
+        )
+        ct = text_of(recv(22)["result"])
+        mpair = re.search(r"^  (.+?) <-> (.+?): (\d+) edges", ct, re.M)
+        mpath = re.search(r"write (\S*arch-rules\.json)", ac)
+        if not (mpair and mpath):
+            print("SKIP arch_check planted-violation leg (no cross-wired pair)")
+        else:
+            la, lb, pair_n = mpair.group(1), mpair.group(2), int(mpair.group(3))
+            rules_file = Path(mpath.group(1))
+            rules_file.write_text(
+                json.dumps(
+                    {
+                        "rules": [
+                            {"id": "planted-ab", "kind": "forbid", "from": la, "to": lb},
+                            {"id": "planted-ba", "kind": "forbid", "from": lb, "to": la},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            try:
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 23,
+                        "method": "tools/call",
+                        "params": {"name": "arch_check", "arguments": {}},
+                    }
+                )
+                av = text_of(recv(23)["result"])
+                mv = re.search(r"arch check: 2 rule\(s\), (\d+) violation", av)
+                wires = [int(n) for n in re.findall(r"(\d+) wires", av)]
+                check(
+                    "arch_check: planted violation over a real pair is caught",
+                    mv and int(mv.group(1)) >= 1 and wires and sum(wires) <= pair_n
+                    and ("planted-ab" in av or "planted-ba" in av),
+                    av[:160],
+                )
+                rules_file.write_text(
+                    json.dumps(
+                        {"rules": [
+                            {"id": "typo", "kind": "forbid",
+                             "from": "No-Such-Subsystem", "to": lb},
+                        ]}
+                    ),
+                    encoding="utf-8",
+                )
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 24,
+                        "method": "tools/call",
+                        "params": {"name": "arch_check", "arguments": {}},
+                    }
+                )
+                at = text_of(recv(24)["result"])
+                check(
+                    "arch_check: typo'd rule is loud over stdio",
+                    "rule config error" in at and "No-Such-Subsystem" in at
+                    and "known clusters" in at,
+                    at[:160],
+                )
+            finally:
+                rules_file.unlink()
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 25,
+                    "method": "tools/call",
+                    "params": {"name": "arch_check", "arguments": {}},
+                }
+            )
+            ac2 = text_of(recv(25)["result"])
+            check(
+                "arch_check: cleanup restores the no-rules answer",
+                "no arch rules configured" in ac2,
+                ac2[:120],
+            )
 
         send(
             {
