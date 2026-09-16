@@ -1,6 +1,6 @@
 # AGENTS.md — tests/
 
-Thirty-one self-contained suites. Each is a standalone script — no pytest — run in
+Thirty-two self-contained suites. Each is a standalone script — no pytest — run in
 its own process:
 
 ```
@@ -16,7 +16,7 @@ with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
 `test_clusterinv`, `test_archrules`, `test_recall`, `test_embedprov`,
 `test_repomap`, `test_selfindex`, `test_explore`, `test_verifier`,
 `test_bench`, `test_bakeint`, `test_portability`, `test_bytelaws`,
-`test_walkguard`, `test_langsep`, `test_delegates`, `test_qa_smoke`) plus a `viz` job that builds
+`test_walkguard`, `test_langsep`, `test_delegates`, `test_qa_smoke`, `test_bootgate`) plus a `viz` job that builds
 frozen synthetic corpus (`tests/vizcorpus_build.py`) and runs `test_viz`
 against its hermetic store in a real browser (issue #100), then re-runs
 `test_qa_smoke` there so its playwright battery leg executes (the suites
@@ -50,6 +50,7 @@ owner-side `test_chunking` and `test_truthful`.
 | `test_server_stdio` | MCP stdio end-to-end: spawns server.py, drives JSON-RPC, asserts the context tool answers; drift/stat-gate, routed-freshness, recall-knobs (graph_boost/two_pass), degraded-shape scenarios (issue #180); dead_code truncation footer + duplicates pure-delegate skip footer on hermetic corpora (issues #266/#268) | mcp + default-config target repo (CI: self-index FAKE bootstrap) |
 | `test_autorescan` | auto-rescan stat gate (issue #19): read-tool freshness, TTL burst guard, embed-failure cooldown, `watch_interval_s` watcher — in-process pins + two stdio e2e servers + the #239 chroma hnsw-settle retry pin (constructed interleaving, no real race needed) | mcp + chromadb + numpy/networkx/scipy/scikit-learn (hermetic temp target + `NEURONAV_EMBED_FAKE=1`) |
 | `test_delegates` | pure-delegate duplicate filter (issue #268): thin wrappers drop from exact_duplicates with a counted skip, genuine groups stay, predicate cache stores the filtered list (#71/#116 laws) | chromadb import (hermetic temp fixture, build-only) |
+| `test_bootgate` | fast-handshake boot gate (issue #273): while the parent holds the store's cross-process write lock, `initialize` + `tools/list` must still answer; after release the boot thread completes (startup banner) and serves `repo_map`; server-under-test selectable via argv for pre-fix FAIL evidence | mcp + chromadb (hermetic temp fixture + config, `NEURONAV_EMBED_FAKE=1`) |
 | `test_searchtext` | capped `search_text` tool (issue #68): file:line:row shape, deterministic order, 20-file/3-line caps with markers + totals, `files_only`, glob, graceful regex errors | mcp + chromadb (hermetic temp config, `NEURONAV_EMBED_FAKE=1`) |
 | `test_baseindex` | export/import-base shards (issue #102): second-run idempotence (WinError 183), per-phase non-destruction (mid-write debris outside base, commit rollback, cleanup self-heal), byte determinism, stale-shard cleanup, fresh-store roundtrip, stale-id skip (sources deleted since export), manifest model/dim-mismatch refusal (issue #124) | chromadb import (hermetic temp target, `NEURONAV_EMBED_FAKE=1`) |
 | `test_repomap` | repo_map budget bound, byte determinism, rank ordering, god-hub saturation on synthetic graphs | stdlib + numpy (no index, no embeddings) |

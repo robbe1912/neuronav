@@ -85,6 +85,8 @@ jobs:
         run: python -X utf8 tests/test_langsep.py
       - name: delegates (pure-delegate duplicate filter, issue #268)
         run: python -X utf8 tests/test_delegates.py
+      - name: bootgate (handshake precedes boot work, issue #273)
+        run: python -X utf8 tests/test_bootgate.py
       # issue #120/#124: serve.py bake-only surface + qa gate smoke. Leg B
       # (playwright battery) skips here via the flag — the viz job below
       # re-runs this suite with the browser available.
