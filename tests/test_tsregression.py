@@ -133,6 +133,7 @@ elif prof is None:
 else:
     nav._apply_config(prof)
     cfg = json.loads(prof.read_text(encoding="utf-8"))
+    parse_floor = float(cfg.get("ts_regression", {}).get("parse_floor", 0.9))
     ts_exts = getattr(ts_mod, "TS_EXTS")
     g = graph.get_graph(rebuild=True)
     walked = [p for p in nav.iter_files() if p.suffix in ts_exts]
@@ -168,7 +169,7 @@ else:
     bad_cap: list[str] = []
     n_docs = 0
     for rel, fs in sorted(g.files.items()):
-        if fs.ext not in ts_exts or not fs.funcs or not fs.imported_modules:
+        if fs.ext not in ts_exts or not fs.funcs or not (fs.imported_modules or fs.from_imports):
             continue
         n_docs += 1
         doc = graph.file_doc(nav.ROOT / rel, rel,
