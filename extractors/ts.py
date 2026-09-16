@@ -731,12 +731,17 @@ def mention_review(name: str, mentions: dict) -> bool:
 
 def is_wiring_only(fs: FileSym) -> bool:
     """Barrels (re-export-only modules) and ambient `.d.ts` declarations are
-    wiring, not logic: they carry zero callable surface of their own."""
+    wiring, not logic: they carry zero callable surface of their own. A
+    `.d.ts` that DOES declare callables is logic — the dead-share
+    denominator counts it (judge C1), and wiring∩dead-file is a
+    contradiction the bake and the tsreg/tshard gates forbid; the
+    registry resolution made that combo reachable on real corpora
+    (compiler baseline dumps are declare-function files)."""
     if fs.ext not in TS_EXTS:
         return False
-    if fs.path.endswith((".d.ts", ".d.mts", ".d.cts", ".d.tsx")):
+    if bool(getattr(fs, "_ts_barrel", False)):  # zero own funcs by construction
         return True
-    return bool(getattr(fs, "_ts_barrel", False))
+    return fs.path.endswith((".d.ts", ".d.mts", ".d.cts", ".d.tsx")) and not fs.funcs
 
 
 def counts_dead_share(fs: FileSym) -> bool:

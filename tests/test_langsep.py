@@ -161,7 +161,8 @@ from extractors import EXTENSIONS, registry_for  # noqa: E402
 # bake/files_model.py + bake/wires.py (is_wiring_only)
 REQUIRED = ("parse", "ENTRY_RULES", "scan_file", "DYNAMIC_HINT",
             "is_entry_exempt", "unresolved_base_review", "stand_in_review",
-            "mention_review", "stat_tags", "is_wiring_only")
+            "mention_review", "stat_tags", "is_wiring_only",
+            "counts_dead_share")
 bad_contract = [
     f".{sfx}" for sfx, mod in sorted(EXTENSIONS.items())
     if not all(hasattr(mod, attr) for attr in REQUIRED)
