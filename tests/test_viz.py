@@ -1488,7 +1488,9 @@ def run_tests(port: int):
                        !L.pairW.has(u.s + "_" + u.t) &&
                        !named.has(u.s + "_" + u.t)).length;
                      const mi = d.mapInfo();
-                     return { sole, afford: mi ? mi.instAfford : null }; }""")
+                     return { sole, afford: mi ? mi.instAfford : null,
+                              alpha: mi ? mi.instAffordAlpha : null,
+                              width: mi ? mi.instAffordWidth : null }; }""")
             if not mi60 or not mi60["sole"]:
                 print("SKIP #60 map affordance — no sole-relation inst "
                       "underlays in this focus (#97)")
@@ -1496,6 +1498,41 @@ def run_tests(port: int):
                 check("inst-only pairs paint map affordance ink (#60)",
                       mi60["afford"] == mi60["sole"],
                       f"afford={mi60['afford']} sole={mi60['sole']}")
+                # [#210] pin the ISSUED ink, not the code path: the seg
+                # params must survive an alpha/width revert sabotage
+                check("afford ink issues 0.40-alpha 1px-floor segs (#60)",
+                      mi60["alpha"] is not None and mi60["alpha"] >= 0.40
+                      and mi60["width"] is not None and mi60["width"] >= 1.0,
+                      f"alpha={mi60['alpha']} width={mi60['width']}")
+                # the width floor max(1, 1/mapZ) equals a bare 1px
+                # stroke AT z=1 - drive below z=1 where a floorless
+                # revert renders sub-pixel, then re-pin (#210)
+                mp_c = page.evaluate("() => { const b = "
+                    "document.getElementById('mapPane').getBoundingClientRect(); "
+                    "return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; }")
+                for _ in range(20):
+                    if page.evaluate("() => window.__dbg.mapZ") <= 0.8:
+                        break
+                    page.mouse.move(mp_c["x"], mp_c["y"])
+                    page.mouse.wheel(0, 120)
+                    page.wait_for_timeout(35)
+                mz = page.evaluate("() => window.__dbg.mapZ")
+                mi60z = page.evaluate("() => { const mi = "
+                    "window.__dbg.mapInfo(); "
+                    "return { a: mi.instAffordAlpha, w: mi.instAffordWidth }; }")
+                check("afford ink floors to 1 screen px below z=1 (#60)",
+                      mz <= 0.8 and mi60z["w"] >= 1.0 / mz - 1e-6
+                      and mi60z["a"] >= 0.40,
+                      f"width={mi60z['w']} alpha={mi60z['a']} z={mz}")
+                # restore the stock pose: zoom back to >=1 and park the
+                # mouse off the pane so later legs read unhovered state
+                for _ in range(20):
+                    if page.evaluate("() => window.__dbg.mapZ") >= 1.0:
+                        break
+                    page.mouse.move(mp_c["x"], mp_c["y"])
+                    page.mouse.wheel(0, -120)
+                    page.wait_for_timeout(35)
+                page.mouse.move(8, 8)
             # the user's own toggle during focus is final for this focus
             # (no re-force): flip the tier off mid-focus, then re-run
             # applyVisibility via a depth change — it must NOT re-seed.

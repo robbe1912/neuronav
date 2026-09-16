@@ -5237,6 +5237,8 @@ let mapLodUnbundled = 0;       // [#77] riders painted unbundled (probe)
 // extended to the aggregated hub tier.
 const MAP_TAP_FOLD_Z = 0.5;
 let mapLodInstAfford = 0;    // [#60] sole-relation underlays at affordance alpha (probe)
+let mapLodInstAffordAlpha = 0;   // [#60/#210] max seg() alpha issued for afford ink (probe)
+let mapLodInstAffordWidth = 0;   // [#60/#210] max seg() width issued for afford ink, screen px (probe)
 let mapLodTapsPainted = 0;   // [#61] hub taps stroked this frame (probe)
 let mapLodTapsFolded = 0;    // [#61] taps folded below the floor this frame (probe)
 const mapLodEval = () => {
@@ -7173,6 +7175,8 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
   // affordance ruling, C2.2). Band-2 intra-cluster fold applies with parity
   // to the spine law (#77).
   mapLodInstAfford = 0;
+  mapLodInstAffordAlpha = 0;
+  mapLodInstAffordWidth = 0;
   const namedPairs = new Set(L.wires.map(w => w.sf + "_" + w.df));
   L.underlays.forEach(u => {
     const afford = !L.pairW.has(u.s + "_" + u.t) &&
@@ -7181,10 +7185,16 @@ function mapPaint(ctx, dpr, cwView, chView, capNote) {
       return;   // [#77] cluster-distance fold (parity with spines)
     if (!afford && !mapInkOn) return;   // demoted ink keeps the fine-ink tier
     const ua = (afford ? 0.40 : 0.12) * dim(u.s, u.t);   // [#60]/[#78]
-    if (afford) mapLodInstAfford++;
+    const uw = afford ? Math.max(1, 1 / mapZ) : 1;   // [#60] countable at any zoom
+    if (afford) {
+      mapLodInstAfford++;
+      // [#210] probe the ISSUED ink, not the code path: capture what
+      // seg() receives so the gate fails under paint-parameter sabotage
+      mapLodInstAffordAlpha = Math.max(mapLodInstAffordAlpha, ua);
+      mapLodInstAffordWidth = Math.max(mapLodInstAffordWidth, uw);
+    }
     seg(u, MGLYPH[u.ty0] ? MGLYPH[u.ty0].c : MGLYPH.attach.c,
-        afford ? Math.max(1, 1 / mapZ) : 1,   // [#60] countable at any zoom
-        MGLYPH.attach.dash, ua);
+        uw, MGLYPH.attach.dash, ua);
     // T-junction terminator: short tick across the entry, no arrow
     ctx.globalAlpha = ua;
     ctx.setLineDash([]);
@@ -8142,6 +8152,8 @@ const mapInfo = () => {
     lodHiddenSpines: mapLayout.spines.filter(sp => !sp.con && sp.pts.length &&
       !sp.hub && nodes[sp.s].cluster === nodes[sp.t].cluster).length,
     instAfford: mapLodInstAfford,   // [#60] sole-relation underlays painted
+    instAffordAlpha: mapLodInstAffordAlpha,   // [#60/#210] issued seg alpha
+    instAffordWidth: mapLodInstAffordWidth,   // [#60/#210] issued seg width (screen px)
     tapsPainted: mapLodTapsPainted,   // [#61] hub taps stroked this frame
     tapsFolded: mapLodTapsFolded,     // [#61] taps folded below the floor
   };
