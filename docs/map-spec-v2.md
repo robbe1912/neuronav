@@ -15,7 +15,7 @@ NEW exports (fedges/fio untouched — 3D layer, search, showFnInfo unaffected):
 - call wire = (src_fn@A → dst_fn@B); NAME = callee (dst fn).
 - var = member name (dst owns). DEFAULT OFF + map-local `vars` chip [F10].
 - signal = signal name; entry lands on handler row; tooltip `scene > sig > B::handler` [F5]. Unresolved → anonymous amber FILE corridor [F13].
-- attach/inst = anonymous, DEMOTED: 1px stroke, alpha 0.40, T-junction, drawn FIRST beneath named wires.
+- attach/inst = anonymous, DEMOTED: 1px stroke, alpha 0.40, T-junction, drawn FIRST beneath named wires. Sole-relation promotion [#60]: a pair with no stroked corridor and no named wire (the only wiring an inst-dominant hub has) paints at affordance alpha 0.40 with a 1 screen-px width floor, exempt from the fine-ink zoom tier and following the band-2 intra-cluster fold [#77] — a focused hub must never render zero ink.
 
 ## 2. Admission — TWO-TIER [F1]
 Tier 1 pairs: file skeleton unchanged (w>=2 || i<120 || top8-touch; 160 cap). Tier 2: rank fn wires per pair (callee in-degree desc, dfn, sf, sfn, line) [F14]; TOP-1/pair individual + labeled; rest ride corridor. E := admitted corridors in view.
