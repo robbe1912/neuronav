@@ -134,6 +134,7 @@ def _spawn(env: dict[str, str], cwd: Path | None = None) -> SimpleNamespace:
         env=env,
     )
     stderr_lines: list[str] = []
+    stdout_lines: list[str] = []  # #253: stdout-purity pin source
     _stdout_q: "queue.Queue[str]" = queue.Queue()
     def _drain_stderr() -> None:
         assert proc.stderr is not None
@@ -145,6 +146,7 @@ def _spawn(env: dict[str, str], cwd: Path | None = None) -> SimpleNamespace:
     def _drain_stdout() -> None:
         assert proc.stdout is not None
         for line in proc.stdout:
+            stdout_lines.append(line)
             _stdout_q.put(line)
 
     threading.Thread(target=lambda: _drain_stdout(), daemon=True).start()
@@ -179,7 +181,8 @@ def _spawn(env: dict[str, str], cwd: Path | None = None) -> SimpleNamespace:
         time.sleep(0.5)
 
     return SimpleNamespace(
-        proc=proc, send=send, recv=recv, kill=kill, stderr_lines=stderr_lines
+        proc=proc, send=send, recv=recv, kill=kill,
+        stderr_lines=stderr_lines, stdout_lines=stdout_lines,
     )
 
 
@@ -310,6 +313,165 @@ def main() -> None:
                 and "dir" not in schema.get("required", []),
                 json.dumps(schema)[:200],
             )
+        # ---- issue #253: MCP spec/best-practice compliance pins ----
+        # The audit (.team_scratch/mcp_audit.md, untracked) judged
+        # most of the surface compliant; these pins hold the
+        # load-bearing parts against SDK drift: negotiated
+        # revision, capabilities honesty, ping, per-tool description
+        # floor, inputSchema shape, annotation hints, and the error
+        # contract (bad input -> isError CallToolResult naming the
+        # field, server stays up for the next call).
+        ires = init.get("result", {})
+        check(
+            "negotiated protocolVersion echoes 2024-11-05",
+            ires.get("protocolVersion") == "2024-11-05",
+            str(ires.get("protocolVersion")),
+        )
+        caps = ires.get("capabilities") or {}
+        check(
+            "capabilities: tools declared, listChanged false (static set)",
+            caps.get("tools", {}).get("listChanged") is False,
+            json.dumps(caps),
+        )
+        check(
+            "capabilities: no logging/progress/completions over-claim",
+            not ({"logging", "progress", "completions"} & set(caps)),
+            json.dumps(sorted(caps)),
+        )
+        send({"jsonrpc": "2.0", "id": 900, "method": "ping"})
+        check("ping answered with an empty result",
+              recv(900).get("result") == {}, "")
+        for t in tools:
+            desc = t.get("description") or ""
+            check(
+                f"{t['name']}: description floor (names the job)",
+                len(desc) >= 120 and "\n" in desc
+                and bool(desc.splitlines()[0].strip()),
+                f"len={len(desc)} head={desc[:60]!r}",
+            )
+        for t in tools:
+            schema = t.get("inputSchema") or {}
+            props = schema.get("properties") or {}
+            required = schema.get("required") or []
+            check(
+                f"{t['name']}: inputSchema well-formed",
+                schema.get("type") == "object" and bool(props)
+                and set(required) <= set(props)
+                and all("type" in p or "anyOf" in p
+                       for p in props.values()),
+                json.dumps(schema)[:200],
+            )
+        for t in tools:
+            if t["name"] in ("memory", "rescan"):
+                continue
+            ann = t.get("annotations") or {}
+            check(
+                f"{t['name']}: readOnlyHint set",
+                ann.get("readOnlyHint") is True,
+                json.dumps(ann),
+            )
+        mem_ann = next(t.get("annotations") or {}
+                       for t in tools if t["name"] == "memory")
+        check(
+            "memory: destructiveHint true, not read-only (issue #253)",
+            mem_ann.get("destructiveHint") is True
+            and not mem_ann.get("readOnlyHint"),
+            json.dumps(mem_ann),
+        )
+        res_ann = next(t.get("annotations") or {}
+                       for t in tools if t["name"] == "rescan")
+        check(
+            "rescan: additive+idempotent, not read-only (issue #253)",
+            res_ann.get("destructiveHint") is False
+            and res_ann.get("idempotentHint") is True
+            and not res_ann.get("readOnlyHint"),
+            json.dumps(res_ann),
+        )
+
+        def _bad_value(prop: dict):
+            kind = prop.get("type")
+            if kind == "string":
+                return 4242
+            if kind in ("integer", "number"):
+                return "not-a-number"
+            if kind == "boolean":
+                return "not-a-bool"
+            for branch in prop.get("anyOf", []):
+                if branch.get("type") in ("integer", "number"):
+                    return "not-a-number"
+                if branch.get("type") == "boolean":
+                    return "not-a-bool"
+            return 4242
+
+        pid = 910
+        for t in sorted(tools, key=lambda x: x["name"]):
+            schema = t.get("inputSchema") or {}
+            props = schema.get("properties") or {}
+            required = schema.get("required") or []
+            if required:
+                arguments, expect = {}, required[0]
+            else:
+                pname = next(
+                    (p for p in sorted(props) if p != "dir"
+                     and ("type" in props[p] or "anyOf" in props[p])),
+                    "dir",
+                )
+                arguments, expect = {pname: _bad_value(props[pname])}, pname
+            pid += 1
+            send({"jsonrpc": "2.0", "id": pid, "method": "tools/call",
+                  "params": {"name": t["name"], "arguments": arguments}})
+            bad = recv(pid)
+            res = bad.get("result") or {}
+            err_text = " ".join(
+                b.get("text", "") for b in res.get("content", [])
+                if b.get("type") == "text"
+            )
+            check(
+                f"{t['name']}: bad input -> isError naming '{expect}'",
+                res.get("isError") is True and expect in err_text,
+                json.dumps(bad)[:200],
+            )
+        pid += 1
+        send({"jsonrpc": "2.0", "id": pid, "method": "tools/call",
+              "params": {"name": "no_such_tool", "arguments": {}}})
+        unk = recv(pid)
+        check(
+            "unknown tool -> isError result (shipped SDK contract)",
+            (unk.get("result") or {}).get("isError") is True,
+            json.dumps(unk)[:200],
+        )
+        pid += 1
+        send({"jsonrpc": "2.0", "id": pid, "method": "tools/call",
+              "params": {"name": "memory",
+                         "arguments": {"verb": "frobnicate"}}})
+        mem_bad = recv(pid)
+        mres = mem_bad.get("result") or {}
+        mem_txt = " ".join(
+            b.get("text", "") for b in mres.get("content", [])
+            if b.get("type") == "text"
+        )
+        check(
+            "memory: bad verb -> isError naming the verb law",
+            mres.get("isError") is True and "verb" in mem_txt.lower(),
+            mem_txt[:200],
+        )
+        # stdout purity: every byte the server ever wrote to stdout
+        # must be a JSON-RPC frame (stdio transport law)
+        time.sleep(0.3)
+        nonframes = []
+        for ln in list(srv.stdout_lines):
+            try:
+                msg = json.loads(ln)
+            except ValueError:
+                nonframes.append(ln)
+                continue
+            if not isinstance(msg, dict) or "jsonrpc" not in msg:
+                nonframes.append(ln)
+        check(
+            "stdout carries only JSON-RPC frames (issue #253)",
+            not nonframes,
+            f"non-frames: {nonframes[:3]!r}",
+        )
         send(
             {
                 "jsonrpc": "2.0",
