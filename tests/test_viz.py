@@ -1472,6 +1472,30 @@ def run_tests(port: int):
                   st39["fi"] >= 0 and st39["inst"] and st39["btn"], str(st39))
             check("scene-hub focus draws budget ink",
                   st39["budgetN"] and st39["budgetN"] > 0 and st39["arcs"], str(st39))
+            # [#60] the same focus on the 2D map: mwires carries no inst
+            # class, so a pair whose ONLY relation is inst/attach must
+            # still paint - as a sole-relation underlay at the affordance
+            # tier (0.40 alpha + 1-screen-px width floor), not declutter
+            # ghost ink. Shape-gated on sole-relation underlays existing.
+            page.wait_for_function(
+                "() => window.__dbg.mapLayout !== null", timeout=4000)
+            mi60 = page.evaluate(
+                """() => { const d = window.__dbg;
+                     const L = d.mapLayout;
+                     if (!L) return null;
+                     const named = new Set(L.wires.map(w => w.sf + "_" + w.df));
+                     const sole = L.underlays.filter(u =>
+                       !L.pairW.has(u.s + "_" + u.t) &&
+                       !named.has(u.s + "_" + u.t)).length;
+                     const mi = d.mapInfo();
+                     return { sole, afford: mi ? mi.instAfford : null }; }""")
+            if not mi60 or not mi60["sole"]:
+                print("SKIP #60 map affordance — no sole-relation inst "
+                      "underlays in this focus (#97)")
+            else:
+                check("inst-only pairs paint map affordance ink (#60)",
+                      mi60["afford"] == mi60["sole"],
+                      f"afford={mi60['afford']} sole={mi60['sole']}")
             # the user's own toggle during focus is final for this focus
             # (no re-force): flip the tier off mid-focus, then re-run
             # applyVisibility via a depth change — it must NOT re-seed.
@@ -3302,10 +3326,13 @@ def run_tests(port: int):
                     check("LOD band 2: intra-cluster corridors fold",
                           b2["lodBand"] == 2 and
                           b2["lodSpinesPainted"] ==
-                          b2["spinesDrawn"] - b2["lodHiddenSpines"],
+                          b2["spinesDrawn"] - b2["lodHiddenSpines"]
+                          - b2["tapsFolded"],   # [#61] taps fold < MAP_TAP_FOLD_Z
                           f"band={b2['lodBand']} "
                           f"painted={b2['lodSpinesPainted']} "
-                          f"drawn={b2['spinesDrawn']} hidden={b2['lodHiddenSpines']}")
+                          f"drawn={b2['spinesDrawn']} "
+                          f"hidden={b2['lodHiddenSpines']} "
+                          f"tapsFolded={b2['tapsFolded']}")
                 else:
                     print("SKIP band-2 spine fold — corpus has no "
                           "intra-cluster corridors (#97)")
@@ -3462,6 +3489,47 @@ def run_tests(port: int):
                 py: window.__dbg.mapPY, z: window.__dbg.mapZ })""")
             check("pan clamps the window inside the world",
                   vw["px"] >= 0 and vw["py"] >= 0, str(vw))
+            # 8e. [#61] super-hub tier degradation: hub taps are
+            # 1-world-px access roads; below MAP_TAP_FOLD_Z they render
+            # sub-half-pixel and fold (paint + pick parity) - the floored
+            # trunk + peel dots carry the read. Shape-gated on the
+            # section focus having hub taps.
+            taps_now = page.evaluate(
+                """() => { const L = window.__dbg.mapLayout;
+                     return L ? L.spines.filter(s => s.hub === 'tap').length : 0; }""")
+            if not taps_now:
+                print("SKIP 8e tap fold (#61) — focus shape has no hub taps (#97)")
+            else:
+                def _tap_wheel(target, direction):
+                    for _ in range(50):
+                        z = page.evaluate("() => window.__dbg.mapZ")
+                        if (direction < 0 and z < target) or \
+                           (direction > 0 and z >= target):
+                            return z
+                        page.mouse.move(mcx, mcy)
+                        page.mouse.wheel(0, 120 if direction < 0 else -120)
+                        page.wait_for_timeout(35)
+                    return page.evaluate("() => window.__dbg.mapZ")
+
+                thr_t = page.evaluate("() => window.__dbg.mapLodThresholds")
+                _tap_wheel(thr_t["tapFold"] - 0.03, -1)
+                page.wait_for_timeout(200)
+                tf = page.evaluate("() => window.__dbg.mapInfo()")
+                check("taps fold below the legibility floor (#61)",
+                      tf["tapsFolded"] == taps_now and tf["tapsPainted"] == 0
+                      and tf["lodSpinesPainted"] >= 1,
+                      f"painted={tf['tapsPainted']} "
+                      f"folded={tf['tapsFolded']}/{taps_now} "
+                      f"spines={tf['lodSpinesPainted']}")
+                page.screenshot(path=".tmp/shots/qa_map_tapfold.png",
+                                type="png")
+                _tap_wheel(thr_t["tapFold"] + 0.1, 1)
+                page.wait_for_timeout(200)
+                tr = page.evaluate("() => window.__dbg.mapInfo()")
+                check("taps restore above the floor (#61)",
+                      tr["tapsPainted"] == taps_now and tr["tapsFolded"] == 0,
+                      f"painted={tr['tapsPainted']} "
+                      f"folded={tr['tapsFolded']}")
             # restore defaults so later sections see the stock state
             page.evaluate("""() => { const c = [...document.querySelectorAll('#dirs .chip')]
                 .find(x => x.textContent.trim() === 'tests'); c.click(); }""")
