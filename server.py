@@ -956,8 +956,12 @@ def clusters(k: int = 6, min_sim: float = 0.6, dir: str = "") -> str:
 def crosstalk(dir: str = "") -> str:
     """Coupling-hotspot report: which subsystem clusters are wired together.
 
-    Counts structural (call/signal/var/instance) edges that CROSS cluster
-    boundaries. Use before splitting/merging modules: a cluster with high
+    Counts structural edges (call/signal/var/instance/attach) that CROSS
+    cluster boundaries; one edge = one distinct fn pair — call-site and
+    call-kind multiplicity collapsed. Scene->scene resource references (pack
+    composition) are tallied separately and feed no number; each row
+    carries the cluster's derivation method + confidence (#267).
+    Use before splitting/merging modules: a cluster with high
     external share is not self-contained; heavy cluster pairs are coupling
     hotspots. Pairs with `clusters` (what the families are) — this reports
     how leaky the boundaries are.

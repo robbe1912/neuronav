@@ -203,6 +203,130 @@ no_tests = C.crosstalk(cs_stub[1:], SimpleNamespace(edges={"core/a.gd::fn": {"co
 out2 = C.fmt_crosstalk(no_tests)
 check("fmt silent when no tests edges counted", "tests/" not in out2 and "unclustered" not in out2, out2)
 
+# ---------------------------------- 5. scene->scene wiring parity (issue #267)
+# scene->scene resource references are composition (a preload scene
+# instancing pack scenes), not subsystem coupling: they are tallied in
+# their own counter and feed NO cluster number — cross, internal, and
+# rule-visible (archrules rides the same tallies). scene<->script wiring
+# (attach/signal) stays counted.
+cs_sc = [
+    {"id": 0, "label": "Hub", "size": 1, "paths": [("main.tscn", "")]},
+    {"id": 1, "label": "Pack", "size": 2, "paths": [("pack/a.tscn", ""), ("pack/b.tscn", "")]},
+    {"id": 2, "label": "Code", "size": 2, "paths": [("code/c.gd", ""), ("code/d.gd", "")]},
+]
+g_sc = SimpleNamespace(
+    edges={
+        "main.tscn::tscn": {
+            "pack/a.tscn::tscn": 1,  # scene -> scene cross: carved out
+            "code/c.gd::handler": 1,  # scene -> script signal: counted
+        },
+        "pack/a.tscn::tscn": {"pack/b.tscn::tscn": 1},  # scene -> scene internal: carved out
+        "code/d.gd::x": {"code/c.gd::g": 1},  # code internal: counted
+    }
+)
+t_sc = C.cross_tallies(cs_sc, g_sc)
+rep_sc = C.crosstalk(cs_sc, g_sc)
+check(
+    "scene->scene edges tallied in their own counter",
+    t_sc.get("scene_scene") == 2,
+    str(t_sc.get("scene_scene")),
+)
+check(
+    "scene->scene edges feed no cluster number",
+    rep_sc.get("scene_scene_edges") == 2
+    and rep_sc["external_edges"] == 1
+    and rep_sc["internal_edges"] == 1,
+    f"ext {rep_sc['external_edges']} int {rep_sc['internal_edges']}",
+)
+pack_row = next(r for r in rep_sc["by_cluster"] if r["label"] == "Pack")
+check("internal scene composition counts as no wiring", pack_row["internal"] == 0, str(pack_row))
+check(
+    "worst pairs contain no scene-composition pair",
+    len(rep_sc["worst_pairs"]) == 1
+    and {rep_sc["worst_pairs"][0]["a"], rep_sc["worst_pairs"][0]["b"]} == {"Hub", "Code"},
+    str(rep_sc["worst_pairs"]),
+)
+out_sc = C.fmt_crosstalk(rep_sc, align=True)
+check(
+    "fmt names the separately counted scene->scene edges",
+    "2 scene->scene resource edges counted separately" in out_sc,
+    out_sc,
+)
+check("fmt silent when no scene->scene edges counted", "scene->scene" not in out2, out2)
+
+
+# ------------------------- 6. edge-unit semantics + per-pair breakdown (#269)
+# one "edge" = one distinct (src fn, dst fn) pair — call-site multiplicity
+# collapses in the structural graph; per-file-pair `x<N>` counts the same
+# unit per ordered file pair; the per-pair type breakdown counts an edge
+# once per carried type, so its sum may exceed the pair total.
+cs_sem = [
+    {"id": 0, "label": "Ui", "size": 2, "paths": [("ui/panel.gd", ""), ("ui/hud.gd", "")],
+     "method": "dir", "confidence": 0.85},
+    {"id": 1, "label": "Net", "size": 1, "paths": [("net/client.gd", "")],
+     "method": "autoload", "confidence": 1.0},
+]
+g_sem = SimpleNamespace(
+    edges={
+        "ui/panel.gd::a": {"net/client.gd::x": 1, "net/client.gd::y": 1},
+        "ui/panel.gd::b": {"net/client.gd::x": 1},
+        "ui/hud.gd::c": {"net/client.gd::x": 1},
+    },
+    edge_types={
+        ("ui/panel.gd::a", "net/client.gd::x"): {"call"},
+        ("ui/panel.gd::a", "net/client.gd::y"): {"call", "var"},  # fn pair carries 2 types
+        ("ui/panel.gd::b", "net/client.gd::x"): {"call"},
+        ("ui/hud.gd::c", "net/client.gd::x"): {"signal"},
+    },
+)
+rep_sem = C.crosstalk(cs_sem, g_sem)
+wp_sem = rep_sem["worst_pairs"][0]
+check("edges unit stays distinct fn pairs", wp_sem["edges"] == 4, str(wp_sem["edges"]))
+check(
+    "per-pair edge-type breakdown attached",
+    wp_sem.get("edge_types") == {"call": 3, "var": 1, "signal": 1},
+    str(wp_sem.get("edge_types")),
+)
+check(
+    "breakdown order deterministic (count desc, type asc)",
+    list(wp_sem.get("edge_types", {})) == ["call", "signal", "var"],
+    str(wp_sem.get("edge_types")),
+)
+out_sem = C.fmt_crosstalk(rep_sem, align=True)
+check(
+    "fmt renders the per-pair type breakdown",
+    "(call 3, signal 1, var 1 | top: ui/panel.gd -> net/client.gd x3" in out_sem,
+    out_sem,
+)
+check(
+    "fmt states the edge-unit semantics",
+    "edge = one distinct fn pair" in out_sem and "call-kind multiplicity collapsed" in out_sem,
+    out_sem,
+)
+
+
+# ------------------------ 7. cluster derivation rides the crosstalk rows (#267)
+# method + confidence already ride nav.clusters() output; crosstalk must
+# surface them so consumers can discount filename/stem-derived clusters.
+rows_sem = {r["label"]: r for r in rep_sem["by_cluster"]}
+check(
+    "by-cluster rows carry method + confidence",
+    rows_sem["Ui"].get("method") == "dir" and rows_sem["Ui"].get("confidence") == 0.85
+    and rows_sem["Net"].get("method") == "autoload",
+    str(rep_sem["by_cluster"]),
+)
+
+check(
+    "fmt renders the derivation tag",
+    "[dir 0.85]" in out_sem and "[autoload 1.00]" in out_sem,
+    out_sem,
+)
+check(
+    "rows without derivation render no tag",
+    all(r.get("method") is None for r in rep["by_cluster"]) and "[dir" not in out,
+    "",
+)
+
 print()
 if FAILS:
     print(f"{len(FAILS)} FAIL: {FAILS}")

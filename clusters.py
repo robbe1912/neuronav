@@ -1573,7 +1573,10 @@ def cross_tallies(cs: list[dict], g=None) -> dict:
     Cluster membership comes from `cs` (nav.clusters() output), edges
     from the structural graph of the active config. Mirrors the
     clusterer's graph shape: tests/ endpoints and unclustered endpoints
-    are tallied separately and feed no cluster number (#114).
+    are tallied separately and feed no cluster number (#114) — and so
+    are scene->scene resource references: pack composition, not
+    subsystem coupling (#267). Scene<->script wiring (attach/signal)
+    stays counted.
 
     `pair_wires` adds what the rule engine needs on top: per ORDERED
     cluster pair (from -> to) one (src_file, dst_file, edge_types)
@@ -1596,6 +1599,7 @@ def cross_tallies(cs: list[dict], g=None) -> dict:
     pair_wires: dict[tuple[int, int], list[tuple[str, str, tuple]]] = defaultdict(list)
     unclustered = 0
     tests_edges = 0
+    scene_scene = 0  # scene->scene resource refs (#267)
     for src, dsts in g.edges.items():
         sf = src.split("::")[0]
         for dst in dsts:
@@ -1609,6 +1613,17 @@ def cross_tallies(cs: list[dict], g=None) -> dict:
                 # counting it as cross-cluster signal misleads (#114).
                 # Tally separately; contributes to no cluster number.
                 tests_edges += 1
+                continue
+            if is_scene_path(sf) and is_scene_path(df):
+                # scene->scene resource references (a preload scene
+                # instancing pack scenes) are composition, not subsystem
+                # coupling — filename co-occurrence, not architecture
+                # (#267). Same carve-out shape as tests/ endpoints:
+                # tallied separately, feeding NO cluster number — not
+                # even the internal one, so pack composition cannot
+                # dilute a cluster's ext %. Scene<->script wiring
+                # (attach/signal) stays counted.
+                scene_scene += 1
                 continue
             a = file_cluster.get(sf)
             b = file_cluster.get(df)
@@ -1635,6 +1650,7 @@ def cross_tallies(cs: list[dict], g=None) -> dict:
         "pair_wires": dict(pair_wires),
         "unclustered": unclustered,
         "tests_edges": tests_edges,
+        "scene_scene": scene_scene,
     }
 
 
@@ -1645,8 +1661,12 @@ def crosstalk(cs: list[dict], g=None) -> dict:
     structural graph of the active config. Answers "which subsystems are
     wired together despite clustering apart" and "which clusters are
     internally hollow". Mirrors the clusterer's graph shape: tests/
-    endpoints and unclustered endpoints are tallied separately and feed
-    no cluster number (#114)."""
+    endpoints, unclustered endpoints, and scene->scene resource
+    no cluster number (#114). Edge unit (#269): one distinct (src fn,
+    dst fn) pair — call-site and call-kind multiplicity collapse in the
+    structural graph (a pair wired as call AND var is one edge);
+    `worst_pairs[].edge_types` counts an edge once per carried
+    type, so its sum can exceed the pair's `edges`."""
     t = cross_tallies(cs, g)
     by_id = {c["id"]: c for c in cs}
     internal_by = t["internal_by"]
@@ -1666,6 +1686,8 @@ def crosstalk(cs: list[dict], g=None) -> dict:
                 "id": cid,
                 "label": c.get("label", ""),
                 "size": c["size"],
+                "method": c.get("method"),
+                "confidence": c.get("confidence"),
                 "internal": internal_by[cid],
                 "external_out": cluster_out[cid],
                 "external_in": cluster_in[cid],
@@ -1676,16 +1698,24 @@ def crosstalk(cs: list[dict], g=None) -> dict:
     worst_pairs = []
     for (a, b), w in sorted(pair_edges.items(), key=lambda kv: (-kv[1], (kv[0][0], kv[0][1]))):
         top = sorted(pair_files[(a, b)].items(), key=lambda kv: (-kv[1], kv[0]))[:3]
-        worst_pairs.append(
-            {
-                "a_id": a,
-                "b_id": b,
-                "a": by_id[a].get("label", str(a)),
-                "b": by_id[b].get("label", str(b)),
-                "edges": w,
-                "top_files": [{"pair": p, "w": wt} for p, wt in top],
-            }
-        )
+        entry = {
+            "a_id": a,
+            "b_id": b,
+            "a": by_id[a].get("label", str(a)),
+            "b": by_id[b].get("label", str(b)),
+            "edges": w,
+            "top_files": [{"pair": p, "w": wt} for p, wt in top],
+        }
+        # per-pair edge-type breakdown (#269): an edge carrying several
+        # types counts once per type, so the breakdown can sum past `w`;
+        # wires carry (None,) when the graph has no edge-type map.
+        tys = Counter()
+        for side in ((a, b), (b, a)):
+            for _sf, _df, et in t["pair_wires"].get(side, ()):
+                tys.update(et)
+        if tys and None not in tys:
+            entry["edge_types"] = dict(sorted(tys.items(), key=lambda kv: (-kv[1], kv[0])))
+        worst_pairs.append(entry)
         if len(worst_pairs) >= 10:
             break
     return {
@@ -1695,6 +1725,7 @@ def crosstalk(cs: list[dict], g=None) -> dict:
         "external_ratio": round(ext_total / max(ext_total + int_total, 1), 3),
         "unclustered_endpoint_edges": t["unclustered"],
         "tests_endpoint_edges": t["tests_edges"],
+        "scene_scene_edges": t["scene_scene"],
         "by_cluster": by_cluster,
         "worst_pairs": worst_pairs,
     }
@@ -1704,12 +1735,19 @@ def fmt_crosstalk(rep: dict, align: bool = False, top_n: int = 0) -> str:
     """Render a crosstalk() report for humans — the ONE formatter shared
     by the MCP `crosstalk` tool and the nav CLI verb (align=True pads
     columns for terminal reading; top_n caps the per-pair top-files list —
-    the MCP shape keeps the pre-#144 top-2). Machines consume the rep dict."""
+    the MCP shape keeps the pre-#144 top-2). Machines consume the rep
+    dict. Edge unit, stated in the header (#269): one distinct (src fn,
+    dst fn) pair — call-site and call-kind multiplicity collapse in the
+    structural graph (a pair wired as call AND var is one edge), and the
+    per-pair type breakdown counts an edge once per carried type."""
     lines = [
         f"crosstalk: {rep['clusters']} clusters, "
         f"internal {rep['internal_edges']} edges, "
         f"cross-cluster {rep['external_edges']} " + ("edges " if align else "")
-        + f"({rep['external_ratio'] * 100:.1f}% of clustered)"
+        + f"({rep['external_ratio'] * 100:.1f}% of clustered)",
+        "  (edge = one distinct fn pair, mixed structural types "
+        "call/signal/var/inst/attach; call-site and call-kind multiplicity "
+        "collapsed; type breakdown counts an edge once per carried type)",
     ]
     if rep["unclustered_endpoint_edges"]:
         lines.append(
@@ -1720,25 +1758,38 @@ def fmt_crosstalk(rep: dict, align: bool = False, top_n: int = 0) -> str:
             f"  ({rep['tests_endpoint_edges']} edges touch tests/ files — "
             f"excluded: the clusterer never wires tests)"
         )
+    if rep.get("scene_scene_edges"):
+        lines.append(
+            f"  ({rep['scene_scene_edges']} scene->scene resource edges "
+            f"counted separately — composition, not subsystem coupling)"
+        )
     lines += ["", "per cluster (top 10 by external):"]
     for r in rep["by_cluster"][:10]:
+        tag = ""
+        if r.get("method") and r.get("confidence") is not None:
+            tag = f"  [{r['method']} {r['confidence']:.2f}]"
         if align:
             lines.append(
                 f"  [{r['id']:>2}] {r['label'][:34]:<34} n={r['size']:<3}"
                 f" internal {r['internal']:<4} out {r['external_out']:<4}"
-                f" in {r['external_in']:<4} ext {r['external_share'] * 100:.0f}%"
+                f" in {r['external_in']:<4} ext {r['external_share'] * 100:.0f}%{tag}"
             )
         else:
             lines.append(
                 f"  [{r['id']:>2}] {r['label'][:34]}  n={r['size']}  "
                 f"internal {r['internal']}  out {r['external_out']}  "
-                f"in {r['external_in']}  ext {r['external_share'] * 100:.0f}%"
+                f"in {r['external_in']}  ext {r['external_share'] * 100:.0f}%{tag}"
             )
     if rep["worst_pairs"]:
         lines += ["", "worst pairs:"]
         for wp in rep["worst_pairs"]:
             top = wp["top_files"][:top_n] if top_n else wp["top_files"]
             tops = ", ".join(f"{t['pair']} x{t['w']}" for t in top)
+            bd = wp.get("edge_types") or {}
+            if bd:
+                detail = ", ".join(f"{ty} {n}" for ty, n in bd.items()) + " | top: " + tops
+            else:
+                detail = "top: " + tops
             sep = " : " if align else ": "
-            lines.append(f"  {wp['a']} <-> {wp['b']}{sep}{wp['edges']} edges (top: {tops})")
+            lines.append(f"  {wp['a']} <-> {wp['b']}{sep}{wp['edges']} edges ({detail})")
     return "\n".join(lines)
