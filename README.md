@@ -34,7 +34,7 @@ no machine values (issue #204): the root `config.json` is deliberately
 absent (never restored); consumers pass `NEURONAV_CONFIG` per-command or
 rely on the pure-defaults cwd boot.
 
-## Tools (stdio MCP, 14)
+## Tools (stdio MCP, 15)
 
 | tool | use |
 |---|---|
@@ -47,6 +47,7 @@ rely on the pure-defaults cwd boot.
 | `context(path, depth)` | per-file dossier: what it defines (funcs/signals/members, capped), cluster, structural+semantic neighbors, hub rank, edge types |
 | `clusters(k, min_sim)` | subsystem families from embedding geometry |
 | `crosstalk()` | which subsystem clusters are wired together (cross-cluster coupling report) |
+| `arch_check()` | architecture-contract check (issue #70) — declarative rules in `.neuronav/arch-rules.json` (`forbid` = zero wires / `budget` = at most `max` wires per cluster pair, optional call/var/signal/inst/attach/alias type filter) evaluated against the live cluster partition and the same wire tally `crosstalk` reads; absent rules file answers with how to write one, a typo'd rule (unknown kind/cluster/type) is reported loudly, never silently skipped |
 | `dead_code(n)` | unreachable-function candidates, tiered likely/review - candidates, never verdicts |
 | `duplicates(n)` | exact-clone function bodies across all indexed languages — .gd/.py/C++ (dedup targets) |
 | `visualize()` | generate interactive 3D graph.html (open the baked file directly — see [3D visualizer](#3d-visualizer-optional-add-on)) |
