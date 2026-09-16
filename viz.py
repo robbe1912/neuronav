@@ -1993,7 +1993,7 @@ function tick() {
   // distance to the camera (~2.4px on screen at every depth, next to 1px wires)
   fnLodV = { bollardsShown: 0, bollardsGated: 0, conduitsShown: 0, conduitsGated: 0,
              chevShown: 0, minChevPx: Infinity, minServedBoxPx: Infinity, minBollardPx: Infinity,
-             serveFi: -1, servePx: -1, oDot: _oDot, oArrow: _oArrow };
+             serveFi: -1, servePx: -1, oDot: _oDot, oArrow: _oArrow, segOccl: 0 };
   _lod = (fnBus || fnJDot) ? busLodInit() : null;   // after fnLodV: it stamps serveFi/servePx
   // endpoint anchor demands are per-frame (camera-pose dependent): reset,
   // then arcs, serving corridors and serving legs add theirs
@@ -2051,6 +2051,24 @@ function tick() {
       const p = s.k.split(">");
       if (p.length === 2) { anchorBoost[+p[0]] = ANCHOR_PX; anchorBoost[+p[1]] = ANCHOR_PX; }
     }
+  // served fn-box SCREEN discs — shared by the conduit ink-occlusion law
+  // (issue #7) and the bollard dodge (issue #5). Box ink is modeled at
+  // (count?3:2)wu radius, the same formula the QA gate uses for jClear.
+  const dv = new THREE.Vector3();
+  const dRect = renderer.domElement.getBoundingClientRect();
+  const dCh = renderer.domElement.clientHeight || 900;
+  const dHt = Math.tan(camera.fov * Math.PI / 360) || 0.4;
+  const discs = [];
+  for (let bi = 0; fnMeta && bi < fnMeta.length; bi++) {
+    const m = fnMeta[bi];
+    if (m.agg && !m.count) continue;
+    if (!alphaTgt || !alphaTgt[m.file] || alphaTgt[m.file] < 0.5) continue;
+    dv.set(m.p[0], m.p[1], m.p[2]).project(camera);
+    const bx = (dv.x*0.5+0.5)*dRect.width, by = (-dv.y*0.5+0.5)*dRect.height;
+    if (bx < -60 || bx > dRect.width+60 || by < -60 || by > dRect.height+60) continue;
+    const cd = Math.hypot(m.p[0]-camera.position.x, m.p[1]-camera.position.y, m.p[2]-camera.position.z);
+    discs.push({ x: bx, y: by, r: (m.count?3:2)*(dCh/2)/(dHt*cd), wx: m.p[0], wy: m.p[1], wz: m.p[2] });
+  }
   if (fnBus && busPts) {
     stAttKey.clear(); chainGate.clear(); inkKeys.clear();
     let dirty = false;
@@ -2129,7 +2147,30 @@ function tick() {
           }
         }
       }
-      const rT = gateOk ? base : (taperF > 0 ? base * taperF : 0.0001);
+      let rT = gateOk ? base : (taperF > 0 ? base * taperF : 0.0001);
+      // issue #7 ink occlusion: a mid-chain segment whose SCREEN ink falls
+      // inside a served box disc + 4px parks — the corridor reads as
+      // passing behind the box (same hide-law class as chevrons under
+      // bollards). Endpoint segments are exempt: draws-to-anchor seams and
+      // the empty-station endpoint census read them. Serve state stays
+      // chain-level (corridor-complete law); only the ink under a box hides.
+      if (gateOk && discs.length && typeof s.k === "string" &&
+          curJ > 0 && curJ < (segN.get(s.k) || 1) - 1) {
+        _sv.set(s.a[0], s.a[1], s.a[2]).project(camera);
+        const ax2 = (_sv.x*0.5+0.5)*dRect.width, ay2 = (-_sv.y*0.5+0.5)*dRect.height;
+        _sv.set(s.b[0], s.b[1], s.b[2]).project(camera);
+        const bx2 = (_sv.x*0.5+0.5)*dRect.width, by2 = (-_sv.y*0.5+0.5)*dRect.height;
+        const abx = bx2 - ax2, aby = by2 - ay2, ab2 = abx*abx + aby*aby || 1;
+        for (let di2 = 0; di2 < discs.length; di2++) {
+          const dc = discs[di2];
+          let tt = ((dc.x-ax2)*abx + (dc.y-ay2)*aby) / ab2;
+          tt = tt < 0 ? 0 : (tt > 1 ? 1 : tt);
+          if (Math.hypot(ax2 + abx*tt - dc.x, ay2 + aby*tt - dc.y) < dc.r + 4) {
+            rT = 0.0001; if (fnLodV) fnLodV.segOccl++;
+            break;
+          }
+        }
+      }
       if (taperF > 0 && jx === 2) {
         _sv.set((s.a[0]+s.b[0])/2, (s.a[1]+s.b[1])/2, (s.a[2]+s.b[2])/2).project(camera);
         if (isFinite(_sv.x) && _sv.z < 1)
@@ -2157,6 +2198,31 @@ function tick() {
   if (fnJDot && fnJDotPos) {
     let dirty = false;
     const a = fnJDot.instanceMatrix.array;
+    // anchor context (issue #5 + empty-station law): a dodged dot stays
+    // lawful while it sits within 20px of RENDERED conduit ink — every
+    // bezier sample of every rendered leg/trunk chain (busPts a/b, scale
+    // gate). The dodge may slide a dot anywhere ALONG this ink network,
+    // never off it: a dot stranded from all ink reads as an empty station.
+    const anchors = [];
+    if (fnBus && busPts && discs.length) {
+      const fa2 = fnBus.instanceMatrix.array;
+      for (let si = 0; si < busPts.length && si*16+2 < fa2.length; si++) {
+        if (Math.hypot(fa2[si*16], fa2[si*16+1], fa2[si*16+2]) <= 0.001) continue;
+        const s2 = busPts[si];
+        dv.set(s2.a[0], s2.a[1], s2.a[2]).project(camera);
+        anchors.push((dv.x*0.5+0.5)*dRect.width, (-dv.y*0.5+0.5)*dRect.height);
+        dv.set(s2.b[0], s2.b[1], s2.b[2]).project(camera);
+        anchors.push((dv.x*0.5+0.5)*dRect.width, (-dv.y*0.5+0.5)*dRect.height);
+      }
+    }
+    // issue #5: bollards must clear fn-box/label INK on screen. Depth-packed
+    // layouts park a bollard 60-90wu BEHIND a foreign box yet project it
+    // inside the box disc — no world-space floor fixes that. Slide the
+    // RENDERED instance along its own corridor ink (station: down the leg
+    // fan; sub: along its leg toward the station; Jof: down its delivery
+    // stub) until its disc clears every served box. Pure function of the
+    // static arrays + camera: identical frames produce identical dodges.
+    // True world arrays (fnJDotPos, zero-gap anchors, census) are untouched.
     for (let i = 0; i < fnJDotR.length; i++) {
       const d = Math.hypot(fnJDotPos[i*3] - camera.position.x,
                            fnJDotPos[i*3+1] - camera.position.y,
@@ -2192,6 +2258,100 @@ function tick() {
         else fnLodV.bollardsGated++;
       }
       const rT = gateOk ? rRef : 0.0001;
+      // issue #5 slide: step along ±tg (down and UP the own ink — a deg-240
+      // hub's clear anchored bearing can sit ~100wu up the trunk fan, F1 #263)
+      // in 3wu increments (cap 120wu) until the projected disc clears every
+      // served box by 2px; every accepted step must stay anchored to conduit
+      // ink (20px census law) or the dot keeps its true position. Topdown is
+      // the degenerate case for the down-fan axis (−Y projects to ~0), so a
+      // direction whose screen step dies falls back to sliding AWAY from the
+      // worst violating box in XZ.
+      if (discs.length && fnJDotTg) {
+        const rr = rT * (dCh/2)/(dHt*Math.max(d,1));
+        const clearAt = (wx, wy, wz) => {
+          dv.set(wx, wy, wz).project(camera);
+          const sx = (dv.x*0.5+0.5)*dRect.width, sy = (-dv.y*0.5+0.5)*dRect.height;
+          for (let di = 0; di < discs.length; di++) {
+            const dc = discs[di];
+            if (Math.hypot(sx-dc.x, sy-dc.y) - dc.r - rr < 2) return { ok: false, sx, sy };
+          }
+          return { ok: true, sx, sy };
+        };
+        let qx = fnJDotPos[i*3], qy = fnJDotPos[i*3+1], qz = fnJDotPos[i*3+2];
+        const at0 = clearAt(qx, qy, qz);
+        if (!at0.ok) {
+          // worst violator (max overlap) drives the fallback axis
+          let wd2 = null, wov = -1;
+          for (const dc of discs) {
+            const ov = dc.r + rr - Math.hypot(at0.sx-dc.x, at0.sy-dc.y) + 2;
+            if (ov > wov) { wov = ov; wd2 = dc; }
+          }
+          // dodge axes: down the own-ink tangent AND its reverse (a deg-240
+          // hub's clear anchored bearing is often UP the trunk fan, F1 #263),
+          // plus away-from-worst-violator in XZ
+          const dirs = [];
+          const tx = fnJDotTg[i*3], ty = fnJDotTg[i*3+1], tz = fnJDotTg[i*3+2];
+          dirs.push([tx, ty, tz], [-tx, -ty, -tz]);
+          if (wd2) {
+            let ax = fnJDotPos[i*3]-wd2.wx, az = fnJDotPos[i*3+2]-wd2.wz;
+            const al = Math.hypot(ax, az);
+            if (al > 1e-6) dirs.push([ax/al, 0, az/al]);
+            else dirs.push([0.8, 0, 0.6]);
+          }
+          // the census law (emptySt): a dot is lawful while it sits within
+          // 20px of RENDERED conduit ink (any servedEnd sample, not just its
+          // own chain terminus). So the slide may walk a dot anywhere ALONG
+          // the ink network, but every accepted candidate must stay
+          // anchored to it — a dot that detaches from all ink reads as an
+          // empty station, which is worse than sharing a box's halo.
+          const anchored = (sx, sy) => {
+            for (let ai = 0; ai < anchors.length; ai += 2)
+              if (Math.hypot(anchors[ai]-sx, anchors[ai+1]-sy) < 20) return true;
+            return false;
+          };
+          const worstAt = (sx, sy) => {
+            let w = 1e9;
+            for (const dc of discs) {
+              const g = Math.hypot(sx-dc.x, sy-dc.y) - dc.r - rr;
+              if (g < w) w = g;
+            }
+            return w;   // min clearance; >= 2 is clear
+          };
+          let okBest = null, capBest = null;
+          for (const [ux, uy, uz] of dirs) {
+            // dead-on-screen axes cannot help (topdown −Y): skip them
+            const p1c = clearAt(fnJDotPos[i*3]+ux*3, fnJDotPos[i*3+1]+uy*3, fnJDotPos[i*3+2]+uz*3);
+            const p0c = clearAt(fnJDotPos[i*3], fnJDotPos[i*3+1], fnJDotPos[i*3+2]);
+            if (Math.hypot(p1c.sx-p0c.sx, p1c.sy-p0c.sy) < 0.5) continue;
+            for (let s = 1; s <= 40; s++) {
+              const cx2 = fnJDotPos[i*3] + ux*3*s, cy2 = fnJDotPos[i*3+1] + uy*3*s, cz2 = fnJDotPos[i*3+2] + uz*3*s;
+              const cc = clearAt(cx2, cy2, cz2);
+              if (!anchored(cc.sx, cc.sy)) continue;   // off-ink: would read as empty station
+              const disp = Math.hypot(cc.sx-at0.sx, cc.sy-at0.sy);
+              if (cc.ok) {
+                if (!okBest || disp < okBest.disp) okBest = { disp, x: cx2, y: cy2, z: cz2 };
+                break;
+              }
+              const clr = worstAt(cc.sx, cc.sy);
+              if (!capBest || clr > capBest.clr) capBest = { clr, x: cx2, y: cy2, z: cz2 };
+            }
+          }
+          // no anchored clear bearing: leave the dot at its true position —
+          // it keeps its station, and the box halo overlap is the lesser
+          // evil (never an empty-station regression).
+          const pick = okBest || capBest;
+          if (pick) { qx = pick.x; qy = pick.y; qz = pick.z; }
+          const o16 = i*16;
+          a[o16+12] = qx; a[o16+13] = qy; a[o16+14] = qz;
+          dirty = true;
+        } else {
+          const o16 = i*16;
+          if (a[o16+12] !== fnJDotPos[i*3] || a[o16+13] !== fnJDotPos[i*3+1] || a[o16+14] !== fnJDotPos[i*3+2]) {
+            a[o16+12] = fnJDotPos[i*3]; a[o16+13] = fnJDotPos[i*3+1]; a[o16+14] = fnJDotPos[i*3+2];
+            dirty = true;
+          }
+        }
+      }
       const f = rT / fnJDotR[i];
       if (Math.abs(f - 1) > 0.06) {
         const o = i * 16;
@@ -3534,7 +3694,7 @@ let fnBus = null;   // trunk conduit bodies (InstancedMesh cylinders)
 let busPts = null;  // segment endpoints for per-frame screen-constant rescale
 let fnBusRi = null; // current per-segment radius (world units)
 let fnJDot = null;  // reroute junction bollards (InstancedMesh spheres)
-  let fnJDotPos = null, fnJDotR = null;  // world positions + current radii (screen-constant)
+  let fnJDotPos = null, fnJDotR = null, fnJDotTg = null;  // world positions, radii, dodge axes (issue #5)
   let fnArrowPos = null, fnArrowR = null;   // arrowhead positions + current radii (screen-constant)
   let fnArrowTang = null;  // world wire tangent at each delivery (chevron aim)
   let fnArrowBox = null;  // delivery box center per arrow (screen-hug clamp)
@@ -3965,7 +4125,7 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
   if (fnLines) { scene.remove(fnLines); fnLines.geometry.dispose(); fnLines = null; }
   if (fnQuiet) { scene.remove(fnQuiet); fnQuiet.geometry.dispose(); fnQuiet = null; }
   if (fnBus) { scene.remove(fnBus); fnBus.geometry.dispose(); fnBus = null; busPts = null; fnBusRi = null; busPtsMeta = null; trunkMetaMap = null; juncPickInfo = null; }
-    if (fnJDot) { scene.remove(fnJDot); fnJDot.geometry.dispose(); fnJDot = null; fnJDotPos = null; fnJDotR = null; }
+    if (fnJDot) { scene.remove(fnJDot); fnJDot.geometry.dispose(); fnJDot = null; fnJDotPos = null; fnJDotR = null; fnJDotTg = null; }
   if (fnArrows) { scene.remove(fnArrows); fnArrows.geometry.dispose(); fnArrows = null; fnArrowPos = null; fnArrowR = null; fnArrowTang = null; fnArrowBox = null; arrowFile = null; }
   // issue #6: halo + delivery legs are rebuilt with the bus -- tear them
   // down with the arrows or ghost discs persist past Escape (#58 family)
@@ -4335,8 +4495,52 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
       }
       stList.push(S);
     }
-  // (moat relaxation runs after Jof placement below — stations stay fixed,
-  // sub-junctions and Jof dots rotate on their rings)
+  // ISSUE #5 hard floor for stations: placement cost above only SOFTLY
+  // avoids boxes (1/d2 within 60 wu); a packed satellite field can still
+  // win the cost and park the station bollard inside foreign box ink —
+  // the -10..-17px jClearMinPx readings. Slide the station along its own
+  // ring to the first bearing clear of EVERY rendered box by >=16 wu and
+  // of earlier stations by >=14 wu (3D gaps: stations float cy+16), then
+  // grow the ring as a last resort. In-place mutation: trunk termini,
+  // leg anchors and busJunc all alias S.p; S.brg follows so leg tangents
+  // stay perpendicular. (Subs + Jof get the same treatment, on their own
+  // rings, inside the moat block below.)
+  {
+    const clear16 = (x, y, z) => {
+      for (const ix of allBoxes)
+        if (Math.hypot(x - fpos[ix*3], y - fpos[ix*3+1], z - fpos[ix*3+2]) < 16)
+          return false;
+      return true;
+    };
+    for (const S of stList) {
+      if (clear16(S.p[0], S.p[1], S.p[2])) {
+        let ok = true;
+        for (const Q of stList)
+          if (Q !== S && Math.hypot(S.p[0]-Q.p[0], S.p[1]-Q.p[1], S.p[2]-Q.p[2]) < 14) { ok = false; break; }
+        if (ok) continue;
+      }
+      const cx = pos[S.fi*3], cy = pos[S.fi*3+1], cz = pos[S.fi*3+2];
+      const stOk = (x, y, z, self) => {
+        for (const Q of stList)
+          if (Q !== self && Math.hypot(x-Q.p[0], y-Q.p[1], z-Q.p[2]) < 14) return false;
+        return true;
+      };
+      let done = false;
+      for (let grow = 0; !done && grow <= 4; grow++) {
+        const R = (ringOut.get(S.fi) || sphR(S.fi)) + STATION_R + grow * 8;
+        const b0 = Math.atan2(S.p[2] - cz, S.p[0] - cx);
+        for (let k = 0; k <= 24 && !done; k++) {
+          for (const sgn of (k ? [1, -1] : [0])) {
+            const phi = b0 + sgn * k * Math.PI / 24;
+            const x = cx + Math.cos(phi) * R, z = cz + Math.sin(phi) * R;
+            if (!clear16(x, cy + 16, z) || !stOk(x, cy + 16, z, S)) continue;
+            S.p[0] = x; S.p[1] = cy + 16; S.p[2] = z; S.brg = phi;
+            done = true; break;
+          }
+        }
+      }
+    }
+  }
   const inB = new Map(), dirB = new Map();
   for (let i = 0, p = 0; i < eidx.length; i += 2, p++) {
     const a = eidx[i], b = eidx[i+1];
@@ -4369,7 +4573,7 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
       for (const sp of S.subJ)
         moat.push({ fi: S.fi, p: sp, r: (ringOut.get(S.fi) || sphR(S.fi)) + SUBJ_R });
     for (const [b, J] of Jof)
-      moat.push({ fi: fnMeta[b].file, p: J, r: JofR.get(b) });
+      moat.push({ fi: fnMeta[b].file, p: J, r: JofR.get(b), jofB: b });
     const sgn = (a, b) => ((a - b + Math.PI) % (2*Math.PI) + 2*Math.PI) % (2*Math.PI) - Math.PI >= 0 ? 1 : -1;
     for (let round = 0; round < 8; round++)
       for (const md of moat) {
@@ -4407,8 +4611,54 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
           md.p[0] = pos[md.fi*3] + Math.cos(nb) * md.r;
           md.p[2] = pos[md.fi*3+2] + Math.sin(nb) * md.r;
         }
+    }
+    // ISSUE #5 hard floor for tree dots (subs + Jof): a soft nudge cannot
+    // escape a dense field — the packed-satellite views park sub bollards
+    // a couple of wu from foreign box centers. Scan the dot's own ring
+    // (deterministic +/- steps from the current bearing) for the first
+    // bearing clear of every rendered box by >=15 wu and of stations by
+    // >=10 wu, growing the ring radius as a last resort. In-place p keeps
+    // boxSub / leg termini / busJunc aliasing the same array; a grown Jof
+    // ring must re-publish JofR (separation re-anchors at the ring radius).
+    const boxClearAt = (x, y, z, floor) => {
+      for (const ix of allBoxes)
+        if (Math.hypot(x - fpos[ix*3], y - fpos[ix*3+1], z - fpos[ix*3+2]) < floor)
+          return false;
+      return true;
+    };
+    for (const md of moat) {
+      if (boxClearAt(md.p[0], md.p[1], md.p[2], 15)) continue;
+      const y0 = md.p[1];
+      const cx = pos[md.fi*3], cz = pos[md.fi*3+2];
+      const stOk = (x, z) => {
+        for (const S of stList)
+          if (Math.hypot(x - S.p[0], z - S.p[2]) < 10) return false;
+        return true;
+      };
+      let done = false;
+      for (let grow = 0; !done && grow <= 4; grow++) {
+        const r = md.r + grow * 6;
+        const b0 = Math.atan2(md.p[2] - cz, md.p[0] - cx);
+        for (let k = 0; k <= 16 && !done; k++) {
+          for (const sgn of (k ? [1, -1] : [0])) {
+            const phi = b0 + sgn * k * Math.PI / 16;
+            const x = cx + Math.cos(phi) * r, z = cz + Math.sin(phi) * r;
+            if (!boxClearAt(x, y0, z, 15) || !stOk(x, z)) continue;
+            md.p[0] = x; md.p[2] = z; md.r = r;
+            if (md.jofB !== undefined) JofR.set(md.jofB, r);
+            done = true; break;
+          }
+        }
       }
+    }
   }
+  // ISSUE #7 experiment log: a world-side polyline floor on the arcs
+  // (arcDodge: Gauss-Seidel control-point pushes, +Y and lateral
+  // variants, 9-11 wu floors) was built, measured, and DELETED — every
+  // variant reshuffled fan curvature for +1..2 crossTT over base
+  // (hub2/orbit45) while the screen-side park law in the tick already
+  // owns the visible fn-box ink band. Placement floors above keep the
+  // endpoints out of box fields; obsLift keeps the tall-obstacle masts.
   // shared arc emitter: 8 quadratic segments (16 verts — the harness
   // counts wires as verts/16), optional arrowhead at the end tangent
   const emitArc = (T, ax, ay, az, bx, by, bz,
@@ -4416,7 +4666,9 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
     if (meta) T.meta.push(meta);   // 1 meta entry per arc (8 segments each)
     const dist = Math.hypot(bx-ax, by-ay, bz-az) || 1;
     const lift = liftFrac * dist;   // ALWAYS +Y: no sign hack, no -Y dives
-    const mx = (ax+bx)/2, my = (ay+by)/2 + lift, mz = (az+bz)/2;
+    const mx = (ax+bx)/2,
+          my = (ay+by)/2 + lift,
+          mz = (az+bz)/2;
     let px = ax, py = ay, pz = az, pd = 0;
     for (let s = 1; s <= FS; s++) {
       const t = s / FS, u = 1 - t;
@@ -4548,12 +4800,15 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
                     new THREE.Color().setHSL(0.12, 0.05, 0.84) ]; // Jof
   for (const S of stList) {
     busJunc.push({ p: S.p, c: [BOL_COL[0].r, BOL_COL[0].g, BOL_COL[0].b], k: 1, of: S.fi, st: 1,
-      nl: S.subJ.length, hd: 1,
+      nl: S.subJ.length, hd: 1, tg: [0, -1, 0],   // dodge axis: down the leg fan
       info: { kind: "station", fi: S.fi, wires: S.wires, trks: S.tks.length } });
     for (let li = 0; li < S.subJ.length; li++) {
       const sp = S.subJ[li];
+      // dodge axis (issue #5): along THIS leg's own ink, toward the station
+      const dl = Math.hypot(S.p[0]-sp[0], S.p[1]-sp[1], S.p[2]-sp[2]) || 1;
       busJunc.push({ p: sp, c: [BOL_COL[1].r, BOL_COL[1].g, BOL_COL[1].b], k: 0.72, of: S.fi, st: 1,
         nl: 1, lk: "L|" + S.fi + "|" + S.id + "|" + li,
+        tg: [(S.p[0]-sp[0])/dl, (S.p[1]-sp[1])/dl, (S.p[2]-sp[2])/dl],
         info: { kind: "sub", fi: S.fi, wires: S.wires } });
       // legs land on a tangent line 5 wu BELOW the station — the empty
       // lane under the horizontal trunk fan (trunks bow +Y from termini
@@ -4563,9 +4818,12 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
       const off = (li - (S.subJ.length - 1) / 2) * 18;
       const ep = [S.p[0] + tx * off, S.p[1] - 5, S.p[2] + tz * off];
       const dist = Math.hypot(ep[0]-sp[0], ep[1]-sp[1], ep[2]-sp[2]) || 1;
-      const lift = 0.24 * dist;   // apex = 0.12*dist: >= 0.10*dist law with margin
-      // (tilted chords + 8-seg sampling eat a thin 0.105 one)
-      const mx = (sp[0]+ep[0])/2, my = (sp[1]+ep[1])/2 + lift, mz = (sp[2]+ep[2])/2;
+      // Apex 0.24*dist keeps the lane law (>= 0.10*dist); endpoint
+      // clearance owns near-box termini, the screen park law the ink.
+      const lift = 0.24 * dist;
+      const mx = (sp[0]+ep[0])/2,
+            my = (sp[1]+ep[1])/2 + lift,
+            mz = (sp[2]+ep[2])/2;
       let lx = sp[0], ly = sp[1], lz = sp[2];
       for (let s = 1; s <= FS; s++) {
         const t = s / FS, u = 1 - t;
@@ -4692,6 +4950,33 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
       const kk = J[0].toFixed(2) + "," + J[1].toFixed(2) + "," + J[2].toFixed(2);
       if (!seen.has(kk)) { seen.add(kk); J[1] += 7 * (ord % 3); ord++; }
     }
+    // ISSUE #5, Jof tail: separation + merge can drift a dot back toward
+    // box ink (re-anchor restores the ring radius; the merge midpoint
+    // averages two cleared dots toward each other's boxes). Slide the
+    // survivors in XZ, in place, away from every box inside 14 wu —
+    // shared arrays move as one dot; tree points are already-cleared
+    // bollards and stay put.
+    const jofSeen = new Set();
+    for (const J of Jof.values()) {
+      if (isTree(J)) continue;
+      const kk = J[0].toFixed(2) + "," + J[2].toFixed(2);
+      if (jofSeen.has(kk)) continue;
+      jofSeen.add(kk);
+      for (let it = 0; it < 6; it++) {
+        let vx = 0, vz = 0, bad = false;
+        for (const ix of allBoxes) {
+          const dx = J[0] - fpos[ix*3], dz = J[2] - fpos[ix*3+2];
+          if (Math.hypot(dx, J[1] - fpos[ix*3+1], dz) < 14) {
+            bad = true;
+            const l = Math.hypot(dx, dz) || 1;
+            vx += dx / l; vz += dz / l;
+          }
+        }
+        if (!bad) break;
+        const vl = Math.hypot(vx, vz) || 1;
+        J[0] += vx / vl * 4; J[2] += vz / vl * 4;
+      }
+    }
     // instancing: one bollard per DISTINCT merged point
     const done = new Set();
     for (const [b, J] of Jof) {
@@ -4699,7 +4984,11 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
       const kk = J[0].toFixed(2) + "," + J[1].toFixed(2) + "," + J[2].toFixed(2);
       if (done.has(kk)) continue;
       done.add(kk);
+      // dodge axis (issue #5): along the delivery stub's own ink, toward
+      // its box — the dot slides down ink it already sits on
+      const gl = Math.hypot(fpos[b*3]-J[0], fpos[b*3+1]-J[1], fpos[b*3+2]-J[2]) || 1;
       busJunc.push({ p: [J[0], J[1], J[2]], c: [BOL_COL[2].r, BOL_COL[2].g, BOL_COL[2].b], k: 0.72, of: fnMeta[b].file, st: 0,
+        tg: [(fpos[b*3]-J[0])/gl, (fpos[b*3+1]-J[1])/gl, (fpos[b*3+2]-J[2])/gl],
         info: { kind: "jof", fi: fnMeta[b].file } });
     }
   }
@@ -4753,15 +5042,22 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
     // the tube — one path, two inks.
     const dist = Math.hypot(p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2]) || 1;
     const Ltier = (CONDUIT_LIFT_BASE + 0.03 * g.tier) * dist;
-    const Lob = obsLift(p0, p1, tmeta.sf, tmeta.tf);
-    const cap = 0.70 * dist;   // 0.80 bow cleared boxes but +2..6 TT at cu fan
+    // ISSUE #7: swarm hulls (obsLift) for the tall silhouettes. fn-box ink
+    // is owned by the screen-side park law in the tick; a world-side
+    // polyline floor (arcDodge) was tried and deleted — every variant
+    // (lift add, lateral bulge) reshuffled fan curvature for +1..2
+    // crossTT over base. Cap 0.70*dist; the 0.80 experiment cleared
+    // boxes but braided the fan (crossTT 59->61).
+    const cap = 0.70 * dist;
     const lift = Math.min(cap, Math.max(0.11 * dist,
-                    Math.max(Ltier, Lob) - 8 * (g.fanR || 0)));
+                    Math.max(Ltier, obsLift(p0, p1, tmeta.sf, tmeta.tf)) - 8 * (g.fanR || 0)));
     emitArc(tierB, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
             tc[0], tc[1], tc[2], tc[0], tc[1], tc[2], 0, lift / dist, false,
             tmeta);
     fnTrunkN++;
-    const qx = (p0[0]+p1[0])/2, qy = (p0[1]+p1[1])/2 + lift, qz = (p0[2]+p1[2])/2;
+    const qx = (p0[0]+p1[0])/2,
+          qy = (p0[1]+p1[1])/2 + lift,
+          qz = (p0[2]+p1[2])/2;
     let bx2 = p0[0], by2 = p0[1], bz2 = p0[2];
     for (let s = 1; s <= FS; s++) {
       const t = s / FS, u = 1 - t;
@@ -4990,10 +5286,13 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
     const M = new THREE.Matrix4(), C = new THREE.Color();
     fnJDotPos = new Float32Array(busJunc.length * 3);
     fnJDotR = new Float32Array(busJunc.length).fill(2.6);
+    fnJDotTg = new Float32Array(busJunc.length * 3);
     busJunc.forEach((j, k) => {
       M.makeTranslation(j.p[0], j.p[1], j.p[2]);
       fnJDot.setMatrixAt(k, M);
       fnJDotPos[k*3] = j.p[0]; fnJDotPos[k*3+1] = j.p[1]; fnJDotPos[k*3+2] = j.p[2];
+      const t = j.tg || [0, -1, 0];
+      fnJDotTg[k*3] = t[0]; fnJDotTg[k*3+1] = t[1]; fnJDotTg[k*3+2] = t[2];
       fnJDot.setColorAt(k, C.setRGB(j.c[0], j.c[1], j.c[2]));
     });
     // disjointness assert (skeptic pre-ruling 3.ii): every bollard is
@@ -9034,7 +9333,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
              nOthers: compactIdx ? compactIdx.length - 1 : 0 }; },
   get lodPxOf() { return _lod ? _lod.pxOf : null; },   // per-file box ref-px (probe hook)
   get alphaTgt() { return alphaTgt; },   // lit-set oracle (tier unification pin)
-  get jDotArrays() { return { of: fnJDotOf, st: fnJDotSt, legs: fnJDotLegs, key: fnJDotKey }; },
+  get jDotArrays() { return { of: fnJDotOf, st: fnJDotSt, legs: fnJDotLegs, key: fnJDotKey, tgt: fnJDotTg }; },  // tgt: dodge axes (issue #5)
   get stubExits() { return stubExits; },  // EXPLAINED EXIT dissolve points
   get anchorBoostArr() { return anchorBoost; },  // corridor-boost px per fi (probe hook)
   get pinTint() { return { tinted: pinTinted ? pinTinted.slice() : [],
