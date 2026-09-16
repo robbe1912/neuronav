@@ -3,7 +3,7 @@
 Local code-intelligence tool: vector recall (chroma + a pluggable embed
 provider — Ollama by default or any OpenAI-compatible `/embeddings` endpoint,
 issue #17), call/signal graph, clusters, dead-code tiers, 3D visualizer, stdio
-MCP server. Python 3.11,
+MCP server. Python 3.12,
 stdlib-first; heavy deps: chromadb/httpx (vector store + embed transport), mcp
 (stdio server), numpy/networkx/scipy/scikit-learn (the cluster/graph math the
 read tools ride), plus the pinned tree-sitter front-ends tree-sitter==0.26.0 /
@@ -35,6 +35,10 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
   Never introduce unordered iteration into layout or export paths.
 - **Gate before every commit** — all suites, 0 failures:
   `.venv/Scripts/python.exe -X utf8 tests/test_<name>.py`
+  (fresh clone: `uv venv && uv pip install -e .` builds that `.venv` from
+  the committed ==-pin set; on git-bash/MSYS, if
+  exec'ing `.venv/Scripts/python.exe` fails, run
+  `uv run --no-project python -X utf8 tests/test_<name>.py`)
 - **Config leakage trap**: suites self-select config via internal
   `setdefault`. NEVER export `NEURONAV_CONFIG` in the shell before running
   them — the env var overrides and silently points suites at the wrong index.

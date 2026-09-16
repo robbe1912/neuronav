@@ -91,34 +91,48 @@ is re-embedded once and RRF-fused with the pass-1 ranks. Hard embed
 budget: 2 calls per query.
 Engaged hits carry `two_pass: true` (same marker convention as `degraded`);
 when the vector side is down the feature stays out of the way and the
-BM25F-only degraded contract is served unchanged. Default `false`: the
-A/B beats single-pass on every metric (hit@1 0.40→0.56, hit@5 0.84→0.88,
-hit@10 0.92→0.96, MRR 0.587→0.706 — `bench/RESULTS.md` `twopass`
-column), but it doubles query-side embeds on the shared search path;
-flip per project after trying it.
+BM25F-only degraded contract is served unchanged. Default `false`: on the
+committed self-index bench (real mode, `qwen3-embedding:0.6b`, k=12 — the
+`After — current main` table in `bench/RESULTS.md`) two-pass lifts the
+top of the ranking — hit@1 0.640→0.800 and MRR 0.747→0.837 over the
+shipped default — but trades recall depth for it: hit@5 drops
+0.960→0.880 and hit@10 0.960→0.920. It also doubles query-side embeds
+on the shared search path; flip per project after trying it.
 
 ## Prerequisites
 
-- Python 3.11+ (venv)
+- Python 3.12+ (venv) — the pinned dependency stack (`numpy==2.5.2`
+  first) does not resolve on 3.11 (issue #247)
 - An embedding backend. Default: Ollama running locally —
   `ollama pull qwen3-embedding:0.6b`. Any OpenAI-compatible
   `/embeddings` endpoint works too (vLLM, LM Studio, llama.cpp server,
   Ollama's own `/v1` layer): point `embed_url` at it and, if it needs a
   key, set `NEURONAV_EMBED_KEY` (env beats the config's `embed_api_key`,
   so secrets stay out of tracked files). See `config/AGENTS.md`.
-- `pip install chromadb filelock httpx "mcp<2" numpy networkx scipy scikit-learn "tree-sitter==0.26.0" "tree-sitter-cpp==0.23.4" "tree-sitter-typescript==0.23.2"` (into the venv; `pyproject.toml` pins the exact versions)
+- `uv pip install -e .` from the checkout (or `pip install -e .` into any
+  3.12 venv) — `pyproject.toml` ==-pins every dependency (issue #247)
 
 The default setup keeps embeddings on the machine; queries and indexing
 both need the backend reachable.
 
 ## Install (standalone checkout)
 
-```powershell
+```bash
 git clone <this repo>
 cd neuronav
-python -m venv .venv
-.venv\Scripts\python.exe -m pip install chromadb httpx "mcp<2" numpy networkx scipy scikit-learn "tree-sitter==0.26.0" "tree-sitter-cpp==0.23.4" "tree-sitter-typescript==0.23.2"
+uv venv                 # .venv on Python >= 3.12 — required by the pin set
+uv pip install -e .     # the exact ==-pin set from pyproject.toml, editable
 ```
+
+No uv? `python -m venv .venv` then
+`.venv/Scripts/python -m pip install -e .` installs the same
+`pyproject.toml` pins (Python >= 3.12 still required — `numpy==2.5.2`
+does not resolve on 3.11).
+
+git-bash/MSYS quirk (issue #247): if exec'ing `.venv/Scripts/python.exe`
+directly fails with `command not found` (exit 127), run the interpreter
+through uv instead: `uv run --no-project python -X utf8
+tests/test_<name>.py`.
 
 ## Wire into a project (one command, any OS)
 

@@ -1,15 +1,15 @@
 # Contributing to neuronav
 
 Local-first code intelligence: vector recall + call graph + 3D map as an MCP
-server. MIT. Python 3.11+, stdlib-first.
+server. MIT. Python 3.12+, stdlib-first.
 
 ## Dev setup
 
-```powershell
+```bash
 git clone https://github.com/robbe1912/neuronav
 cd neuronav
-python -m venv .venv
-.venv\Scripts\python.exe -m pip install chromadb httpx "mcp<2" numpy playwright networkx scipy scikit-learn "tree-sitter==0.26.0" "tree-sitter-cpp==0.23.4" "tree-sitter-typescript==0.23.2"
+uv venv && uv pip install -e .   # Python >= 3.12; the committed ==-pin set
+uv pip install playwright        # only for local test_viz runs
 ollama pull qwen3-embedding:0.6b          # default embedding backend; any OpenAI-compatible /embeddings endpoint also works (config/AGENTS.md)
 ```
 
