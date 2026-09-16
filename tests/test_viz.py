@@ -814,6 +814,7 @@ def run_tests(port: int):
         page.screenshot(path=str(SHOTS / "qa_hubbudget.png"),
                         scale="css", type="png")
 
+
         # 5. hover a fn box -> tooltip shows path :: name
         hover = page.evaluate(
             """() => { const d = window.__dbg;
@@ -3396,6 +3397,60 @@ def run_tests(port: int):
                 check("issue#63 trunk lanePad is zoom-free (source invariant)",
                       bool(lane_src) and lane_src["idx"] >= 0 and lane_src["zoomFree"],
                       str(lane_src.get("tail") if lane_src else lane_src))
+
+                # 8b3. [#10] router bend law: the staircase class (serial
+                rf10 = page.evaluate(
+                    """() => { const d = window.__dbg;
+                         const rf = d.routeFns;
+                         if (!rf) return { fail: 'no routeFns' };
+                         // synthetic staircase-class polyline: 6 jogs of
+                         // 6px cross-runs between same-direction 40px
+                         // vertical runs (the issue's signature shape) —
+                         // x CLIMBS monotonically, it does not oscillate
+                         const stair = [[0, 0]];
+                         let px = 0, py = 0;
+                         for (let k = 0; k < 6; k++) {
+                           py += 40; stair.push([px, py]);
+                           px += 6; stair.push([px, py]);
+                           py += 40; stair.push([px, py]);
+                         }
+                         const merged = rf.mergeBends(stair.map(p => [p[0], p[1]]));
+                         const t0 = rf.turnsOf(stair), t1 = rf.turnsOf(merged);
+                         const sameEnds = merged.length >= 2
+                           && merged[0][0] === stair[0][0]
+                           && merged[0][1] === stair[0][1]
+                           && merged[merged.length-1][0] === stair[stair.length-1][0]
+                           && merged[merged.length-1][1] === stair[stair.length-1][1];
+                         // monotone law: a clean zigzag must never gain
+                         // a bend through the merger
+                         const zz = [];
+                         for (let k = 0; k <= 8; k++)
+                           zz.push([k % 2 ? 30 : 0, k * 20]);
+                         const zt0 = rf.turnsOf(zz), zt1 = rf.turnsOf(rf.mergeBends(zz));
+                         return { t0, t1, sameEnds, len0: stair.length,
+                                  len1: merged.length, zt0, zt1 }; }""")
+                check("[#10] route merger exposed on the page (routeFns)",
+                      bool(rf10) and "fail" not in rf10, str(rf10)[:160])
+                if rf10 and "fail" not in rf10:
+                    check("[#10] merger consolidates the staircase class",
+                          rf10["t1"] <= rf10["t0"] and rf10["sameEnds"]
+                          and rf10["len1"] < rf10["len0"],
+                          f"turns {rf10['t0']}->{rf10['t1']} "
+                          f"pts {rf10['len0']}->{rf10['len1']}")
+                    check("[#10] merger never adds a bend (monotone law)",
+                          rf10["zt1"] <= rf10["zt0"],
+                          f"zigzag {rf10['zt0']}->{rf10['zt1']}")
+                a10 = page.evaluate("() => window.__dbg.routeAudit")
+                check("[#10] route census carries the turn fields",
+                      bool(a10) and all(k in a10 for k in
+                        ("maxTurns", "over20", "turnsSum", "turnsN",
+                         "maxTrunkTurns")),
+                      str(a10)[:180])
+                check("[#10] staircase class within bar post-merge",
+                      bool(a10) and a10.get("maxTurns") is not None
+                      and a10["maxTurns"] <= 20 and a10["over20"] == 0,
+                      f"maxTurns={a10.get('maxTurns') if a10 else None} "
+                      f"over20={a10.get('over20') if a10 else None}")
             page.screenshot(path=str(SHOTS / "qa_map_zoomout.png"),
                             scale="css", type="png")
             print("artifact: .tmp/shots/qa_map_zoomout.png")
@@ -4607,6 +4662,89 @@ def run_tests(port: int):
                   f" {pinB2 and 'wire'}")
         else:
             print("SKIP convergence law - no tint buffers")
+
+        # 4e. [#12] focus container: the focused file renders as a
+        # translucent hull HOLDING its fn boxes (faint fill + back-side
+        # rim, depthWrite off, behind the fn tier). It is focus-tier ink:
+        # the serve gate must be ON, so wheel INTO the ball from the 3D
+        # canvas (x < paneW — the map pane owns the right half) until
+        # lodServe flips; bounded, loud-skip when the camera cannot reach.
+        served, notches = False, 0
+        for _ in range(12):
+            if page.evaluate("() => !!window.__dbg.lodServe"):
+                served = True
+                break
+            page.mouse.move(400, 450)
+            page.mouse.wheel(0, -240)
+            notches += 1
+            quiesce(page)
+        if not served:
+            print(f"SKIP [#12] focus container — serve gate unreachable "
+                  f"after {notches} wheel steps (camera shape)")
+        else:
+            hp = page.evaluate(
+                """() => { const d = window.__dbg;
+                     const fi = d.focusFileIdx;
+                     const h = d.focusHullProbe || null;
+                     let n = 0, outside = 0, maxD = 0;
+                     (d.fnMeta || []).forEach(m => {
+                       if (m.file !== fi) return;
+                       if (m.agg && !m.count) return;
+                       n++;
+                       const half = m.count ? 3 : 2;
+                       const dd = Math.hypot(m.p[0] - d.pos[fi*3],
+                                            m.p[1] - d.pos[fi*3+1],
+                                            m.p[2] - d.pos[fi*3+2]) + half;
+                       if (dd > maxD) maxD = dd;
+                       if (h && dd > h.R + 0.01) outside++;
+                     });
+                     return { fi, h, n, outside, maxD: +maxD.toFixed(2),
+                              oHull: h ? h.oHull : 0 }; }""")
+            check("[#12] focus container: translucent hull behind fn tier",
+                  bool(hp["h"]) and hp["h"]["transparent"]
+                  and not hp["h"]["depthWrite"]
+                  and hp["h"]["ro"] < (hp["h"]["boxRO"] or 0),
+                  str(hp.get("h")))
+            check("[#12] focus container holds every fn box of the file",
+                  hp["n"] >= 1 and hp["outside"] == 0
+                  and hp["h"]["R"] >= hp["maxD"],
+                  f"boxes={hp['n']} outside={hp['outside']} "
+                  f"R={hp['h']['R']:.1f} maxBoxD={hp['maxD']}")
+            check("[#12] focus container is served-tier ink (visible)",
+                  hp["oHull"] > 0, str(hp["oHull"]))
+            # focus-tier-only: far zoom fades the container away — the
+            # file collapses back to its node dot. One wheel event is
+            # one dolly step regardless of delta magnitude, so zoom in
+            # a LOOP of separate events.
+            page.mouse.move(400, 450)
+            for _ in range(notches + 10):
+                page.mouse.wheel(0, 120)
+                page.wait_for_timeout(20)
+            quiesce(page)
+            far = page.evaluate(
+                "() => window.__dbg.focusHullProbe"
+                " ? window.__dbg.focusHullProbe.oHull : -1")
+            check("[#12] focus container fades out at far zoom",
+                  0 <= far < hp["oHull"],
+                  f"near={hp['oHull']} far={far}")
+            # restore the pre-leg state for the sections that follow:
+            # (a) the REAL pointer must leave the canvas — parked on it,
+            # Chrome reconciles every later synthetic pointermove with a
+            # trusted pointerleave that kills hover ink; park it on the
+            # chrome. (b) the focus row re-click re-tweens the camera to
+            # the ball framing (wheel-step arithmetic undo drifts).
+            page.mouse.move(1500, 15)
+            page.fill("#search", tok)
+            page.dispatch_event("#search", "input")
+            wait_rows(page, best_path)
+            page.evaluate(
+                """(p) => { const rows =
+                     [...document.querySelectorAll('#searchResults .row')];
+                     const r = rows.find(x => x.getAttribute('title') === p);
+                     if (r) r.dispatchEvent(
+                       new PointerEvent('pointerdown', { bubbles: true })); }""",
+                best_path)
+            quiesce(page)
 
         # [issue #85 owner r5] the click-slop law: a real hand drifts
         # 5-12px between press and release - before the slop restore
