@@ -250,8 +250,13 @@ def main() -> int:
     ro_bad = {k: v for k, v in ann.items()
               if k not in ("rescan", "memory") and not (v and v.readOnlyHint)}
     check("all read-only tools carry readOnlyHint", not ro_bad, str(ro_bad))
-    check("rescan and memory are the unannotated (write) tools",
-          ann.get("rescan") is None and ann.get("memory") is None
+    check("rescan and memory are the write tools (mutating hints)",
+          ann.get("rescan") is not None and ann.get("memory") is not None
+          and not ann["rescan"].readOnlyHint
+          and not ann["memory"].readOnlyHint
+          and ann["memory"].destructiveHint is True
+          and ann["rescan"].idempotentHint is True
+          and ann["rescan"].destructiveHint is False
           and len(ann) >= 10)
     check("explore tool registered", "explore" in ann)
 

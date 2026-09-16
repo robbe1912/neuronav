@@ -113,6 +113,15 @@ mcp._mcp_server.version = _version()
 
 # below except rescan and memory is pure read over the local index
 READONLY = ToolAnnotations(readOnlyHint=True)
+# The two mutators carry the rest of the annotation vocabulary
+# (spec: the hints below are meaningful only when readOnlyHint is
+# false, which is exactly the mutators). memory set overwrites and
+# delete removes durable notes -> destructiveHint; rescan only
+# rebuilds derived caches and converges -> additive-only +
+# idempotent (issue #253).
+MUTATING_MEMORY = ToolAnnotations(destructiveHint=True)
+MUTATING_RESCAN = ToolAnnotations(destructiveHint=False,
+                                  idempotentHint=True)
 
 # ---- universal mount (issue #131): one server entry, per-call dir ---------
 #
@@ -1448,7 +1457,7 @@ def _rescan_paths(stats: dict) -> str:
     return "\n" + "\n".join(lines) if lines else ""
 
 
-@mcp.tool()
+@mcp.tool(annotations=MUTATING_MEMORY)
 def memory(verb: str, name: str = "", body: str = "", dir: str = "") -> str:
     """Project memories — durable notes kept across sessions (issue #67).
 
@@ -1468,8 +1477,8 @@ def memory(verb: str, name: str = "", body: str = "", dir: str = "") -> str:
 
     Names are one safe filename component: 1-128 chars of
     letters/digits/._- starting alphanumeric (path shapes like "../x"
-    are refused). This tool mutates state, like rescan — no read-only
-    hint.
+    are refused). This tool mutates durable state (set overwrites,
+    delete removes) — annotated destructiveHint, never read-only.
     """
     with _route(dir) as prelude:
         out = memories.run(verb, name, body)
@@ -1478,7 +1487,7 @@ def memory(verb: str, name: str = "", body: str = "", dir: str = "") -> str:
         # report the build would silently lose the write
         return f"{prelude}\n{out}" if prelude else out
 
-@mcp.tool()
+@mcp.tool(annotations=MUTATING_RESCAN)
 def rescan(dir: str = "") -> str:
     """Re-index changed/new/deleted files: vectors, function index, graph.
 
