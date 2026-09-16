@@ -12,11 +12,11 @@ welcome — this is a comparison, not an attack.
 | tool | approach | retrieval | languages | human surface |
 |---|---|---|---|---|
 | **neuronav** | per-project local index: symbol graph + BM25F + vector embeddings, fused | hybrid (exact ∪ semantic ∪ graph) | GDScript, Python, C++, TypeScript, Rust (JS in flight, #277) | full 3D map |
-| [CodeGraph](https://github.com/colbymchenry/codegraph) | Rust kernel, structural graph only (no vectors — SQLite FTS5 + graph resolution) | symbol/graph traversal | ~34 (Rust kernel parses ~20 natively) | `codegraph ui` (callers/src/callees) |
+| [CodeGraph](https://github.com/colbymchenry/codegraph) | Rust kernel, structural graph only (no vectors — SQLite FTS5 + graph resolution) | symbol/graph traversal | ~20 native core (+WASM fallbacks) | `codegraph ui` (callers/src/callees) |
 | [aider repo map](https://aider.chat/docs/repomap.html) | tree-sitter defs/refs + PageRank ranking | token-budgeted map for the LLM | 20+ (tree-sitter) | none (agent-facing text) |
 | [Sourcegraph SCIP](https://github.com/sourcegraph/scip) | clangd/LSP-accurate indexers | precise xrefs (hosted or local CLI) | many, per-indexer | web UI |
 | GitHub code nav | tree-sitter + stack-graphs, hosted | jump-to-def/xref in PR views | many | PR/blame gutter |
-| [GitNexus](https://github.com/abhigyanpatwari/GitNexus) | Node graph + communities + flows, browser UI + CLI/MCP (PolyForm-NC license) | graph traversal + BM25 | 15 vendored tree-sitter grammars | browser 2D graph |
+| [GitNexus](https://github.com/abhigyanpatwari/GitNexus) | Node graph + communities + flows, browser UI + CLI/MCP (PolyForm-NC license) | graph traversal + BM25 | tree-sitter (14 languages; 4 grammars vendored) | browser 2D graph |
 | [Serena](https://github.com/oraios/serena) | LSP-based MCP toolkit (symbols, references, project memories) | LSP xrefs (per-language servers) | whatever the LSP server speaks | none |
 | [probe](https://github.com/probelabs/probe) | Rust structural search: ripgrep speed + tree-sitter AST chunking | lexical ∪ AST chunk match | many (tree-sitter) | none |
 | [SeeRepo](https://arxiv.org/abs/2503.05163) (research) | repo snapshot graph for LLM context | `render_subgraph` on demand | Python | none |
@@ -60,7 +60,7 @@ welcome — this is a comparison, not an attack.
 
 ## Where neuronav is not ahead (yet)
 - **Language breadth** — 5 extractors (GDScript, Python, C++, TypeScript,
-  Rust; JS in flight as #277) vs CodeGraph's ~34 / aider's tree-sitter
+  Rust; JS in flight as #277) vs CodeGraph's ~20-native / aider's tree-sitter
   set. The extractor registry keeps adding a language cheap (one parser +
   dead-tier hints), but each is hand-verified — the 2026 field surveys
   (wal.sh) show the failure mode of breadth without semantics: a grammar
@@ -73,13 +73,13 @@ welcome — this is a comparison, not an attack.
   worktree and runs a partial rescan on drift) with an opt-in background
   watcher (`watch_interval_s`). Remaining honest gap: no always-on watcher
   by default.
-- **Scale evidence** — CodeGraph publishes huge-repo numbers (Linux kernel
-  70k files <12 min; Swift 27k files ~100 s fresh). neuronav is validated
+- **Scale evidence** — CodeGraph publishes huge-repo benchmarks (70k-file-class
+  repos). neuronav is validated
   in the 1k–13k-file range (self-index, SWMG 1.6k, the TS 4-repo matrix's
   12.8k-file leg) and has no 70k-file benchmark; the embed step is also
   ours alone — cold-index time on very large repos is unproven, and the
   map bake at that scale is untested.
-- **Community/maturity** — ~9.6k★ (CodeGraph, 2026-09) and an npm
+- **Community/maturity** — ~69k★ (CodeGraph, 2026-09) and an npm
   distribution vs a young repo.
 
 ## The one-line version
