@@ -668,13 +668,14 @@ _FORWARD_RE = re.compile(r"^return\s+(?:await\s+)?[A-Za-z_][\w.]*\([\w\s,]*\)$")
 
 def _pure_delegate(norm: str) -> bool:
     """True for thin delegation wrappers (issue #268): after an
-    optional signature line, the body is only call-free guards
-    (if/elif + return, at most two), at most one call-free assignment,
-    and a single forwarding `return call(args)`. The regexes carry
-    #116's conservatism — parens in guards/assignments, operators in
-    the forwarding call's args, any extra statement, or a brace-
-    language body never classify, so the filter can miss a wrapper but
-    never drops real duplicated logic."""
+    optional signature line, the body is only call-free guards (if/elif
+    whose one-line body is a call-free return — an early-out — or a
+    call-free assignment — arg normalization; at most two), at most one
+    call-free assignment, and a single forwarding `return call(args)`.
+    The regexes carry #116's conservatism — parens in guards/
+    assignments, operators in the forwarding call's args, any extra
+    statement, or a brace-language body never classify, so the filter
+    can miss a wrapper but never drops real duplicated logic."""
     # _normalize_body emits a uniform two-space indent; strip it so the
     # statement regexes match shape, not indentation
     lines = [ln.strip() for ln in norm.splitlines()]
@@ -683,11 +684,11 @@ def _pure_delegate(norm: str) -> bool:
     if not 2 <= len(lines) <= 5:
         return False
     i = 0
-    while (
-        i + 1 < len(lines)
-        and _GUARD_RE.match(lines[i])
-        and _GUARD_RET_RE.match(lines[i + 1])
-    ):
+    while i + 1 < len(lines) and _GUARD_RE.match(lines[i]):
+        if not (
+            _GUARD_RET_RE.match(lines[i + 1]) or _ASSIGN_RE.match(lines[i + 1])
+        ):
+            break
         i += 2
     if i < len(lines) and _ASSIGN_RE.match(lines[i]):
         i += 1
