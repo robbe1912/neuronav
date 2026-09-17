@@ -25,14 +25,11 @@ HERE = Path(__file__).resolve().parents[1]
 FIX = Path(__file__).resolve().parent / "fixtures" / "rustreg"
 PROFILE = os.environ.get("NEURONAV_CONFIG", "")
 
-FAILS: list[str] = []
 
 
-def check(name: str, cond: bool, detail: str = "") -> None:
-    print(("PASS" if cond else "FAIL"), name, detail)
-    if not cond:
-        FAILS.append(name)
+from harness import finish, styled
 
+check = styled("comma")  # byte pin: print-sep PASS lines
 
 CFG = Path(tempfile.gettempdir()) / "neuronav_rustreg_config.json"
 CFG.write_text(
@@ -266,6 +263,4 @@ else:
             check("profile: .rs file_doc imports heads under budget "
                   f"({checked_docs} files)", checked_docs > 0, str(checked_docs))
 
-print()
-print(f"{len(FAILS)} failure(s)")
-sys.exit(1 if FAILS else 0)
+finish()

@@ -61,14 +61,9 @@ sys.path.insert(0, str(HERE))
 import nav  # noqa: E402  (binds the temp config above)
 import server  # noqa: E402
 
-FAILS: list[str] = []
 
 
-def check(name: str, cond: bool, detail: str = "") -> None:
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail else ""))
-    if not cond:
-        FAILS.append(name)
-
+from harness import check, finish
 
 # The stdio sections below spawn server.py subprocesses, which read the
 # real 3s TTL from nav.py — capture it before the in-process speedup.
@@ -634,5 +629,4 @@ def chroma_retry_unit() -> None:
 if __name__ == "__main__":
     main()
 
-print(f"\n{len(FAILS)} failure(s)")
-sys.exit(1 if FAILS else 0)
+finish()

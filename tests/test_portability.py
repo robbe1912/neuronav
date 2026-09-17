@@ -59,14 +59,9 @@ sys.path.insert(0, str(REPO))
 
 import nav  # noqa: E402  (binds the BOM'd config above)
 
-FAILURES: list[str] = []
 
 
-def check(name: str, cond: bool, detail: str = "") -> None:
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail else ""))
-    if not cond:
-        FAILURES.append(name)
-
+from harness import check, finish
 
 def run_child(
     args: list[str],
@@ -295,8 +290,7 @@ def main() -> None:
         nav.client = _real_client298
     shutil.rmtree(_d298, ignore_errors=True)
 
-    print(f"\n{len(FAILURES)} failure(s)")
-    sys.exit(1 if FAILURES else 0)
+    finish()
 
 
 if __name__ == "__main__":

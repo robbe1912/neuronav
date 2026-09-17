@@ -11,15 +11,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-FAILURES = []
 
 
-def check(name, cond, detail=""):
-    tag = "PASS" if cond else "FAIL"
-    print(f"{tag} {name}" + (f" — {detail}" if detail else ""))
-    if not cond:
-        FAILURES.append(name)
-
+from harness import FAILURES, check
 
 def load_viz_funcs():
     sys.path.insert(0, str(ROOT))
@@ -176,6 +170,7 @@ def main():
             check(f"relax block={blk} byte-identical to default", h8 == base_h, h8)
     finally:
         _L._RELAX_BLOCK = orig_blk
+    # byte pin: nodes/links summary + banner — kept local
     print(f"\n{N} nodes · {len(links)} links · {len(FAILURES)} failure(s)")
     if FAILURES:
         print("FAILED:", ", ".join(FAILURES))

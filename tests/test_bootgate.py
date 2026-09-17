@@ -36,13 +36,11 @@ SERVER_DIR = (
 )
 sys.path.insert(0, str(SERVER_DIR))  # the checkout under test wins over any editables
 
-RESULTS: list[tuple[str, bool, str]] = []
 
 
-def check(name: str, cond: bool, detail: str = "") -> None:
-    RESULTS.append((name, bool(cond), detail))
-    print(f"{'PASS' if cond else 'FAIL'}: {name}" + (f" — {detail}" if detail else ""))
+import harness
 
+check = harness.styled("colon")  # byte pin: "PASS: <name>" lines
 
 def recv_id(proc: subprocess.Popen, want_id: int, deadline_s: float) -> dict | None:
     """Next JSON-RPC response with the wanted id, or None at the deadline."""
@@ -199,9 +197,9 @@ def main() -> None:
                 proc.kill()
                 proc.wait()
 
-    failed = [r for r in RESULTS if not r[1]]
-    print(f"\n{len(RESULTS) - len(failed)}/{len(RESULTS)} checks passed")
-    if failed:
+    # byte pin: pass/total ratio summary, now off the shared sink
+    print(f"\n{harness.EXECUTED - len(harness.FAILURES)}/{harness.EXECUTED} checks passed")
+    if harness.FAILURES:
         sys.exit(1)
 
 

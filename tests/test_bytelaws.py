@@ -61,14 +61,9 @@ sys.path.insert(0, str(HERE))
 import nav  # noqa: E402  (binds the scratch config above)
 import viz  # noqa: E402
 
-FAILS: list[str] = []
 
 
-def check(name: str, cond: bool, detail: str = "") -> None:
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail else ""))
-    if not cond:
-        FAILS.append(name)
-
+from harness import check, finish
 
 BOM = b"\xef\xbb\xbf"
 
@@ -170,5 +165,4 @@ check("no-BOM law: bake graph.html (DATA + importmap splices)",
       not html.startswith(BOM) and BOM not in html,
       f"first bytes {html[:8]!r}")
 
-print(f"\n{len(FAILS)} failure(s)")
-sys.exit(1 if FAILS else 0)
+finish()

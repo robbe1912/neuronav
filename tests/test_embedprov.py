@@ -99,13 +99,7 @@ def write_cfg(**over):
 write_cfg()  # bootstrap: first nav import (inside) binds the temp config
 import nav  # noqa: E402  (cached module from write_cfg's import)
 
-FAILS = []
-
-
-def check(name, cond, detail=""):
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail else ""))
-    if not cond:
-        FAILS.append(name)
+from harness import FAILURES as FAILS, check
 
 
 # --- provider selection -------------------------------------------------
@@ -782,5 +776,6 @@ try:
 except RuntimeError as e:
     check("#298 matching provider imports fine", False, str(e)[:140])
 
+# byte pin: inline failure names in the summary — kept local
 print(f"{len(FAILS)} failure(s)" + (": " + ", ".join(FAILS) if FAILS else ""))
 sys.exit(1 if FAILS else 0)

@@ -17,14 +17,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parents[1]
 FIX = HERE / "tests" / "fixtures" / "mwires"
 
-FAILS = []
 
 
-def check(name, cond, detail=""):
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail else ""))
-    if not cond:
-        FAILS.append(name)
-
+from harness import check, finish
 
 cfg = Path(tempfile.gettempdir()) / "neuronav_mwires_config.json"
 cfg.write_text(
@@ -141,5 +136,4 @@ check(
     "",
 )
 
-print(f"\n{len(FAILS)} failure(s)")
-sys.exit(1 if FAILS else 0)
+finish()

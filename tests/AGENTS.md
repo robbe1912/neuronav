@@ -8,7 +8,14 @@ its own process:
 ```
 
 Exit 0 = all pass. Each suite bootstraps `sys.path` to the repo root and
-uses a local `check(name, cond)` helper (PASS/FAIL lines + failure count).
+uses the shared `tests/harness.py` `check(name, cond, detail)` /
+`finish()` (PASS/FAIL lines + failure count). Suites that predate the
+shared harness keep their exact output bytes via `harness.styled(...)`
+check lines and local summary tails — every such byte pin carries a
+named reason in the suite; new suites use the canonical style only
+(issue #301). The browser suites ride `tests/_page_harness.py`'s
+`CheckLog` instead — a different finish contract (the #123 executed
+check floor), not drift.
 CI (`.github/workflows/ci.yml`) runs thirty-one hermetic suites on ubuntu
 with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
 `test_pyhard`, `test_cpphard`, `test_jshard`, `test_autorescan`, `test_server_stdio`,

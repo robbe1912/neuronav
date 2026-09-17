@@ -19,14 +19,9 @@ import graph  # noqa: E402  (binds the self-index config)
 import nav  # noqa: E402
 import recall  # noqa: E402
 
-FAILS = []
 
 
-def check(name, cond, detail=""):
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail else ""))
-    if not cond:
-        FAILS.append(name)
-
+from harness import check, finish
 
 # Hermetic bootstrap (GK #166 F1): a fresh checkout — CI — starts with
 # an empty self-index store; nothing else in the suites job populates
@@ -504,5 +499,4 @@ check("_rrf docstring states k=RRF_K=30, not k=60 (#298)",
 check("_augment budget<=0 skips pass 2 entirely (#298)",
       recall._augment("q", ["nav.py"], g, budget=0) == "")
 
-print(f"\n{len(FAILS)} failure(s)")
-sys.exit(1 if FAILS else 0)
+finish()

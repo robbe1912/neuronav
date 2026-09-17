@@ -39,7 +39,6 @@ from extractors import registry_for  # noqa: E402
 from extractors import rust as rust_x  # noqa: E402
 from extractors import ts as ts_x  # noqa: E402
 
-FAILS: list[str] = []
 
 # extractor-level root names for the `dead` goal (per-language virtuals)
 GD_ROOTS = set(gd_x.VIRTUALS) | set(gd_x.GUT_ROOTS) | set(gd_x.ENGINE_VIRTUALS.get("", ()))
@@ -53,11 +52,9 @@ RUST_ROOTS = set(rust_x.RUST_STD_TRAIT_METHODS)
 GOAL_RE = re.compile(r"^\s*(?://|#|;)-\s+(.+)$")
 
 
-def check(name: str, cond: bool, detail: str = "") -> None:
-    print(("PASS" if cond else "FAIL"), name, detail)
-    if not cond:
-        FAILS.append(name)
+from harness import finish, styled
 
+check = styled("comma")  # byte pin: print-sep PASS lines
 
 def _extents(fs):
     """cpp only: name -> (def line, next def line) for site attribution."""
@@ -239,6 +236,4 @@ check("dead goals present", n_dead >= 8, str(n_dead))
 for fam, floor in ((".py", 4), ("gd", 5), ("cpp", 8), ("ts", 6), ("rs", 4)):
     check(f"{fam} fixtures annotated", len(fam_files[fam]) >= floor, str(sorted(fam_files[fam])))
 
-print()
-print(f"{len(FAILS)} failure(s)")
-sys.exit(1 if FAILS else 0)
+finish()

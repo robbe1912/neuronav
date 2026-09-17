@@ -11,14 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import graph  # noqa: E402
 from extractors.model import FileSym, Func  # noqa: E402
 
-FAILURES: list[str] = []
 
 
-def check(name: str, cond: bool, detail: str = "") -> None:
-    print(f"{'PASS' if cond else 'FAIL'}  {name}{'  ' + detail if detail and not cond else ''}")
-    if not cond:
-        FAILURES.append(name)
+from harness import finish, styled
 
+check = styled("wide")  # byte pin: two-space tag, fail-only detail
 
 def add_file(g, path, names, ext=".py", class_name=""):
     fs = FileSym(path=path, ext=ext, class_name=class_name)
@@ -130,8 +127,7 @@ def main() -> int:
           f"{leaves_shown} leaves shown")
     check("hub's 40 funcs not all listed", "m39(" not in hub_sig)
 
-    print(f"\n{len(FAILURES)} failure(s)")
-    return 1 if FAILURES else 0
+    finish()
 
 
 if __name__ == "__main__":

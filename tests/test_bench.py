@@ -18,14 +18,11 @@ sys.path.insert(0, str(REPO / "bench"))
 
 import run_bench  # noqa: E402
 
-FAILURES: list[str] = []
 
 
-def check(name: str, cond: bool, detail: str = "") -> None:
-    print(f"{'PASS' if cond else 'FAIL'}  {name}{'  ' + detail if detail and not cond else ''}")
-    if not cond:
-        FAILURES.append(name)
+from harness import finish, styled
 
+check = styled("wide")  # byte pin: two-space tag, fail-only detail
 
 def synth_record(golden: list[dict], fp: str, stamp: bool = True) -> dict:
     """A minimal but honest after/both record: every golden query ranked 1."""
@@ -147,8 +144,7 @@ def main() -> int:
         check("baseline hard row documented (0 by construction on hit@5)",
               "Baseline `both` on the same hard 2" in text)
 
-    print(f"\n{len(FAILURES)} failure(s)")
-    return 1 if FAILURES else 0
+    finish()
 
 
 if __name__ == "__main__":

@@ -94,13 +94,9 @@ HUBFN = max(
 # (test_autorescan's e2e precedent)
 TTL_WAIT = nav.STAT_TTL_S + 0.5
 
-FAILS = []
 
 
-def check(name: str, cond: bool, detail: str = "") -> None:
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail else ""))
-    if not cond:
-        FAILS.append(name)
+from harness import FAILURES as FAILS, check
 
 # pin both sides of the #286 knob in fresh children: a bare nav import
 # keeps the 3.0 default; the env override is honored end-to-end
@@ -2238,5 +2234,6 @@ def _memory_scenario() -> None:
 if __name__ == "__main__":
     main()
 
+# byte pin: summary without leading blank line — kept local
 print(f"{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)

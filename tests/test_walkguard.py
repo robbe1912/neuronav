@@ -28,14 +28,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]
 
-FAILS = []
 
 
-def check(name, cond, detail=""):
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail else ""))
-    if not cond:
-        FAILS.append(name)
-
+from harness import FAILURES as FAILS, check
 
 # ---- scratch corpus + config -------------------------------------------------
 SCRATCH = Path(tempfile.gettempdir()) / "neuronav_walkguard_scratch"
@@ -475,5 +470,6 @@ shutil.rmtree(SCRATCH3, ignore_errors=True)
 shutil.rmtree(SCRATCH2, ignore_errors=True)
 
 shutil.rmtree(SCRATCH, ignore_errors=True)
+# byte pin: WALKGUARD OK/FAILS tail — kept local
 print(("WALKGUARD OK" if not FAILS else f"WALKGUARDFAILS: {FAILS}"))
 sys.exit(1 if FAILS else 0)

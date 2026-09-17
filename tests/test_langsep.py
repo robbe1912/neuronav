@@ -34,15 +34,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]
 
-FAILS: list[str] = []
 
 
-def check(name, cond, detail=""):
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail else ""))
-    if not cond:
-        FAILS.append(name)
-
-
+from harness import FAILURES as FAILS, check
 
 SHARED = sorted(
     [HERE / n for n in ("graph.py", "nav.py", "server.py", "viz.py", "layout.py",
@@ -252,6 +246,7 @@ check("sweep shell + receiver prologue hoisted (ts/js/rust/python)",
       not _unhoisted, ", ".join(_unhoisted) or "all four import the shells")
 
 # ---- summary -------------------------------------------------------------------
+# summary tail is a pre-#301 byte pin (names failures)
 print()
 if FAILS:
     print(f"FAILED {len(FAILS)} check(s): " + ", ".join(FAILS))

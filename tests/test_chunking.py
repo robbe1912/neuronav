@@ -14,14 +14,9 @@ import graph  # noqa: E402
 PY_MOD = registry_for(".py")
 GD_MOD = registry_for(".gd")
 
-FAILS = []
 
 
-def check(name, cond, detail=""):
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail else ""))
-    if not cond:
-        FAILS.append(name)
-
+from harness import FAILURES as FAILS, check
 
 # ---- model helpers ---------------------------------------------------------
 
@@ -380,6 +375,7 @@ check("file_doc does not mutate the parse",
       all(f.kind == "raw" for f in _fs_after.funcs.values())
       and sorted(_fs_before.funcs) == sorted(_fs_after.funcs))
 
+# summary tail is a pre-#301 byte pin (names failures)
 print()
 if FAILS:
     print(f"{len(FAILS)} failure(s): {FAILS}")
