@@ -34,6 +34,14 @@ if os.environ.get("NEURONAV_EMBED_FAKE") == "1":
 
 FAILURES: list[str] = []
 
+# The floor-legs' pinned garbage query — MODULE LEVEL ON PURPOSE: BM25F
+# indexes fn bodies, so a literal inside main() would index the query's
+# own tokens and make this suite's file the top lexical hit for it
+# (measured: src=both, not weak — the self-reference trap). At module
+# scope the string never enters any indexed field; tokens verified
+# absent from the whole corpus (bm25 zero-matches, lex fallback empty).
+NOHIT_Q = "purple elephant dishwasher quadrant marmalade"
+
 
 def check(name: str, cond: bool, detail: str = "") -> None:
     print(f"{'PASS' if cond else 'FAIL'}  {name}{'  ' + detail if detail and not cond else ''}")
@@ -75,9 +83,13 @@ def main() -> int:
     # find_functions an absolute relevance floor — a pure-noise query on
     # a POPULATED fn store now degrades to the lexical fallback with a
     # reason naming the floor (PR-254's monkeypatched empty-index
-    # stand-in for this gap is replaced by the real contract). Absent
-    # tokens make the lexical fallback miss provably on any platform.
-    nohit_q = "qqzzxxwwyy_no_such_token_kkvvp"
+    # stand-in for this gap is replaced by the real contract). The
+    # pinned query is a rare-word salad measured sub-floor under BOTH
+    # embed modes (fn rows 0.38-0.44 real / ~0.1 FAKE; the first cut
+    # pinned qqzzx-class noise, which rides 0.52-0.58 under real and
+    # escapes the floor — the #297 owner-leg red). Absent tokens make
+    # the lexical fallback miss provably on any platform.
+    nohit_q = NOHIT_Q
     check("no-hit query is lexically absent (lexical fallback: zero hits)",
           bool(xp._tokens(nohit_q)) and xp._lexical_fallback(nohit_q, 3) == [])
     fn_rows = s.graph.find_functions(nohit_q, 3)
