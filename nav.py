@@ -217,9 +217,17 @@ def _neuroignore(path: Path | None) -> frozenset[str]:
                      if n not in ("", ".", "..") and "/" not in n and "\\" not in n)
 # walk-everything defaults shared by the no-config / project-local legs
 # (issue #27) and the onboard scaffold — one literal, three consumers.
+# issue #286 (the bare walk-all landmine): a config-less walk rooted at a
+# dirty checkout silently ingested the scratch trees — .tmp worktrees
+# alone add tens of thousands of files, .team_scratch carries whole
+# venvs (the 20x test_server_stdio timeout). Named here, both walk
+# surfaces heal at once: _apply_config builds EXCLUDE_DIRS from this
+# tuple (iter_files' filter AND the indexed walk), and iter_root_files
+# unions it with _PRUNE_FLOOR — so the floor stays the floor, not the fix.
 WALK_DEFAULTS = {
     "include_dirs": (".",),
-    "exclude_dirs": (".git", "__pycache__", ".venv", ".neuronav", "node_modules"),
+    "exclude_dirs": (".git", "__pycache__", ".venv", ".neuronav", "node_modules",
+                     ".tmp", ".team_scratch"),
 }
 
 
@@ -357,7 +365,12 @@ MANIFEST_NAME = "manifest.json"
 # and is TTL-cached below so bursts of tool calls do not re-stat the
 # tree. The rescan behind the gate stays sha-gated, so a touched-but-
 # identical file embeds nothing.
-STAT_TTL_S = 3.0
+# NEURONAV_STAT_TTL_S (issue #286): test-pace knob for the TTL window —
+# test_server_stdio's drift legs sleep one window per leg, so the suite
+# sets 0.5 and its spawned servers inherit it. Default 3.0 everywhere
+# else. Read once at import; in-process overrides patch nav.STAT_TTL_S
+# directly (test_autorescan's precedent).
+STAT_TTL_S = float(os.environ.get("NEURONAV_STAT_TTL_S") or 3.0)
 
 
 def _embed_post(chunk: list[str], headers: dict[str, str] | None) -> dict:
@@ -477,6 +490,32 @@ def embed_failure_reason(exc: Exception) -> str:
     return f"embedding backend unreachable ({type(exc).__name__})"
 
 
+# issue #286: an oversized BARE walk (no config, non-hermetic, cwd at a
+# git root) says so once, mid-walk — before the caller's parse phase,
+# where the real cost lands. A hint, never a gate: configured walks and
+# FAKE runs stay silent.
+WALK_SCOPE_WARN_N = 10_000
+_walk_scope_warned = False
+
+
+def _walk_scope_tick(n: int) -> None:
+    global _walk_scope_warned
+    if _walk_scope_warned:
+        return
+    _walk_scope_warned = True
+    if (
+        CONFIG_PATH is None
+        and not os.environ.get("NEURONAV_EMBED_FAKE")
+        and Path.cwd() == ROOT
+        and (ROOT / ".git").is_dir()
+    ):
+        print(
+            f"neuronav: walk scope {n:,} files under bare defaults — pass "
+            "NEURONAV_CONFIG or extend exclude_dirs; continuing",
+            file=sys.stderr,
+        )
+
+
 def iter_files(all_suffixes: bool = False) -> Iterator[Path]:
     # os.walk (not rglob) so exclude_dirs are pruned from the traversal —
     # a repo-root include_dir would otherwise walk .venv/.chroma/etc.
@@ -485,6 +524,7 @@ def iter_files(all_suffixes: bool = False) -> Iterator[Path]:
     # order stays the per-dir sorted walk — so a rescan counts it once
     # instead of double-embedding both copies into one upsert batch.
     seen: set[str] = set()
+    n = 0
     for d in INCLUDE_DIRS:
         base = ROOT / d
         if not base.is_dir():
@@ -500,6 +540,9 @@ def iter_files(all_suffixes: bool = False) -> Iterator[Path]:
                     if fid in seen:
                         continue
                     seen.add(fid)
+                    n += 1
+                    if n == WALK_SCOPE_WARN_N:
+                        _walk_scope_tick(n)
                     yield p
 
 
@@ -565,6 +608,7 @@ def stat_fingerprint() -> dict[str, tuple[int, int]]:
     (same include/exclude/suffix rules). Stat-only, so it is cheap
     enough to run on every read-tool call."""
     fp: dict[str, tuple[int, int]] = {}
+    n = 0
     root_len = len(str(ROOT)) + 1
     stack = [ROOT / d for d in INCLUDE_DIRS]
     while stack:
@@ -586,6 +630,9 @@ def stat_fingerprint() -> dict[str, tuple[int, int]]:
                         st.st_mtime_ns,
                         st.st_size,
                     )
+                    n += 1
+                    if n == WALK_SCOPE_WARN_N:
+                        _walk_scope_tick(n)
         except OSError:
             continue  # include_dir vanished; empty is a valid fingerprint
     return fp

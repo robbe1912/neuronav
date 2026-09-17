@@ -66,11 +66,11 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `layout.py` | pure strata/layout math for the bake: adjacency, iterative Tarjan SCC, strata depths, seeded force layout (moved verbatim from `viz.py`, issue #86; stdlib + numpy only, no nav/graph/chroma imports) |
 | `bake/` | pure per-job transforms for the viz DATA pipeline (issue #86 phase 2): `gitinfo` head/churn stamps, `files_model` J1-J4, `wires` J5-J8, `semantics` J11, `overlays` J13/J14/J17, `fnio` J15-J16, `budget` row-cap keeper — take g/clusters as args, no chroma/nav imports |
 | `onboard.py` | one-command project onboarding (issue #27): `init`/`wire` write `<project>/.neuronav/config.json` + MCP entries; `wire --omp` emits the omp harness mcpServers fragment (issue #130); `global-wire` emits ONE uvx entry (`uvx --from git+…@vX.Y.Z neuronav-mcp`, issue #204) on all four harnesses — the install stays read-only, OS-agnostic pure stdlib |
-| `tools/` | dev gates: `qa_readability.py` (readability/declutter gate), `serve.py` (headless-dev no-cache HTTP for the bake only — production is opening `.neuronav/graph.html` directly, file://, issue #133; exclusive bind + per-OS port-owner hint) |
+| `tools/` | dev gates: `qa_readability.py` (readability/declutter gate), `serve.py` (headless-dev no-cache HTTP for the bake only — production is opening `.neuronav/graph.html` directly, file://, issue #133; exclusive bind + per-OS port-owner hint), `run_battery.py` (parallel full-battery driver — every `tests/test_*.py` suite, pool + serial/gated legs, per-suite exit codes, issue #286) |
 | `config/` | named config profiles, machine-portable only (relative `root`s); the root `config.json` is deliberately ABSENT (issue #204 — the repo carries no machine values; consumers pass `NEURONAV_CONFIG` per-command or boot pure-defaults on cwd) |
 | `vendor/three-0.160.0/` | vendored three.js core + 4 addons, embedded at build (see below) |
 | `bench/` | recall benchmark: golden set, `run_bench.py`, committed results (`RESULTS.md`) — the numbers `docs/comparison.md` cites |
-| `tests/` | 34 self-contained suites + committed fixtures (see tests/AGENTS.md) |
+| `tests/` | 40 self-contained suites + committed fixtures (see tests/AGENTS.md) |
 | `docs/map-spec-v2.md` | spec the named-wire map layer implements |
 
 ## viz.py template laws

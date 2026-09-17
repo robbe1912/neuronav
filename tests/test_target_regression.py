@@ -1,11 +1,24 @@
 # external-target .gd-pipeline regression — fresh process, default config:
 #   .venv/Scripts/python.exe -X utf8 tests/test_target_regression.py
+# The whole suite is one profile leg: it skips LOUDLY without a
+# machine-local target profile (issue #97: a regression target is
+# named, never assumed — pre-#286 a config-less run silently bound the
+# self-tree and the floors below mis-fired against the wrong corpus).
 import json
 import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# captured before `import graph` — the import itself binds the config
+_prof = Path(os.environ["NEURONAV_CONFIG"]) if os.environ.get("NEURONAV_CONFIG") \
+    else Path(__file__).resolve().parents[1] / "config.json"
+if not _prof.is_file():
+    print(f"SKIP test_target_regression: no NEURONAV_CONFIG profile and no "
+          f"config.json at {_prof} (issue #97 — the .gd regression target "
+          "is a named machine-local repo, never assumed; see tests/AGENTS.md)")
+    sys.exit(0)
 
 import graph  # noqa: E402  (default config.json -> external target)
 
