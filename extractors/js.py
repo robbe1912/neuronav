@@ -57,7 +57,6 @@ import os
 import posixpath
 import re
 import sys
-import weakref
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -68,15 +67,14 @@ import tree_sitter_typescript as _tst
 
 from extractors.model import FileSym, Func
 
-# shared ES-family alias machinery lives in ts.py (the JSONC-tolerant
-# reader, one extends level, longest-prefix paths); the React class
-# lifecycle virtuals are the same name set. ts.py cannot import this
-# module back (js -> ts is the dependency direction), so its
-# mixed-repo bare-candidate gate spells JS_EXTS literally.
-from extractors.ts import TS_BASE_VIRTUALS as _BASE_VIRTUALS
-from extractors.ts import _alias_expand, _load_tsconfig
+# shared ES-family machinery lives in ts.py (the JSONC-tolerant alias
+# reader, one extends level, longest-prefix paths; the React class
+# lifecycle virtuals; the suffix sets and the per-ctx package-walk
+# seen-dict, single-spelled per #293). ts.py cannot import this module
+# back (js -> ts is the dependency direction).
+from extractors.ts import JS_EXTS, TS_BASE_VIRTUALS as _BASE_VIRTUALS
+from extractors.ts import _PKG_SEEN, _alias_expand, _load_tsconfig
 
-JS_EXTS = frozenset({".js", ".jsx", ".mjs", ".cjs"})
 JS_LANG = Language(_jst.language())
 TSX_LANG = Language(_tst.language_tsx())
 _PARSERS = {ext: Parser(TSX_LANG if ext == ".jsx" else JS_LANG) for ext in JS_EXTS}
@@ -742,7 +740,6 @@ _TEST_PATH_RE = re.compile(
 _CONFIG_NAME_RE = re.compile(
     r"^(?:next\.config\.|vite\.config\.|tailwind\.config\.|app\.config\.)"
     r"[^/]*$|^app\.json$")
-_PKG_SEEN: "weakref.WeakKeyDictionary[object, set]" = weakref.WeakKeyDictionary()
 
 
 def _entry_tests(fs: FileSym, ctx) -> Iterator[str]:
@@ -791,7 +788,8 @@ def _entry_package(fs: FileSym, ctx) -> Iterator[str]:
     if done:
         return
     done.add("")  # sentinel: the root walk itself is one-shot per ctx —
-    # trees with no package.json anywhere must not re-walk per js file
+    # trees with no package.json anywhere must not re-walk per
+    # ES-family file (the seen-dict is shared with ts.py, #293)
     root_dir = ctx.path_for("")
     for path in sorted(ctx.walk_root_files({".json"})):
         rel = path.relative_to(root_dir).as_posix()
