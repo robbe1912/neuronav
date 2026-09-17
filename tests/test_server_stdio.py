@@ -28,7 +28,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 HERE = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(HERE))
+# server-under-test selectable via argv (test_bootgate precedent):
+# default = this checkout; an argv checkout is how pre-fix FAIL
+# evidence runs against unmodified main
+SERVER_DIR = (
+    Path(sys.argv[1]).resolve() if len(sys.argv) > 1
+    else HERE
+)
+sys.path.insert(0, str(SERVER_DIR))  # the checkout under test wins
 
 # CI hermetic leg (issue #180): the spawned main server strips
 # NEURONAV_CONFIG and re-runs nav's discovery from cwd=HERE —
@@ -149,13 +156,13 @@ def _spawn(env: dict[str, str], cwd: Path | None = None) -> SimpleNamespace:
     recv enforces a REAL deadline (a blocked readline would otherwise
     ignore the timeout)."""
     proc = subprocess.Popen(
-        [sys.executable, "-X", "utf8", str(HERE / "server.py")],
+        [sys.executable, "-X", "utf8", str(SERVER_DIR / "server.py")],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
-        cwd=cwd or HERE,
+        cwd=cwd or SERVER_DIR,
         env=env,
     )
     stderr_lines: list[str] = []
@@ -289,6 +296,15 @@ def main() -> None:
             bool(instr) and all(k in instr for k in
                                 ("repo_map", "explore", "semantic_search", "memory")),
             repr(instr[:120]),
+        )
+
+        # issue #300: the workflow must name every advertised tool —
+        # it had drifted to 11 of 16 (search_text, context, clusters,
+        # crosstalk, arch_check missing from the agent's manual)
+        check(
+            "instructions name every advertised tool (issue #300)",
+            all(t in instr for t in TOOL_NAMES),
+            f"missing: {sorted(t for t in TOOL_NAMES if t not in instr)}",
         )
         send({"jsonrpc": "2.0", "method": "notifications/initialized"})
 
@@ -860,6 +876,10 @@ def main() -> None:
         # duplicates output
         _truncation_scenario()
 
+        # issue #300: #125 honesty sweep — clusters listing marker +
+        # clamp footers naming the applied bound
+        _sweep300_scenario()
+
         # issue #180 CI legs: drift/stat-gate consistency + degraded
         # semantics, both on hermetic scratch trees (run in both modes)
         _drift_scenario()
@@ -1163,6 +1183,102 @@ def _truncation_scenario() -> None:
         srv.kill()
         if FAILS:
             print("--- honesty server stderr (tail) ---")
+            print("\n".join(srv.stderr_lines[-15:]))
+
+
+def _sweep300_scenario() -> None:
+    """issue #300: #125 honesty sweep on the server views. A 40-chain
+    import corpus (deterministic ~38 communities under FAKE embeds —
+    the self-index resolution sweep's shape) forces the clusters
+    listing past its 30 cap: the answer must carry the +N more marker,
+    not stop silently. Same law on the clamps: repo_map's budget and
+    semantic_search's n announce the bound they applied instead of
+    quietly serving 8192/25."""
+    import shutil
+
+    scratch = HERE / ".team_scratch" / "sweep300"
+    shutil.rmtree(scratch, ignore_errors=True)
+    corp = scratch / "chains"
+    for g in range(40):
+        d = corp / f"grp{g:02d}"
+        d.mkdir(parents=True)
+        (d / "core.py").write_text(
+            f"def grp{g:02d}_core_fn(mag_{g}):\n    return mag_{g} * {g}\n",
+            encoding="utf-8", newline="\n",
+        )
+        (d / "mid.py").write_text(
+            f"from grp{g:02d}.core import grp{g:02d}_core_fn\n"
+            f"def grp{g:02d}_mid_fn(x_{g}):\n"
+            f"    return grp{g:02d}_core_fn(x_{g}) + 1\n",
+            encoding="utf-8", newline="\n",
+        )
+        (d / "leaf.py").write_text(
+            f"from grp{g:02d}.mid import grp{g:02d}_mid_fn\n"
+            f"def grp{g:02d}_leaf_fn(y_{g}):\n"
+            f"    return grp{g:02d}_mid_fn(y_{g}) * 2\n",
+            encoding="utf-8", newline="\n",
+        )
+    cfg = scratch / "sweep300.neuronav.json"
+    cfg.write_text(json.dumps({
+        "root": str(corp.resolve()),
+        "collection": "sweep300",
+        "state_dir": "default",
+        "include_dirs": ["."],
+        "extensions": [".py"],
+        "exclude_dirs": [".git", "__pycache__", ".venv", ".neuronav", "node_modules"],
+    }), encoding="utf-8", newline="\n")
+
+    env = {k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}
+    env["NEURONAV_CONFIG"] = str(cfg)
+    env["NEURONAV_EMBED_FAKE"] = "1"
+    srv = _spawn(env)
+    send, recv = srv.send, srv.recv
+
+    def call(mid: int, name: str, args: dict) -> dict:
+        send({"jsonrpc": "2.0", "id": mid, "method": "tools/call",
+              "params": {"name": name, "arguments": args}})
+        return recv(mid)["result"]
+
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "sweep300", "version": "0"}}})
+        check("sweep300: initialize handshake", "result" in recv(1), "")
+
+        out = text_of(call(2, "clusters", {}))
+        header = out.splitlines()[0] if out else ""
+        check("sweep300: clusters header carries the true total",
+              re.fullmatch(r"\d+ cluster\(s\):", header) is not None,
+              header)
+        n_total = int(header.split()[0]) if header[:1].isdigit() else 0
+        check("sweep300: fixture exceeds the listing cap",
+              n_total > 30, f"{n_total} clusters")
+        check(
+            "sweep300: past-cap clusters answer with a +N more marker (issue #300)",
+            re.search(
+                rf"… \+{n_total - 30} more cluster\(s\) — listing capped at 30",
+                out,
+            ) is not None,
+            out.splitlines()[-1:],
+        )
+
+        # clamp footers name the applied bound (#125) instead of silence
+        rm = text_of(call(3, "repo_map", {"budget_tokens": 999999}))
+        check("sweep300: repo_map budget clamp footer names the bound",
+              "(budget clamped to 8192 — legal range 256..8192)" in rm,
+              rm.splitlines()[-1:])
+        ss = text_of(call(4, "semantic_search",
+                          {"query": "core fn", "n": 99}))
+        check("sweep300: semantic_search n clamp footer names the bound",
+              "(n clamped to 25 — legal range 1..25)" in ss,
+              ss.splitlines()[-1:])
+        rm2 = text_of(call(5, "repo_map", {"budget_tokens": 512}))
+        check("sweep300: in-range budget serves no footer",
+              "budget clamped" not in rm2, rm2.splitlines()[-1:])
+    finally:
+        srv.kill()
+        if FAILS:
+            print("--- sweep300 server stderr (tail) ---")
             print("\n".join(srv.stderr_lines[-15:]))
 
 

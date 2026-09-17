@@ -90,9 +90,13 @@ _INSTRUCTIONS = (
     "Code-structure intelligence over the session's working directory. "
     "Workflow: call repo_map once per project for the layout; explore(topic) "
     "to orient on a subsystem; semantic_search / find_functions for lookups; "
-    "symbol_graph / dead_code / duplicates for structure questions; "
-    "impact(symbol) for the pre-refactor blast-radius check — run it "
-    "before renaming or removing anything; "
+    "search_text regex-greps the indexed files; context(path) is the "
+    "one-file orientation dossier (cluster, neighbors, defines); "
+    "clusters / crosstalk / arch_check map the subsystems themselves — "
+    "communities, their coupling hotspots, project-rule violations — "
+    "before a multi-file refactor; symbol_graph / dead_code / duplicates "
+    "for structure questions; impact(symbol) for the pre-refactor "
+    "blast-radius check — run it before renaming or removing anything; "
     "visualize opens the graph.html bake. Tools are read-only except "
     "rescan (forces reindex) and memory (set/get/list/delete persistent "
     "project notes - save durable findings there, not transient state). "
@@ -224,12 +228,10 @@ def _boot_guidance(census: dict[str, int], probe_fail: str | None) -> str:
         key=lambda kv: (-kv[1], kv[0]),
     )
     if ranked:
-        head = ", ".join(f"{s} x{c}" for s, c in ranked[:_GUIDANCE_SUGGEST_CAP])
-        rest = len(ranked) - min(len(ranked), _GUIDANCE_SUGGEST_CAP)
-        lines.append(
-            f"  file types on disk (same walk, any suffix): {head}"
-            + (f" (+{rest} more)" if rest > 0 else "")
+        head = _capped(
+            [f"{s} x{c}" for s, c in ranked], _GUIDANCE_SUGGEST_CAP
         )
+        lines.append(f"  file types on disk (same walk, any suffix): {head}")
     else:
         lines.append(
             "  file types on disk: NONE under the walk — check root/"
@@ -550,11 +552,14 @@ def _route(dir: str):
             yield _first_contact()
 
 
+_EMPTY_INDEX = "no results (index empty — call rescan first)"
+
+
 def _fmt(hits: list[dict]) -> str:
     """Format hybrid-recall hits: RRF-fused score, src provenance
     (vec/bm25/both), bidirectional 1-hop ctx labels."""
     if not hits:
-        return "no results (index empty — call rescan first)"
+        return _EMPTY_INDEX
     lines: list[str] = []
     if hits[0].get("degraded"):
         why = hits[0].get("degraded_reason") or "vector index unavailable"
@@ -643,7 +648,13 @@ def repo_map(budget_tokens: int = 2048, dir: str = "") -> str:
         _auto_rescan()
         budget = max(MIN_MAP_BUDGET, min(budget_tokens, MAX_MAP_BUDGET))
         g = graph.get_graph()
-        return _here(g) + "\n" + graph.repo_map(budget_tokens=budget)
+        out = _here(g) + "\n" + graph.repo_map(budget_tokens=budget)
+        if budget != budget_tokens:
+            out += (
+                f"\n(budget clamped to {budget} — legal range "
+                f"{MIN_MAP_BUDGET}..{MAX_MAP_BUDGET})"
+            )
+        return out
 
 
 @mcp.tool(annotations=READONLY)
@@ -682,10 +693,14 @@ def semantic_search(
         if prelude:
             return prelude
         _auto_rescan()
+        req_n = n
         n = max(1, min(n, 25))
-        return _here(graph.get_graph()) + "\n" + _fmt(
+        out = _here(graph.get_graph()) + "\n" + _fmt(
             nav.search(query, n, two_pass=two_pass, graph_boost=graph_boost)
         )
+        if n != req_n:
+            out += f"\n(n clamped to {n} — legal range 1..25)"
+        return out
 
 
 @mcp.tool(annotations=READONLY)
@@ -710,7 +725,11 @@ def find_functions(query: str, n: int = 6, dir: str = "") -> str:
         if prelude:
             return prelude
         _auto_rescan()
+        req_n = n
         n = max(1, min(n, 15))
+        clamp_note = (
+            f"\n(n clamped to {n} — legal range 1..15)" if n != req_n else ""
+        )
         try:
             hits = graph.find_functions(query, n)
         except Exception as exc:
@@ -728,12 +747,12 @@ def find_functions(query: str, n: int = 6, dir: str = "") -> str:
                     f"{h['score']:0.3f}  {h['path']}#{h['func']}:{h['line']}"
                     for h in hits
                 ]
-            )
+            ) + clamp_note
         if not hits:
             return "no function index — call rescan first"
         return "\n".join(
             f"{h['score']:0.3f}  {h['path']}#{h['func']}:{h['line']}" for h in hits
-        )
+        ) + clamp_note
 
 
 # Zoekt-style cap discipline (issue #68): summarized, capped search output
@@ -772,7 +791,7 @@ def search_text(pattern: str, glob: str = "", files_only: bool = False, dir: str
             return f"invalid regex {pattern!r}: {exc}"
         g = graph.get_graph()
         if not g.files:
-            return "no results (index empty — call rescan first)"
+            return _EMPTY_INDEX
         matched: list[tuple[str, int, list[tuple[int, str]]]] = []
         scanned = 0
         total = 0
@@ -835,13 +854,10 @@ def _sg_short(key: str) -> str:
 
 
 def _sg_row(label: str, keys: list[str]) -> str:
-    shown = ", ".join(_sg_short(k) for k in keys[:SYMBOL_ROW_NAMES]) or "-"
-    more = (
-        f" +{len(keys) - SYMBOL_ROW_NAMES} more"
-        if len(keys) > SYMBOL_ROW_NAMES
-        else ""
-    )
-    return f"    {label}: {len(keys)} ({shown}{more})"
+    shown = _capped(
+        [_sg_short(k) for k in keys], SYMBOL_ROW_NAMES
+    ) or "-"
+    return f"    {label}: {len(keys)} ({shown})"
 
 
 def _symbol_view(g, symbol: str, depth: int) -> str:
@@ -917,12 +933,9 @@ def _impact_view(g, symbol: str, direction: str, max_depth: int) -> str:
         if res["direction"] == "callers"
         else "callees — what it depends on"
     )
-    seeds = ", ".join(_sg_short(k) for k in res["seeds"][:3])
-    seed_more = (
-        f" +{len(res['seeds']) - 3} more" if len(res["seeds"]) > 3 else ""
-    )
+    seeds = _capped([_sg_short(k) for k in res["seeds"]], 3)
     out = [
-        f"impact of {res['symbol']} ({seeds}{seed_more}): {what}",
+        f"impact of {res['symbol']} ({seeds}): {what}",
         f"total: {res['total']} within {res['max_depth']} hops",
     ]
     for hop, keys in enumerate(res["by_depth"], start=1):
@@ -1064,10 +1077,12 @@ def dead_code(n: int = 100, dir: str = "") -> str:
 @mcp.tool(annotations=READONLY)
 def duplicates(n: int = 20, dir: str = "") -> str:
     """Duplicated function bodies (exact, whitespace/comment-normalized),
-    across ALL indexed languages (.gd, .py, C++ sources/headers) —
-    issue #116: the scan is not GDScript-only, so a Python or C++ repo
-    no longer gets a false clean bill. `#` comments strip in the
-    normalization (gd/py); C++ `//` comments compare as body text.
+    across ALL indexed languages — the extractor registry is the roster,
+    so every language the walk indexes gets scanned (issue #116: the
+    scan was never GDScript-only; no repo gets a false clean bill).
+    Comment stripping follows each language's own comment syntax where
+    the normalizer implements it; elsewhere comments compare as body
+    text.
 
     Simplification targets: same logic living twice. Groups with 3+ members
     first. Cross-file groups are refactoring gold (extract shared helper);
@@ -1113,6 +1128,13 @@ def duplicates(n: int = 20, dir: str = "") -> str:
         return "\n".join(lines)
 
 
+CLUSTER_LIST_CAP = 30  # clusters shown per response; +N more past it
+
+
+def _cluster_member(path_class: tuple) -> str:
+    path, _cls = path_class
+    return f"  res://{path}"
+
 @mcp.tool(annotations=READONLY)
 def clusters(k: int = 6, min_sim: float = 0.6, dir: str = "") -> str:
     """Subsystem clusters discovered from embedding geometry (mutual kNN).
@@ -1136,15 +1158,17 @@ def clusters(k: int = 6, min_sim: float = 0.6, dir: str = "") -> str:
         if not cs:
             return "index empty — call rescan first"
         lines = [f"{len(cs)} cluster(s):", ""]
-        for c in cs[:30]:
+        for c in cs[:CLUSTER_LIST_CAP]:
             label = c.get("label") or "misc"
             meta = f" [{c.get('method')}, conf {c.get('confidence', 0):.2f}]"
             lines.append(f"c{c['id']} {label} — {c['size']} files{meta}:")
-            for path, _cls in c["paths"][:12]:
-                lines.append(f"  res://{path}")
-            if c["size"] > 12:
-                lines.append(f"  … +{c['size'] - 12} more")
+            lines.extend(_capped_row(c["paths"], 12, _cluster_member))
             lines.append("")
+        if len(cs) > CLUSTER_LIST_CAP:
+            lines.append(
+                f"… +{len(cs) - CLUSTER_LIST_CAP} more cluster(s) — "
+                f"listing capped at {CLUSTER_LIST_CAP}"
+            )
         return "\n".join(lines)
 
 
@@ -1300,6 +1324,16 @@ def _capped(names: list[str], cap: int) -> str:
     return shown + (f" +{len(names) - cap} more" if len(names) > cap else "")
 
 
+def _capped_row(items: list, cap: int, render, indent: str = "  ") -> list[str]:
+    """Row-wise sibling of _capped (issue #125): first `cap` items as
+    rendered rows, then one explicit +N more line — the shared leaf for
+    every hand-rolled row slice."""
+    rows = [render(it) for it in items[:cap]]
+    if len(items) > cap:
+        rows.append(f"{indent}… +{len(items) - cap} more")
+    return rows
+
+
 def _render_defines(fs) -> list[str]:
     """What the file declares (issue #125): capped funcs/signals/members
     rows. The fresh-agent entry point used to emit every orientation
@@ -1340,12 +1374,12 @@ def _render_membership(p: str, cs: list, indeg: dict[str, int]) -> list[str]:
             f'{mine["method"]}) — {mine["size"]} files, '
             f"this file ranks #{my_rank} by in-degree"
         )
+        def _row(m: tuple) -> str:
+            v, pp, cc = m
+            return f"    {v:>3}  res://{pp}" + (f" ({cc})" if cc else "")
+
         lines.append(f"  members (top {min(12, len(members))} by in-degree):")
-        for v, pp, cc in members[:12]:
-            cls = f" ({cc})" if cc else ""
-            lines.append(f"    {v:>3}  res://{pp}{cls}")
-        if len(members) > 12:
-            lines.append(f"    … +{len(members) - 12} more")
+        lines.extend(_capped_row(members, 12, _row, indent="    "))
     return lines
 
 
@@ -1369,15 +1403,16 @@ def _render_neighbors(p: str, adj: dict, indeg: dict[str, int], depth: int) -> l
             ),
             key=lambda e: -e[0],
         )
-        for _w, nb, out_t, in_t in entries[:15]:
+        def _nb_row(e: tuple) -> str:
+            _w, nb, out_t, in_t = e
             parts = []
             if out_t:
                 parts.append("-> " + _ctx_types(out_t))
             if in_t:
                 parts.append("<- " + _ctx_types(in_t))
-            lines.append(f"  res://{nb}  {'  '.join(parts)}")
-        if len(entries) > 15:
-            lines.append(f"  … +{len(entries) - 15} more")
+            return f"  res://{nb}  {'  '.join(parts)}"
+
+        lines.extend(_capped_row(entries, 15, _nb_row))
         if depth >= 2:
             seen = {p} | set(direct)
             hop2: dict[str, str] = {}
