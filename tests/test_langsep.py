@@ -48,6 +48,7 @@ SHARED = sorted(
     [HERE / n for n in ("graph.py", "nav.py", "server.py", "viz.py", "layout.py",
                         "clusters.py", "explore.py", "recall.py", "onboard.py")]
     + list((HERE / "bake").glob("*.py"))
+    + list((HERE / "vizjs").glob("*.py"))   # #299 A: the template lives here now
     + list((HERE / "tools").glob("*.py"))
 )
 
@@ -78,7 +79,7 @@ JS_SUFFIX = re.compile(r"""/\\.(?:tscn|gd|tres|res|py|cpp|h|hpp)\b""")
 
 # ---- temporary, line-anchored allowlist (see header) ---------------------------
 ALLOWED = {}
-ALLOWED[("viz.py", 3086)] = "V-1: queued behind #123/#89 (data-flag contract)"
+ALLOWED[("vizjs/focus_vis.py", 208)] = "V-1: queued behind #123/#89 (data-flag contract; moved verbatim from viz.py:3086 by #299 A)"
 # config/parametric walk filters — EXTS is the user's config include-set
 # and `suffixes` arrives as a caller argument (registry datum at the call
 # site); neither is a language truth hard-coded in nav

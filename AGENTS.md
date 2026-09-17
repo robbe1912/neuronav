@@ -62,9 +62,10 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `archrules.py` | architecture-violation rules over crosstalk (issue #70): reads `<state_dir>/arch-rules.json` at call time (routed per project, the memories.py law); forbid/budget kinds with optional edge-type filter; loud config errors (unknown kind/cluster/type/key, malformed file — never silently skipped); rides `clusters.cross_tallies` so rules see exactly what crosstalk counts (#114 parity) |
 | `explore.py` | one-call orientation tool (codegraph-discipline: windowed 100-line slices + continuation anchors, issue #69; one `clusters()` pass feeds both stages, issue #44) |
 | `server.py` | FastMCP stdio server; read-only tools carry `readOnlyHint`, `rescan` is the write tool; read tools auto-rescan on worktree drift (stat gate, issue #19) |
-| `viz.py` | Python `_build_data` orchestrator + the JS template as ONE ordered join of section constants (single script tag) -> `graph.html`; owns every nav/graph/chroma edge (J9/J10/J12/J18) and threads the rest through pure leaves; `ensure_bake()` (issue #86 R8) is the single rescan->bake entry — `server.visualize` and `onboard._index` delegate to it; `generate()` refuses empty/zeroed stores loudly, naming the store + counts + rescan fix (issue #64; tiny-store waiver is `NEURONAV_EMBED_FAKE=1`-only) and the splice is strict-JSON, `</script`/token-refusing, atomic via `os.replace` (issue #108) |
+| `viz.py` | Python `_build_data` orchestrator (pure wiring, #299 B) -> `graph.html`; owns the stage order and threads results through the `bake/` leaves; `ensure_bake()` (issue #86 R8) is the single rescan->bake entry — `server.visualize` and `onboard._index` delegate to it; `generate()` refuses empty/zeroed stores loudly, naming the store + counts + rescan fix (issue #64; tiny-store waiver is `NEURONAV_EMBED_FAKE=1`-only) and the splice is strict-JSON, `</script`/token-refusing, atomic via `os.replace` (issue #108) |
+| `vizjs/` | the graph.html JS template as 17 ordered modules (`_HTML_HEAD` + one per `_JS_*` section, #299 A) joined by `vizjs.template()` at `generate()` time — see the template laws below |
 | `layout.py` | pure strata/layout math for the bake: adjacency, iterative Tarjan SCC, strata depths, seeded force layout (moved verbatim from `viz.py`, issue #86; stdlib + numpy only, no nav/graph/chroma imports) |
-| `bake/` | pure per-job transforms for the viz DATA pipeline (issue #86 phase 2): `gitinfo` head/churn stamps, `files_model` J1-J4, `wires` J5-J8, `semantics` J11, `overlays` J13/J14/J17, `fnio` J15-J16, `budget` row-cap keeper — take g/clusters as args, no chroma/nav imports |
+| `bake/` | pure per-job transforms for the viz DATA pipeline (issues #86 phase 2, #299 B): `gitinfo` head/churn stamps, `files_model` J1-J4, `wires` J5-J8, `embeddings` J9 kNN + the ONE chroma fetch (the store-index space derives exactly once there, #299 C), `semantics` J11 cluster matrix + J10 supergroups + #279 semAff rows, `overlays` J13/J14/J17, `fnio` J15-J16, `budget` row-cap keeper — data arrives as arguments; the only nav edge is `bake.embeddings` |
 | `onboard.py` | one-command project onboarding (issue #27): `init`/`wire` write `<project>/.neuronav/config.json` + MCP entries; `wire --omp` emits the omp harness mcpServers fragment (issue #130); `global-wire` emits ONE uvx entry (`uvx --from git+…@vX.Y.Z neuronav-mcp`, issue #204) on all four harnesses — the install stays read-only, OS-agnostic pure stdlib |
 | `tools/` | dev gates: `qa_readability.py` (readability/declutter gate), `serve.py` (headless-dev no-cache HTTP for the bake only — production is opening `.neuronav/graph.html` directly, file://, issue #133; exclusive bind + per-OS port-owner hint), `run_battery.py` (parallel full-battery driver — every `tests/test_*.py` suite, pool + serial/gated legs, per-suite exit codes, issue #286) |
 | `config/` | named config profiles, machine-portable only (relative `root`s); the root `config.json` is deliberately ABSENT (issue #204 — the repo carries no machine values; consumers pass `NEURONAV_CONFIG` per-command or boot pure-defaults on cwd) |
@@ -73,12 +74,13 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `tests/` | 40 self-contained suites + committed fixtures (see tests/AGENTS.md) |
 | `docs/map-spec-v2.md` | spec the named-wire map layer implements |
 
-## viz.py template laws
+## vizjs template laws
 
-The template is an ordered join of section constants — `_HTML_HEAD` then
-the `_JS_*` sections; join order is the original text order, byte-identical
-to the former single string, one script tag; the `__DATA__` and
-`__IMPORTMAP__` replaces are unchanged.
+The template is the `vizjs/` package — `_HTML_HEAD` then one module per
+`_JS_*` section (#299 A). `vizjs.template()` joins them in the rung order
+pinned in `vizjs/__init__.py` — provably the original text order, so the
+bake stays byte-identical to the former single string, one script tag;
+the `__DATA__` and `__IMPORTMAP__` replaces are unchanged.
 Edit JS directly, but `graph.html` bakes the template at
 `generate()` time: **regen after every template edit** or you test stale JS
 (this has bitten us). Production opens `<state_dir>/graph.html` directly

@@ -246,6 +246,49 @@ r = run_child(cfg_path=empty_cfg)
 check("zero-file walk refused",
       r.returncode != 0 and "found 0 files" in r.stderr, r.stderr.strip()[:120].replace("\n", " "))
 
+
+# ---- 11. #299 C: the store-index space derives exactly once ------------------
+# The walk-order × store-index mapping was rebuilt independently at three
+# consumers (fetch/knn/semAff, plus the cluster matrix) — drift there wires
+# kNN pairs and semAff ink to the wrong nodes with no loud failure (#64's
+# silent-degradation class). #299 C derives it once (bake.embeddings
+# _store_paths) and threads it through the emb triple; these legs pin it.
+bake_src = "".join(
+    p.read_text(encoding="utf-8")
+    for p in sorted((HERE / "bake").glob("*.py")) + [HERE / "viz.py"]
+)
+restatements = re.findall(r"for p in paths if p in emb_idx", bake_src)
+check("#299 store-index derivation restated exactly once (bake/embeddings)",
+      len(restatements) == 1, f"{len(restatements)} occurrences in bake/ + viz.py")
+
+try:
+    from bake.embeddings import _knn_sims, _store_paths
+    from bake.semantics import _sem_aff
+
+    # walk order deliberately differs from store order; c.py unindexed
+    paths = ["a.py", "b.py", "c.py", "d.py"]
+    emb_idx = {"b.py": 0, "a.py": 1, "d.py": 2}
+    emb_paths = _store_paths(paths, emb_idx)
+    check("#299 _store_paths keeps walk order, filtered",
+          emb_paths == ["a.py", "b.py", "d.py"], str(emb_paths))
+
+    # emb rows in emb_paths order: a~d identical (the kNN pair), b orthogonal
+    import numpy as np
+
+    v = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]], dtype=np.float32)
+    emb = (emb_idx, v, emb_paths)
+    sims, _ = _knn_sims(emb)
+    check("#299 kNN indices are emb_paths-local (a,d pair)",
+          sims == [[0, 2, 1.0]], str(sims))
+
+    idx = {"a.py": 10, "b.py": 3, "d.py": 7}   # node indices, unrelated order
+    rows, dropped = _sem_aff(emb, sims, idx)
+    check("#299 semAff maps through the shared space to NODE indices",
+          rows == [[10, 7, 1.0]] and dropped == 0,
+          f"rows={rows} dropped={dropped}")
+except ImportError as e:
+    check("#299 bake.embeddings/bake.semantics split exists", False, str(e))
+
 # ---- cleanup -----------------------------------------------------------------
 shutil.rmtree(SCRATCH, ignore_errors=True)
 print(f"\n{len(FAILS)} failure(s)")
