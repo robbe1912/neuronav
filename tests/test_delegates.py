@@ -173,6 +173,13 @@ def main() -> int:
               "    return shared(x);\n"
               "}\n"
           , _TS))
+    check("ts real-body shape classifies (bare brace, no signature — "
+          "the extractor's stored body form, #312 review)",
+          is_delegate(
+              "{\n"
+              "    return shared(x);\n"
+              "}\n"
+          , _TS))
     check("cpp wrapper with real logic stays (hook conservatism)",
           not is_delegate(
               "int Widget::compute(int x)\n"

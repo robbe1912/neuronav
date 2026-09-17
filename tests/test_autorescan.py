@@ -349,8 +349,8 @@ class ServerProc:
         )
         self.out_q: queue.Queue[str] = queue.Queue()
         self.err_lines: list[str] = []
-        threading.Thread(target=self._drain_out, daemon=True).start()
-        threading.Thread(target=self._drain_err, daemon=True).start()
+        threading.Thread(target=getattr(self, "_drain_out"), daemon=True).start()
+        threading.Thread(target=getattr(self, "_drain_err"), daemon=True).start()
         self._id = 0
         self.last_raw: dict = {}
 

@@ -202,6 +202,7 @@ def _preset_hint(suggestions: list[str]) -> str | None:
     extractors.PRESETS (ts before js, so a mixed web repo suggests the
     fuller list). None when no preset applies."""
     for name in PRESETS:
+        if set(PRESETS[name]) & set(suggestions):
             return name
     return None
 
