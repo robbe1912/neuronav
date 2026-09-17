@@ -15,8 +15,8 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnQuiet() { return fnQuiet; }, get fnTrunkN() { return fnTrunkN; },
   get fnQuietTrunkN() { return fnQuietTrunkN; },
   get fnBus() { return fnBus; }, get fnBusPx() { return fnBusRi; },
-  get busPts() { return busPts; }, get fnJDot() { return fnJDot; },
-  get fnJDotR() { return fnJDotR; }, get fnArrowR() { return fnArrowR; },
+  get busPts() { return busPts; }, get fnJDot() { return jdot && jdot.mesh; },
+  get fnJDotR() { return jdot && jdot.r; }, get fnArrowR() { return fnArrowR; },
   get camera() { return camera; },
   get fnTrunkW() { return fnTrunkW; }, get fnJstubN() { return fnJstubN; },
   get fnQuietTrunkW() { return fnQuietTrunkW; },
@@ -30,7 +30,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
              nOthers: compactIdx ? compactIdx.length - 1 : 0 }; },
   get lodPxOf() { return _lod ? _lod.pxOf : null; },   // per-file box ref-px (probe hook)
   get alphaTgt() { return alphaTgt; },   // lit-set oracle (tier unification pin)
-  get jDotArrays() { return { of: fnJDotOf, st: fnJDotSt, legs: fnJDotLegs, key: fnJDotKey, tgt: fnJDotTg }; },  // tgt: dodge axes (issue #5)
+  get jDotArrays() { return jdot && { of: jdot.of, st: jdot.st, legs: jdot.legs, key: jdot.key, tgt: jdot.tg }; },  // tgt: dodge axes (issue #5); #299 D: shape pinned by test_viz
   get stubExits() { return stubExits; },  // EXPLAINED EXIT dissolve points
   get anchorBoostArr() { return anchorBoost; },  // corridor-boost px per fi (probe hook)
   get pinTint() { return { tinted: pinTinted ? pinTinted.slice() : [],
@@ -131,7 +131,6 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
       seen.set(k, r > 0.001);
     }
     const mat = new THREE.Matrix4();
-    const tanH = Math.tan(camera.fov * Math.PI / 360);
     const out = [];
     for (const [k, served] of seen) {
       if (!served) continue;
@@ -139,7 +138,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
       fileMesh.getMatrixAt(fi, mat);
       const dist = camera.position.distanceTo(
         new THREE.Vector3(pos[fi * 3], pos[fi * 3 + 1], pos[fi * 3 + 2]));
-      const sprPx = mat.elements[0] * 900 / (tanH * dist);   // diameter, REF-px
+      const sprPx = mat.elements[0] * 2 * refPxPerWu(dist, 900);   // diameter, REF-px   // #299 D
       const boxPx = _lod ? _lod.pxOf(fi) : null;
       out.push({ k, fi, px: Math.max(sprPx, boxPx || 0), boxPx, boosted: anchorBoost[fi] > 0,
                  alpha: alphaTgt[fi] });
@@ -181,7 +180,8 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
       const v = new THREE.Vector3(p[0], p[1], p[2]).project(camera);
       if (!isFinite(v.x) || !isFinite(v.y) || v.z >= 1) return null;
       const r = renderer.domElement.getBoundingClientRect();
-      return { x: (v.x + 1) / 2 * r.width, y: (1 - v.y) / 2 * r.height };
+      toScreen(v, r.width, r.height);   // #299 D
+      return { x: _scr[0], y: _scr[1] };
     };
     const pickAnchor = (p, cands) => {
       // cands: [{kind, idx, p, pxTol, wuTol}] — best qualifying by screen px,
@@ -211,9 +211,9 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
     // end landing on one is attached (part of the full-path unit), though
     // the UNIT termini still owe a file anchor elsewhere
     const juncCands = [];
-    if (fnJDot) {
-      const jm = fnJDot.instanceMatrix.array;
-      for (let ji = 0; ji < fnJDot.count; ji++)
+    if (jdot) {
+      const jm = jdot.mesh.instanceMatrix.array;
+      for (let ji = 0; ji < jdot.mesh.count; ji++)
         juncCands.push({ kind: "junc", idx: ji, p: [jm[ji * 16 + 12], jm[ji * 16 + 13], jm[ji * 16 + 14]], pxTol: 12, wuTol: 20 });
     }
     // leads-home fallback (rubric Amendment 4): an end that misses the tight
@@ -292,8 +292,10 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   projectPoint(x, y, z) {
     const v = new THREE.Vector3(x, y, z).project(camera);
     const r = renderer.domElement.getBoundingClientRect();
-    return { x: r.left + (v.x + 1) / 2 * r.width,
-             y: r.top + (1 - v.y) / 2 * r.height, z: v.z };
+    // #299 D: toScreen is canvas-relative; this hook is viewport-relative
+    // — the rect offset is the whole difference between the two names
+    toScreen(v, r.width, r.height);
+    return { x: r.left + _scr[0], y: r.top + _scr[1], z: v.z };
   },
   pickWireMeta, wireDesc, showWireTip, hideWireTip,
   get wirePin() { return wirePin; },   // [issue #82] {surface, kind, id, menu} | null

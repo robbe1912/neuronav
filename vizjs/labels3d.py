@@ -142,7 +142,8 @@ function updateClusterLabs() {
     if (hubV.z > 1 || Math.abs(hubV.x) > 1.05 || Math.abs(hubV.y) > 1.05) {
       proj.push(null); continue;
     }
-    const px = (hubV.x*0.5+0.5)*w, py = (-hubV.y*0.5+0.5)*h;
+    toScreen(hubV, w, h);   // #299 D: shared NDC->canvas
+    const px = _scr[0], py = _scr[1];
     proj.push({ px, py });
     gx += px; gy += py; gn++;
   }
@@ -238,23 +239,14 @@ const semAdd = (i, j, s) => {
 semAff.forEach(([a, b, s]) => { semAdd(a, b, s); semAdd(b, a, s); });
 let semMesh = null, semPosIB = null, semColIB = null;
 if (semAff.length) {
-  const g = new LineSegmentsGeometry();
-  g.setPositions(new Float32Array(semAff.length * 6));
-  g.setColors(new Float32Array(semAff.length * 6));
-  const m = new LineMaterial({
-    vertexColors: true, linewidth: 1.25, worldUnits: false,
-    // faint on purpose: hint ink must never compete with the call/signal
-    // corridors — own hue + dotted + sub-bucket opacity
-    transparent: true, opacity: 0.30, alphaToCoverage: false,
-    blending: THREE.NormalBlending, depthWrite: false,
-    dashed: true, dashSize: 2.5, gapSize: 6,
-  });
-  m.resolution.set(glW(), innerHeight);
-  semMesh = new LineSegments2(g, m);
-  semMesh.frustumCulled = false;   // positions mutate per frame
-  scene.add(semMesh);
-  semPosIB = g.attributes.instanceStart.data;
-  semColIB = g.attributes.instanceColorStart.data;
+  // faint on purpose: hint ink must never compete with the call/signal
+  // corridors — own hue + dotted + sub-bucket opacity. #299 D: mkFatLines
+  // owns construction + the resize registry (frustumCulled off included).
+  semMesh = mkFatLines(new Float32Array(semAff.length * 6),
+    new Float32Array(semAff.length * 6),
+    { linewidth: 1.25, opacity: 0.30, dashed: true, dashSize: 2.5, gapSize: 6 });
+  semPosIB = semMesh.geometry.attributes.instanceStart.data;
+  semColIB = semMesh.geometry.attributes.instanceColorStart.data;
 }
 function syncSemAff() {
   if (!semMesh) return;
@@ -268,8 +260,7 @@ function syncSemAff() {
     // black alone is NOT hidden under normal blending
     if (!gate || alphaTgt[a] < 0.05 || alphaTgt[b] < 0.05 ||
         nodeFiltered(nodes[a]) || nodeFiltered(nodes[b])) {
-      pa[o] = ax; pa[o+1] = ay; pa[o+2] = az;
-      pa[o+3] = ax; pa[o+4] = ay + 0.05; pa[o+5] = az;
+      stub(pa, o, ax, ay, az);   // #299 D: the shared degenerate guard
       ca[o] = ca[o+1] = ca[o+2] = ca[o+3] = ca[o+4] = ca[o+5] = 0;
       return;
     }
@@ -278,8 +269,7 @@ function syncSemAff() {
     const el = Math.sqrt(ex*ex + ey*ey + ez*ez);
     const trA = trimAt(a), trB = trimAt(b);
     if (el - trA - trB <= 0.05) {   // stub law: never feed normalize(0)
-      pa[o] = ax; pa[o+1] = ay; pa[o+2] = az;
-      pa[o+3] = ax; pa[o+4] = ay + 0.05; pa[o+5] = az;
+      stub(pa, o, ax, ay, az);   // #299 D: the shared degenerate guard
       ca[o] = ca[o+1] = ca[o+2] = ca[o+3] = ca[o+4] = ca[o+5] = 0;
       return;
     }

@@ -222,16 +222,10 @@ function rebuildFocusWires() {
     top.forEach(i => list.push(i));
     list.sort((a, b) => a - b);   // deterministic vertex order
   } else if (!list.length) {
-    if (focusArcs) {
-      scene.remove(focusArcs.lines); focusArcs.lines.geometry.dispose();
-      focusArcs = null;
-    }
+    if (focusArcs) { killFatLines(focusArcs.lines); focusArcs = null; }
     return;
   }
-  if (focusArcs) {
-    scene.remove(focusArcs.lines); focusArcs.lines.geometry.dispose();
-    focusArcs = null;
-  }
+  if (focusArcs) { killFatLines(focusArcs.lines); focusArcs = null; }
   const n = list.length;
   const vCount = n * ARC_SEG * 2;
   const P = new Float32Array(vCount * 3);
@@ -242,10 +236,10 @@ function rebuildFocusWires() {
     const l = links[li];
     const ax = pos[l.s*3], ay = pos[l.s*3+1], az = pos[l.s*3+2];
     const bx = pos[l.t*3], by = pos[l.t*3+1], bz = pos[l.t*3+2];
-    const dist = Math.hypot(bx-ax, by-ay, bz-az) || 1;
+    const dist = qSpan(ax, ay, az, bx, by, bz);
     // control point: midpoint lifted 14% of the span — every arc rises, so
     // two crossing wires separate in height instead of sharing a pixel
-    const mx = (ax + bx) / 2, my = (ay + by) / 2 + dist * 0.14, mz = (az + bz) / 2;
+    const m = qMid(ax, ay, az, bx, by, bz, dist * 0.14);
     const vis = Math.min(alphaTgt[l.s], alphaTgt[l.t]);
     col.setHex(TYPE_C3D[l.ty] || 0xd9e2eb);
     if (revealed.has(li)) col.multiplyScalar(0.42);   // C2.2 dim-but-traceable
@@ -253,10 +247,9 @@ function rebuildFocusWires() {
     const phase = ((li * 2654435761) % 997) / 997 * 13;   // per-link dash phase
     let px = 0, py = 0, pz = 0, pd = 0;
     for (let s = 0; s <= ARC_SEG; s++) {
-      const t = s / ARC_SEG, u = 1 - t;
-      const x = u*u*ax + 2*u*t*mx + t*t*bx;
-      const y = u*u*ay + 2*u*t*my + t*t*by;
-      const z = u*u*az + 2*u*t*mz + t*t*bz;
+      const t = s / ARC_SEG;
+      const q = qPt(ax, ay, az, m[0], m[1], m[2], bx, by, bz, t);
+      const x = q.x, y = q.y, z = q.z;
       const dd = s ? pd + Math.hypot(x-px, y-py, z-pz) : 0;
       if (s) {
         const vi = (k * ARC_SEG + s - 1) * 2;
@@ -272,19 +265,11 @@ function rebuildFocusWires() {
   });
   // fat-line rebuild per call: the budget is tiny (≤ hub budget arcs) and
   // Line2 gives the hub fan real 2px ink like every other wire
-  const fgeo = new LineSegmentsGeometry();
-  fgeo.setPositions(P);
-  fgeo.setColors(C);
-  const fmat = new LineMaterial({ vertexColors: true,
-    transparent: true, opacity: 0.95, linewidth: 2, worldUnits: false,
-    dashed: true, dashSize: 8, gapSize: 5, depthWrite: false,
-    blending: THREE.NormalBlending, alphaToCoverage: false });
-  fmat.resolution.set(glW(), innerHeight);
-  const flines = new LineSegments2(fgeo, fmat);
+  const flines = mkFatLines(P, C, { opacity: 0.95, linewidth: 2,
+    dashed: true, dashSize: 8, gapSize: 5 });
   flines.computeLineDistances();
-  flines.frustumCulled = false; flines.renderOrder = 3;
-  scene.add(flines);
-  focusArcs = { lines: flines, geo: fgeo, mat: fmat };
+  flines.renderOrder = 3;
+  focusArcs = { lines: flines, geo: flines.geometry, mat: flines.material };
   // the arcs REPLACE the budget links' straight bucket chords (k-pass blacks
   // those) — hover/click must test THESE chords, or the collider stays on
   // the invisible pre-curve straight line

@@ -243,6 +243,96 @@ controls.autoRotate = false;
 controls.autoRotateSpeed = 0.35;
 let spinEnabled = false;
 
+// ---- shared leaves (#299 D): one definition per restated law ----------
+// Sections used to restate these five+ inline (the #58/#5 bug families);
+// module scope shares them — every use site now names WHICH law it rides.
+
+// quad-bezier conduit arcs: the +Y-lift law (lift is ALWAYS +Y, absolute
+// world units). Five sites restated the polynomial/tangent math; drift
+// bends chevrons off wire ends. qPt/qTan write SHARED scratches (_qP/_qT):
+// read components immediately, never hold the reference.
+const _qP = new THREE.Vector3(), _qT = new THREE.Vector3();
+function qSpan(ax, ay, az, bx, by, bz) { return Math.hypot(bx-ax, by-ay, bz-az) || 1; }
+function qMid(ax, ay, az, bx, by, bz, lift) {
+  return [(ax+bx)/2, (ay+by)/2 + lift, (az+bz)/2];
+}
+function qPt(ax, ay, az, mx, my, mz, bx, by, bz, t) {
+  const u = 1 - t;
+  return _qP.set(u*u*ax + 2*u*t*mx + t*t*bx,
+                 u*u*ay + 2*u*t*my + t*t*by,
+                 u*u*az + 2*u*t*mz + t*t*bz);
+}
+function qTan(ax, ay, az, mx, my, mz, bx, by, bz, t) {
+  return _qT.set(2*(1-t)*(mx-ax) + 2*t*(bx-mx),
+                 2*(1-t)*(my-ay) + 2*t*(by-my),
+                 2*(1-t)*(mz-az) + 2*t*(bz-mz)).normalize();
+}
+
+// NDC -> canvas px (origin at the canvas top-left). Viewport-relative
+// sites (projectPoint, the corridor census) add the rect offset on top;
+// the leaf call marks which convention a site uses — the inline forms
+// never did (canvas-relative vs viewport-relative had already drifted).
+const _scr = [0, 0];
+function toScreen(v3, w, h) {
+  _scr[0] = (v3.x + 1) / 2 * w;
+  _scr[1] = (1 - v3.y) / 2 * h;
+  return _scr;
+}
+// reference px per world unit at dist on a canvas hpx tall (default: the
+// live canvas). The one fov law behind every px gate — was restated as
+// 2*tan(fov/2)/hpx and its inverse at five separate sites.
+function refPxPerWu(dist, hpx) {
+  const h = hpx === undefined ? (renderer.domElement.clientHeight || 900) : hpx;
+  return h / 2 / (Math.tan(camera.fov * Math.PI / 360) * dist);
+}
+
+// degenerate-stub guard: a zero-length fat-line segment feeds
+// LineMaterial's normalize(0) NaN screen quads — the documented streak
+// artifact. Hidden/trimmed paths stub to a point + a 0.05wu +Y epsilon.
+function stub(arr, o, x, y, z) {
+  arr[o] = x; arr[o+1] = y; arr[o+2] = z;
+  arr[o+3] = x; arr[o+4] = y + 0.05; arr[o+5] = z;
+}
+
+// fat-line construction + the resize registry: LineMaterial resolves
+// linewidth in SCREEN px, so every LineSegments2 needs resolution.set on
+// construction AND on every resize — hand-maintained resize lists were
+// the missed-material drift class. mkFatLines registers each mesh;
+// killFatLines retires it (rebuild paths); resize3D walks the registry.
+const fatLines = new Set();
+function mkFatLines(pos, col, opts) {
+  const g = new LineSegmentsGeometry();
+  g.setPositions(pos);
+  if (col) g.setColors(col);
+  const m = new LineMaterial(Object.assign({
+    vertexColors: true, worldUnits: false, transparent: true,
+    alphaToCoverage: false, blending: THREE.NormalBlending, depthWrite: false,
+  }, opts));
+  m.resolution.set(glW(), innerHeight);
+  const ls = new LineSegments2(g, m);
+  ls.frustumCulled = false;
+  scene.add(ls);
+  fatLines.add(ls);
+  return ls;
+}
+function killFatLines(ls) {
+  if (!ls) return null;
+  scene.remove(ls);
+  ls.geometry.dispose();
+  fatLines.delete(ls);
+  return null;
+}
+// generic mesh teardown: scene.remove + geometry dispose; deep also
+// releases an InstancedMesh's instance buffers.
+function dispose(m, deep) {
+  if (!m) return null;
+  scene.remove(m);
+  if (m.geometry) m.geometry.dispose();
+  if (deep && m.dispose) m.dispose();
+  return null;
+}
+
+
 // cluster hue: golden angle spread; dead files tinted toward red.
 // lightness bands break golden-angle hue collisions across long cid runs
 const hue = c => c < 0 ? 0.08 : (c * 0.61803398875 + 0.55) % 1;
@@ -471,8 +561,7 @@ function syncFileMesh() {
         const dist = camera.position.distanceTo(_sfTmp.set(x, y, z));
         const hs = hoverScale[i] || 1;
         const base = sc / hs;   // rest size (alpha included), hover lifted out
-        const rpxBase = base * (renderer.domElement.clientHeight / 2) /
-                        (Math.tan(camera.fov * Math.PI / 360) * dist);
+        const rpxBase = base * refPxPerWu(dist, renderer.domElement.clientHeight);   // #299 D
         if (rpxBase > 0.001 && rpxBase < anchorBoost[i])
           sc = base * Math.min(4.0, anchorBoost[i] / rpxBase) * hs;
         // degree-scaled minimum DIAMETER (rpxBase is a radius): only binds

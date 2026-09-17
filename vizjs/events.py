@@ -69,12 +69,14 @@ renderer.domElement.addEventListener("pointermove", e => {
       const fm = fnMeta[h.instanceId];
       if (!fm || alphaTgt[fm.file] <= 0.5 || (fm.agg && !fm.count)) continue;
       const v = _pickV.set(fm.p[0], fm.p[1], fm.p[2]).project(camera);
-      const sx = (v.x*0.5+0.5)*cr.width, sy = (-v.y*0.5+0.5)*cr.height;
+      toScreen(v, cr.width, cr.height);   // #299 D
+      const sx = _scr[0], sy = _scr[1];
       const dist = Math.hypot(sx-px, sy-py);
       if (dist < bestPx) { bestPx = dist; hoveredFn = h.instanceId; hovered = -1; }
     } else if (h.object === fileMesh && alphaTgt[h.instanceId] > 0.5) {
       const v = _pickV.set(pos[h.instanceId*3], pos[h.instanceId*3+1], pos[h.instanceId*3+2]).project(camera);
-      const sx = (v.x*0.5+0.5)*cr.width, sy = (-v.y*0.5+0.5)*cr.height;
+      toScreen(v, cr.width, cr.height);   // #299 D
+      const sx = _scr[0], sy = _scr[1];
       const dist = Math.hypot(sx-px, sy-py);
       if (dist < bestPx) { bestPx = dist; hovered = h.instanceId; hoveredFn = -1; }
     }
@@ -355,12 +357,10 @@ function resize3D() {
   const w = glW(), h = innerHeight;
   camera.aspect = w/h; camera.updateProjectionMatrix();
   renderer.setSize(w, h);
-  bucketMat.forEach(m => m.resolution.set(w, h));
-  if (semMesh) semMesh.material.resolution.set(w, h);
-  // fat-line overlays live in screen px too — stale resolution = wrong width
-  if (fnLines) fnLines.material.resolution.set(w, h);
-  if (fnQuiet) fnQuiet.material.resolution.set(w, h);
-  if (focusArcs) focusArcs.mat.resolution.set(w, h);
+  // fat lines live in screen px too — stale resolution = wrong width.
+  // #299 D: every LineSegments2 registers itself in mkFatLines, so this
+  // is one walk; a new overlay can no longer forget its resize hookup.
+  fatLines.forEach(ls => ls.material.resolution.set(w, h));
   _sfDirty = true;   // canvas height feeds the anchor/deg-floor px laws
 }
 addEventListener("resize", resize3D);

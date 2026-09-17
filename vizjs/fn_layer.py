@@ -20,13 +20,9 @@ let fnJstubN = 0;   // shared junction legs: Jof delivery stubs + station tree l
 let fnStationsArr = [];  // per-file bus stations of the current fn layer (via __dbg)
 let fnJclearV = -1; // min world junction->box-center distance (via __dbg)
 let fnLegN = 0;     // station tree legs (thin conduits, via __dbg)
-let fnJDotK = null;  // per-junction bollard size factor (screen-constant law)
-let fnJDotOf = null;   // owner FILE index per bollard (round-5 LOD gate)
-let fnJDotSt = null;   // 1 = station-class gate, 0 = own-file resolved gate
-let fnJDotLegs = null;  // legs per STATION (0 = bridge class; sighting #9 gate)
-let fnJDotKey = null;   // per-bollard attachment key: heads "T|fi" (serving trunk
-                        // endpoint), subs their leg key — a bollard renders only
-                        // when its attachment SERVED this frame (empty-station law)
+// #299 D: the junction-bollard arrays (k size factor, of owner file, st
+// station-class gate, legs per station, key attachment key) live as fields
+// on the jdot record below — one teardown unit, not five more module vars
 const stAttKey = new Set();  // served attachment keys (serve loop fills, jDot gate reads)
 let fnBoxScale = null; // fi -> largest rendered fn-box world size
 let stationTks = null; // fi -> trunk keys leaving that file's stations
@@ -51,8 +47,10 @@ let fnQuietTrunkW = 0;  // quiet wires absorbed into trunks (via __dbg)
 let fnBus = null;   // trunk conduit bodies (InstancedMesh cylinders)
 let busPts = null;  // segment endpoints for per-frame screen-constant rescale
 let fnBusRi = null; // current per-segment radius (world units)
-let fnJDot = null;  // reroute junction bollards (InstancedMesh spheres)
-  let fnJDotPos = null, fnJDotR = null, fnJDotTg = null;  // world positions, radii, dodge axes (issue #5)
+let jdot = null;  // #299 D: the junction record {mesh, pos, r, tg, of, st,
+                  // legs, key, k} — reroute bollards + their parallel arrays,
+                  // born in one build, dying in one registry entry (issue #5
+                  // dodge axes ride along; __dbg.jDotArrays keeps its shape)
   let fnArrowPos = null, fnArrowR = null;   // arrowhead positions + current radii (screen-constant)
   let fnArrowTang = null;  // world wire tangent at each delivery (chevron aim)
   let fnArrowBox = null;  // delivery box center per arrow (screen-hug clamp)
@@ -80,33 +78,59 @@ const CHEV_FAN_PX = 16;
 // around each box for its delivery mark, so a rider must sit as
 // close to its box as visibility allows (t=1 is the box end)
 const RIDE_TS = [0.95, 0.9, 0.85, 0.8, 0.6, 0.4, 0.2, 0.05];
+// #299 D: the fn layer's asset registry — one teardown entry per heap
+// asset, registered once. rebuildFnLayer walks the list instead of nine
+// hand-maintained if-blocks (the #58 missed-teardown family: every new
+// asset needed its own block, and blocks were missed). Entries are
+// idempotent null-guards (dispose/killFatLines no-op on null); adding
+// an asset = adding its entry here.
+const layerAssets = [
+  () => { fnMesh = dispose(fnMesh, true); },
+  () => { fnLines = killFatLines(fnLines); },
+  () => { fnQuiet = killFatLines(fnQuiet); },
+  () => { fnBus = dispose(fnBus); busPts = null; fnBusRi = null; busPtsMeta = null; trunkMetaMap = null; juncPickInfo = null; },
+  () => { if (jdot) { jdot.mesh = dispose(jdot.mesh); } jdot = null; },
+  () => { fnArrows = dispose(fnArrows); fnArrowPos = null; fnArrowR = null; fnArrowTang = null; fnArrowBox = null; arrowFile = null; },
+  // issue #6: halo + delivery legs are rebuilt with the bus -- tear them
+  // down with the arrows or ghost discs persist past Escape (#58 family)
+  // and a stale leg array could alias a same-count rebuild
+  () => { if (fnArrowHalo) { scene.remove(fnArrowHalo); fnArrowHalo.geometry.dispose(); fnArrowHalo.material.dispose(); } fnArrowHalo = null; fnArrowLeg = null; },
+  () => { fnStalks = dispose(fnStalks); },
+  () => { if (focusHull) {
+    scene.remove(focusHull.fill);
+    scene.remove(focusHull.rim);
+    focusHull.fill.geometry.dispose(); focusHull.fill.material.dispose();
+    focusHull.rim.geometry.dispose(); focusHull.rim.material.dispose();
+    focusHull = null; _oHull = 0;
+  } },
+];
+function teardownLayer() { for (const fn of layerAssets) fn(); }
 // delivery-leg bezier (emitArc curve: mid + liftFrac*dist in +Y, B = box).
-// legPt/legTan reproduce the painted arc from the captured leg params.
+// legPt/legTan reproduce the painted arc from the captured leg params —
+// through the SAME q-leaves emitArc paints with, so rider and arc cannot
+// drift apart (the measured chevron-off-wire bug class).
+function legMid(i) {
+  const ax = fnArrowLeg[i*4], ay = fnArrowLeg[i*4+1], az = fnArrowLeg[i*4+2];
+  const bx = fnArrowBox[i*3], by = fnArrowBox[i*3+1], bz = fnArrowBox[i*3+2];
+  return qMid(ax, ay, az, bx, by, bz,
+              fnArrowLeg[i*4+3] * qSpan(ax, ay, az, bx, by, bz));
+}
 function legPt(i, t, out) {
   const ax = fnArrowLeg[i*4], ay = fnArrowLeg[i*4+1], az = fnArrowLeg[i*4+2];
-  const lf = fnArrowLeg[i*4+3];
   const bx = fnArrowBox[i*3], by = fnArrowBox[i*3+1], bz = fnArrowBox[i*3+2];
-  const dist = Math.hypot(bx-ax, by-ay, bz-az) || 1;
-  const mx = (ax+bx)/2, my = (ay+by)/2 + lf*dist, mz = (az+bz)/2;
-  const u = 1 - t;
-  return out.set(u*u*ax + 2*u*t*mx + t*t*bx,
-                 u*u*ay + 2*u*t*my + t*t*by,
-                 u*u*az + 2*u*t*mz + t*t*bz);
+  const m = legMid(i);
+  return out.copy(qPt(ax, ay, az, m[0], m[1], m[2], bx, by, bz, t));
 }
 function legTan(i, t, out) {
   const ax = fnArrowLeg[i*4], ay = fnArrowLeg[i*4+1], az = fnArrowLeg[i*4+2];
-  const lf = fnArrowLeg[i*4+3];
   const bx = fnArrowBox[i*3], by = fnArrowBox[i*3+1], bz = fnArrowBox[i*3+2];
-  const dist = Math.hypot(bx-ax, by-ay, bz-az) || 1;
-  const mx = (ax+bx)/2, my = (ay+by)/2 + lf*dist, mz = (az+bz)/2;
-  return out.set(2*(1-t)*(mx-ax) + 2*t*(bx-mx),
-                 2*(1-t)*(my-ay) + 2*t*(by-my),
-                 2*(1-t)*(mz-az) + 2*t*(bz-mz)).normalize();
+  const m = legMid(i);
+  return out.copy(qTan(ax, ay, az, m[0], m[1], m[2], bx, by, bz, t));
 }
 function aimArrows() {
   if (!fnArrows || !fnArrowPos || !fnArrowTang || !fnArrowR) return;
   const hpx = renderer.domElement.clientHeight || 900;
-  const wuPerPx = 2 * Math.tan(camera.fov * Math.PI / 360) / hpx;
+  const wuPerPx = 1 / refPxPerWu(1, hpx);
   const M = new THREE.Matrix4(), X = new THREE.Vector3(), Y = new THREE.Vector3(),
         Z = new THREE.Vector3(), P = new THREE.Vector3(), T = new THREE.Vector3();
   const a = fnArrows.instanceMatrix.array;
@@ -261,12 +285,14 @@ function aimArrows() {
     // drag them back into the occluded pile, so it only applies to
     // box anchors (ride < 0).
     if (ride < 0 && fnArrowBox) {
-      const q = _obstV.set(fnArrowBox[i*3], fnArrowBox[i*3+1], fnArrowBox[i*3+2]).project(camera);
-      const qx = (q.x*0.5+0.5)*w, qy = (-q.y*0.5+0.5)*h;
+      _obstV.set(fnArrowBox[i*3], fnArrowBox[i*3+1], fnArrowBox[i*3+2]).project(camera);
+      toScreen(_obstV, w, h);   // #299 D: shared NDC->canvas
+      const qx = _scr[0], qy = _scr[1];
       for (let t = 1; t > 0.02; t -= 0.08) {
         _obstV.set(bx0 + (fnArrowPos[i*3]-bx0)*t, by0 + (fnArrowPos[i*3+1]-by0)*t,
                    bz0 + (fnArrowPos[i*3+2]-bz0)*t).project(camera);
-        const ax2 = (_obstV.x*0.5+0.5)*w, ay2 = (-_obstV.y*0.5+0.5)*h;
+        toScreen(_obstV, w, h);
+        const ax2 = _scr[0], ay2 = _scr[1];
         if (Math.hypot(ax2-qx, ay2-qy) <= 14) { P.set(
           bx0 + (fnArrowPos[i*3]-bx0)*t, by0 + (fnArrowPos[i*3+1]-by0)*t,
           bz0 + (fnArrowPos[i*3+2]-bz0)*t); break; }
@@ -419,8 +445,10 @@ function updateFocusLabels() {
   for (const S of fnStationsArr) {
     for (const q of [S.p, ...S.subJ]) {
       _flabV.set(q[0], q[1], q[2]).project(camera);
-      if (_flabV.z <= 1 && Math.abs(_flabV.x) <= 1.02 && Math.abs(_flabV.y) <= 1.02)
-        stPts.push([(_flabV.x * 0.5 + 0.5) * w, (-_flabV.y * 0.5 + 0.5) * h]);
+      if (_flabV.z <= 1 && Math.abs(_flabV.x) <= 1.02 && Math.abs(_flabV.y) <= 1.02) {
+        toScreen(_flabV, w, h);   // #299 D
+        stPts.push([_scr[0], _scr[1]]);
+      }
     }
   }
   // 14px margin: at 0.72 kf the marginal label straddled the old 10px

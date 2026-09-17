@@ -211,7 +211,7 @@ const hubOff = new Map();
 const _obstV = new THREE.Vector3();
 function juncArrowObstacles(w, h) {
   const pts = [];
-  for (const mesh of [fnJDot, fnArrows]) {
+  for (const mesh of [jdot && jdot.mesh, fnArrows]) {
     if (!mesh) continue;
     const am = mesh.instanceMatrix.array;
     for (let i = 0; i < am.length / 16; i++) {
@@ -226,8 +226,10 @@ function juncArrowObstacles(w, h) {
           && _arrowRide[i] >= 0 && _arrowRide[i] < 1)
         _obstV.set(fnArrowBox[i*3], fnArrowBox[i*3+1], fnArrowBox[i*3+2]).project(camera);
       else _obstV.set(am[i*16+12], am[i*16+13], am[i*16+14]).project(camera);
-      if (_obstV.z <= 1 && Math.abs(_obstV.x) <= 1.05 && Math.abs(_obstV.y) <= 1.05)
-        pts.push([(_obstV.x*0.5+0.5)*w, (-_obstV.y*0.5+0.5)*h]);
+      if (_obstV.z <= 1 && Math.abs(_obstV.x) <= 1.05 && Math.abs(_obstV.y) <= 1.05) {
+        toScreen(_obstV, w, h);   // #299 D
+        pts.push([_scr[0], _scr[1]]);
+      }
     }
   }
   return pts;

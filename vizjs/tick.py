@@ -5,7 +5,7 @@
 _JS_TICK = r"""// Pure function of camera pose + build data; no layout change.
 function busLodInit() {
   const hpx = renderer.domElement.clientHeight || 900;
-  const wuPerPx = 2 * Math.tan(camera.fov * Math.PI / 360) / hpx;
+  const wuPerPx = 1 / refPxPerWu(1, hpx);   // #299 D: the shared fov law
   const memo = new Map();
   // REF-normalized px (user directive, round 5): all screen laws live in
   // REFERENCE pixels — px a size would have on a nominal 900px-tall canvas.
@@ -141,9 +141,9 @@ function tick() {
     fnLines.material.opacity = EMPHASIS.FOCUS_TIER_OPACITY * lod;
     if (fnQuiet) fnQuiet.material.opacity = 0.16 * lod;
     if (fnBus) fnBus.material.opacity = 0.35 + 0.65 * lod;
-    if (fnJDot) fnJDot.material.opacity = 0.35 + 0.55 * lod;
+    if (jdot) jdot.mesh.material.opacity = 0.35 + 0.55 * lod;
     if (fnArrows) fnArrows.material.opacity = 0.9 * lod;
-    _oDot = fnJDot ? 0.35 + 0.55 * lod : 0;
+    _oDot = jdot ? 0.35 + 0.55 * lod : 0;
     _oArrow = fnArrows ? 0.9 * lod : 0;
     // [#12] the container is focus-tier ink: served = full glass, far zoom
     // fades it to nothing — the file node collapses back to its dot
@@ -158,7 +158,7 @@ function tick() {
   fnLodV = { bollardsShown: 0, bollardsGated: 0, conduitsShown: 0, conduitsGated: 0,
              chevShown: 0, minChevPx: Infinity, minServedBoxPx: Infinity, minBollardPx: Infinity,
              serveFi: -1, servePx: -1, oDot: _oDot, oArrow: _oArrow, segOccl: 0 };
-  _lod = (fnBus || fnJDot) ? busLodInit() : null;   // after fnLodV: it stamps serveFi/servePx
+  _lod = (fnBus || jdot) ? busLodInit() : null;   // after fnLodV: it stamps serveFi/servePx
   // endpoint anchor demands are per-frame (camera-pose dependent): reset,
   // then arcs, serving corridors and serving legs add theirs
   anchorBoost.fill(0);
@@ -201,7 +201,7 @@ function tick() {
         const cw = renderer.domElement.clientWidth || 1600;
         const ch2 = renderer.domElement.clientHeight || 900;
         const nominalD = 2.2 * compactBallR;
-        const pxN = wu * (ch2 / 2) / (Math.tan(camera.fov * Math.PI / 360) * nominalD);
+        const pxN = wu / refPxPerWu(nominalD, ch2);   // #299 D
         if (pxN > 0.35 * Math.hypot(cw, ch2)) ok = false;
       }
       legTermOn.set(k, ok);
@@ -221,6 +221,8 @@ function tick() {
   const dv = new THREE.Vector3();
   const dRect = renderer.domElement.getBoundingClientRect();
   const dCh = renderer.domElement.clientHeight || 900;
+  // #299 D: the one inline tan kept — its degenerate-fov ||0.4 guard has
+  // no place in the shared leaf (fov is 55 here; the guard is belt+braces)
   const dHt = Math.tan(camera.fov * Math.PI / 360) || 0.4;
   const discs = [];
   for (let bi = 0; fnMeta && bi < fnMeta.length; bi++) {
@@ -228,7 +230,8 @@ function tick() {
     if (m.agg && !m.count) continue;
     if (!alphaTgt || !alphaTgt[m.file] || alphaTgt[m.file] < 0.5) continue;
     dv.set(m.p[0], m.p[1], m.p[2]).project(camera);
-    const bx = (dv.x*0.5+0.5)*dRect.width, by = (-dv.y*0.5+0.5)*dRect.height;
+    toScreen(dv, dRect.width, dRect.height);   // #299 D: shared NDC->canvas
+    const bx = _scr[0], by = _scr[1];
     if (bx < -60 || bx > dRect.width+60 || by < -60 || by > dRect.height+60) continue;
     const cd = Math.hypot(m.p[0]-camera.position.x, m.p[1]-camera.position.y, m.p[2]-camera.position.z);
     discs.push({ x: bx, y: by, r: (m.count?3:2)*(dCh/2)/(dHt*cd), wx: m.p[0], wy: m.p[1], wz: m.p[2] });
@@ -321,9 +324,11 @@ function tick() {
       if (gateOk && discs.length && typeof s.k === "string" &&
           curJ > 0 && curJ < (segN.get(s.k) || 1) - 1) {
         _sv.set(s.a[0], s.a[1], s.a[2]).project(camera);
-        const ax2 = (_sv.x*0.5+0.5)*dRect.width, ay2 = (-_sv.y*0.5+0.5)*dRect.height;
+        toScreen(_sv, dRect.width, dRect.height);   // #299 D
+        const ax2 = _scr[0], ay2 = _scr[1];
         _sv.set(s.b[0], s.b[1], s.b[2]).project(camera);
-        const bx2 = (_sv.x*0.5+0.5)*dRect.width, by2 = (-_sv.y*0.5+0.5)*dRect.height;
+        toScreen(_sv, dRect.width, dRect.height);
+        const bx2 = _scr[0], by2 = _scr[1];
         const abx = bx2 - ax2, aby = by2 - ay2, ab2 = abx*abx + aby*aby || 1;
         for (let di2 = 0; di2 < discs.length; di2++) {
           const dc = discs[di2];
@@ -359,9 +364,9 @@ function tick() {
   updateStubLabs();
   // bollards read at ANY camera distance: a 1-2px dot in a dark knot is not
   // a reroute node you can see — radius ∝ camera distance (~2.5-4px on screen)
-  if (fnJDot && fnJDotPos) {
+  if (jdot && jdot.pos) {
     let dirty = false;
-    const a = fnJDot.instanceMatrix.array;
+    const a = jdot.mesh.instanceMatrix.array;
     // anchor context (issue #5 + empty-station law): a dodged dot stays
     // lawful while it sits within 20px of RENDERED conduit ink — every
     // bezier sample of every rendered leg/trunk chain (busPts a/b, scale
@@ -374,9 +379,11 @@ function tick() {
         if (Math.hypot(fa2[si*16], fa2[si*16+1], fa2[si*16+2]) <= 0.001) continue;
         const s2 = busPts[si];
         dv.set(s2.a[0], s2.a[1], s2.a[2]).project(camera);
-        anchors.push((dv.x*0.5+0.5)*dRect.width, (-dv.y*0.5+0.5)*dRect.height);
+        toScreen(dv, dRect.width, dRect.height);   // #299 D
+        anchors.push(_scr[0], _scr[1]);
         dv.set(s2.b[0], s2.b[1], s2.b[2]).project(camera);
-        anchors.push((dv.x*0.5+0.5)*dRect.width, (-dv.y*0.5+0.5)*dRect.height);
+        toScreen(dv, dRect.width, dRect.height);
+        anchors.push(_scr[0], _scr[1]);
       }
     }
     // issue #5: bollards must clear fn-box/label INK on screen. Depth-packed
@@ -386,11 +393,11 @@ function tick() {
     // fan; sub: along its leg toward the station; Jof: down its delivery
     // stub) until its disc clears every served box. Pure function of the
     // static arrays + camera: identical frames produce identical dodges.
-    // True world arrays (fnJDotPos, zero-gap anchors, census) are untouched.
-    for (let i = 0; i < fnJDotR.length; i++) {
-      const d = Math.hypot(fnJDotPos[i*3] - camera.position.x,
-                           fnJDotPos[i*3+1] - camera.position.y,
-                           fnJDotPos[i*3+2] - camera.position.z);
+    // True world arrays (jdot.pos, zero-gap anchors, census) are untouched.
+    for (let i = 0; i < jdot.r.length; i++) {
+      const d = Math.hypot(jdot.pos[i*3] - camera.position.x,
+                           jdot.pos[i*3+1] - camera.position.y,
+                           jdot.pos[i*3+2] - camera.position.z);
       // SCREEN-CONSTANT bollard radii, the same law class as conduit width
       // (skeptic B3: a world-radius floor shrinks with zoom while trunks
       // hold ~screen px — hierarchy inverted at hubzoom). Station ≈11px,
@@ -398,16 +405,16 @@ function tick() {
       // dot's size factor — one dominant merge dot per station, tree dots
       // clearly subordinate (round-3 crop verdict: "cluster of mid-sized
       // balls" with 9px/6px was still too flat).
-      const kf = fnJDotK ? fnJDotK[i] : 1;
+      const kf = jdot.k ? jdot.k[i] : 1;
       const lod = _lod;
       const hpxr = renderer.domElement.clientHeight || 900;
-      let gateOk = lod ? (fnJDotSt[i] ? lod.stOK(fnJDotOf[i]) : lod.res(fnJDotOf[i])) : true;
+      let gateOk = lod ? (jdot.st[i] ? lod.stOK(jdot.of[i]) : lod.res(jdot.of[i])) : true;
       // sighting #9 (2) + empty-station law (user report): a bollard renders
       // only when its attachment ACTUALLY SERVED this frame — station heads
       // need a serving trunk endpoint ("T|fi" in stAttKey), sub dots their
       // own leg chain. Inventory legs/trunks do NOT earn ink (the user saw
       // fully-empty station bollards floating at the landing pose).
-      if (gateOk && fnJDotKey && fnJDotKey[i] && !stAttKey.has(fnJDotKey[i]))
+      if (gateOk && jdot.key && jdot.key[i] && !stAttKey.has(jdot.key[i]))
         gateOk = false;
       // viewport-FRACTION law (user directive r5): the world-slope law
       // r = kf*0.0102*d keeps every element a constant FRACTION of the
@@ -416,8 +423,8 @@ function tick() {
       const rRef = d * 0.0102 * kf;
       if (fnLodV) {
         if (gateOk) { fnLodV.bollardsShown++;
-          fnLodV.minServedBoxPx = Math.min(fnLodV.minServedBoxPx, lod ? lod.pxOf(fnJDotOf[i]) : Infinity);
-          const wpp = 2 * Math.tan(camera.fov * Math.PI / 360) / hpxr;
+          fnLodV.minServedBoxPx = Math.min(fnLodV.minServedBoxPx, lod ? lod.pxOf(jdot.of[i]) : Infinity);
+          const wpp = 1 / refPxPerWu(1, hpxr);   // #299 D
           fnLodV.minBollardPx = Math.min(fnLodV.minBollardPx, ((2 * rRef) / (wpp * d)) * (900 / hpxr)); }
         else fnLodV.bollardsGated++;
       }
@@ -430,18 +437,19 @@ function tick() {
       // the degenerate case for the down-fan axis (−Y projects to ~0), so a
       // direction whose screen step dies falls back to sliding AWAY from the
       // worst violating box in XZ.
-      if (discs.length && fnJDotTg) {
+      if (discs.length && jdot.tg) {
         const rr = rT * (dCh/2)/(dHt*Math.max(d,1));
         const clearAt = (wx, wy, wz) => {
           dv.set(wx, wy, wz).project(camera);
-          const sx = (dv.x*0.5+0.5)*dRect.width, sy = (-dv.y*0.5+0.5)*dRect.height;
+          toScreen(dv, dRect.width, dRect.height);   // #299 D
+          const sx = _scr[0], sy = _scr[1];
           for (let di = 0; di < discs.length; di++) {
             const dc = discs[di];
             if (Math.hypot(sx-dc.x, sy-dc.y) - dc.r - rr < 2) return { ok: false, sx, sy };
           }
           return { ok: true, sx, sy };
         };
-        let qx = fnJDotPos[i*3], qy = fnJDotPos[i*3+1], qz = fnJDotPos[i*3+2];
+        let qx = jdot.pos[i*3], qy = jdot.pos[i*3+1], qz = jdot.pos[i*3+2];
         const at0 = clearAt(qx, qy, qz);
         if (!at0.ok) {
           // worst violator (max overlap) drives the fallback axis
@@ -454,10 +462,10 @@ function tick() {
           // hub's clear anchored bearing is often UP the trunk fan, F1 #263),
           // plus away-from-worst-violator in XZ
           const dirs = [];
-          const tx = fnJDotTg[i*3], ty = fnJDotTg[i*3+1], tz = fnJDotTg[i*3+2];
+          const tx = jdot.tg[i*3], ty = jdot.tg[i*3+1], tz = jdot.tg[i*3+2];
           dirs.push([tx, ty, tz], [-tx, -ty, -tz]);
           if (wd2) {
-            let ax = fnJDotPos[i*3]-wd2.wx, az = fnJDotPos[i*3+2]-wd2.wz;
+            let ax = jdot.pos[i*3]-wd2.wx, az = jdot.pos[i*3+2]-wd2.wz;
             const al = Math.hypot(ax, az);
             if (al > 1e-6) dirs.push([ax/al, 0, az/al]);
             else dirs.push([0.8, 0, 0.6]);
@@ -484,11 +492,11 @@ function tick() {
           let okBest = null, capBest = null;
           for (const [ux, uy, uz] of dirs) {
             // dead-on-screen axes cannot help (topdown −Y): skip them
-            const p1c = clearAt(fnJDotPos[i*3]+ux*3, fnJDotPos[i*3+1]+uy*3, fnJDotPos[i*3+2]+uz*3);
-            const p0c = clearAt(fnJDotPos[i*3], fnJDotPos[i*3+1], fnJDotPos[i*3+2]);
+            const p1c = clearAt(jdot.pos[i*3]+ux*3, jdot.pos[i*3+1]+uy*3, jdot.pos[i*3+2]+uz*3);
+            const p0c = clearAt(jdot.pos[i*3], jdot.pos[i*3+1], jdot.pos[i*3+2]);
             if (Math.hypot(p1c.sx-p0c.sx, p1c.sy-p0c.sy) < 0.5) continue;
             for (let s = 1; s <= 40; s++) {
-              const cx2 = fnJDotPos[i*3] + ux*3*s, cy2 = fnJDotPos[i*3+1] + uy*3*s, cz2 = fnJDotPos[i*3+2] + uz*3*s;
+              const cx2 = jdot.pos[i*3] + ux*3*s, cy2 = jdot.pos[i*3+1] + uy*3*s, cz2 = jdot.pos[i*3+2] + uz*3*s;
               const cc = clearAt(cx2, cy2, cz2);
               if (!anchored(cc.sx, cc.sy)) continue;   // off-ink: would read as empty station
               const disp = Math.hypot(cc.sx-at0.sx, cc.sy-at0.sy);
@@ -510,25 +518,25 @@ function tick() {
           dirty = true;
         } else {
           const o16 = i*16;
-          if (a[o16+12] !== fnJDotPos[i*3] || a[o16+13] !== fnJDotPos[i*3+1] || a[o16+14] !== fnJDotPos[i*3+2]) {
-            a[o16+12] = fnJDotPos[i*3]; a[o16+13] = fnJDotPos[i*3+1]; a[o16+14] = fnJDotPos[i*3+2];
+          if (a[o16+12] !== jdot.pos[i*3] || a[o16+13] !== jdot.pos[i*3+1] || a[o16+14] !== jdot.pos[i*3+2]) {
+            a[o16+12] = jdot.pos[i*3]; a[o16+13] = jdot.pos[i*3+1]; a[o16+14] = jdot.pos[i*3+2];
             dirty = true;
           }
         }
       }
-      const f = rT / fnJDotR[i];
+      const f = rT / jdot.r[i];
       if (Math.abs(f - 1) > 0.06) {
         const o = i * 16;
         a[o] *= f; a[o+5] *= f; a[o+10] *= f;   // uniform sphere scale
-        fnJDotR[i] = rT;
+        jdot.r[i] = rT;
         dirty = true;
       }
     }
-    if (dirty) fnJDot.instanceMatrix.needsUpdate = true;
+    if (dirty) jdot.mesh.instanceMatrix.needsUpdate = true;
   }
   // NO EXPLANATION WITHOUT PRESENCE (sighting #11): the pinned card's
   // lifetime is frame-synced to its anchor's rendered state — chain keys
-  // must carry ink (inkKeys), bollards must render (fnJDotR), plain wires
+  // must carry ink (inkKeys), bollards must render (jdot.r), plain wires
   // keep at least one lit endpoint. Anchor gone -> card hides, no exceptions.
   if (wireTipAnchor && wireTipEl.style.display !== "none") {
     const a = wireTipAnchor;
@@ -536,7 +544,7 @@ function tick() {
     if ((a.kind === "trunk" || a.kind === "jleg") && a.k !== undefined)
       present = inkKeys.has(String(a.k));
     else if (a.__ji !== undefined)
-      present = (fnJDotR[a.__ji] || 0) > 0.001;
+      present = (jdot.r[a.__ji] || 0) > 0.001;
     else if (a.kind === "wire" && a.a !== undefined && a.b !== undefined)
       present = (alphaTgt[a.a] || 0) > 0.5 || (alphaTgt[a.b] || 0) > 0.5;
     if (!present) hideWireTip();

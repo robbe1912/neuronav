@@ -50,24 +50,17 @@ const bucketPosIB = [], bucketColIB = [], bucketMat = [], bucketMesh = [];
   });
   BUCKETS.forEach(b => {
     const bi = BUCKETS.indexOf(b);
-    const geo = new LineSegmentsGeometry();
-    geo.setPositions(new Float32Array((counts[bi] * 2 + hwCounts[bi] * 32) * 3));
-    geo.setColors(new Float32Array((counts[bi] * 2 + hwCounts[bi] * 32) * 3));
-    const mat = new LineMaterial({
-      vertexColors: true, linewidth: b.width, worldUnits: false,
-      // normal blending: additive stacking blew out hub fans into white glare
-      // (hundreds of strands converge on 200+-degree hubs); overview opacity
-      // capped per bucket so edges stay a quiet layer under the cluster hues
-      transparent: true, opacity: b.op, alphaToCoverage: false,
-      blending: THREE.NormalBlending, depthWrite: false,
-    });
-    mat.resolution.set(glW(), innerHeight);
-    const mesh = new LineSegments2(geo, mat);
-    mesh.frustumCulled = false;   // instance positions mutate per frame
-    scene.add(mesh);
-    bucketPosIB.push(geo.attributes.instanceStart.data);
-    bucketColIB.push(geo.attributes.instanceColorStart.data);
-    bucketMat.push(mat);
+    // normal blending: additive stacking blew out hub fans into white glare
+    // (hundreds of strands converge on 200+-degree hubs); overview opacity
+    // capped per bucket so edges stay a quiet layer under the cluster hues.
+    // #299 D: mkFatLines owns construction + the resize registry.
+    const mesh = mkFatLines(
+      new Float32Array((counts[bi] * 2 + hwCounts[bi] * 32) * 3),
+      new Float32Array((counts[bi] * 2 + hwCounts[bi] * 32) * 3),
+      { linewidth: b.width, opacity: b.op });
+    bucketPosIB.push(mesh.geometry.attributes.instanceStart.data);
+    bucketColIB.push(mesh.geometry.attributes.instanceColorStart.data);
+    bucketMat.push(mesh.material);   // opacity tier laws + __dbg read it
     bucketMesh.push(mesh);   // dash distances are computed on the LineSegments2
   });
 }
@@ -386,11 +379,12 @@ function pickWireMeta(e) {
       const o = i * 6;
       v.set(a[o], a[o+1], a[o+2]).project(camera);
       if (v.z > 1) continue;
+      toScreen(v, rect.width, rect.height);   // #299 D
+      const vSx = _scr[0], vSy = _scr[1];
       w.set(a[o+3], a[o+4], a[o+5]).project(camera);
       if (w.z > 1) continue;
-      const d = segDist(px, py,
-        (v.x + 1) / 2 * rect.width, (1 - v.y) / 2 * rect.height,
-        (w.x + 1) / 2 * rect.width, (1 - w.y) / 2 * rect.height);
+      toScreen(w, rect.width, rect.height);
+      const d = segDist(px, py, vSx, vSy, _scr[0], _scr[1]);
       const m = meta[Math.floor(i / per)];
       // pick parity (sighting #11): a trunk meta on the wire tier must not
       // answer the picker when its conduit is LOD-culled — the card would
@@ -410,11 +404,12 @@ function pickWireMeta(e) {
       const o = fo + s * 6;
       v.set(arr[o], arr[o+1], arr[o+2]).project(camera);
       if (v.z > 1) break;
+      toScreen(v, rect.width, rect.height);   // #299 D
+      const vSx = _scr[0], vSy = _scr[1];
       w.set(arr[o+3], arr[o+4], arr[o+5]).project(camera);
       if (w.z > 1) break;
-      const d = segDist(px, py,
-        (v.x + 1) / 2 * rect.width, (1 - v.y) / 2 * rect.height,
-        (w.x + 1) / 2 * rect.width, (1 - w.y) / 2 * rect.height);
+      toScreen(w, rect.width, rect.height);
+      const d = segDist(px, py, vSx, vSy, _scr[0], _scr[1]);
       const dd = d - 1;
       if (dd < bestD) { bestD = dd; best = { kind: "link", li: i }; pickWireZ = v.z + segT * (w.z - v.z); }
     }
@@ -431,11 +426,12 @@ function pickWireMeta(e) {
         const s = busPts[i];
         v.set(s.a[0], s.a[1], s.a[2]).project(camera);
         if (v.z > 1) continue;
+        toScreen(v, rect.width, rect.height);   // #299 D
+        const vSx = _scr[0], vSy = _scr[1];
         w.set(s.b[0], s.b[1], s.b[2]).project(camera);
         if (w.z > 1) continue;
-        const d = segDist(px, py,
-          (v.x + 1) / 2 * rect.width, (1 - v.y) / 2 * rect.height,
-          (w.x + 1) / 2 * rect.width, (1 - w.y) / 2 * rect.height);
+        toScreen(w, rect.width, rect.height);
+        const d = segDist(px, py, vSx, vSy, _scr[0], _scr[1]);
         const dd = d - 3;   // thick target: generous forgiveness
         // pick-vs-render parity (skeptic A8b): a culled chain (instance
         // scale parked at 0.0001) must not answer the picker — hovering
@@ -451,16 +447,17 @@ function pickWireMeta(e) {
     if (juncPickInfo) {
       for (let i = 0; i < juncPickInfo.length; i++) {
         const m = juncPickInfo[i];
-        const p = fnJDotPos;
+        const p = jdot ? jdot.pos : null;
         if (!m || !p) continue;
         v.set(p[i*3], p[i*3+1], p[i*3+2]).project(camera);
         if (v.z > 1) continue;
         // pick-vs-render parity (sighting #11 class 2): a culled bollard
         // (radius parked at 0.0001) must not answer the picker — a card on
         // invisible ink is explanation without presence
-        if ((fnJDotR[i] || 0) <= 0.001) continue;
+        if ((jdot.r[i] || 0) <= 0.001) continue;
         m.__ji = i;   // presence check keys the card to this dot's live radius
-        const dx = (v.x + 1) / 2 * rect.width - px, dy = (1 - v.y) / 2 * rect.height - py;
+        toScreen(v, rect.width, rect.height);   // #299 D
+        const dx = _scr[0] - px, dy = _scr[1] - py;
         const dd = Math.hypot(dx, dy) - 8;   // dot radius + forgiveness
         if (dd < bestD) { bestD = dd; best = m; pickWireZ = v.z; }
       }
@@ -536,6 +533,10 @@ function syncEdgePos() {
       for (let v = 0; v < 16; v++) {
         const o = b + v * 6;
         if (hidden) {
+          // #299 D: stub-law sibling with a deliberate shape difference —
+          // highway arcs stub BOTH verts at the +0.05-lifted point (a whole
+          // arc collapses onto one spot), unlike stub()'s second-vert-only
+          // lift used by the straight/semAff guards below.
           const sx = dpos[l.s*3], sy = dpos[l.s*3+1] + 0.05, sz = dpos[l.s*3+2];
           arr[o] = sx; arr[o+1] = sy; arr[o+2] = sz;
           arr[o+3] = sx; arr[o+4] = sy; arr[o+5] = sz;

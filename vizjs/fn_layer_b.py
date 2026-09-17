@@ -3,25 +3,7 @@
 # every edit here changes graph.html: regen the bake (the standing
 # template law; test_viz refuses a bake older than viz.py/vizjs).
 _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
-  if (fnMesh) { scene.remove(fnMesh); fnMesh.geometry.dispose(); fnMesh.dispose(); fnMesh = null; }
-  if (fnLines) { scene.remove(fnLines); fnLines.geometry.dispose(); fnLines = null; }
-  if (fnQuiet) { scene.remove(fnQuiet); fnQuiet.geometry.dispose(); fnQuiet = null; }
-  if (fnBus) { scene.remove(fnBus); fnBus.geometry.dispose(); fnBus = null; busPts = null; fnBusRi = null; busPtsMeta = null; trunkMetaMap = null; juncPickInfo = null; }
-    if (fnJDot) { scene.remove(fnJDot); fnJDot.geometry.dispose(); fnJDot = null; fnJDotPos = null; fnJDotR = null; fnJDotTg = null; }
-  if (fnArrows) { scene.remove(fnArrows); fnArrows.geometry.dispose(); fnArrows = null; fnArrowPos = null; fnArrowR = null; fnArrowTang = null; fnArrowBox = null; arrowFile = null; }
-  // issue #6: halo + delivery legs are rebuilt with the bus -- tear them
-  // down with the arrows or ghost discs persist past Escape (#58 family)
-  // and a stale leg array could alias a same-count rebuild
-  if (fnArrowHalo) { scene.remove(fnArrowHalo); fnArrowHalo.geometry.dispose(); fnArrowHalo.material.dispose(); fnArrowHalo = null; }
-  fnArrowLeg = null;
-  if (fnStalks) { scene.remove(fnStalks); fnStalks.geometry.dispose(); fnStalks = null; }
-  if (focusHull) {
-    scene.remove(focusHull.fill);
-    scene.remove(focusHull.rim);
-    focusHull.fill.geometry.dispose(); focusHull.fill.material.dispose();
-    focusHull.rim.geometry.dispose(); focusHull.rim.material.dispose();
-    focusHull = null; _oHull = 0;
-  }
+  teardownLayer();   // #299 D: one walk, every layer asset (see layerAssets)
   fnMeta = [];
   rosterGen++;   // stale ball pins die with their roster (#16)
   if (!fnMode || !focusing) return;
@@ -593,17 +575,13 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
   const emitArc = (T, ax, ay, az, bx, by, bz,
                    ar, ag, ab, br, bg, bb, phase, liftFrac, arrow, meta) => {
     if (meta) T.meta.push(meta);   // 1 meta entry per arc (8 segments each)
-    const dist = Math.hypot(bx-ax, by-ay, bz-az) || 1;
-    const lift = liftFrac * dist;   // ALWAYS +Y: no sign hack, no -Y dives
-    const mx = (ax+bx)/2,
-          my = (ay+by)/2 + lift,
-          mz = (az+bz)/2;
+    const dist = qSpan(ax, ay, az, bx, by, bz);
+    // lift ALWAYS +Y (no sign hack, no -Y dives) — the qMid conduit law
+    const m = qMid(ax, ay, az, bx, by, bz, liftFrac * dist);
     let px = ax, py = ay, pz = az, pd = 0;
     for (let s = 1; s <= FS; s++) {
-      const t = s / FS, u = 1 - t;
-      const x = u*u*ax + 2*u*t*mx + t*t*bx;
-      const y = u*u*ay + 2*u*t*my + t*t*by;
-      const z = u*u*az + 2*u*t*mz + t*t*bz;
+      const q = qPt(ax, ay, az, m[0], m[1], m[2], bx, by, bz, s / FS);
+      const x = q.x, y = q.y, z = q.z;
       const dd = pd + Math.hypot(x-px, y-py, z-pz);
       T.ep.push(px, py, pz, x, y, z);
       T.ec.push(ar, ag, ab, br, bg, bb);
@@ -612,10 +590,9 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
         // delivery arrow sits EXACTLY at the arc end with the end tangent
         // (t=1 derivative 2(B-M)) — tips must land on the delivery
         // geometry, not one segment short of it (skeptic R4: 1.9px)
-        const axp = bx - mx, ayp = by - my, azp = bz - mz;
-        const al = Math.hypot(axp, ayp, azp) || 1;
+        qTan(ax, ay, az, m[0], m[1], m[2], bx, by, bz, 1);
         aPos.push(bx, by, bz);
-        aDir.push(axp/al, ayp/al, azp/al);
+        aDir.push(_qT.x, _qT.y, _qT.z);
         aCol.push(br, bg, bb);
         aBox.push(bx, by, bz);
         // issue #6 ride: delivery leg = this arc (from -> box,
@@ -746,19 +723,16 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
       const tx = -Math.sin(S.brg), tz = Math.cos(S.brg);
       const off = (li - (S.subJ.length - 1) / 2) * 18;
       const ep = [S.p[0] + tx * off, S.p[1] - 5, S.p[2] + tz * off];
-      const dist = Math.hypot(ep[0]-sp[0], ep[1]-sp[1], ep[2]-sp[2]) || 1;
+      const dist = qSpan(sp[0], sp[1], sp[2], ep[0], ep[1], ep[2]);
       // Apex 0.24*dist keeps the lane law (>= 0.10*dist); endpoint
       // clearance owns near-box termini, the screen park law the ink.
-      const lift = 0.24 * dist;
-      const mx = (sp[0]+ep[0])/2,
-            my = (sp[1]+ep[1])/2 + lift,
-            mz = (sp[2]+ep[2])/2;
+      // #299 D: same q-leaves the trunk arcs and riders use — one
+      // +Y-lift law, one tangent math, no per-site restatement to drift.
+      const m = qMid(sp[0], sp[1], sp[2], ep[0], ep[1], ep[2], 0.24 * dist);
       let lx = sp[0], ly = sp[1], lz = sp[2];
       for (let s = 1; s <= FS; s++) {
-        const t = s / FS, u = 1 - t;
-        const x = u*u*sp[0] + 2*u*t*mx + t*t*ep[0];
-        const y = u*u*sp[1] + 2*u*t*my + t*t*ep[1];
-        const z = u*u*sp[2] + 2*u*t*mz + t*t*ep[2];
+        const q = qPt(sp[0], sp[1], sp[2], m[0], m[1], m[2], ep[0], ep[1], ep[2], s / FS);
+        const x = q.x, y = q.y, z = q.z;
         busSegs.push({ a: [lx, ly, lz], b: [x, y, z],
                        col: [BOL_COL[1].r, BOL_COL[1].g, BOL_COL[1].b],
                        k: "L|" + S.fi + "|" + S.id + "|" + li, rf: 0.55 });
@@ -984,15 +958,14 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
             tc[0], tc[1], tc[2], tc[0], tc[1], tc[2], 0, lift / dist, false,
             tmeta);
     fnTrunkN++;
-    const qx = (p0[0]+p1[0])/2,
-          qy = (p0[1]+p1[1])/2 + lift,
-          qz = (p0[2]+p1[2])/2;
+    // #299 D: the bollard-dodge control polyline rides the SAME bezier
+    // law the ink arc above it emits — one curve, two consumers, zero
+    // drift between what renders and what the dodge clears against.
+    const qc = qMid(p0[0], p0[1], p0[2], p1[0], p1[1], p1[2], lift);
     let bx2 = p0[0], by2 = p0[1], bz2 = p0[2];
     for (let s = 1; s <= FS; s++) {
-      const t = s / FS, u = 1 - t;
-      const x = u*u*p0[0] + 2*u*t*qx + t*t*p1[0];
-      const y = u*u*p0[1] + 2*u*t*qy + t*t*p1[1];
-      const z = u*u*p0[2] + 2*u*t*qz + t*t*p1[2];
+      const q = qPt(p0[0], p0[1], p0[2], qc[0], qc[1], qc[2], p1[0], p1[1], p1[2], s / FS);
+      const x = q.x, y = q.y, z = q.z;
       busSegs.push({ a: [bx2, by2, bz2], b: [x, y, z], col: tc, k: tmeta.k });
       bx2 = x; by2 = y; bz2 = z;
     }
@@ -1118,20 +1091,12 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
   }
   const makeWires = (T, op) => {
     // fat lines: WebGL ignores linewidth on classic LineSegments — Line2
-    // renders real screen-space width (default wires read at 2px)
-    const g = new LineSegmentsGeometry();
-    g.setPositions(new Float32Array(T.ep));
-    g.setColors(new Float32Array(T.ec));
-    const m = new LineMaterial({
-      vertexColors: true, transparent: true, opacity: op,
-      linewidth: 2, worldUnits: false, dashed: true,
-      dashSize: 7, gapSize: 4, blending: THREE.NormalBlending,
-      depthWrite: false, alphaToCoverage: false });
-    m.resolution.set(glW(), innerHeight);
-    const ls = new LineSegments2(g, m);
+    // renders real screen-space width (default wires read at 2px).
+    // #299 D: mkFatLines owns construction + the resize registry; dashes
+    // still need per-rebuild distances, so they stay the caller's call.
+    const ls = mkFatLines(new Float32Array(T.ep), new Float32Array(T.ec),
+      { opacity: op, linewidth: 2, dashed: true, dashSize: 7, gapSize: 4 });
     ls.computeLineDistances();
-    ls.frustumCulled = false;
-    scene.add(ls);
     return ls;
   };
   fnLines = makeWires(tierB, 0.75);
@@ -1180,15 +1145,12 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
     }
     if (isFinite(jmin)) fnJclearV = jmin;
   }
-  // per-junction size factors (screen-constant bollard law in the tick)
-  fnJDotOf = null; fnJDotSt = null; stationTks = null; fnBoxScale = null; arrowFile = null; _lod = null; fnJDotKey = null;
+  // per-junction size factors (screen-constant bollard law in the tick).
+  // #299 D: the whole bollard family builds into ONE record — the eight
+  // parallel fnJDot* vars are fields on it, so teardown is a single null
+  // in layerAssets, not eight.
+  stationTks = null; fnBoxScale = null; arrowFile = null; _lod = null;
   juncPickInfo = busJunc.map(j => j.info || null);
-  if (busJunc.length) {
-    fnJDotOf = Int32Array.from(busJunc, j => j.of | 0);
-    fnJDotSt = Uint8Array.from(busJunc, j => j.st | 0);
-    fnJDotLegs = Int32Array.from(busJunc, j => j.nl | 0);
-    fnJDotKey = busJunc.map(j => j.hd ? "T|" + (j.of | 0) : (j.lk || null));
-  }
   stationTks = new Map();
   for (const S of stList) {
     let tks = stationTks.get(S.fi);
@@ -1201,28 +1163,25 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
     const sc = m.count ? 6 : 4;
     if (sc > (fnBoxScale.get(m.file) || 0)) fnBoxScale.set(m.file, sc);
   }
-  fnJDotK = null;
-  if (busJunc.length)
-    fnJDotK = Float32Array.from(busJunc, j => j.k || 1);
   if (busJunc.length) {
     // reroute bollards: the junction must be a THING — a dot where the fan
     // merges and where the bus delivers onto the fn box (Blueprint reroute)
     const jg = new THREE.SphereGeometry(3, 8, 6);
-    fnJDot = new THREE.InstancedMesh(jg, new THREE.MeshBasicMaterial({
+    const jm = new THREE.InstancedMesh(jg, new THREE.MeshBasicMaterial({
       transparent: true, opacity: 0.9, depthWrite: false }), busJunc.length);
-    fnJDot.renderOrder = 3;   // junctions sit ON TOP of the wire tangle
-    fnJDot.material.depthTest = false;  // occlusion may never fully hide a dot (pre-ruling 3.iii)
+    jm.renderOrder = 3;   // junctions sit ON TOP of the wire tangle
+    jm.material.depthTest = false;  // occlusion may never fully hide a dot (pre-ruling 3.iii)
     const M = new THREE.Matrix4(), C = new THREE.Color();
-    fnJDotPos = new Float32Array(busJunc.length * 3);
-    fnJDotR = new Float32Array(busJunc.length).fill(2.6);
-    fnJDotTg = new Float32Array(busJunc.length * 3);
+    const pos = new Float32Array(busJunc.length * 3);
+    const r = new Float32Array(busJunc.length).fill(2.6);
+    const tg = new Float32Array(busJunc.length * 3);
     busJunc.forEach((j, k) => {
       M.makeTranslation(j.p[0], j.p[1], j.p[2]);
-      fnJDot.setMatrixAt(k, M);
-      fnJDotPos[k*3] = j.p[0]; fnJDotPos[k*3+1] = j.p[1]; fnJDotPos[k*3+2] = j.p[2];
+      jm.setMatrixAt(k, M);
+      pos[k*3] = j.p[0]; pos[k*3+1] = j.p[1]; pos[k*3+2] = j.p[2];
       const t = j.tg || [0, -1, 0];
-      fnJDotTg[k*3] = t[0]; fnJDotTg[k*3+1] = t[1]; fnJDotTg[k*3+2] = t[2];
-      fnJDot.setColorAt(k, C.setRGB(j.c[0], j.c[1], j.c[2]));
+      tg[k*3] = t[0]; tg[k*3+1] = t[1]; tg[k*3+2] = t[2];
+      jm.setColorAt(k, C.setRGB(j.c[0], j.c[1], j.c[2]));
     });
     // disjointness assert (skeptic pre-ruling 3.ii): every bollard is
     // near-white (S<=0.15, L>=0.80) while every RENDERED fn box carries a
@@ -1233,10 +1192,21 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
       C.setRGB(j.c[0], j.c[1], j.c[2]).getHSL(hsl);
       if (hsl.s > 0.15 || hsl.l < 0.80) console.error("[bus] bollard family drift", hsl);
     }
-    fnJDot.instanceMatrix.needsUpdate = true;
-    if (fnJDot.instanceColor) fnJDot.instanceColor.needsUpdate = true;
-    fnJDot.frustumCulled = false;
-    scene.add(fnJDot);
+    jm.instanceMatrix.needsUpdate = true;
+    if (jm.instanceColor) jm.instanceColor.needsUpdate = true;
+    jm.frustumCulled = false;
+    scene.add(jm);
+    jdot = {
+      mesh: jm,   // reroute junction bollards (InstancedMesh spheres)
+      pos,        // world positions
+      r,          // radii (screen-constant law)
+      tg,         // dodge axes (issue #5)
+      of: Int32Array.from(busJunc, j => j.of | 0),   // owner FILE index (round-5 LOD gate)
+      st: Uint8Array.from(busJunc, j => j.st | 0),   // 1 = station-class gate
+      legs: Int32Array.from(busJunc, j => j.nl | 0), // legs per STATION (sighting #9 gate)
+      key: busJunc.map(j => j.hd ? "T|" + (j.of | 0) : (j.lk || null)),  // attachment key: a bollard renders only when its attachment SERVED this frame
+      k: Float32Array.from(busJunc, j => j.k || 1),  // per-junction size factor (screen-constant law)
+    };
   }
   if (aPos.length) {
     // 2D SCREEN-SPACE CHEVRON (skeptic r4): 3D cones render as round dots
