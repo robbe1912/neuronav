@@ -83,9 +83,9 @@ ALLOWED[("vizjs/focus_vis.py", 208)] = "V-1: queued behind #123/#89 (data-flag c
 # config/parametric walk filters — EXTS is the user's config include-set
 # and `suffixes` arrives as a caller argument (registry datum at the call
 # site); neither is a language truth hard-coded in nav
-ALLOWED[("nav.py", 634)] = "config walk filter (EXTS = user config; all_suffixes=#240 census)"
-ALLOWED[("nav.py", 688)] = "parametric walk filter (caller-supplied suffixes)"
-ALLOWED[("nav.py", 719)] = "config walk filter (EXTS = user config)"
+ALLOWED[("nav.py", 651)] = "config walk filter (EXTS = user config; all_suffixes=#240 census)"  # #298: line moved, idiom unchanged
+ALLOWED[("nav.py", 705)] = "parametric walk filter (caller-supplied suffixes)"
+ALLOWED[("nav.py", 736)] = "config walk filter (EXTS = user config)"
 
 
 def detectors(line: str) -> list[str]:
