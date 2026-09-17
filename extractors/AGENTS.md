@@ -10,6 +10,7 @@ Full field contract: `extractors/README.md`.
 |---|---|
 | `__init__.py` | registry: `EXTENSIONS` maps suffix -> module (`.gd`/`.tscn` -> `gdscript`, `.py` -> `python`, `.h`/`.hpp`/`.cpp`/`.cc`/`.cxx` -> `cpp`, `.ts`/`.tsx`/`.mts`/`.cts` -> `ts`, `.js`/`.jsx`/`.mjs`/`.cjs` -> `js`, `.rs` -> `rust`); `registry_for(suffix)` returns module or None; `RAW_TEXT_EXTS` = the issue-#240 web set with no structural extractor (`.json .md`) — walked/indexed as raw `file_doc` when configured (TS went structural in #245, JS in #277); `PRESETS` = the `onboard.py init --preset ts\|js\|python\|cpp\|gdscript\|rust` extension lists (curated; the ts preset carries `.cjs` too since #277) |
 | `model.py` | language-neutral dataclasses `FileSym` / `Func` — the parse output contract |
+| `common.py` | shared leaf: text mechanics (`fn_key`, `entry_keys`, regexes) +, since #302, the tree-sitter front-end shells (`node_text`/`node_line`/`line_starts_of`/`ident_child`/`last_ident`/`body_block`, `rel_of_target`, the `receiver_env` scan prologue, and the `make_import_liveness_sweep` factory) — language knobs stay data at the call site (ident types, block child name, `$`-identifiers) |
 | `gdscript.py` | `.gd` + `.tscn` parser, entry-point rules, IO surface scan |
 | `python.py` | `.py` parser, entry-point rules, import/member facts; fn bodies sliced by AST spans (column-0 string lines no longer truncate them) |
 | `cpp.py` | `.h`/`.hpp`/`.cpp`/`.cc`/`.cxx` parser: tree-sitter-cpp front-end + stdlib macro-surface pass (ClassDB/GDVIRTUAL registration harvest, ADD_SIGNAL/ADD_PROPERTY, emit_signal, memnew) |
@@ -32,9 +33,10 @@ every registered module — dead-code reachability starts there.
 signals, `attached_script` (first script of a .tscn — viz reads it),
 `scripts` (all ext_resources), instances, connections, members (gates `var`
 edges), consts (name -> repo relpath), name_literals, init_calls,
-entry_hints (@rpc etc), imported_modules, from_imports; C++ additionally
-fills `globals` (file-scope vars), `aliases` (typedef/using), and
-`private_members` (access-region members — stronger dead candidates).
+entry_hints (@rpc etc), imported_modules, from_imports; cpp fills
+`globals` (file-scope statics) and `private_members` (access-region
+members — stronger dead candidates), cpp/ts/rust fill `aliases`
+(typedef/using, ts `type`, rust `type`).
 
 ## Dead-code exemptions (review-vs-likely tiers live in graph.py, fed from here)
 

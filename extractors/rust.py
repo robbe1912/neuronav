@@ -61,16 +61,25 @@ only, no other source file's contents) and never imports nav or graph
 
 from __future__ import annotations
 
-import bisect
-import os
-import posixpath
 import re
+from functools import partial
 from pathlib import Path
 
 from tree_sitter import Language, Parser, Query, QueryCursor
 
 import tree_sitter_rust as _tsr
 
+from extractors.common import (  # leaf module: shared text mechanics (#302)
+    body_block,
+    ident_child,
+    last_ident,
+    line_starts_of,
+    make_import_liveness_sweep,
+    node_line as _line,
+    node_text as _text,
+    receiver_env,
+    rel_of_target as _rel_of_target,
+)
 from extractors.model import FileSym, Func
 
 RUST_EXTS = frozenset({".rs"})
@@ -104,32 +113,12 @@ _QUERY = Query(RUST_LANG, _QUERY_SRC)
 
 
 # ---- node helpers (no Point reads — module header law) --------------------------
-
-def _text(node, src: bytes) -> str:
-    return src[node.start_byte:node.end_byte].decode("utf-8", "replace")
-
-
-def _line(node, line_starts: list[int]) -> int:
-    return bisect.bisect_right(line_starts, node.start_byte)
-
-
-def _ident_child(node, src: bytes) -> str:
-    for ch in node.children:
-        if ch.type in _IDENT_TYPES:
-            return _text(ch, src)
-    return ""
-
-
-def _last_ident(text_val: str) -> str:
-    ids = re.findall(r"[A-Za-z_]\w*", text_val)
-    return ids[-1] if ids else ""
-
-
-def _body_block(node, src: bytes) -> str:
-    for ch in node.children:
-        if ch.type == "block":
-            return _text(ch, src)
-    return ""
+# shared front-end mechanics live in extractors/common.py (#302); the
+# per-language knobs are data: identifier node types, block child name,
+# '$' allowed in identifiers (rust: no).
+_ident_child = partial(ident_child, ident_types=_IDENT_TYPES)
+_last_ident = partial(last_ident, dollar=False)
+_body_block = partial(body_block, block_type="block")
 
 
 def _signature(node, src: bytes) -> tuple[list[tuple[str, str]], str]:
@@ -256,14 +245,6 @@ def _resolve_chain(path: Path, segments):
         directory = got.parent if got.name == "mod.rs" else got.parent / got.stem
         childdir = directory
     return (cur, childdir)
-
-
-def _rel_of_target(abs_target: Path, path: Path, rel: str) -> str:
-    """Repo-rel posix id of an absolute path, derived from the importing
-    file's own (abs, rel) pair — parse never learns the walk root."""
-    r = os.path.relpath(abs_target, path.parent).replace(os.sep, "/")
-    d = posixpath.dirname(rel)
-    return posixpath.normpath(posixpath.join(d, r)) if d else posixpath.normpath(r)
 
 
 # ---- use structural walk ---------------------------------------------------------
@@ -414,7 +395,7 @@ def parse(path: Path, rel: str) -> FileSym:
     src = text.encode("utf-8")
     fs = FileSym(path=rel, ext=".rs")
     root = _PARSER.parse(src).root_node
-    line_starts = [0] + [i + 1 for i, b in enumerate(src) if b == 0x0A]
+    line_starts = line_starts_of(src)
     caps = QueryCursor(_QUERY).captures(root)
 
     def bytewise(*keys: str) -> list:
@@ -832,12 +813,7 @@ def scan_file(fs: FileSym, ctx) -> None:
 
 
 def _scan_body_rust(fs: FileSym, fn: Func, ctx) -> None:
-    src_key = fn.key
-    body = fn.body or ""
-    var_types: dict[str, str] = dict(fs.members)
-    for p, t in fn.params:
-        if t:
-            var_types[p] = t
+    src_key, body, var_types = receiver_env(fs, fn, module_vars=False)
     for m in RUST_TYPED_LOCAL_RE.finditer(body):
         var_types[m.group(1)] = m.group(2).strip()
     for m in RUST_NEW_LOCAL_RE.finditer(body):
@@ -986,17 +962,10 @@ def rebind_reexports_sweep(ctx) -> None:
         fs.from_imports = rebound
 
 
-def import_liveness_sweep(ctx) -> None:
-    """Glob `use foo::*;` imports: the whole target module's funcs enter
-    ctx.referenced (python plain-import semantics verbatim)."""
-    for rel in sorted(ctx.files):
-        fs = ctx.files[rel]
-        if getattr(fs, "ext", "") != ".rs":
-            continue
-        for mod in sorted(fs.imported_modules):
-            if mod in ctx.files:
-                for other in ctx.files[mod].funcs.values():
-                    ctx.referenced.add(other.key)
+import_liveness_sweep = make_import_liveness_sweep(
+    RUST_EXTS,
+    "Glob `use foo::*;` imports: the whole target module's funcs enter "
+    "ctx.referenced (python plain-import semantics verbatim).")
 
 
 # registry choreography binds (langsep) — see extractors/python.py's
