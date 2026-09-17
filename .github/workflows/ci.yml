@@ -89,6 +89,8 @@ jobs:
         run: python -X utf8 tests/test_delegates.py
       - name: bootgate (handshake precedes boot work, issue #273)
         run: python -X utf8 tests/test_bootgate.py
+      - name: bootrecovery (recovery retry + bounded rescan, issue #292)
+        run: python -X utf8 tests/test_bootrecovery.py
       - name: impact (transitive blast-radius walk, issue #280)
         run: python -X utf8 tests/test_impact.py
       # issue #120/#124: serve.py bake-only surface + qa gate smoke. Leg B

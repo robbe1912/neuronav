@@ -340,8 +340,12 @@ def _boot_recovery() -> str | None:
     tool call picks it up here instead of demanding a restart. A
     config-FILE-driven boot stays degraded (its fix is editing that
     config, then restarting: discovery would hand back the same path).
-    Returns the prelude the call answers with, or None when still
-    degraded."""
+    A failed attempt must not brick the session (issue #292): the
+    re-bind rolls fully back, so the CONFIG_PATH guard below stays a
+    retry latch instead of a one-way tripwire — once the transient
+    cause (embed blip, held store lock) is gone, the next call
+    recovers. Returns the prelude the call answers with, or None when
+    still degraded."""
     global _BOOT_DEGRADED, _BOOT_STORE
     if nav.CONFIG_PATH is not None:
         return None
@@ -349,13 +353,22 @@ def _boot_recovery() -> str | None:
     if not cfg_path.is_file():
         return None
     _validate_foreign_config(cfg_path, Path.cwd())
+    # the pre-recovery state, restored verbatim on failure: nav's
+    # pure-defaults globals, the graph singleton (a mid-sync failure
+    # must not leave it serving the candidate store), and the env
+    # use_config exports for subprocesses
+    saved_cfg = {f: getattr(nav, f) for f in nav._CONFIG_FIELDS}
+    saved_graph = graph._graph
     try:
         nav.use_config(cfg_path)
-        _BOOT_STORE = (str(nav.STATE_DIR), nav.COLLECTION)
         stats = _bounded_rescan()
         g, fns, note = _sync_chain(stats)
         nav.stat_mark_synced()
         _raw_text_banner(nav.suffix_census())
+        # only success re-points the boot identity: a failure past
+        # use_config must leave _at_boot() describing the store the
+        # session actually serves
+        _BOOT_STORE = (str(nav.STATE_DIR), nav.COLLECTION)
         _BOOT_DEGRADED = None
         return (
             f"config appeared mid-session — rebound the boot to "
@@ -364,11 +377,23 @@ def _boot_recovery() -> str | None:
             f"{stats['deleted']} (a/u/u/d), fns {fns['fns_upserted']} "
             f"upserted, graph {len(g.files)} files{note}. Call again to query."
         )
-    except Exception as e:
+    except (Exception, SystemExit) as e:
+        # SystemExit first-class: nav's lock-timeout abort escapes
+        # `except Exception` and would kill the caller's thread
+        # mid-recovery (issue #292). The rollback below is what makes
+        # the guard above retryable: without it the first failure left
+        # nav bound to the candidate config and every later call
+        # short-circuited to the guidance until process restart.
+        for f, v in saved_cfg.items():
+            setattr(nav, f, v)
+        # pre-recovery the env var cannot have been set: a boot with
+        # NEURONAV_CONFIG bound has CONFIG_PATH set and never gets here
+        os.environ.pop("NEURONAV_CONFIG", None)
+        graph._graph = saved_graph
         _BOOT_DEGRADED = (
             f"neuronav: recovery FAILED — the config at "
             f"{cfg_path.as_posix()} raised: {e}. Fix it (or the embedding "
-            "backend it names), then restart the session."
+            "backend it names); the next call retries the recovery."
         )
         return _BOOT_DEGRADED
 
@@ -415,7 +440,7 @@ def _heal_routed_drift() -> None:
     try:
         if not nav.stat_scan():
             return
-        stats = nav.rescan()
+        stats = _bounded_rescan()
         if stats["added"] or stats["updated"] or stats["deleted"]:
             _sync_chain(stats)
             print(
@@ -445,7 +470,7 @@ def _first_contact() -> str | None:
         return None
     nav.import_base()
     t0 = time.perf_counter()
-    stats = nav.rescan()
+    stats = _bounded_rescan()
     g, fns, note = _sync_chain(stats)
     nav.stat_mark_synced()
     return (
@@ -1708,13 +1733,13 @@ def rescan(dir: str = "") -> str:
     with _route(dir) as prelude:
         # issue #41 law: the explicit rescan TOOL stays loud on a 0-file
         # walk — so the degraded-boot guidance (yielded by identity) is
-        # NOT returned; we fall through to nav.rescan(), whose
+        # NOT returned; we fall through to the bounded rescan, whose
         # RuntimeError names root/extensions. A mid-session recovery
         # prelude (a different string) still returns.
         if prelude and prelude is not _BOOT_DEGRADED:
             return prelude
         t0 = time.perf_counter()
-        stats = nav.rescan()
+        stats = _bounded_rescan()
         g, fns, note = _sync_chain(stats)
         nav.stat_mark_synced()
         dt = time.perf_counter() - t0

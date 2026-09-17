@@ -1,6 +1,6 @@
 # AGENTS.md — tests/
 
-Forty self-contained suites. Each is a standalone script — no pytest — run in
+Forty-one self-contained suites. Each is a standalone script — no pytest — run in
 its own process:
 
 ```
@@ -9,7 +9,7 @@ its own process:
 
 Exit 0 = all pass. Each suite bootstraps `sys.path` to the repo root and
 uses a local `check(name, cond)` helper (PASS/FAIL lines + failure count).
-CI (`.github/workflows/ci.yml`) runs thirty hermetic suites on ubuntu
+CI (`.github/workflows/ci.yml`) runs thirty-one hermetic suites on ubuntu
 with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
 `test_pyhard`, `test_cpphard`, `test_jshard`, `test_autorescan`, `test_server_stdio`,
 `test_searchtext`, `test_project_mode`, `test_baseindex`, `test_mwires`,
@@ -17,7 +17,7 @@ with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
 `test_repomap`, `test_selfindex`, `test_explore`, `test_verifier`,
 `test_bench`, `test_bakeint`, `test_portability`, `test_bytelaws`,
 `test_walkguard`, `test_langsep`, `test_delegates`, `test_qa_smoke`,
-`test_bootgate`, `test_impact`, `test_packaging`) plus a `viz` job that builds
+`test_bootgate`, `test_bootrecovery`, `test_impact`, `test_packaging`) plus a `viz` job that builds
 frozen synthetic corpus (`tests/vizcorpus_build.py`) and runs `test_viz`
 against its hermetic store in a real browser (issue #100), then re-runs
 `test_qa_smoke` there so its playwright battery leg executes (the suites
@@ -54,6 +54,7 @@ owner-side `test_chunking` and `test_truthful`.
 | `test_autorescan` | auto-rescan stat gate (issue #19): read-tool freshness, TTL burst guard, embed-failure cooldown, `watch_interval_s` watcher — in-process pins + two stdio e2e servers + the #239 chroma hnsw-settle retry pin (constructed interleaving, no real race needed) | mcp + chromadb + numpy/networkx/scipy/scikit-learn (hermetic temp target + `NEURONAV_EMBED_FAKE=1`) |
 | `test_delegates` | pure-delegate duplicate filter (issue #268): thin wrappers drop from exact_duplicates with a counted skip, genuine groups stay, predicate cache stores the filtered list (#71/#116 laws) | chromadb import (hermetic temp fixture, build-only) |
 | `test_bootgate` | fast-handshake boot gate (issue #273): while the parent holds the store's cross-process write lock, `initialize` + `tools/list` must still answer; after release the boot thread completes (startup banner) and serves `repo_map`; server-under-test selectable via argv for pre-fix FAIL evidence | mcp + chromadb (hermetic temp fixture + config, `NEURONAV_EMBED_FAKE=1`) |
+| `test_bootrecovery` | boot recovery retry + bounded rescan (issue #292): a failed in-session recovery rolls the config re-bind back (nav globals + `NEURONAV_CONFIG` env + graph singleton + boot identity) so the `CONFIG_PATH` guard stays a retry latch, not a one-way brick; nav's lock-timeout `SystemExit` lands in the degraded prelude instead of escaping to the caller's thread; the explicit rescan tool aborts loudly within `LOCK_WAIT_S` under a held store lock | mcp + chromadb (hermetic temp root bound as the pure-defaults boot, `NEURONAV_EMBED_FAKE=1`; server-under-test selectable via argv for pre-fix FAIL evidence) |
 | `test_impact` | impact() transitive blast radius (issue #280): cycle termination, diamond single-count, honest depth caps with a counted past-the-cap frontier, direction asymmetry, entry-boundary annotation, byte-stable rendering, miss suggestions | mcp import (synthetic graphs; no index, no embeddings) |
 | `test_searchtext` | capped `search_text` tool (issue #68): file:line:row shape, deterministic order, 20-file/3-line caps with markers + totals, `files_only`, glob, graceful regex errors | mcp + chromadb (hermetic temp config, `NEURONAV_EMBED_FAKE=1`) |
 | `test_baseindex` | export/import-base shards (issue #102): second-run idempotence (WinError 183), per-phase non-destruction (mid-write debris outside base, commit rollback, cleanup self-heal), byte determinism, stale-shard cleanup, fresh-store roundtrip, stale-id skip (sources deleted since export), manifest model/dim-mismatch refusal (issue #124) | chromadb import (hermetic temp target, `NEURONAV_EMBED_FAKE=1`) |
