@@ -70,7 +70,10 @@ def _apply_config(path: Path | None) -> None:
     and again by ``nav.py --config <path>`` (which also sets NEURONAV_CONFIG
     so subprocesses and sibling modules like graph.py agree). ``path=None``
     means no config anywhere: pure cwd defaults (issue #27)."""
-    global CONFIG_PATH, ROOT, COLLECTION, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, EMBED_URL, EMBED_MODEL, EMBED_DIM, EMBED_DOC_PREFIX, EMBED_PROVIDER, EMBED_API_KEY, WATCH_INTERVAL_S, RECALL_TWO_PASS, CHUNK_CAST, FILE_DOC_CAST, STATE_DIR, DB_DIR, BASE_DIR
+    global CONFIG_PATH, COLLECTION, ROOT, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, \
+        EMBED_URL, EMBED_MODEL, EMBED_DIM, EMBED_DOC_PREFIX, EMBED_PROVIDER, \
+        EMBED_API_KEY, WATCH_INTERVAL_S, RECALL_TWO_PASS, CHUNK_CAST, \
+        FILE_DOC_CAST, STATE_DIR, DB_DIR, BASE_DIR, GITIGNORE_PRUNE_DIRS
     if path is not None and not path.is_file():
         # issue #41: an explicit config path is a contract, not a hint —
         # silently degrading to walk-all defaults flips the walk identity
@@ -104,13 +107,25 @@ def _apply_config(path: Path | None) -> None:
             # so shipped profiles (config/neuronav.json) stay machine-portable
             ROOT = (path.parent / ROOT).resolve()
     COLLECTION = str(cfg.get("collection", "main"))
-    # project-local / no-config defaults walk everything (issue #27); the
-    # legacy install-config default keeps the original target-repo shape
+    # walk scope (issues #27 / #296): project-local and no-config legs walk
+    # everything; a config that omits include_dirs also walks everything —
+    # include_dirs is strictly opt-in (the old fallback was one target
+    # repo's layout and walked 0 files everywhere else). Only the legacy
+    # extensions/exclude fallbacks remain config-mode-scoped.
     _walk_all = path is None or _project_local
-    INCLUDE_DIRS = tuple(cfg.get("include_dirs", WALK_DEFAULTS["include_dirs"] if _walk_all else ("scripts", "scenes", "VFX", "ai", "tests", "tools")))
+    INCLUDE_DIRS = tuple(cfg.get("include_dirs", WALK_DEFAULTS["include_dirs"]))
     EXTS = set(cfg.get("extensions", sorted(_REGISTERED) if _walk_all else WALK_EXTS))
     EXCLUDE_DIRS = frozenset(cfg.get("exclude_dirs", WALK_DEFAULTS["exclude_dirs"] if _walk_all else (".git", "__pycache__")))
     EXCLUDE_DIRS |= _neuroignore(path)
+    # issue #296-B: gitignore-aware walking. Root .gitignore dir entries
+    # join the exclude set via the same union as .neuroignore — additive
+    # only, so precedence stays: explicit exclude_dirs > .neuroignore
+    # (both in EXCLUDE_DIRS) > .gitignore dir entries (a separate set so
+    # they can be attributed/counted, never re-included). Applied on every
+    # leg: walk-all was the landmine surface, but a configured walk on a
+    # fresh repo deserves the same honesty.
+    GITIGNORE_PRUNE_DIRS = _gitignore_dirs(ROOT) - EXCLUDE_DIRS
+    EXCLUDE_DIRS |= GITIGNORE_PRUNE_DIRS
     EMBED_URL = str(cfg.get("embed_url", "http://127.0.0.1:11434/api/embed"))
     EMBED_MODEL = str(cfg.get("embed_model", "qwen3-embedding:0.6b"))
     EMBED_DIM = int(cfg.get("embed_dim", 1024))
@@ -215,20 +230,52 @@ def _neuroignore(path: Path | None) -> frozenset[str]:
              if ln.strip() and not ln.lstrip().startswith("#")}
     return frozenset(n for n in names
                      if n not in ("", ".", "..") and "/" not in n and "\\" not in n)
-# walk-everything defaults shared by the no-config / project-local legs
-# (issue #27) and the onboard scaffold — one literal, three consumers.
-# issue #286 (the bare walk-all landmine): a config-less walk rooted at a
-# dirty checkout silently ingested the scratch trees — .tmp worktrees
-# alone add tens of thousands of files, .team_scratch carries whole
-# venvs (the 20x test_server_stdio timeout). Named here, both walk
-# surfaces heal at once: _apply_config builds EXCLUDE_DIRS from this
-# tuple (iter_files' filter AND the indexed walk), and iter_root_files
-# unions it with _PRUNE_FLOOR — so the floor stays the floor, not the fix.
+def _gitignore_dirs(root: Path) -> frozenset[str]:
+    # issue #296: the walk ignores the target repo's own .gitignore — a
+    # machine-specific exclude list can't keep up (venv/target/build/dist/
+    # next stay walkable). Reuse the .neuroignore mechanism (one bare dir
+    # name per line) against <root>/.gitignore: dir-prune entries only.
+    # Skipped: comments, negations (!name — gitignore negation semantics
+    # don't map onto a prune union), globs (*?[]\ — no bare name to match
+    # against os.walk dirnames), anchored (/name — root-anchored, not a
+    # bare name) and interior-slash paths (nested gitignores are a
+    # follow-up if they earn the risk). Duplicated names cost nothing.
+    try:
+        raw = (root / ".gitignore").read_text(encoding="utf-8-sig")  # BOM law (#119)
+    except OSError:
+        return frozenset()
+    names = []
+    for line in raw.splitlines():
+        line = line.strip().rstrip("/")  # "dir/" and "dir" prune the same
+        if not line or line.startswith(("#", "!")) or line.startswith("/"):
+            continue
+        if any(c in line for c in "*?[]\\") or "/" in line:
+            continue
+        if line not in (".", ".."):
+            names.append(line)
+    return frozenset(names)
+
+
+# walk-everything defaults shared by no-config / project-local legs, the
+# onboard scaffold and the root-wide prune floor (issue #27: one literal,
+# three consumers; issue #296-C: WALK_DEFAULTS["exclude_dirs"] IS the one
+# canonical prune set — _PRUNE_FLOOR derives from it, so the indexed walk,
+# iter_root_files and stat_fingerprint can never disagree again; issue #286:
+# .tmp/.team_scratch stay here — they are not gitignore-standard, they are
+# THIS repo's scratch names). Issue #296-A: a config without include_dirs
+# walks everything — include_dirs is strictly opt-in; there is no
+# machine-specific directory fallback left to mistarget a foreign repo.
 WALK_DEFAULTS = {
     "include_dirs": (".",),
-    "exclude_dirs": (".git", "__pycache__", ".venv", ".neuronav", "node_modules",
-                     ".tmp", ".team_scratch"),
+    "exclude_dirs": (".git", ".godot", "__pycache__", ".venv", ".neuronav",
+                     "node_modules", ".tmp", ".team_scratch"),
 }
+# one-shot stderr note when gitignore-sourced prunes hide a large subtree
+# (issue #296-B): keeps the #290/#286 oversized-walk guard honest — the
+# totals it counts may already be gitignore-pruned. Hermetic (FAKE) runs
+# stay silent like the #286 hint.
+GITIGNORE_PRUNE_WARN_N = 10_000
+_gitignore_counted: set[str] = set()
 
 
 def use_config(path: Path) -> None:
@@ -244,6 +291,7 @@ COLLECTION: str
 INCLUDE_DIRS: tuple[str, ...]
 EXTS: set[str]
 EXCLUDE_DIRS: frozenset[str]
+GITIGNORE_PRUNE_DIRS: frozenset[str]
 EMBED_URL: str
 EMBED_MODEL: str
 EMBED_DIM: int
@@ -280,7 +328,7 @@ _apply_config(_discover_config())
 
 _CONFIG_FIELDS = (
     "CONFIG_PATH",
-    "ROOT", "COLLECTION", "INCLUDE_DIRS", "EXTS", "EXCLUDE_DIRS",
+    "ROOT", "COLLECTION", "INCLUDE_DIRS", "EXTS", "EXCLUDE_DIRS", "GITIGNORE_PRUNE_DIRS",
     "EMBED_URL", "EMBED_MODEL", "EMBED_DIM", "EMBED_DOC_PREFIX", "EMBED_PROVIDER",
     "EMBED_API_KEY", "WATCH_INTERVAL_S", "RECALL_TWO_PASS", "CHUNK_CAST",
     "FILE_DOC_CAST",
@@ -514,6 +562,51 @@ def _walk_scope_tick(n: int) -> None:
             "NEURONAV_CONFIG or extend exclude_dirs; continuing",
             file=sys.stderr,
         )
+def _gitignore_prune_tick(pruned: list[str]) -> None:
+    # issue #296: surface large gitignore-sourced prunes once per dir name
+    # per process — a fresh consumer whose whole build tree vanished from
+    # the index deserves a breadcrumb, not a silent 0-file walk. Mirrors
+    # the #286 hint: hermetic FAKE runs and non-repo cwd stay silent.
+    if os.environ.get("NEURONAV_EMBED_FAKE") or CONFIG_PATH is not None and not (ROOT / ".git").is_dir():
+        return
+    fresh = [dn for dn in pruned if dn not in _gitignore_counted]
+    if not fresh:
+        return
+    todo = []
+    for dn in fresh:
+        _gitignore_counted.add(dn)
+        todo.append(dn)
+    if not todo:
+        return
+    total = sum(_count_pruned_files(ROOT / dn) for dn in todo)
+    if total >= GITIGNORE_PRUNE_WARN_N:
+        print(
+            f"neuronav: .gitignore prunes ({', '.join(sorted(todo))}) holding "
+            f"{total:,} files — not indexed; extend exclude_dirs to override",
+            file=sys.stderr,
+        )
+
+
+def _count_pruned_files(base: Path, cap: int = 100_000) -> int:
+    # capped file count inside a pruned dir (for the one-shot note above);
+    # best-effort — unreadable entries count as zero, never fatal
+    n = 0
+    stack = [base]
+    while stack and n < cap:
+        cur = stack.pop()
+        try:
+            with os.scandir(cur) as it:
+                for entry in it:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(entry.path)
+                    else:
+                        n += 1
+                        if n >= cap:
+                            break
+        except OSError:
+            continue
+    return n
+
 
 
 def iter_files(all_suffixes: bool = False) -> Iterator[Path]:
@@ -530,6 +623,10 @@ def iter_files(all_suffixes: bool = False) -> Iterator[Path]:
         if not base.is_dir():
             continue
         for dirpath, dirnames, filenames in os.walk(base):
+            if GITIGNORE_PRUNE_DIRS:
+                _gitignore_prune_tick(
+                    [dn for dn in dirnames if dn in GITIGNORE_PRUNE_DIRS]
+                )
             dirnames[:] = sorted(dn for dn in dirnames if dn not in EXCLUDE_DIRS)
             for name in sorted(filenames):
                 # all_suffixes (issue #240): same walk rules with the
@@ -569,14 +666,12 @@ def suffix_census() -> dict[str, int]:
     return counts
 
 
-# standard cache prune floor for root-wide wiring walks (issue #117): the
-# indexed walk prunes the config's exclude_dirs (+ .neuroignore); root-wide
-# scans (the .tres wiring pass) prune those PLUS these caches — one set
-# beside the walk's config home; consumers derive, none re-hardcodes a
-# second list
-_PRUNE_FLOOR = frozenset(
-    {".git", ".godot", ".venv", "node_modules", ".tmp", ".neuronav"}
-)
+# standard cache prune floor for root-wide wiring walks (issue #117) —
+# issue #296-C: derived from the one canonical set (WALK_DEFAULTS) so the
+# indexed walk (config exclude_dirs + .neuroignore + .gitignore via
+# _apply_config) and the root-wide scans can't drift again; consumers
+# derive, none re-hardcodes a second list
+_PRUNE_FLOOR = frozenset(WALK_DEFAULTS["exclude_dirs"])
 
 
 def iter_root_files(suffixes: set[str] | frozenset[str]) -> Iterator[Path]:
