@@ -258,8 +258,7 @@ def _boot_guidance(census: dict[str, int], probe_fail: str | None) -> str:
                 f"  note: {', '.join(unreg)} have no structural extractor — "
                 "they index as raw text (semantic_search/search_text work), "
                 "but find_functions/symbol_graph/dead_code return nothing "
-                "for these files until extractors land (TS is the tracked "
-                "follow-up)"
+                "for these files until extractors land for them"
             )
         lines.append(
             "  then call rescan (this session picks the new config up) "
@@ -314,7 +313,8 @@ def _raw_text_banner(census: dict[str, int]) -> None:
         "text (semantic_search/search_text work), but find_functions/"
         "symbol_graph/dead_code return nothing for these files "
         "(onboard.py init --preset ts|js|python|cpp|gdscript curates "
-        "extensions; a TS extractor is the tracked follow-up)",
+        "extensions; these files index as raw text until extractors "
+        "land for them)",
         file=sys.stderr,
     )
 
