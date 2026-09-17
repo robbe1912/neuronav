@@ -655,7 +655,7 @@ function mapClampView() {
     p = Math.max(lo, Math.min(hi, p));
     return hi === 0 && lo < 0 ? (lo + hi) / 2 : p;
   };
-  mapPX = clampC(mapPX, mapLayout.worldW || MAP_WORLD_W, cwView);
+  mapPX = clampC(mapPX, mapLayout.worldW, cwView);
   mapPY = clampC(mapPY, mapLayout.worldH || 0, chView);
 }
 // rAF dirty-flag single draw (section 5 [F7]): every caller coalesces here

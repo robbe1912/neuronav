@@ -2,8 +2,7 @@
 # #86 phase-3 / #299 A): 2D map pane layout + build. Moved VERBATIM from viz.py —
 # every edit here changes graph.html: regen the bake (the standing
 # template law; test_viz refuses a bake older than viz.py/vizjs).
-_JS_MAP_RENDER = r"""const MAP_WORLD_W = 1100;   // world width CAP - the pane is a window onto it
-function mapRender() {
+_JS_MAP_RENDER = r"""function mapRender() {
   if (!mapVisible) return;
   const ctx = mapPane.getContext("2d");
   const cwView = mapPane.clientWidth || 440;

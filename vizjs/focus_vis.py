@@ -219,8 +219,7 @@ function rebuildFocusWires() {
   });
   if (revealed.size) {
     const top = [...revealed].sort((a, b) => links[b].w - links[a].w || a - b).slice(0, 8);
-    top.forEach(i => { revealed.delete(i); list.push(i); });
-    top.forEach(i => revealed.add(i));
+    top.forEach(i => list.push(i));
     list.sort((a, b) => a - b);   // deterministic vertex order
   } else if (!list.length) {
     if (focusArcs) {
