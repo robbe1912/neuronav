@@ -27,14 +27,11 @@ import nav  # noqa: E402
 import recall  # noqa: E402
 import server  # noqa: E402
 
-FAILURES: list[str] = []
 
 
-def check(name: str, cond: bool, detail: str = "") -> None:
-    print(f"{'PASS' if cond else 'FAIL'}  {name}{'  ' + detail if detail and not cond else ''}")
-    if not cond:
-        FAILURES.append(name)
+from harness import finish, styled
 
+check = styled("wide")  # byte pin: two-space tag, fail-only detail
 
 MISMATCH_MSG = (
     "index was built with embed model 'oldm' (provider 'ollama') but "
@@ -318,8 +315,7 @@ def main() -> int:
     finally:
         server._auto_rescan = orig_ar
 
-    print(f"\n{len(FAILURES)} failure(s)")
-    return 1 if FAILURES else 0
+    finish()
 
 
 if __name__ == "__main__":

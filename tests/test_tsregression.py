@@ -17,7 +17,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-FAILS = []
 PROFILE = os.environ.get("NEURONAV_CONFIG", "")  # captured before the fixture config takes it
 
 FIX = Path(__file__).resolve().parent / "fixtures" / "tsreg"
@@ -38,11 +37,7 @@ import graph  # noqa: E402
 import nav  # noqa: E402
 
 
-def check(name, cond, detail=""):
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail else ""))
-    if not cond:
-        FAILS.append(name)
-
+from harness import check, finish
 
 def digest(g) -> str:
     """Byte-stability digest over the walked-graph surface (cpphard law)."""
@@ -198,5 +193,4 @@ else:
           f"{n_docs} docs, missing on {len(bad_hdr)}: {bad_hdr[:3]}")
     check(".ts docs stay under the embed budget", not bad_cap, str(bad_cap[:5]))
 
-print(f"\n{len(FAILS)} failure(s)")
-sys.exit(1 if FAILS else 0)
+finish()

@@ -44,14 +44,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 PY = sys.executable
-FAILURES = []
 
 
-def check(name, cond, detail=""):
-    print(f"{'PASS' if cond else 'FAIL'} {name}" + (f" — {detail}" if detail and not cond else ""))
-    if not cond:
-        FAILURES.append(name)
+from harness import FAILURES, styled
 
+check = styled("faildash")  # byte pin: detail rides FAIL lines only
 
 # --- shared helpers ----------------------------------------------------------
 
@@ -529,6 +526,7 @@ def leg_b_battery():
 if __name__ == "__main__":
     leg_a_serve()
     leg_b_battery()
+    # byte pin: bullet-list summary + banner — kept local
     print()
     if FAILURES:
         print(f"{len(FAILURES)} FAILURE(S):")

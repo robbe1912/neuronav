@@ -12,14 +12,9 @@ os.environ["NEURONAV_CONFIG"] = str(Path(__file__).resolve().parents[1] / "confi
 
 import graph  # noqa: E402  (binds neuronav config via NEURONAV_CONFIG)
 
-FAILS = []
 
 
-def check(name, cond, detail=""):
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail else ""))
-    if not cond:
-        FAILS.append(name)
-
+from harness import check, finish
 
 g = graph.get_graph(rebuild=True)
 
@@ -56,5 +51,4 @@ check("self build deterministic",
       and sum(len(v) for v in g.edges.values()) == sum(len(v) for v in g2.edges.values()),
       f"{len(g.files)} files, {sum(len(v) for v in g.edges.values())} edges")
 
-print(f"\n{len(FAILS)} failure(s)")
-sys.exit(1 if FAILS else 0)
+finish()

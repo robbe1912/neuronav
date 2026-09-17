@@ -19,14 +19,9 @@ ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 PY = sys.executable
 
-FAILURES: list[str] = []
 
 
-def check(name: str, ok: bool, detail: str = "") -> None:
-    print(("PASS " if ok else "FAIL ") + name + (f" — {detail}" if detail else ""))
-    if not ok:
-        FAILURES.append(name)
-
+from harness import FAILURES, check
 
 def run_nav(cwd: Path, code: str, env_extra: dict | None = None) -> str:
     """Fresh interpreter with cwd set; NEURONAV_CONFIG scrubbed by default

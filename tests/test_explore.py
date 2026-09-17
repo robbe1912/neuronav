@@ -32,14 +32,11 @@ if os.environ.get("NEURONAV_EMBED_FAKE") == "1":
     if nav.fns_collection().count() == 0:
         graph.sync_functions([], [])  # empty fn col + no changes -> first build
 
-FAILURES: list[str] = []
 
 
-def check(name: str, cond: bool, detail: str = "") -> None:
-    print(f"{'PASS' if cond else 'FAIL'}  {name}{'  ' + detail if detail and not cond else ''}")
-    if not cond:
-        FAILURES.append(name)
+from harness import finish, styled
 
+check = styled("wide")  # byte pin: two-space tag, fail-only detail
 
 def main() -> int:
     import explore as xp
@@ -302,8 +299,7 @@ def main() -> int:
           and len(ann) >= 10)
     check("explore tool registered", "explore" in ann)
 
-    print(f"\n{len(FAILURES)} failure(s)")
-    return 1 if FAILURES else 0
+    finish()
 
 
 if __name__ == "__main__":

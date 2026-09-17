@@ -23,14 +23,9 @@ from types import SimpleNamespace
 
 HERE = Path(__file__).resolve().parents[1]
 
-FAILS = []
 
 
-def check(name, cond, detail=""):
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail else ""))
-    if not cond:
-        FAILS.append(name)
-
+from harness import FAILURES as FAILS, check
 
 cfg = Path(tempfile.gettempdir()) / "neuronav_clusterinv_config.json"
 cfg.write_text(
@@ -416,6 +411,7 @@ check(
     == {"ui/s.gd", "ui/s.tscn", "tgt/a.gd", "tgt/b.gd", "tgt/c.gd"},
     str(_out_maj),
 )
+# summary tail is a pre-#301 byte pin (names failures)
 print()
 if FAILS:
     print(f"{len(FAILS)} FAIL: {FAILS}")

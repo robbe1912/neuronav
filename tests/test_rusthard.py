@@ -19,14 +19,11 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parents[1]
 FIX = Path(__file__).resolve().parent / "fixtures" / "rust"
 
-FAILS: list[str] = []
 
 
-def check(name: str, cond: bool, detail: str = "") -> None:
-    print(("PASS" if cond else "FAIL"), name, detail)
-    if not cond:
-        FAILS.append(name)
+from harness import finish, styled
 
+check = styled("comma")  # byte pin: print-sep PASS lines
 
 CFG = Path(tempfile.gettempdir()) / "neuronav_rusthard_config.json"
 CFG.write_text(
@@ -319,6 +316,4 @@ g2 = graph.get_graph(rebuild=True)
 check("determinism: rebuild digest stable", digest(g) == digest(g2),
       f"{digest(g)[:12]} vs {digest(g2)[:12]}")
 
-print()
-print(f"{len(FAILS)} failure(s)")
-sys.exit(1 if FAILS else 0)
+finish()

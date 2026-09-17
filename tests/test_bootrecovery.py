@@ -37,13 +37,11 @@ SERVER_DIR = (
 )
 sys.path.insert(0, str(SERVER_DIR))  # the checkout under test wins over any editables
 
-RESULTS: list[tuple[str, bool, str]] = []
 
 
-def check(name: str, cond: bool, detail: str = "") -> None:
-    RESULTS.append((name, bool(cond), detail))
-    print(f"{'PASS' if cond else 'FAIL'}: {name}" + (f" — {detail}" if detail else ""))
+import harness
 
+check = harness.styled("colon")  # byte pin: "PASS: <name>" lines
 
 def main() -> None:
     # best-effort cleanup: chroma keeps sqlite handles past teardown on
@@ -253,9 +251,9 @@ def main() -> None:
             str(warm)[:140],
         )
 
-    failed = [r for r in RESULTS if not r[1]]
-    print(f"\n{len(RESULTS) - len(failed)}/{len(RESULTS)} checks passed")
-    if failed:
+    # byte pin: pass/total ratio summary, now off the shared sink
+    print(f"\n{harness.EXECUTED - len(harness.FAILURES)}/{harness.EXECUTED} checks passed")
+    if harness.FAILURES:
         sys.exit(1)
 
 

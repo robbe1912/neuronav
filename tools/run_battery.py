@@ -10,11 +10,20 @@
 # self-contained hermetic scratch trees by convention — distinct temp-dir
 # names, own state dirs).
 # Classification (recomputed per run from tests/test_*.py at HEAD):
-#   pool      — every suite except the three below (FAKE embeds, scrubbed
+#   pool      — every suite except the four below (FAKE embeds, scrubbed
 #               NEURONAV_CONFIG so no ambient profile rebinds a hermetic
 #               suite mid-battery)
 #   serial    — test_qa_smoke: leg A only (NEURONAV_QA_SMOKE_NO_BROWSER=1);
-#               the full-browser leg B belongs to the CI viz job
+#               the full-browser leg B belongs to the CI viz job;
+#               test_crosslang: the chroma store race (issue #301 C) — its
+#               self-index leg rides config/neuronav.json's
+#               "state_dir": "default" (<root>/.neuronav) and its fn-level
+#               toy leg pins the same default, making it the only pool suite
+#               on the DEFAULT chroma store while test_selfindex (same
+#               profile, rebuild=True) and test_explore (self-bootstrap)
+#               hold that store at -j4; observed as chroma InternalError
+#               "Error finding id" (PR #312 battery; attribution GK). One
+#               entry — the #283 parallelization win stands.
 #   gated     — test_target_regression: runs only when the checkout-local
 #               config.json exists (the owner's .gd target profile, issue
 #               #97 — the suite itself skips loudly without one);
@@ -29,7 +38,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-SERIAL = {"test_qa_smoke.py"}
+SERIAL = {
+    "test_qa_smoke.py",
+    # races test_selfindex/test_explore on the DEFAULT chroma store
+    # (<root>/.neuronav) — see the serial bullet above for the schedule
+    "test_crosslang.py",
+}
 GATED = {
     "test_target_regression.py": "checkout-local config.json (owner .gd target profile, issue #97)",
     "test_viz.py": "~/vizcorpus/config.json (CI viz job builds the corpus)",

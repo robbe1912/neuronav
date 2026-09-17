@@ -24,14 +24,9 @@ from types import SimpleNamespace
 
 HERE = Path(__file__).resolve().parents[1]
 
-FAILS = []
 
 
-def check(name, cond, detail=""):
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail else ""))
-    if not cond:
-        FAILS.append(name)
-
+from harness import FAILURES as FAILS, check
 
 TMP = Path(tempfile.mkdtemp(prefix="neuronav_archrules_"))
 cfg = TMP / "neuronav_archrules_config.json"
@@ -339,6 +334,7 @@ check("rules see no scene->scene wires but keep scene->script (#267/#114)",
       by_rule.get("sc-any") == 1 and "sc-inst" not in by_rule,
       str(rep["violations"])[:120])
 
+# summary tail is a pre-#301 byte pin (names failures)
 print()
 if FAILS:
     print(f"{len(FAILS)} FAIL: {FAILS}")

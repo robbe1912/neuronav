@@ -22,14 +22,9 @@ if not _prof.is_file():
 
 import graph  # noqa: E402  (default config.json -> external target)
 
-FAILS = []
 
 
-def check(name, cond, detail=""):
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail else ""))
-    if not cond:
-        FAILS.append(name)
-
+from harness import check, finish
 
 g = graph.get_graph(rebuild=True)
 gd = [f for f in g.files.values() if f.ext == ".gd"]
@@ -57,5 +52,4 @@ for _ptok, _ftok in _cans.get("dead", []):
 for _tok in _cans.get("alive", []):
     check(f"canary {_tok} alive", not any(_tok in c["path"] for c in cands))
 
-print(f"\n{len(FAILS)} failure(s)")
-sys.exit(1 if FAILS else 0)
+finish()

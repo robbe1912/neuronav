@@ -90,14 +90,11 @@ _CPP = registry_for(".cpp")
 _TS = registry_for(".ts")
 _RS = registry_for(".rs")
 
-FAILS: list[str] = []
 
 
-def check(name: str, cond: bool, detail: str = "") -> None:
-    print(f"{'PASS' if cond else 'FAIL'}  {name}" + (f"  {detail}" if detail and not cond else ""))
-    if not cond:
-        FAILS.append(name)
+from harness import FAILURES as FAILS, styled
 
+check = styled("wide")  # byte pin: two-space tag, fail-only detail
 
 def is_delegate(body: str, mod=None) -> bool:
     return graph._pure_delegate(graph._normalize_body(body, mod), mod)
@@ -254,6 +251,7 @@ def main() -> int:
     check("rebuild serves the persisted (filtered) cache",
           g2.duplicates_report() == report, str(g2.duplicates_report()))
 
+    # byte pin: no leading blank line; scratch cleanup rides the finally below
     print(f"{len(FAILS)} failure(s)")
     return 1 if FAILS else 0
 

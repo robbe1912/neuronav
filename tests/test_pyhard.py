@@ -15,15 +15,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parents[1]
 FIX = HERE / "tests" / "fixtures" / "pyhard"
 
-FAILS = []
 
 
-def check(name: bool | str, cond: bool, detail: str = "") -> None:
-    label = f"PASS {name}" if cond else f"FAIL {name}"
-    print(label + (f" — {detail}" if detail else ""))
-    if not cond:
-        FAILS.append(str(name))
-
+from harness import FAILURES as FAILS, check
 
 cfg = Path(tempfile.gettempdir()) / "neuronav_pyhard_config.json"
 cfg.write_text(
@@ -242,5 +236,6 @@ stays_dead("callbacks: string-literal name is not a ref",
 stays_dead("callbacks: attribute ref is not a bare-name ref",
             "callback_refs.py", "fire_later")
 
+# byte pin: summary without leading blank line — kept local
 print(f"{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)

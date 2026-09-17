@@ -17,14 +17,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]
 
-FAILS = []
 
 
-def check(name, cond, detail=""):
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail else ""))
-    if not cond:
-        FAILS.append(name)
-
+from harness import check, finish
 
 # ---- scratch corpus + config (the vizcorpus_build shape, miniature) --------
 SCRATCH = Path(tempfile.gettempdir()) / "neuronav_bakeint_scratch"
@@ -291,5 +286,4 @@ except ImportError as e:
 
 # ---- cleanup -----------------------------------------------------------------
 shutil.rmtree(SCRATCH, ignore_errors=True)
-print(f"\n{len(FAILS)} failure(s)")
-sys.exit(1 if FAILS else 0)
+finish()

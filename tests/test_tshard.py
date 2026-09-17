@@ -19,13 +19,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parents[1]
 FIX = Path(__file__).resolve().parent / "fixtures" / "ts"
 
-FAILS: list[str] = []
+from harness import FAILURES as FAILS, styled
 
-
-def check(name: str, cond: bool, detail: str = "") -> None:
-    print(("PASS" if cond else "FAIL"), name, detail)
-    if not cond:
-        FAILS.append(name)
+check = styled("comma")  # byte pin: print-sep PASS lines
 
 
 CFG = Path(tempfile.gettempdir()) / "neuronav_tshard_config.json"
@@ -317,5 +313,6 @@ check("suite no wiring-only file in dead-file tier",
 g2 = graph.get_graph(rebuild=True)
 check("suite determinism double-run", digest(g) == digest(g2))
 
+# byte pin: summary without leading blank line — kept local
 print(f"{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)

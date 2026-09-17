@@ -15,14 +15,11 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parents[1]
 FIX = Path(__file__).resolve().parent / "fixtures" / "cpp"
 
-FAILS: list[str] = []
 
 
-def check(name: str, cond: bool, detail: str = "") -> None:
-    print(("PASS" if cond else "FAIL"), name, detail)
-    if not cond:
-        FAILS.append(name)
+from harness import finish, styled
 
+check = styled("comma")  # byte pin: print-sep PASS lines
 
 CFG = Path(tempfile.gettempdir()) / "neuronav_cpphard_config.json"
 CFG.write_text(
@@ -278,6 +275,4 @@ check("t4 template base strip", g.files["template_base.h"].extends == "TBase",
       g.files["template_base.h"].extends)
 check("t4 primary class in class_map", g.class_map.get("UsesTBase") == "template_base.h",
       str(g.class_map.get("UsesTBase")))
-print()
-print(f"{len(FAILS)} failure(s)")
-sys.exit(1 if FAILS else 0)
+finish()

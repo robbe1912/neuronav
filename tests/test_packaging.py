@@ -39,14 +39,9 @@ from types import SimpleNamespace
 
 HERE = Path(__file__).resolve().parents[1]
 
-FAILS: list[str] = []
 
 
-def check(name: str, ok: bool, detail: str = "") -> None:
-    print(("PASS " if ok else "FAIL ") + name + (f" — {detail}" if detail else ""))
-    if not ok:
-        FAILS.append(name)
-
+from harness import FAILURES as FAILS, check
 
 VENDOR_FILES = (
     "vendor/three-0.160.0/three.module.js",
@@ -297,6 +292,7 @@ def main() -> None:
     finally:
         srv.kill()
 
+    # byte pin: summary without leading blank line — kept local
     print(f"{len(FAILS)} failure(s)")
     sys.exit(1 if FAILS else 0)
 

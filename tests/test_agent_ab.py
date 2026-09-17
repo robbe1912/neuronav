@@ -98,15 +98,11 @@ from bench.agent_ab import arms as ab_arms  # noqa: E402
 from bench.agent_ab import run as ab_run  # noqa: E402
 from bench.agent_ab import tasks as ab_tasks  # noqa: E402
 
-FAILS: list[str] = []
 
 
-def check(name: str, cond: bool, detail: str = "") -> None:
-    mark = "PASS" if cond else "FAIL"
-    print(f"[{mark}] {name}" + (f" — {detail}" if detail and not cond else ""))
-    if not cond:
-        FAILS.append(name)
+from harness import FAILURES as FAILS, styled
 
+check = styled("bracket")  # byte pin: [PASS]/[FAIL] tag lines
 
 # -- boot the index the same way run.py does (rescan -> graph -> fns) --------
 stats = nav.rescan()
@@ -288,6 +284,7 @@ if not (0 <= _i_fast < _i_slow):
 else:
     print("ok - battery pool reports in completion order (#298)")
 
+# byte pin: FAIL-list summary + banner — kept local
 if FAILS:
     print(f"{len(FAILS)} FAIL: {FAILS}")
     sys.exit(1)
