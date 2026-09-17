@@ -267,6 +267,35 @@ def main() -> int:
     check("determinism: payload repeats byte-identical",
           g.impact("hub") == res)
 
+    # -- bare Graph.__new__ fixtures: read-path class defaults (#294) -------
+    # _pred is already a class default so bare graphs can query; the
+    # liveness read-path attributes (referenced / referenced_names /
+    # reachable / autoloads) must be too — dead_code() raised
+    # AttributeError on self.referenced for exactly this shape.
+    bare = graph.Graph.__new__(graph.Graph)
+    bare.files = {}
+    empty = bare.dead_code()
+    check("bare graph: dead_code() answers on empty files",
+          empty["total"] == 0 and empty["candidates"] == [],
+          f"total={empty['total']}")
+    solo = graph.Graph.__new__(graph.Graph)
+    solo.files = {}
+    add_file(solo, "solo.py", ["only"])
+    dc = solo.dead_code()
+    check("bare graph: unreachable fn on a bare graph ranks dead",
+          dc["total"] == 1
+          and (dc["candidates"][0]["path"], dc["candidates"][0]["func"])
+          == ("solo.py", "only"),
+          str(dc["candidates"][:1]))
+    check("bare graph: liveness read-path defaults are empty",
+          not solo.referenced and not solo.referenced_names
+          and not solo.reachable and solo.autoloads == {})
+    try:
+        solo.referenced.add("x")  # frozenset default: an accidental WRITE
+        # on a bare graph must fail loudly, never leak across instances
+        check("bare graph: accidental write fails loudly", False)
+    except AttributeError:
+        check("bare graph: accidental write fails loudly", True)
     print(f"\n{len(FAILURES)} failure(s)")
     return 1 if FAILURES else 0
 

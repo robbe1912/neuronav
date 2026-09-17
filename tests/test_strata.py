@@ -139,6 +139,43 @@ def main():
     check("entries above deepest layer", min(top) > max(deep),
           f"min entry Y {min(top):.0f} vs max deep Y {max(deep):.0f}")
 
+
+    # 8. chunked relax exactness (issue #294): the post-sim pairwise
+    #    passes (depenetrate, exact 3D/XZ scale, strata sweep) run in
+    #    _RELAX_BLOCK row blocks instead of dense N x N temporaries
+    #    (~0.9 GB peak at 6k nodes). Blocks must be EXACT: any block
+    #    size — default, tiny, single-block (the old dense shape) —
+    #    yields byte-identical positions.
+    import layout as _L
+    import random as _random
+    _rng = _random.Random(3)
+    N8 = 64
+    links8 = []
+    for i in range(N8 - 1):          # chains give strata depth > 0
+        if i % 3 != 2:
+            links8.append({"s": i, "t": i + 1, "w": 2.0, "ty": "call"})
+    for _ in range(140):
+        a, b = _rng.randrange(N8), _rng.randrange(N8)
+        if a != b:
+            links8.append({"s": a, "t": b, "w": 1.0,
+                           "ty": _rng.choice(["call", "inst", "attach"])})
+    sims8 = [t for t in ((_rng.randrange(N8), _rng.randrange(N8),
+                          _rng.uniform(0.5, 0.95)) for _ in range(30)) if t[0] != t[1]]
+    hot8 = [_rng.choice([0.0, 1.0]) for _ in range(N8)]
+    cid8 = [min(i * 4 // N8, 3) for i in range(N8)]
+    orig_blk = _L._RELAX_BLOCK
+    try:
+        base_h = None
+        for blk in (orig_blk, 37, 1 << 30):
+            _L._RELAX_BLOCK = blk
+            out8 = layout_fn(N8, links8, sims8, cid8, hot=hot8)
+            h8 = hashlib.sha256(
+                json.dumps(out8, separators=(",", ":")).encode()).hexdigest()
+            if base_h is None:
+                base_h = h8
+            check(f"relax block={blk} byte-identical to default", h8 == base_h, h8)
+    finally:
+        _L._RELAX_BLOCK = orig_blk
     print(f"\n{N} nodes · {len(links)} links · {len(FAILURES)} failure(s)")
     if FAILURES:
         print("FAILED:", ", ".join(FAILURES))

@@ -67,6 +67,7 @@ RECURSE_SIM = 0.70     # second-pass floor for still-big subclusters (0.30)
 MAX_DEPTH = 2
 PART_SOFT_CAP = 66     # routing passes stop adding to a part at this size
 PART_CAP = 70          # hard mega-blob cap the final enforce pass guarantees
+WELD_CAP = 12          # max members one shared-script weld may glue (both weld passes)
 CHUNK_MIN = 55         # deterministic chunk fill target when a part refuses every cut
 
 TOKEN_CAMEL_RE = re.compile(r"([a-z0-9])([A-Z])")
@@ -182,7 +183,12 @@ def _weld_units(
                 out.append(srel)
         return out
 
-    # pass 1: each scene welds to its PRIMARY attached script unconditionally
+    # pass 1: each scene welds to its PRIMARY attached script — same
+    # WELD_CAP as pass 2: the shared-script mega-unit risk is identical
+    # for the primary bond, and an uncapped pass-1 weld built units no
+    # later pass could split (split/chunk regroup WHOLE welds), which
+    # silently voided PART_CAP once 70+ scenes shared one root script
+    # (issue #294)
     for rel, i in sorted(id_of.items()):
         if not is_scene_path(rel) or i in tests or rel not in g.files:
             continue
@@ -192,15 +198,16 @@ def _weld_units(
         aj = res_to_rel(att)
         j = id_of.get(aj)
         if j is not None and j not in tests:
-            _union(i, j, None)
-    # pass 2: remaining script welds capped — a heavily-shared script
-    # (a hub component can sit on half the UI scenes) must not transitively
-    # glue dozens of scenes into one mega-unit
+            _union(i, j, WELD_CAP)
+    # pass 2: remaining script welds, capped the same way — a
+    # heavily-shared script (a hub component can sit on half the UI
+    # scenes) must not transitively glue dozens of scenes into one
+    # mega-unit
     for rel, i in sorted(id_of.items()):
         if not is_scene_path(rel) or i in tests or rel not in g.files:
             continue
         for srel in _scripts(rel):
-            _union(i, id_of[srel], 12)
+            _union(i, id_of[srel], WELD_CAP)
     members_of: dict[int, list[int]] = defaultdict(list)
     for i in range(n):
         if i not in tests:
@@ -1222,7 +1229,11 @@ def _pass_scene_majority(
                 if not is_scene_path(path):
                     continue
                 u = unit_of.get(path) or [path]
-                if u[0] != path:
+                # anchor on the unit's first SCENE member, not u[0]:
+                # sorted unit lists put .gd before .tscn, so u[0] skipped
+                # every canonical foo.gd+foo.tscn weld — the pass never
+                # ran for exactly the pairs it was written for (issue #294)
+                if min(p for p in u if is_scene_path(p)) != path:
                     continue  # process each welded unit once, via its anchor
                 pi = part_of4[path]
                 w2: Counter = Counter()
