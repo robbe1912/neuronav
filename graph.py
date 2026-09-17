@@ -99,6 +99,19 @@ class Graph:
     # still find the attribute; build() replaces it via predicates.bind.
     _pred: dict | None = None
 
+    # liveness read-path attrs follow the same law (issue #294):
+    # referenced / referenced_names / reachable / autoloads are WRITTEN
+    # by __init__/build but READ by queries, so bare Graph.__new__
+    # fixtures must find them too — dead_code() raised AttributeError
+    # on self.referenced otherwise. The sets default to frozenset: an
+    # accidental .add on a bare graph fails loudly instead of leaking
+    # across instances (autoloads is only ever replaced wholesale by
+    # build(), so a plain dict default is safe there).
+    referenced: frozenset = frozenset()        # string-referenced (alive, not root)
+    referenced_names: frozenset = frozenset()  # func names called via unresolvable receivers
+    reachable: frozenset = frozenset()         # keys reachable from roots
+    autoloads: dict = {}                       # autoload name -> script rel path
+
     def __init__(self) -> None:
         self.files: dict[str, FileSym] = {}
         self.class_map: dict[str, str] = {}  # class_name -> res:// path

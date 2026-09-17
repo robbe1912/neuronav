@@ -327,6 +327,95 @@ check(
     "",
 )
 
+# -------------------------- 8. engine contract defects (issue #294)
+# (a) pass-1 PRIMARY welds carry the same member cap as pass 2: 80
+# scenes attaching one shared root script must not weld into a single
+# 81-member unit. _split_units and cap-enforce's chunk fallback group
+# WHOLE welds — an oversized weld can never be divided downstream, so
+# PART_CAP=70 was unenforceable the moment it formed.
+class _FS294:
+    def __init__(self, att="", scripts=()):
+        self.attached_script = att
+        self.scripts = list(scripts)
+
+
+class _G294:
+    def __init__(self, files):
+        self.files = files
+
+
+_scenes = [f"art/scene_{i:02}.tscn" for i in range(80)]
+_shared = "scripts/shared.gd"
+_files = {s: _FS294(att="res://scripts/shared.gd") for s in _scenes}
+_files[_shared] = _FS294()
+_ids = sorted(_scenes + [_shared])
+_id_of = {p: i for i, p in enumerate(_ids)}
+_, _members = C._weld_units(_ids, set(), _id_of, _G294(_files))
+_big = max(len(m) for m in _members.values())
+check(
+    "pass-1 welds capped: shared primary script can't weld 80 scenes",
+    _big <= C.PART_CAP,
+    f"largest welded unit = {_big} (PART_CAP={C.PART_CAP})",
+)
+# below the cap the canonical weld still fires: a small scene set
+# sharing one primary stays ONE atomic unit
+_files3 = {s: _FS294(att="res://scripts/shared.gd") for s in _scenes[:3]}
+_files3[_shared] = _FS294()
+_ids3 = sorted(_scenes[:3] + [_shared])
+_, _mem3 = C._weld_units(_ids3, set(), {p: i for i, p in enumerate(_ids3)}, _G294(_files3))
+check(
+    "pass-1 cap keeps small legitimate welds whole",
+    max(len(m) for m in _mem3.values()) == 4,
+    str(sorted(len(m) for m in _mem3.values())),
+)
+# end-to-end: the welded units flow into finalize and the 81-file blob
+# raw part must leave cap-enforce under PART_CAP (identical vectors, so
+# no similarity cut divides and the unit-aware chunking path decides)
+_units81 = [sorted(_ids[m] for m in mem) for mem in _members.values()]
+_mat81 = np.tile(np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32), (81, 1))
+_cs81 = C.finalize(
+    [{"id": 0, "size": 81, "paths": [(p, "") for p in _ids]}],
+    _ids, _mat81, adj=None, units=_units81,
+)
+_max81 = max(c["size"] for c in _cs81)
+check(
+    "cap-enforce bounds the 80-scene blob end-to-end (PART_CAP real)",
+    _max81 <= C.PART_CAP,
+    f"largest final part = {_max81} (PART_CAP={C.PART_CAP})",
+)
+
+# (b) scene-majority anchor: the once-per-unit gate must anchor on the
+# unit's first SCENE member. Sorted unit lists put .gd before .tscn, so
+# u[0] silently skipped the canonical foo.gd+foo.tscn weld — the pass
+# never ran for exactly the layout it was written for.
+_adj_ctl = {"aaa/s.tscn": {"tgt/a.gd": 6.0, "tgt/b.gd": 6.0}, "zzz/a.gd": {}}
+_unit_ctl = ["aaa/s.tscn", "zzz/a.gd"]  # scene sorts first: old anchor fired
+_parts_ctl = [
+    {"paths": [("aaa/s.tscn", ""), ("zzz/a.gd", "")], "size": 2},
+    {"paths": [("tgt/a.gd", ""), ("tgt/b.gd", ""), ("tgt/c.gd", "")], "size": 3},
+]
+_out_ctl = C._pass_scene_majority(_parts_ctl, _adj_ctl, {p: _unit_ctl for p in _unit_ctl})
+check(
+    "scene-majority control moves a scene-anchored unit",
+    len(_out_ctl) == 1
+    and {e[0] for e in _out_ctl[0]["paths"]}
+    == {"aaa/s.tscn", "zzz/a.gd", "tgt/a.gd", "tgt/b.gd", "tgt/c.gd"},
+    str(_out_ctl),
+)
+_adj_maj = {"ui/s.tscn": {"tgt/a.gd": 6.0, "tgt/b.gd": 6.0}, "ui/s.gd": {}}
+_unit_maj = ["ui/s.gd", "ui/s.tscn"]  # script sorts first: the canonical pair
+_parts_maj = [
+    {"paths": [("ui/s.gd", "S"), ("ui/s.tscn", "")], "size": 2},
+    {"paths": [("tgt/a.gd", ""), ("tgt/b.gd", ""), ("tgt/c.gd", "")], "size": 3},
+]
+_out_maj = C._pass_scene_majority(_parts_maj, _adj_maj, {p: _unit_maj for p in _unit_maj})
+check(
+    "scene-majority runs for script-anchored units (.gd < .tscn)",
+    len(_out_maj) == 1
+    and {e[0] for e in _out_maj[0]["paths"]}
+    == {"ui/s.gd", "ui/s.tscn", "tgt/a.gd", "tgt/b.gd", "tgt/c.gd"},
+    str(_out_maj),
+)
 print()
 if FAILS:
     print(f"{len(FAILS)} FAIL: {FAILS}")

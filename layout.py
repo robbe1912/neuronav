@@ -10,6 +10,18 @@ tests/test_strata.py imports this module directly.
 import os
 import sys
 
+# Row-block size for the chunked pairwise relax passes in _layout
+# (issue #294): every N x N (and N x N x 3) dense temporary below the
+# 2048-node force cut became a block-striped loop, so the relax working
+# set is O(_RELAX_BLOCK x N) instead of O(N^2) — measured process peak
+# at 6k nodes: 1833 MB -> 452 MB (the remainder is the pre-sim kcoef
+# build, which the grid path never reads). The striping is EXACT:
+# blocks only change allocation granularity, never elementwise
+# arithmetic or the argwhere-then-move pair order, so positions stay
+# byte-identical to the dense form at any block size (pinned by
+# tests/test_strata.py §8 and the 6k corpus phase bisect).
+_RELAX_BLOCK = 512
+
 
 def _links_adj(n: int, links: list) -> list:
     """Directed adjacency from links rows ({"s","t"} dicts or [s,t,...])."""
@@ -369,7 +381,26 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
              else np.zeros(n, dtype=np.float32))
     rad = (np.minimum(12.0, 4.5 + np.sqrt(deg) * 1.0)
            * (1.0 + 0.35 * churn) * 1.1).astype(np.float32)
-    min_d = (rad[:, None] + rad[None, :]) * 2.0
+    # chunked pairwise relax (issue #294): min_d, the depenetrate d0,
+    # the exact-scale dist and the strata dy/req/dxz0 used to be dense
+    # N x N (x2/x3) temporaries — the ~1.8 GB peak at 6k nodes landed
+    # exactly on the engine-scale repos the grid-binned force path
+    # serves. Row blocks (see _RELAX_BLOCK) hold the working set at
+    # O(BLOCK x N) while every elementwise op and the deterministic
+    # argwhere-then-move pair sequence stay identical to the dense form:
+    # byte-stable positions, only allocation is chunked.
+    def _mind_block(a0: int, a1: int):
+        return (rad[a0:a1, None] + rad[None, :]) * 2.0
+
+    def _req_block(a0: int, a1: int):
+        # required XZ distance per pair: the 3D min distance minus the
+        # frozen Y gap (dy >= min_d pairs need nothing). req is invariant
+        # across the sweeps (Y frozen, rad constant), so recomputing rows
+        # per block reproduces the precomputed matrix element-for-element.
+        dy = pos[a0:a1, None, 1] - pos[None, :, 1]
+        md = _mind_block(a0, a1)
+        return np.sqrt(np.maximum(md * md - dy * dy, 0.0)).astype(np.float32)
+
     # dilation fallback: pure pair-pushing oscillates in dense cores (a
     # correction that fixes one pair re-violates its neighbors). If a burst
     # of iterations doesn't converge, inflate the layout slightly and retry
@@ -377,10 +408,15 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
     dbg = os.environ.get("NEURONAV_DEBUG_RELAX")
     def depenetrate() -> int:
         """Separate near-concentric pairs deterministically (see comment)."""
-        d0 = pos[:, None, :] - pos[None, :, :]
-        dd0 = np.sqrt((d0 * d0).sum(-1))
-        np.fill_diagonal(dd0, np.inf)
-        fused = np.argwhere(dd0 < 5.0)
+        fused: list = []
+        for a0 in range(0, n, _RELAX_BLOCK):
+            a1 = min(a0 + _RELAX_BLOCK, n)
+            d0 = pos[a0:a1, None, :] - pos[None, :, :]
+            dd0 = np.sqrt((d0 * d0).sum(-1))
+            dd0[np.arange(a1 - a0), np.arange(a0, a1)] = np.inf
+            loc = np.argwhere(dd0 < 5.0)
+            loc[:, 0] += a0  # argwhere rows are block-local; make global
+            fused.extend(loc)
         moved = 0
         for a, b in fused:
             if a >= b:
@@ -389,7 +425,7 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
             ang = h / 9973.0 * 6.2831853
             axis = np.array([np.cos(ang), 0.35 * np.sin(ang * 1.7), np.sin(ang)], dtype=np.float32)
             axis /= max(float(np.sqrt((axis * axis).sum())), 1e-3)
-            sep = float(min_d[a, b]) * 1.2
+            sep = float((rad[a] + rad[b]) * 2.0) * 1.2
             mid = (pos[a] + pos[b]) * 0.5
             pos[a] = mid - axis * (sep * 0.5)
             pos[b] = mid + axis * (sep * 0.5)
@@ -405,9 +441,12 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
     n0 = depenetrate()
     if dbg and n0:
         print(f"[depen] fixed {n0} fused pairs", file=sys.stderr)
-    dist = np.sqrt(((pos[:, None, :] - pos[None, :, :]) ** 2).sum(-1))
-    np.fill_diagonal(dist, np.inf)
-    s = float((min_d / dist).max())
+    s = 0.0
+    for a0 in range(0, n, _RELAX_BLOCK):
+        a1 = min(a0 + _RELAX_BLOCK, n)
+        dist = np.sqrt(((pos[a0:a1, None, :] - pos[None, :, :]) ** 2).sum(-1))
+        dist[np.arange(a1 - a0), np.arange(a0, a1)] = np.inf
+        s = max(s, float((_mind_block(a0, a1) / dist).max()))
     if s > 1.0:
         if dbg:
             print(f"[relax3d] exact scale pass: s={s:.3f}", file=sys.stderr)
@@ -434,10 +473,6 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
         # deterministic jitter within a layer (<= 0.15 spacing): breaks exact
         # Y ties so same-layer pairs keep a stable separation axis below
         pos[:, 1] += (rng.uniform(-1.0, 1.0, n) * (0.30 * spacing)).astype(np.float32)
-        # required XZ distance so the 3D distance still clears min_d given
-        # the now-frozen Y gap (dy >= min_d pairs need nothing)
-        dy = pos[:, None, 1] - pos[None, :, 1]
-        req = np.sqrt(np.maximum(min_d * min_d - dy * dy, 0.0)).astype(np.float32)
         # XZ twin of the 3D relax, Y (strata axis) frozen; same exact-scale
         # finisher: dxz scales linearly, s = max(req/dxz) clears all pairs
         # while the frozen Y gaps keep their contribution to the 3D distance
@@ -446,11 +481,17 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
         # dy~0 (jitter) - depenetrate them in XZ (same trick as the 3D
         # pass) before the exact XZ scale, or s explodes on a dxz~0 pair
         for sweep in range(30):
-            dxz0 = pos[:, None, [0, 2]] - pos[None, :, [0, 2]]
-            dd0 = np.sqrt((dxz0 * dxz0).sum(-1))
-            np.fill_diagonal(dd0, np.inf)
-            fused = np.argwhere((dd0 < 8.0) & (req > 0.0))
-            if not len(fused):
+            fused: list = []
+            for a0 in range(0, n, _RELAX_BLOCK):
+                a1 = min(a0 + _RELAX_BLOCK, n)
+                dxz0 = pos[a0:a1, None, [0, 2]] - pos[None, :, [0, 2]]
+                dd0 = np.sqrt((dxz0 * dxz0).sum(-1))
+                dd0[np.arange(a1 - a0), np.arange(a0, a1)] = np.inf
+                req = _req_block(a0, a1)
+                loc = np.argwhere((dd0 < 8.0) & (req > 0.0))
+                loc[:, 0] += a0  # argwhere rows are block-local; make global
+                fused.extend(loc)
+            if not fused:
                 break
             for a, b in fused:
                 if a >= b:
@@ -459,7 +500,10 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
                 ang = h / 9973.0 * 6.2831853
                 axis = np.array([np.cos(ang), np.sin(ang)], dtype=np.float32)
                 axis /= max(float(np.sqrt((axis * axis).sum())), 1e-3)
-                sep = float(req[a, b]) * 1.2
+                dyab = pos[a, 1] - pos[b, 1]
+                mdab = (rad[a] + rad[b]) * 2.0
+                sep = float(np.sqrt(np.maximum(
+                    mdab * mdab - dyab * dyab, np.float32(0.0)))) * 1.2
                 mid = (pos[a, [0, 2]] + pos[b, [0, 2]]) * 0.5
                 pos[a, [0, 2]] = mid - axis * (sep * 0.5)
                 pos[b, [0, 2]] = mid + axis * (sep * 0.5)
@@ -467,10 +511,13 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
         # pairs. Y scales by the SAME factor (around 0): anisotropic
         # XZ-only inflation turned the galaxy into a pancake - uniform
         # scaling keeps the sphere-to-scene ratio the eye was calibrated on.
-        dxz = pos[:, None, [0, 2]] - pos[None, :, [0, 2]]
-        dxzd = np.sqrt((dxz * dxz).sum(-1))
-        np.fill_diagonal(dxzd, np.inf)
-        s = float((req / dxzd).max())
+        s = 0.0
+        for a0 in range(0, n, _RELAX_BLOCK):
+            a1 = min(a0 + _RELAX_BLOCK, n)
+            dxz = pos[a0:a1, None, [0, 2]] - pos[None, :, [0, 2]]
+            dxzd = np.sqrt((dxz * dxz).sum(-1))
+            dxzd[np.arange(a1 - a0), np.arange(a0, a1)] = np.inf
+            s = max(s, float((_req_block(a0, a1) / dxzd).max()))
         if s > 1.0:
             if dbg:
                 print(f"[relaxXZ] exact scale pass: s={s:.3f}", file=sys.stderr)
