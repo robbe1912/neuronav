@@ -70,7 +70,7 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `config/` | named config profiles, machine-portable only (relative `root`s); the root `config.json` is deliberately ABSENT (issue #204 — the repo carries no machine values; consumers pass `NEURONAV_CONFIG` per-command or boot pure-defaults on cwd) |
 | `vendor/three-0.160.0/` | vendored three.js core + 4 addons, embedded at build (see below) |
 | `bench/` | recall benchmark: golden set, `run_bench.py`, committed results (`RESULTS.md`) — the numbers `docs/comparison.md` cites |
-| `tests/` | 33 self-contained suites + committed fixtures (see tests/AGENTS.md) |
+| `tests/` | 34 self-contained suites + committed fixtures (see tests/AGENTS.md) |
 | `docs/map-spec-v2.md` | spec the named-wire map layer implements |
 
 ## viz.py template laws
@@ -162,6 +162,7 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_walkguard` | rescan walk + write robustness (issue #117): parse isolation, .tres wiring walk via registry suffixes + pruned traversal, dedupe, write-locked sync | chromadb import (hermetic scratch corpus + FAKE embeds) |
 | `test_delegates` | pure-delegate duplicate filter (issue #268): thin wrappers drop from exact_duplicates with a counted skip, genuine groups stay, predicate cache stores the filtered list (#71/#116 laws) | chromadb import (hermetic temp fixture, build-only) |
 | `test_bootgate` | fast-handshake boot gate (issue #273): with the store's cross-process write lock held by the parent, `initialize` + `tools/list` must still answer; after release the boot thread completes (startup banner) and `repo_map` serves; argv-selectable server-under-test for pre-fix FAIL evidence | mcp + chromadb (hermetic temp fixture + config, `NEURONAV_EMBED_FAKE=1`) |
+| `test_impact` | transitive blast-radius tool (issue #280): cycle-safe deterministic BFS closure over fn-level edges — diamond dedupe, honest depth caps with a counted past-the-cap frontier, direction asymmetry, entry-anchored chains, byte-stable rendering, miss suggestions | mcp import (synthetic graphs; no index, no embeddings) |
 
 Playwright harness gotchas: launch `channel="chrome"`; it serves `graph.html`
 on an ephemeral loopback port (issue #132) — viz gates may run concurrently,

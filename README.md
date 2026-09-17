@@ -34,7 +34,7 @@ no machine values (issue #204): the root `config.json` is deliberately
 absent (never restored); consumers pass `NEURONAV_CONFIG` per-command or
 rely on the pure-defaults cwd boot.
 
-## Tools (stdio MCP, 15)
+## Tools (stdio MCP, 16)
 
 | tool | use |
 |---|---|
@@ -43,6 +43,7 @@ rely on the pure-defaults cwd boot.
 | `find_functions(query, n)` | same, per function with line numbers; scores are embedding cosine 0-1 — a different scale than `semantic_search`'s RRF values; embedding backend down degrades to a lexical substring fallback tagged `degraded:` (never a raw error) |
 | `search_text(pattern, glob, files_only)` | regex text search — grep-class exact-string/literal queries; capped `file:line:text` rows (20 files / 3 lines) with truncation markers + totals |
 | `symbol_graph(symbol, depth)` | callers/callees with true counts + `+N more` past 8 names, 13-node cap with a truncation marker; a total miss suggests closest matches — refactoring safety |
+| `impact(symbol, direction, max_depth)` | transitive blast radius (issue #280) — everything that transitively CALLS a symbol (`direction="callers"`: what breaks if it changes) or it calls (`direction="callees"`: what it depends on), cycle-safe deterministic BFS over the same fn-level edges `symbol_graph` walks one hop at a time; full closure total with a per-hop depth histogram, `+N more` past 8 names, `+N past the depth cap` marker when the walk stopped early, entry-anchored caller chains listed as `entries reached`; a miss suggests closest matches — the pre-refactor check |
 | `explore(query, n, anchor, orientation)` | one-call orientation: Read-equivalent source slices + callers/callees flow; slices cap at a 100-line window ending in `pass anchor="path:start-end" to continue` — pass that anchor back to page the next window with zero re-orientation; `orientation=false` (repeat calls) skips the constant repo-map/cluster-map preamble and spends the budget on slices |
 | `context(path, depth)` | per-file dossier: what it defines (funcs/signals/members, capped), cluster, structural+semantic neighbors, hub rank, edge types |
 | `clusters(k, min_sim)` | subsystem families from embedding geometry |

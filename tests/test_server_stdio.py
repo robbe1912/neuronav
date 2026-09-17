@@ -188,7 +188,8 @@ def _spawn(env: dict[str, str], cwd: Path | None = None) -> SimpleNamespace:
 
 TOOL_NAMES = (
     "explore", "repo_map", "semantic_search", "find_functions", "search_text",
-    "symbol_graph", "dead_code", "duplicates", "clusters", "crosstalk",
+    "symbol_graph", "impact", "dead_code", "duplicates", "clusters",
+    "crosstalk",
     "arch_check", "context", "visualize", "rescan", "memory",
 )
 
@@ -315,9 +316,9 @@ def main() -> None:
         )
         # issue #131: universal mount — every tool gains the optional dir
         # param (empty = boot config's repo); the suite pins the surface,
-        # so it pins the new parameter on all 15 tools
+        # so it pins the new parameter on all 16 tools
         check(
-            "tools/list advertises exactly the 15 tools",
+            "tools/list advertises exactly the 16 tools",
             sorted(names) == sorted(TOOL_NAMES),
             f"tools={names}",
         )
@@ -689,6 +690,27 @@ def main() -> None:
               bool(re.search(r"callers: \d+ \(", sg))
               and bool(re.search(r"callees: \d+ \(", sg)),
               sg.splitlines()[:3])
+
+        # issue #280: impact rides the wire on the self-index's
+        # most-called fn (config-agnostic) — full totals + per-hop
+        # histogram under the #125 line law, byte-stable across calls
+        send({"jsonrpc": "2.0", "id": 12, "method": "tools/call",
+              "params": {"name": "impact",
+                         "arguments": {"symbol": HUBFN}}})
+        imp = text_of(recv(12)["result"])
+        check("impact: full totals + depth histogram over the wire (issue #280)",
+              bool(re.match(r"impact of .+ \(.*\): callers — what breaks$",
+                            imp.splitlines()[0]))
+              and bool(re.search(r"total: \d+ within [1-8] hops", imp))
+              and bool(re.search(r"depth 1: \d+ \(", imp)),
+              imp.splitlines()[:3])
+        send({"jsonrpc": "2.0", "id": 13, "method": "tools/call",
+              "params": {"name": "impact",
+                         "arguments": {"symbol": HUBFN}}})
+        check("impact: byte-stable across calls",
+              text_of(recv(13)["result"]) == imp,
+              len(imp))
+
         ex_schema = next(
             (t.get("inputSchema") or {} for t in tools if t["name"] == "explore"),
             {},
@@ -1675,6 +1697,27 @@ def _drift_scenario() -> None:
         check("drift/125: context defines rows in definition order",
               "defines: 15 func(s) — m00, m01" in ctx,
               [ln for ln in ctx.splitlines() if ln.startswith("defines")][:2])
+
+        # issue #280: impact over the wire on the controlled hub — full
+        # transitive caller total, honest per-hop histogram with "+N
+        # more", the direction guard answering guidance (not an error),
+        # and a miss suggesting closest matches
+        imp = call(19, "impact", {"symbol": "hub", "max_depth": 2})
+        check("drift/280: impact answers full transitive caller totals",
+              imp.splitlines()[0] == "impact of hub (hub_wire.py#hub): "
+              "callers — what breaks"
+              and "total: 14 within 2 hops" in imp
+              and "    depth 1: 14 (" in imp and "+6 more" in imp,
+              imp[:200])
+        bad = call(20, "impact", {"symbol": "hub", "direction": "sideways"})
+        check("drift/280: bad direction answers guidance, not an error",
+              bad.startswith("direction must be 'callers' or 'callees'"),
+              bad[:120])
+        imiss = call(21, "impact", {"symbol": "HubBenchh"})
+        check("drift/280: impact miss suggests closest matches",
+              imiss.startswith("no function matching 'HubBenchh'")
+              and "Closest matches: hub" in imiss,
+              imiss[:160])
     finally:
         srv.kill()
         if FAILS:
