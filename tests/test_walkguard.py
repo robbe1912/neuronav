@@ -13,6 +13,9 @@
 #      (all chroma writes now ride nav._db_lock — grep-audited in review)
 # plus a fresh-store determinism leg: two independent stores over the same
 # corpus embed byte-identically (FAKE vectors are content-seeded).
+# plus issue #286: bare config-less defaults exclude .tmp/.team_scratch on
+# both walk surfaces, and the once-only scope hint fires only for oversized
+# bare walks at a git-root cwd (silent under config, FAKE, or non-repo cwd)
 import contextlib
 import io
 import json
@@ -221,6 +224,94 @@ check(
     outs[0] == outs[1] and len(outs[0].splitlines()) >= 3,
     f"rows={len(outs[0].splitlines())} identical={outs[0] == outs[1]}",
 )
+
+# ---- issue #286: bare-defaults scratch exclusion + once-only scope hint -----
+# The suite process is config-bound (cfg_a above), so these legs run as
+# children under a second scratch root; the guard threshold is lowered in
+# the child to keep the fixture tiny — the crossing logic is the contract.
+SCRATCH2 = Path(tempfile.gettempdir()) / "neuronav_walkguard_bare"
+shutil.rmtree(SCRATCH2, ignore_errors=True)
+TREE = SCRATCH2 / "tree"
+for sub in (".git", ".tmp", ".team_scratch", "team_scratch", "src"):
+    (TREE / sub).mkdir(parents=True)
+(TREE / "src" / "app.py").write_text(
+    "def main():\n    pass\n", encoding="utf-8"
+)
+(TREE / ".team_scratch" / "civenv").mkdir()
+(TREE / ".tmp" / "junk.py").write_text("tmp_junk = 1\n", encoding="utf-8")
+(TREE / ".team_scratch" / "civenv" / "junk.py").write_text(
+    "scratch_junk = 1\n", encoding="utf-8"
+)
+(TREE / "team_scratch" / "junk.py").write_text(
+    "near_miss = 1\n", encoding="utf-8"
+)
+
+GUARD_PROBE = SCRATCH2 / "guard_probe.py"
+GUARD_PROBE.write_text(
+    "import sys\n"
+    f"sys.path.insert(0, {str(HERE)!r})\n"
+    "import nav\n"
+    "nav.WALK_SCOPE_WARN_N = 2\n"
+    "names = sorted(str(p.relative_to(nav.ROOT)).replace(chr(92), '/')\n"
+    "               for p in nav.iter_files())\n"
+    "sum(1 for _ in nav.iter_files())\n"
+    "nav.stat_fingerprint()\n"
+    "print('|'.join(names))\n",
+    encoding="utf-8",
+)
+CLEAN_ENV = {
+    k: v for k, v in os.environ.items()
+    if k not in ("NEURONAV_CONFIG", "NEURONAV_EMBED_FAKE", "NEURONAV_STAT_TTL_S")
+}
+
+
+def _guard_lines(proc):
+    return [ln for ln in proc.stderr.splitlines() if "walk scope" in ln]
+
+
+proc = subprocess.run(
+    [sys.executable, "-X", "utf8", str(GUARD_PROBE)],
+    capture_output=True, text=True, env=CLEAN_ENV, cwd=str(TREE),
+)
+check("bare walk: child completed", proc.returncode == 0, proc.stderr[-400:])
+check(
+    "bare walk: .tmp/.team_scratch excluded, near-miss dir kept (issue #286)",
+    proc.stdout.strip() == "src/app.py|team_scratch/junk.py",
+    proc.stdout.strip(),
+)
+warns = _guard_lines(proc)
+check(
+    "bare walk: scope hint fires exactly once across walk + refingerprint",
+    len(warns) == 1 and "bare defaults" in warns[0] and "NEURONAV_CONFIG" in warns[0],
+    f"lines={len(warns)}",
+)
+
+cfg_bare = SCRATCH2 / "config_bare.json"
+cfg_bare.write_text(
+    json.dumps({
+        "root": str(TREE),
+        "collection": "walkguard_bare",
+        "state_dir": "default",
+        "include_dirs": ["."],
+        "extensions": [".py"],
+        "exclude_dirs": [],
+    }),
+    encoding="utf-8",
+)
+for label, env in (
+    ("configured walk", {**CLEAN_ENV, "NEURONAV_CONFIG": str(cfg_bare)}),
+    ("FAKE/hermetic run", {**CLEAN_ENV, "NEURONAV_EMBED_FAKE": "1"}),
+    ("non-repo cwd", CLEAN_ENV),
+):
+    proc = subprocess.run(
+        [sys.executable, "-X", "utf8", str(GUARD_PROBE)],
+        capture_output=True, text=True, env=env,
+        cwd=str(SCRATCH2 if label == "non-repo cwd" else TREE),
+    )
+    warns = _guard_lines(proc)
+    check(f"{label}: scope hint stays silent", len(warns) == 0, f"lines={len(warns)}")
+
+shutil.rmtree(SCRATCH2, ignore_errors=True)
 
 shutil.rmtree(SCRATCH, ignore_errors=True)
 print(("WALKGUARD OK" if not FAILS else f"WALKGUARDFAILS: {FAILS}"))

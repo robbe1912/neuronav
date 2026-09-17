@@ -46,12 +46,16 @@ def make_project(tmp: Path) -> Path:
     proj = tmp / "proj"
     (proj / "src").mkdir(parents=True)
     (proj / "src" / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
-    # scratch conventions (repo-root .tmp, agent .team_scratch): excluded
-    # only via .neuroignore — nothing is hardcoded
+    # scratch conventions (repo-root .tmp, agent .team_scratch): baseline-
+    # excluded under bare defaults (issue #286 — a dirty checkout's scratch
+    # trees are never user code); .neuroignore still adjusts beyond that
     (proj / ".tmp").mkdir()
     (proj / ".tmp" / "scratch.py").write_text("def leaked():\n    return 2\n", encoding="utf-8")
     (proj / ".team_scratch").mkdir()
     (proj / ".team_scratch" / "census.py").write_text("def leaked2():\n    return 3\n", encoding="utf-8")
+    # a non-baseline dir: the .neuroignore adjustability leg's vehicle
+    (proj / "vendor").mkdir()
+    (proj / "vendor" / "lib.py").write_text("def vlib():\n    return 4\n", encoding="utf-8")
     (proj / ".gitignore").write_text("build/\n", encoding="utf-8")
     return proj
 
@@ -82,10 +86,8 @@ def main() -> None:
         lines = out.strip().splitlines()
         check("no-config: root is cwd", lines[0] == str(proj), lines[0])
         check("no-config: walks everything, state under project", lines[2] == "('.',)" and lines[3] == str(proj / ".neuronav"))
-        out2 = run_nav(proj, "import nav; print([str(p) for p in nav.iter_files() if '.tmp' in str(p)])")
-        check("no-config: nothing hardcoded — .tmp walked until .neuroignore says otherwise", out2.strip() != "[]", out2)
-
-        check("no-config: extensions = registered suffixes", lines[1] == str(sorted(EXTENSIONS)), lines[1])
+        out2 = run_nav(proj, "import nav; print([str(p) for p in nav.iter_files() if '.tmp' in str(p) or '.team_scratch' in str(p)])")
+        check("no-config: .tmp/.team_scratch baseline-excluded under bare defaults (issue #286)", out2.strip() == "[]", out2)
         r = subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "init"], cwd=proj,
                            env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}, "NEURONAV_EMBED_FAKE": "1"},
                            capture_output=True, text=True, check=True)
@@ -104,9 +106,12 @@ def main() -> None:
         check("init: .neuroignore scaffolded once, lists both conventions", ig.count(".tmp") == 1 and ig.count(".team_scratch") == 1, repr(ig))
         igf = proj / ".neuronav" / ".neuroignore"
         saved = igf.read_text(encoding="utf-8")
+        igf.write_text("# user extended it\nvendor\n", encoding="utf-8")
+        out4 = run_nav(proj, "import nav; print([str(p) for p in nav.iter_files() if 'vendor' in str(p)])")
+        check(".neuroignore: user-adjustable — adding a name excludes it", out4.strip() == "[]", out4)
         igf.write_text("# user trimmed it\n", encoding="utf-8")
-        out4 = run_nav(proj, "import nav; print([str(p) for p in nav.iter_files() if '.tmp' in str(p)])")
-        check(".neuroignore: user-adjustable — dropping the line re-includes .tmp", out4.strip() != "[]", out4)
+        out5 = run_nav(proj, "import nav; print([str(p) for p in nav.iter_files() if 'vendor' in str(p)])")
+        check(".neuroignore: dropping the line re-includes it", out5.strip() != "[]", out5)
         igf.write_text(saved, encoding="utf-8")
         gi = (proj / ".gitignore").read_text(encoding="utf-8")
         check("init: gitignore gains exactly one .neuronav/ line", gi.count(".neuronav/") == 1, repr(gi))
