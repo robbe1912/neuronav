@@ -262,8 +262,9 @@ import time as _t298
 _rb298 = _imp298.import_module("tools.run_battery")
 _real298 = (_rb298.run_suite, _rb298.classify, _rb298.SERIAL, _rb298.GATED, sys.argv)
 def _fake298(root, name, extra_env):
-    _t298.sleep({"test_slow.py": 0.30, "test_fast.py": 0.02}[name])
-    return name, 0, 0.0, ""
+    _d298 = {"test_slow.py": 0.30, "test_fast.py": 0.02}[name]
+    _t298.sleep(_d298)
+    return name, 0, _d298, ""
 _rb298.run_suite = _fake298
 _rb298.classify = lambda root: (["test_slow.py", "test_fast.py"], {})
 _rb298.SERIAL, _rb298.GATED = set(), {}
