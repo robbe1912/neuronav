@@ -37,6 +37,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import chromadb
+import chromadb.errors  # drop CLI: NotFoundError is the only swallowable failure (#298)
 from filelock import FileLock, Timeout
 import httpx
 
@@ -54,7 +55,15 @@ def _discover_config() -> Path | None:
     """Issue #27 discovery: env beats project-local beats checkout-local.
     Returns ``None`` when nothing applies -> caller uses pure defaults."""
     env = os.environ.get("NEURONAV_CONFIG")
-    if env:
+    if env is not None:
+        if not env.strip():
+            # #298: present-but-empty is an explicit config contract (#41
+            # class) — falling through to defaults silently switches the
+            # walk identity the same way a wrong path would
+            raise SystemExit(
+                "NEURONAV_CONFIG is set but empty — unset it or point it at "
+                "a real config json (onboard.py init writes one)"
+            )
         return Path(env)
     local = Path.cwd() / ".neuronav" / "config.json"
     if local.is_file():
@@ -452,6 +461,14 @@ def _embed_post(chunk: list[str], headers: dict[str, str] | None) -> dict:
         attempt += 1
 
 
+def _fake_embeds() -> bool:
+    """#298: =0 means OFF (unset/""/"0" falsy); only a non-"0" value swaps
+    in the deterministic hash embeddings. Four sites used to read the env
+    raw, so NEURONAV_EMBED_FAKE=0 silently faked every embed."""
+    v = os.environ.get("NEURONAV_EMBED_FAKE")
+    return v is not None and v != "" and v != "0"
+
+
 def embed(texts: list[str]) -> list[list[float]]:
     """Batch-embed via the configured provider (issue #17): Ollama
     /api/embed or any OpenAI-compatible /embeddings endpoint. Truncates
@@ -463,7 +480,7 @@ def embed(texts: list[str]) -> list[list[float]]:
     exercise for real while no model server is needed. NOT semantic -
     quality gates stay local with a real Ollama."""
     truncated = [t[:MAX_EMBED_CHARS] for t in texts]
-    if os.environ.get("NEURONAV_EMBED_FAKE"):
+    if _fake_embeds():
         out = []
         for t in truncated:
             rng = random.Random(f"neuronav-fake:{t}")
@@ -553,7 +570,7 @@ def _walk_scope_tick(n: int) -> None:
     _walk_scope_warned = True
     if (
         CONFIG_PATH is None
-        and not os.environ.get("NEURONAV_EMBED_FAKE")
+        and not _fake_embeds()
         and Path.cwd() == ROOT
         and (ROOT / ".git").is_dir()
     ):
@@ -567,7 +584,7 @@ def _gitignore_prune_tick(pruned: list[str]) -> None:
     # per process — a fresh consumer whose whole build tree vanished from
     # the index deserves a breadcrumb, not a silent 0-file walk. Mirrors
     # the #286 hint: hermetic FAKE runs and non-repo cwd stay silent.
-    if os.environ.get("NEURONAV_EMBED_FAKE") or CONFIG_PATH is not None and not (ROOT / ".git").is_dir():
+    if _fake_embeds() or CONFIG_PATH is not None and not (ROOT / ".git").is_dir():
         return
     fresh = [dn for dn in pruned if dn not in _gitignore_counted]
     if not fresh:
@@ -1046,7 +1063,7 @@ def embed_mode() -> str:
     the collection stamp so a rescan in the OTHER mode force-re-embeds
     instead of silently reusing sha-gated vectors from the wrong space
     (the #219 rig failure: hash-embed bootstrap, real bench, cosine 0)."""
-    return "fake" if os.environ.get("NEURONAV_EMBED_FAKE") else "real"
+    return "fake" if _fake_embeds() else "real"
 
 
 def doc_shape() -> str:
@@ -1334,7 +1351,10 @@ def clusters(
 
 def export_base() -> dict[str, object]:
     """Dump ids+embeddings+metadata to tracked gz shards. No doc text
-    (git has the file contents; import re-attaches from the checkout).
+    in the shards — import_base upserts ids+embeddings+metadatas only,
+    so imported rows carry no documents until a rescan re-embeds them
+    (#298: the old "import re-attaches from the checkout" claim was
+    false; the bench coherence check crashes on the None documents).
     Commit safety (issue #102): the complete generation is staged in a
     SIBLING dir (state/base.tmp-export) and validated before the live
     base is touched at all, then committed by a whole-directory swap
@@ -1462,7 +1482,16 @@ def import_base() -> dict[str, int | str]:
         # stamps gate when present (#159): a manifest without dim is not
         # a mismatch — the model is the fingerprint, the shards carry
         # the true vectors — and the message shows raw stored values
-        if manifest.get("model") != EMBED_MODEL or (dim is not None and dim != EMBED_DIM):
+        m_prov = manifest.get("provider")
+        # #298 D4: a same-name model behind a different provider is not
+        # guaranteed to be the same vector space (#17/#159 — _check_model
+        # already treats this as drift for live stores); None-safe so
+        # pre-stamp manifests keep importing
+        if (
+            manifest.get("model") != EMBED_MODEL
+            or (dim is not None and dim != EMBED_DIM)
+            or (m_prov is not None and m_prov != EMBED_PROVIDER)
+        ):
             raise RuntimeError(
                 f"base index model mismatch: {manifest.get('model')}/{dim} "
                 f"(provider {manifest.get('provider')!r}) vs config "
@@ -1490,7 +1519,8 @@ def import_base() -> dict[str, int | str]:
         return {"imported": len(ids), "manifest_count": int(manifest.get("count", 0)),
                 "exported_at": str(manifest.get("exported_at", ""))}
 
-if __name__ == "__main__":
+def _cli(argv: list[str] | None = None) -> None:
+    """CLI dispatch (nav.py <cmd>); argv override for in-process tests (#298)."""
     # issue #119: a direct run piped through a cp1252/ascii console raises
     # UnicodeEncodeError the moment a hit path is non-ASCII — the CLI is a
     # console program, so force UTF-8 output regardless of the locale (the
@@ -1500,7 +1530,7 @@ if __name__ == "__main__":
             _stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):
             pass
-    argv = list(sys.argv[1:])
+    argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "--config":
         # switch to a second config (self-index etc.) before running:
         # rebind globals + set NEURONAV_CONFIG so sibling modules (graph.py,
@@ -1521,7 +1551,10 @@ if __name__ == "__main__":
         dt = time.perf_counter() - t0
         print(f"{s} in {dt:.1f}s, total={count()}")
     elif cmd == "search":
-        for h in search(" ".join(sys.argv[2:])):
+        # #298 D1: join the sliced argv — sys.argv still carries the
+        # "--config <cfg> search" prefix, feeding the config path INTO
+        # the query (reproduced: 12 spurious bm25 hits on "json"/"search")
+        for h in search(" ".join(argv[1:])):
             ctx = f"  ctx=[{', '.join(h['ctx'])}]" if h["ctx"] else ""
             print(f"{h['score']:0.4f}  {h['file']}  src={h['src']}{ctx}")
     elif cmd == "count":
@@ -1544,8 +1577,19 @@ if __name__ == "__main__":
             try:
                 cl.delete_collection(name)
                 print(f"dropped {name}")
-            except Exception:
+            except chromadb.errors.NotFoundError:
                 print(f"{name}: not present")
+            except Exception as e:
+                # #298: a Windows file lock / IO error is NOT "not present" —
+                # swallowing it here reads as a successful drop and the user
+                # debugs a store that was never dropped
+                raise RuntimeError(
+                    f"drop: deleting collection {name!r} failed: {e}"
+                ) from e
     else:
         print(f"unknown command: {cmd}", file=sys.stderr)
         sys.exit(2)
+
+
+if __name__ == "__main__":
+    _cli()

@@ -219,6 +219,82 @@ def main() -> None:
         r = run_child([PY, "-c", child], g, env_extra={"NEURONAV_CONFIG": ""})
         check("git churn: default environment identity", r.returncode == 0 and (r.stdout or "").strip().splitlines()[0] == "[1.0, 1.0]", (r.stdout or "")[:80])
 
+    # ---- #298: CLI query isolation + config edges --------------------------------
+    # The --config form used to join sys.argv[2:] — which still carries the
+    # config path and the word "search" — INTO the query, so every --config
+    # search was quietly contaminated (bm25 hits on "json"/"search").
+    _d298 = Path(tempfile.mkdtemp(prefix="n298port_"))
+    (_d298 / "src").mkdir()
+    (_d298 / "src" / "aaa.py").write_text(
+        "def json_search_thing():\n    return 'json search config'\n", encoding="utf-8")
+    _cfg298 = _d298 / "cfg.json"
+    _cfg298.write_text(json.dumps({
+        "root": str(_d298), "collection": "n298port", "state_dir": "default",
+        "include_dirs": ["src"], "extensions": [".py"], "exclude_dirs": [],
+    }), encoding="utf-8")
+    _env298 = {"NEURONAV_CONFIG": str(_cfg298)}
+    run_child([sys.executable, "-X", "utf8", "-c",
+               "import sys; sys.path.insert(0, '.'); import nav; nav.rescan()"],
+              cwd=_d298, env_extra=_env298)
+    _bad = run_child([sys.executable, "-X", "utf8", str(REPO / "nav.py"),
+                      "--config", str(_cfg298), "search", "zzqxnopenterm"], cwd=_d298)
+    _good = run_child([sys.executable, "-X", "utf8", str(REPO / "nav.py"),
+                       "search", "zzqxnopenterm"], cwd=_d298, env_extra=_env298)
+    _bad_hits = [l for l in _bad.stdout.splitlines() if "src=" in l]
+    _good_hits = [l for l in _good.stdout.splitlines() if "src=" in l]
+    check("#298 --config search query is not contaminated by the config path",
+          _bad_hits == _good_hits and _bad_hits
+          and all("src=vec" in l for l in _bad_hits),
+          f"--config: {_bad_hits[:1]} env: {_good_hits[:1]}")
+
+    _r298 = run_child([sys.executable, "-X", "utf8", "-c", "import nav"],
+                      cwd=_d298, env_extra={"NEURONAV_CONFIG": ""})
+    check("#298 present-but-empty NEURONAV_CONFIG aborts (#41 contract)",
+          _r298.returncode != 0 and "empty" in _r298.stderr, _r298.stderr.strip()[:100])
+
+    _pa, _pb = _d298 / "projA", _d298 / "projB"
+    (_pa / "src").mkdir(parents=True)
+    (_pa / "src" / "one.py").write_text("def portable():\n    return 1\n", encoding="utf-8")
+    run_child([sys.executable, "-X", "utf8", str(REPO / "onboard.py"), "init"], cwd=_pa)
+    _root298 = json.loads((_pa / ".neuronav" / "config.json").read_text(encoding="utf-8"))["root"]
+    check("#298 scaffold pins root='.' (portable, #27 contract)", _root298 == ".", repr(_root298))
+    shutil.move(str(_pa), str(_pb))
+    _moved = run_child([sys.executable, "-X", "utf8", "-c",
+                        "import sys; sys.path.insert(0, '.'); import nav; "
+                        "nav.use_config(__import__('pathlib').Path(sys.argv[1])); "
+                        "print(nav.ROOT)",
+                        str(_pb / ".neuronav" / "config.json")], cwd=_d298)
+    check("#298 moved config resolves root at its new home",
+          _moved.returncode == 0 and _moved.stdout.strip() == str(_pb),
+          _moved.stdout.strip() or _moved.stderr.strip()[:100])
+
+    import chromadb  # noqa: E402  (drop legs: swallow NotFoundError only)
+    class _StubClient:
+        def __init__(self, exc):
+            self._exc = exc
+        def delete_collection(self, name):
+            raise self._exc
+    _real_client298 = nav.client
+    try:
+        nav.client = lambda: _StubClient(chromadb.errors.NotFoundError())
+        import io as _io298, contextlib as _cx298
+        _buf298 = _io298.StringIO()
+        with _cx298.redirect_stdout(_buf298):
+            nav._cli(["drop"])
+        check("#298 drop: chroma NotFoundError still reads as 'not present'",
+              _buf298.getvalue().count("not present") == 2
+              and "dropped" not in _buf298.getvalue(), _buf298.getvalue()[:80])
+        nav.client = lambda: _StubClient(PermissionError("file is locked by another process"))
+        try:
+            nav._cli(["drop"])
+            check("#298 drop: a locked/IO failure aborts loudly, names the collection", False, "no raise")
+        except RuntimeError as e:
+            check("#298 drop: a locked/IO failure aborts loudly, names the collection",
+                  "drop:" in str(e) and nav.COLLECTION in str(e) and "locked" in str(e), str(e)[:120])
+    finally:
+        nav.client = _real_client298
+    shutil.rmtree(_d298, ignore_errors=True)
+
     print(f"\n{len(FAILURES)} failure(s)")
     sys.exit(1 if FAILURES else 0)
 

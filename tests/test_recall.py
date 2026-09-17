@@ -496,5 +496,13 @@ check("weak rows reach the wire with a floor footer",
 check("floor constants pinned (self-index calibration)",
       recall.RELEVANCE_FLOOR_SIM == 0.48 and recall.RELEVANCE_FLOOR_BM25 == 6.0)
 
+# ---- #298 smalls: dead import, docstring truth, pass-2 budget gate -----------
+check("no unused weakref import rides along (#298)",
+      not hasattr(recall, "weakref"))
+check("_rrf docstring states k=RRF_K=30, not k=60 (#298)",
+      "k=RRF_K=30" in (recall._rrf.__doc__ or ""), (recall._rrf.__doc__ or "")[:60])
+check("_augment budget<=0 skips pass 2 entirely (#298)",
+      recall._augment("q", ["nav.py"], g, budget=0) == "")
+
 print(f"\n{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)

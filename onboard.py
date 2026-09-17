@@ -76,7 +76,10 @@ def scaffold(project: Path | None = None, preset: str | None = None) -> Path:
     cfg_path = state / "config.json"
     if not cfg_path.is_file():
         cfg = {
-            "root": str(proj),
+            # #298 D3: "." keeps the config portable (#27's contract) —
+            # _apply_config resolves it against the config's own dir via
+            # the #240 machinery; absolute roots still win verbatim
+            "root": ".",
             "collection": "main",
             "state_dir": "default",
             "include_dirs": list(nav.WALK_DEFAULTS["include_dirs"]),
@@ -258,9 +261,12 @@ def _emit_omp(name: str, entry: dict, path: Path) -> None:
     """Write/merge the omp mcpServers fragment. User config merges by server
     name, so multiple projects coexist; other servers are preserved."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    doc: dict = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    # #298 D2: the SAME law global_wire uses on this file — _read_merge_json
+    # (utf-8-sig, loud #121 errors) + _write_json_atomic (crash never
+    # truncates a shared config carrying other projects' servers)
+    doc: dict = _read_merge_json(path, "mcpServers") if path.is_file() else {}
     doc.setdefault("mcpServers", {})[name] = _omp_shape(entry)
-    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8", newline="\n")
+    _write_json_atomic(path, doc)
 
 
 

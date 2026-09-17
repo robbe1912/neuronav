@@ -26,7 +26,7 @@ import os
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 SERIAL = {"test_qa_smoke.py"}
@@ -129,7 +129,9 @@ def main() -> None:
     t0 = time.perf_counter()
     with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as ex:
         futs = [ex.submit(run_suite, root, n, {}) for n in pool]
-        for fut in futs:  # pool suites print as they finish
+        # #298: consume in COMPLETION order — submit order withheld later
+        # PASS lines behind a slow early suite
+        for fut in as_completed(futs):
             name, rc, dt, tail = fut.result()
             results.append((name, rc, dt))
             report(name, rc, dt, tail)

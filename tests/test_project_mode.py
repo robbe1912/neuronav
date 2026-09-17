@@ -93,7 +93,7 @@ def main() -> None:
                            capture_output=True, text=True, check=True)
         cfg_path = proj / ".neuronav" / "config.json"
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-        check("init: project-local config with walk defaults", cfg["root"] == str(proj) and cfg["include_dirs"] == ["."])
+        check("init: project-local config with walk defaults", cfg["root"] == "." and cfg["include_dirs"] == ["."])   # #298: root pins portable
         check("init: scaffold opts into the project store (issue #91)",
               cfg.get("state_dir") == "default", str(cfg.get("state_dir")))
         check("init: scaffold extensions = registered + raw-text web set "
@@ -164,7 +164,7 @@ def main() -> None:
         check("preset ts: curated extensions + state_dir + root",
               pcfg["extensions"] == list(PRESETS["ts"])
               and pcfg["state_dir"] == "default"
-              and pcfg["root"] == str(preset_proj), json.dumps(pcfg))
+              and pcfg["root"] == ".", json.dumps(pcfg))   # #298: portable root
         r = subprocess.run(
             [PY, "-X", "utf8", str(ROOT / "onboard.py"), "init",
              "--preset", "cobol"], cwd=str(tmp), capture_output=True, text=True)
@@ -747,6 +747,37 @@ def main() -> None:
         check("serve: POSIX hint is lsof/ss, never the cmdlet",
               "lsof" in posix_hint and "9123" in posix_hint
               and "Get-NetTCPConnection" not in posix_hint, posix_hint)
+# ---- #298: _emit_omp obeys the shared-config law (BOM + atomic) --------------
+# ~/.omp/agent/mcp.json is SHARED with other projects' servers: a PS5 BOM
+# crashed the plain read, and a crash mid-write truncated every server entry.
+import importlib as _imp298
+onb298 = _imp298.import_module("onboard")
+_omp298 = Path(tempfile.mkdtemp(prefix="n298omp_")) / "mcp.json"
+_omp298.write_bytes(b"\xef\xbb\xbf" + json.dumps(
+    {"mcpServers": {"other-tool": {"type": "stdio", "command": "other"}}}).encode("utf-8"))
+onb298._emit_omp("neuronav", {"command": "uvx", "args": ["neuronav"]}, _omp298)
+_doc298 = json.loads(_omp298.read_text(encoding="utf-8-sig"))
+check("#298 _emit_omp merges a BOM'd shared config instead of crashing",
+      set(_doc298.get("mcpServers", {})) == {"other-tool", "neuronav"}, str(_doc298))
+
+_sentinel298 = _omp298.read_bytes()
+_real_replace298 = os.replace
+def _boom298(src, dst):
+    raise OSError(13, "the file is locked by another process")
+os.replace = _boom298
+try:
+    onb298._emit_omp("neuronav", {"command": "uvx", "args": ["neuronav"]}, _omp298)
+    check("#298 _emit_omp crash leaves the shared config byte-intact", False, "no raise")
+except OSError:
+    _litter = sorted(p.name for p in _omp298.parent.iterdir())
+    check("#298 _emit_omp crash leaves the shared config byte-intact",
+          _omp298.read_bytes() == _sentinel298 and _litter == ["mcp.json"],
+          f"bytes-ok={_omp298.read_bytes() == _sentinel298} dir={_litter}")
+finally:
+    os.replace = _real_replace298
+import shutil as _sh298
+_sh298.rmtree(_omp298.parent, ignore_errors=True)
+
 if __name__ == "__main__":
     main()
     sys.exit(1 if FAILURES else 0)   # a failing run must fail the gate
