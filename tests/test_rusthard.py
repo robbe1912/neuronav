@@ -252,6 +252,24 @@ check("f10 undeclared orphans all dead",
           for n in ("orphan_one", "orphan_two", "orphan_pub")),
       str([c for c in dead["candidates"] if c["path"] == "dead_helpers.rs"]))
 
+# fixture 11: bin/cli.rs — cargo bin target is its OWN crate root (issue
+# #284): crate:: heads anchor at bin/cli/, never the fixture-root lib.rs
+cf = g.files["bin/cli.rs"]
+check("f11 bin main rooted", "bin/cli.rs::main" in g.roots)
+check("f11 use-crate alias binds inside the bin's own module tree",
+      ("bin/cli/helper.rs", "shake") in cf.from_imports
+      and getattr(cf, "_rust_aliases", {}).get("jolt") == ("bin/cli/helper.rs", "shake"),
+      f"{sorted(cf.from_imports)} {dict(getattr(cf, '_rust_aliases', {}))}")
+_main11 = g.edges.get("bin/cli.rs::main", set())
+for _dst in ("bin/cli/helper.rs::shake",   # use crate::helper::shake as jolt
+             "bin/cli/helper.rs::steady"):  # helper::steady via the mod decl
+    check(f"f11 main -> {_dst}", _dst in _main11, str(sorted(_main11)))
+check("f11 bin helper fns alive", alive("bin/cli/helper.rs", "shake")
+      and alive("bin/cli/helper.rs", "steady"))
+check("f11 pub fn in a bin stays dead-eligible (no lib closure over bins)",
+      tier("bin/cli.rs", "bin_orphan") == "likely",
+      str([c for c in dead["candidates"] if c["path"] == "bin/cli.rs"]))
+
 # non-vacuity: the suite bites on real signal
 check("non-vacuity: >=10 alive rust rows",
       sum(1 for rel, fs in g.files.items() if fs.ext == ".rs"

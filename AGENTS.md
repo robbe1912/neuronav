@@ -151,6 +151,7 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_selfindex` | neuronav indexes itself | chromadb import (structural only) |
 | `test_target_regression` | byte-stability over the target repo | chromadb import + the target repo via per-command `NEURONAV_CONFIG` (untracked machine-local profile) |
 | `test_tsregression` | TS target byte-stability + liveness canaries + parse-coverage floors (per-command untracked profile) | chromadb import + the TS target via `NEURONAV_CONFIG` |
+| `test_rustregression` | Rust target byte-stability + fn-level liveness canaries + parse-coverage floors (per-command untracked profile) | chromadb import + the Rust target via `NEURONAV_CONFIG` |
 | `test_server_stdio` | MCP tool surface end-to-end (JSON-RPC over stdio) | mcp + default-config target repo (CI: self-index FAKE bootstrap, issue #180) |
 | `test_autorescan` | auto-rescan stat gate: freshness, TTL burst guard, failure cooldown, watcher (issue #19) | mcp + chromadb + numpy/networkx/scipy/scikit-learn (hermetic temp target, fake embeds) |
 | `test_searchtext` | capped regex text search tool (issue #68): rows/order, 20-file + 3-line caps, truncation markers, totals, files_only, glob, graceful paths | mcp + chromadb (hermetic temp target, fake embeds) |

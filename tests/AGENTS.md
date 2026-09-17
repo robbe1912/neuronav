@@ -48,6 +48,7 @@ owner-side `test_chunking` and `test_truthful`.
 | `test_selfindex` | self-index structural invariants: likely-dead zero, handlers stay review, deterministic rebuild | chromadb import (structural only) |
 | `test_target_regression` | byte-stability over the target repo: floor pins + liveness canaries | chromadb import + the target repo configured in `config.json` |
 | `test_tsregression` | TS target byte-stability + liveness canaries + parse-coverage floors (per-command untracked profile); hermetic section pins the judge-C1 dead-file registry resolution (`.ts` flags like the `.gd` control) + the `# imports:` doc header | chromadb import + the TS target via `NEURONAV_CONFIG` |
+| `test_rustregression` | Rust target byte-stability + fn-level liveness canaries + parse-coverage floors (per-command untracked profile, issue #284); hermetic section pins the crate shape — lib.rs pub-mod closure, wiring-only barrel, bin target as its OWN crate root, integration-test name-level wiring (no cross-crate static edges, pinned as a non-goal) — plus dead-file flags and the `# imports:` doc header | chromadb import + the Rust target via `NEURONAV_CONFIG` |
 | `test_explore` | explore() happy/degraded/no-hit paths, windowed slices + anchor paging (issue #69) + MCP tool annotations; CI leg self-bootstraps the self-index under FAKE (issue #180) | mcp + chroma + populated self-index (CI: self-populated via FAKE rescan) |
 | `test_server_stdio` | MCP stdio end-to-end: spawns server.py, drives JSON-RPC, asserts the context tool answers; drift/stat-gate, routed-freshness, recall-knobs (graph_boost/two_pass), degraded-shape scenarios (issue #180); dead_code truncation footer + duplicates pure-delegate skip footer on hermetic corpora (issues #266/#268) | mcp + default-config target repo (CI: self-index FAKE bootstrap) |
 | `test_autorescan` | auto-rescan stat gate (issue #19): read-tool freshness, TTL burst guard, embed-failure cooldown, `watch_interval_s` watcher — in-process pins + two stdio e2e servers + the #239 chroma hnsw-settle retry pin (constructed interleaving, no real race needed) | mcp + chromadb + numpy/networkx/scipy/scikit-learn (hermetic temp target + `NEURONAV_EMBED_FAKE=1`) |
@@ -168,6 +169,15 @@ Suites pick their own config; the shell must not pre-export one:
   `ts_regression.parse_floor` key and liveness canaries from its
   `regression_canaries` block (dead `[path, func]` pairs, alive name
   tokens) — both machine-local, never tracked.
+- `test_rustregression` mirrors that shape for Rust (issue #284): hermetic
+  leg over `tests/fixtures/rustreg` (crate-shaped); profile legs bind the
+  #284 audit target (anubis daemon-rs) via an untracked scratch profile —
+  `.tmp/anubis-profile.json` on this machine, root at
+  `E:/GitRepos/anubis-public/packages/daemon-rs`, `state_dir` outside the
+  target per #91. Floors come from `rust_regression.parse_floor`/`rs_floor`
+  and canaries from `regression_canaries` (dead `[path, func]` pairs;
+  alive pairs are fn-level — the Rust refinement of tsregression's
+  file-level tokens). Skip loudly without the env (#97); never export it.
 
 - Launches real Chrome via `channel="chrome"` (no browser download).
 - Serves the repo root on an **ephemeral loopback port** (issue #132): viz
@@ -212,6 +222,14 @@ Suites pick their own config; the shell must not pre-export one:
   pair (dead-share denominator, resolved import line), a `.gd` control
   for the judge-C1 registry-resolution pin, and a `.py` pair for the
   language-neutral `# imports:` doc head.
+- `fixtures/rust/*` — Rust extractor fixtures (issue #244): pub-mod API
+  closure, re-export rebinding, trait dispatch, entry attributes, macro
+  call-sites, wiring-only barrel, orphan controls, and the cargo-bin
+  own-crate-root pair (`bin/cli.rs` + `bin/cli/helper.rs`, issue #284).
+- `fixtures/rustreg/*` — crate-shaped rust regression fixture (issue
+  #284): lib.rs pub-mod barrel + re-export, in-crate alias rebind,
+  dead-share pair, a bin target with its own module tree, and an
+  integration test wired through the crate name.
 - `fixtures/verifier/*` — synthetic annotated fixtures for extractor
   facts with no committed coverage (gd declared surface, tscn PackedScene
   instancing). Goal-comment grammar: `tests/test_verifier.py` header;

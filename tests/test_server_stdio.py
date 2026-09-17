@@ -1126,7 +1126,7 @@ def _fresh_folder_scenario() -> None:
     extractor landed, #245), so that half pins the structural boot:
     initialize answers, tools/list works, repo_map serves the real map.
     The degraded-boot guidance UX lives on for raw-text-only repos
-    (.md — JS left that club in #277): an md-only sibling pins the
+    (.md — JS left that club in #277, Rust in #284): an md-only sibling pins the
     contract verbatim — read tools answer first-call guidance naming
     the scanned extensions + the paste-ready config for the suffixes
     actually on disk, the explicit rescan TOOL stays loud (#41 law),
@@ -1247,9 +1247,55 @@ def _fresh_folder_scenario() -> None:
             print("--- fresh240 js server stderr (tail) ---")
             print("\n".join(srv.stderr_lines[-15:]))
 
+    # --- rust-only sibling: structural too (issue #284 — the rust
+    #     extractor is wired into the registry default walk for .rs) ---
+    rsrepo = scratch / "rustonly"
+    (rsrepo / "src").mkdir(parents=True)
+    (rsrepo / "src" / "lib.rs").write_text(
+        "pub fn rgreet() -> &'static str {\n  \"ahoy\"\n}\n\n"
+        "pub fn rcaller() -> &'static str {\n  rgreet()\n}\n",
+        encoding="utf-8", newline="\n")
+
+    rsenv = dict(base)
+    rsenv["NEURONAV_EMBED_FAKE"] = "1"
+    srv = _spawn(rsenv, cwd=rsrepo)
+    send, recv = srv.send, srv.recv
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "fresh", "version": "0"}}})
+        init = recv(1)
+        check("fresh240: rust-only pure-defaults boot answers initialize "
+              "(server stays up — the v0.1.5 fatal)",
+              "result" in init and srv.proc.poll() is None, "")
+        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        names = [t["name"] for t in recv(2)["result"]["tools"]]
+        check("fresh240: tools/list works on the structural rust boot",
+              "repo_map" in names and "rescan" in names, "")
+
+        g = text_of(call(3, "repo_map", {"budget_tokens": 256}))
+        check("fresh240: rust boot serves the structural map, not guidance "
+              "(issue #284)",
+              g.startswith(f"you are here: {rsrepo.resolve().as_posix()}")
+              and "lib.rs" in g and "EMPTY INDEX" not in g, g[:160])
+        g2 = text_of(call(4, "semantic_search", {"query": "rgreet"}))
+        check("fresh240: rust boot semantic_search serves, not guidance",
+              "lib.rs" in g2 and "EMPTY INDEX" not in g2, g2[:160])
+
+        r = call(5, "rescan", {})
+        check("fresh240: rust boot rescan succeeds (structural, #284)",
+              not bool(r.get("isError")) and "files" in text_of(r),
+              text_of(r)[:200])
+    finally:
+        srv.kill()
+        if FAILS:
+            print("--- fresh240 rust server stderr (tail) ---")
+            print("\n".join(srv.stderr_lines[-15:]))
+
     # --- md-only sibling: the raw-text degraded-boot UX (issue #240,
     #     preserved verbatim for the languages without an extractor —
-    #     .md never registers; JS left this club in #277) ---
+    #     .md never registers; JS left this club in #277, Rust in #284) ---
     mdrepo = scratch / "mdonly"
     (mdrepo / "src").mkdir(parents=True)
     (mdrepo / "src" / "main.md").write_text(
