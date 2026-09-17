@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from extractors import cpp
 from extractors import gdscript
+from extractors import js
 from extractors import python
 from extractors import rust
 from extractors import ts
@@ -60,6 +61,10 @@ EXTENSIONS: dict[str, object] = {
     ".tsx": ts,
     ".mts": ts,
     ".cts": ts,
+    ".js": js,
+    ".jsx": js,
+    ".mjs": js,
+    ".cjs": js,
     ".rs": rust,
 }
 
@@ -68,10 +73,11 @@ EXTENSIONS: dict[str, object] = {
 # (degraded-boot guidance), so they live here beside the registry, not
 # in the shared modules. Registered suffixes parse structurally; the
 # rest ride graph.file_doc's raw fallback (embedded + searchable, fns 0)
-# until an extractor lands for them (JS is the tracked follow-up).
-RAW_TEXT_EXTS = (".js", ".jsx", ".mjs", ".cjs", ".json", ".md")
+# until an extractor lands for them.
+RAW_TEXT_EXTS = (".json", ".md")
 PRESETS: dict[str, tuple[str, ...]] = {
-    "ts": (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".json", ".md"),
+    "ts": (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
+           ".json", ".md"),
     "js": (".js", ".jsx", ".mjs", ".cjs", ".json", ".md"),
     "python": (".py", ".pyi", ".json", ".md"),
     "cpp": (".h", ".hpp", ".cpp", ".cc", ".cxx"),
@@ -113,6 +119,8 @@ BUILD_SEQUENCE = (
     python.arg_refs_sweep,
     ts.rebind_reexports_sweep,
     ts.import_liveness_sweep,
+    js.rebind_reexports_sweep,
+    js.import_liveness_sweep,
     rust.rebind_reexports_sweep,
     rust.import_liveness_sweep,
 )
