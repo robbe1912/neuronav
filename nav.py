@@ -365,7 +365,12 @@ MANIFEST_NAME = "manifest.json"
 # and is TTL-cached below so bursts of tool calls do not re-stat the
 # tree. The rescan behind the gate stays sha-gated, so a touched-but-
 # identical file embeds nothing.
-STAT_TTL_S = 3.0
+# NEURONAV_STAT_TTL_S (issue #286): test-pace knob for the TTL window —
+# test_server_stdio's drift legs sleep one window per leg, so the suite
+# sets 0.5 and its spawned servers inherit it. Default 3.0 everywhere
+# else. Read once at import; in-process overrides patch nav.STAT_TTL_S
+# directly (test_autorescan's precedent).
+STAT_TTL_S = float(os.environ.get("NEURONAV_STAT_TTL_S") or 3.0)
 
 
 def _embed_post(chunk: list[str], headers: dict[str, str] | None) -> dict:

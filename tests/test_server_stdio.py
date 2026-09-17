@@ -47,6 +47,13 @@ if CI_HERMETIC:
         "NEURONAV_CONFIG", str(HERE / "config" / "neuronav.json")
     )
 
+# issue #286 test-pace knob: NEURONAV_STAT_TTL_S shortens the stat TTL
+# for this suite process and every spawned server child (children
+# inherit the export), shrinking the six TTL_WAIT legs. setdefault — an
+# explicit export still wins. Both sides of the knob are pinned by the
+# child probes below TTL_WAIT.
+os.environ.setdefault("NEURONAV_STAT_TTL_S", "0.5")
+
 import graph  # noqa: E402  (repo root on path)
 import nav  # noqa: E402
 
@@ -75,8 +82,9 @@ HUBFN = max(
     default="",
 ).partition("::")[2]
 
-# the stat gate's TTL cache is real (3s) — drift legs wait one window
-# out so the next read tool re-walks (test_autorescan's e2e precedent)
+# the stat gate's TTL cache is real (3s default, 0.5s here via the #286
+# knob) — drift legs wait one window out so the next read tool re-walks
+# (test_autorescan's e2e precedent)
 TTL_WAIT = nav.STAT_TTL_S + 0.5
 
 FAILS = []
@@ -86,6 +94,23 @@ def check(name: str, cond: bool, detail: str = "") -> None:
     print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail else ""))
     if not cond:
         FAILS.append(name)
+
+# pin both sides of the #286 knob in fresh children: a bare nav import
+# keeps the 3.0 default; the env override is honored end-to-end
+for _ttl_env, _want in ((None, "3.0"), ("0.5", "0.5")):
+    _env = {k: v for k, v in os.environ.items() if k != "NEURONAV_STAT_TTL_S"}
+    if _ttl_env:
+        _env["NEURONAV_STAT_TTL_S"] = _ttl_env
+    _pin = subprocess.run(
+        [sys.executable, "-X", "utf8", "-c", "import nav; print(nav.STAT_TTL_S)"],
+        capture_output=True, text=True, env=_env, cwd=str(HERE),
+    )
+    check(
+        f"ttl knob: nav.STAT_TTL_S=={_want} "
+        + ("with" if _ttl_env else "without") + " NEURONAV_STAT_TTL_S",
+        _pin.stdout.strip() == _want,
+        _pin.stdout.strip() or _pin.stderr[-200:],
+    )
 
 
 def _pkg_version() -> str:
