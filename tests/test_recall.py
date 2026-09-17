@@ -468,7 +468,7 @@ check("degraded + boost deterministic", json.dumps(dgb) == json.dumps(dgb2))
 # is MARK-ONLY: a row is weak when every side's raw evidence is under
 # the calibrated floor (cos < 0.48 AND bm25 < 6.0); ranks, membership,
 # and scores are unchanged — bench/golden pins the quality contract.
-gq = recall.search("flumph zorp blorptastic quarble snorfle", k=5)
+gq = recall.search("purple elephant dishwasher quadrant marmalade", k=5)
 check("garbage query: every fused row weak-flagged",
       len(gq) == 5 and all(h.get("weak") is True for h in gq),
       str([(h["file"], h["src"], h.get("weak")) for h in gq[:3]]))
@@ -480,7 +480,7 @@ check("real query: top rows clear the floor (not all weak)",
 import graph  # noqa: E402  (fn-level floor shares the same constant)
 import server  # noqa: E402  (_fmt is the MCP render surface for hits)
 
-fng = graph.find_functions("flumph zorp blorptastic quarble snorfle", 4)
+fng = graph.find_functions("purple elephant dishwasher quadrant marmalade", 4)
 check("garbage fn query: rows weak-flagged (mark-only)",
       bool(fng) and all(r.get("weak") is True for r in fng),
       str([(r["func"], r["score"], r.get("weak")) for r in fng[:2]]))
