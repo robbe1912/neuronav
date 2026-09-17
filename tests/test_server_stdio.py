@@ -745,6 +745,9 @@ def main() -> None:
               == "boolean"
               and "orientation" not in ex_schema.get("required", []),
               json.dumps(ex_schema)[:200])
+        check("explore: query not required — anchor alone pages (issue #276)",
+              "query" not in ex_schema.get("required", []),
+              json.dumps(ex_schema.get("required", [])))
         send({"jsonrpc": "2.0", "id": 11, "method": "tools/call",
               "params": {"name": "explore",
                          "arguments": {"query": "cluster labeling", "n": 3,
@@ -753,6 +756,25 @@ def main() -> None:
         check("explore: orientation=False skips the preamble (issue #125)",
               "== repo map ==" not in ex and "== clusters ==" not in ex,
               ex[:160])
+        m = re.search(r'anchor="([^"]+)"', ex)
+        if m:
+            send({"jsonrpc": "2.0", "id": 14, "method": "tools/call",
+                  "params": {"name": "explore",
+                             "arguments": {"anchor": m.group(1)}}})
+            cont = text_of(recv(14)["result"])
+            check("explore: anchor-only call pages without query (issue #276)",
+                  bool(re.search(r"^\d+\t", cont, re.M)) or cont.startswith("**")
+                  or "anchor" in cont[:60],
+                  cont[:160])
+        else:
+            print(f"SKIP: explore slice had no continuation anchor on this "
+                  f"index shape (issue #97) — anchor-only leg not exercisable")
+        send({"jsonrpc": "2.0", "id": 15, "method": "tools/call",
+              "params": {"name": "explore", "arguments": {}}})
+        empty = text_of(recv(15)["result"])
+        check("explore: neither query nor anchor -> guidance not error",
+              "one of the two is required" in empty,
+              empty[:160])
 
         # repo_map: read-only orientation preamble — bounded output +
         # you-are-here header on every response
