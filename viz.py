@@ -22,134 +22,18 @@ from datetime import datetime
 from pathlib import Path
 import nav
 import graph
-from layout import (_links_adj, _tarjan_scc, _strata_depths,
-                    _strata_analysis, _layout)
+from layout import _strata_analysis, _layout
 from bake.files_model import _attach, _dead_flags, _build_nodes, _build_links
 from bake.wires import _emit_wire_rows, _signal_wires, _wire_budget, _fn_roster
-from bake.semantics import _cluster_matrix
+from bake.embeddings import _fetch_embeddings, _knn_sims
+from bake.semantics import (SEM_AFF_CAP, _cluster_matrix, _sem_aff,
+                            _supergroups)  # SEM_AFF_CAP re-export: test_viz pins it
 from bake.overlays import _highways, _cap_highways, _crosstalk_top
 from bake.fnio import _fn_io, _cap_fnio
 from bake.gitinfo import head, churn
 import vizjs  # the 17-section graph.html template package (#299 A)
 
 
-def _fetch_embeddings(paths):
-    """The ONE chroma embedding fetch per bake (D4/V7): the two original
-    fetch sites issued byte-identical calls, so hoisting the fetch is
-    semantic-preserving. Returns (emb_idx, normalized float32 rows) for
-    the indexed paths, or None when the store is missing/empty."""
-    try:
-        import numpy as np
-
-        col = nav._collection()
-        if col.count():
-            got = nav.chroma_read(
-                "bake embeddings", lambda: col.get(include=["embeddings"])
-            )
-            emb_idx = {rid: i for i, rid in enumerate(got["ids"])}
-            rows = [emb_idx[p] for p in paths if p in emb_idx]
-            embs = np.array(
-                [got["embeddings"][r] for r in rows], dtype=np.float32
-            )
-            norms = np.linalg.norm(embs, axis=1, keepdims=True)
-            norms[norms == 0] = 1.0
-            embs /= norms
-            return emb_idx, embs
-    except Exception:
-        return None
-    return None
-
-
-def _knn_sims(paths, emb):
-    """J9: semantic kNN pairs from the bake's one embedding fetch.
-    Returns (sims, emb) — the emb passthrough lets supergroups degrade
-    exactly when the kNN stage failed (None also when the fetch did),
-    mirroring the monolith's shared outer try."""
-    # semantic kNN pairs from nav's embedding store — layout-only forces,
-    # never rendered as edges: mutual top-6 neighbours with cosine >= 0.45
-    # (mutual links resist transitive chaining, mirroring nav.clusters()).
-    # Degrades to [] if the chroma store is missing/empty.
-    sims: list[list] = []
-    if emb is None:
-        return sims, None
-    emb_idx, embs = emb
-    try:
-        import numpy as np
-
-        rows = [emb_idx[p] for p in paths if p in emb_idx]
-        sim = embs @ embs.T
-        np.fill_diagonal(sim, -1.0)
-        from clusters import topk_desc
-
-        knn = topk_desc(sim, 6)
-        for a in range(len(rows)):
-            for b in knn[a]:
-                b = int(b)
-                if a < b and a in knn[b] and sim[a, b] >= 0.45:
-                    sims.append([a, b, round(float(sim[a, b]), 4)])
-    except Exception:
-        sims = []
-        return sims, None
-    return sims, emb
-
-# #279: rendered-affinity ink budget. The layout keeps riding ALL J9 pairs
-# (the springs want the full field); only the INK channel is capped, like
-# the wire/highway budgets. Hundreds, not thousands.
-SEM_AFF_CAP = 220
-
-
-def _sem_aff(paths, emb, sims, idx):
-    """#279: semantic-affinity overlay rows — the J9 kNN pairs promoted
-    from layout-only springs to also-rendered ink. Same pairs, same ONE
-    embedding fetch, no second bake job (grounding: issue #279 comment).
-    Rows are [i, j, sim] NODE indices (i < j), ranked by (-sim, path_i,
-    path_j) and cut at SEM_AFF_CAP so the served ink is deterministic.
-    Returns (rows, dropped)."""
-    if emb is None or not sims:
-        return [], 0
-    emb_paths = [p for p in paths if p in emb[0]]
-    path_of = {v: k for k, v in idx.items()}
-    rows = [
-        (idx[emb_paths[a]], idx[emb_paths[b]], s) for a, b, s in sims
-    ]
-    rows.sort(key=lambda r: (-r[2], path_of[r[0]], path_of[r[1]]))
-    dropped = max(0, len(rows) - SEM_AFF_CAP)
-    return [[a, b, s] for a, b, s in rows[:SEM_AFF_CAP]], dropped
-
-
-
-def _supergroups(clusters, paths, emb):
-    """J10: coarse supergroups over the fine clusters, from the kNN
-    stage's embeddings. Empty when emb is None (kNN stage failed) or
-    scipy/coarse_groups is unavailable."""
-    cid_gid: dict[int, int] = {}   # fine cluster id -> supergroup id
-    groups2: list[dict] = []
-    if emb is None:
-        return cid_gid, groups2
-    emb_idx, embs = emb
-    # two-level navigation: coarse supergroups over the fine
-    # clusters (scipy average-linkage over embedding centroids,
-    # clusters.coarse_groups). Optional UI level — degrades to []
-    # when scipy/embeddings are unavailable.
-    try:
-        from clusters import coarse_groups
-
-        emb_paths = [p for p in paths if p in emb_idx]
-        for grp in coarse_groups(clusters, emb_paths, embs):
-            cids = [
-                int(clusters[ci]["id"])
-                for ci in grp["cluster_ids"]
-                if 0 <= ci < len(clusters)
-            ]
-            for cid in cids:
-                cid_gid[cid] = grp["id"]
-            groups2.append(
-                {"id": grp["id"], "label": grp["label"], "cids": cids}
-            )
-    except Exception:
-        cid_gid = {}
-        groups2 = []
-    return cid_gid, groups2
 
 
 def _layout_stage(nodes, links, sims, ckeys, cmat):
@@ -269,16 +153,16 @@ def _build_data() -> dict:
     n_clusters = len(clusters)
 
     emb = _fetch_embeddings(paths)
-    sims, emb_knn = _knn_sims(paths, emb)
-    cid_gid, groups2 = _supergroups(clusters, paths, emb_knn)
+    sims, emb_knn = _knn_sims(emb)
+    cid_gid, groups2 = _supergroups(clusters, emb_knn)
     # #279: promote the J9 pairs (layout springs) to also-rendered ink
-    sem_aff, sem_dropped = _sem_aff(paths, emb, sims, idx)
+    sem_aff, sem_dropped = _sem_aff(emb, sims, idx)
 
     # supergroup id per node (gid; -1 = unclustered / groups unavailable)
     for nd in nodes:
         nd["gid"] = cid_gid.get(nd["cluster"], -1)
 
-    ckeys, cmat = _cluster_matrix(paths, nodes, emb)
+    ckeys, cmat = _cluster_matrix(nodes, emb)
     pos_baked, depths, cyc_ids, hot = _layout_stage(
         nodes, links, sims, ckeys, cmat
     )
