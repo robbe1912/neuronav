@@ -65,6 +65,7 @@ import graph
 from extractors import PRESETS, registry_for, res_to_rel  # noqa: E402
 import memories
 import nav
+import recall
 
 def _version() -> str:
     """The version serverInfo reports (issue #207): the neuronav package
@@ -557,7 +558,8 @@ _EMPTY_INDEX = "no results (index empty — call rescan first)"
 
 def _fmt(hits: list[dict]) -> str:
     """Format hybrid-recall hits: RRF-fused score, src provenance
-    (vec/bm25/both), bidirectional 1-hop ctx labels."""
+    (vec/bm25/both), bidirectional 1-hop ctx labels, weak markers for
+    under-floor rows (issue #297)."""
     if not hits:
         return _EMPTY_INDEX
     lines: list[str] = []
@@ -570,9 +572,19 @@ def _fmt(hits: list[dict]) -> str:
         # issue #74 two-pass hits carry their marker to the wire (off by
         # default, so default rows stay byte-identical)
         tp = "  2pass" if h.get("two_pass") else ""
+        # issue #297: under-floor rows are noise-shaped — tagged, and
+        # counted once in the footer that names the floor
+        wk = "  weak" if h.get("weak") else ""
         ctx = ", ".join(h.get("ctx") or [])
         lines.append(
-            f"{h['score']:0.4f}  {h['file']}  src={h['src']}  ctx=[{ctx}]{tag}{tp}"
+            f"{h['score']:0.4f}  {h['file']}  src={h['src']}  ctx=[{ctx}]{tag}{tp}{wk}"
+        )
+    weak_n = sum(1 for h in hits if h.get("weak"))
+    if weak_n:
+        lines.append(
+            f"[{weak_n} weak hit(s) below the relevance floor "
+            f"(cos < {recall.RELEVANCE_FLOOR_SIM:.2f} / bm25 < "
+            f"{recall.RELEVANCE_FLOOR_BM25:.1f}) — likely noise]"
         )
     return "\n".join(lines)
 
@@ -676,7 +688,9 @@ def semantic_search(
     Scores are RRF rank-fusion values (1/(30+rank) summed per side that
     found the file, plus the graph-neighbor boost), NOT cosine: ~0.03 is
     a strong top hit and 1.0 is unreachable — compare rows by order,
-    never against find_functions' 0-1 cosine scale (issue #125).
+    never against find_functions' 0-1 cosine scale (issue #125). Rows
+    whose every side sits under the absolute relevance floor are tagged
+    `weak` with a footer naming the floor (issue #297).
 
     two_pass=True runs the RepoCoder second retrieve (issue #74: pass-1
     hits donate identifiers to one re-embedded augmented query; engaged
@@ -750,9 +764,18 @@ def find_functions(query: str, n: int = 6, dir: str = "") -> str:
             ) + clamp_note
         if not hits:
             return "no function index — call rescan first"
-        return "\n".join(
+        rows = [
             f"{h['score']:0.3f}  {h['path']}#{h['func']}:{h['line']}" for h in hits
-        ) + clamp_note
+        ]
+        weak_n = sum(1 for h in hits if h.get("weak"))
+        if weak_n:
+            # issue #297: name the floor so the weak rows read as noise,
+            # not as confident cosine neighbors
+            rows.append(
+                f"[{weak_n} of {len(hits)} under the relevance floor "
+                f"(cos < {recall.RELEVANCE_FLOOR_SIM:.2f}) — likely noise]"
+            )
+        return "\n".join(rows) + clamp_note
 
 
 # Zoekt-style cap discipline (issue #68): summarized, capped search output

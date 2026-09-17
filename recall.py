@@ -51,6 +51,21 @@ CTX_CAP = 3
 # qprefix baseline, double-run stable — bench/RESULTS.md); 0.0 is the
 # explicit off wire.
 GRAPH_BOOST = 0.25
+# Absolute relevance floor (issue #297): every score search() emits is
+# RELATIVE (RRF rank units) or corpus-scaled (BM25F idf weights), so a
+# pure-noise query ("purple elephant dishwasher") fused into confident
+# unmarked rows. The floor flags rows whose raw per-side evidence is
+# indistinguishable from the calibrated noise band: weak = BOTH sides
+# under their floor (AND-rule — one real-grade side vouches for the
+# row). Mark-only: rank order, hit membership and every bench golden
+# number are unchanged by construction. Calibrated on the self-index
+# (qwen3-embedding:0.6b, bench golden): real-query targets reach cos
+# 0.375 / bm25 1.87 at minimum — always vouched by their other side —
+# while noise rows sit under cos 0.48 / bm25 6.0 on both. English-token
+# salad that collides with stopwords can exceed the lexical arm (a
+# tokenizer gap, not a floor gap — separate defect).
+RELEVANCE_FLOOR_SIM = 0.48
+RELEVANCE_FLOOR_BM25 = 6.0
 # char budget for the two-pass augmented query's harvested identifier
 # tail — sized so the original query stays dominant (issue #74 A/B)
 TWO_PASS_BUDGET = 320
@@ -225,28 +240,33 @@ def _cached_index(files: dict) -> BM25F:
     return _index_cache[2]
 
 
-def _vector_ranks(query: str, depth: int) -> tuple[list[str], dict[str, dict]]:
-    """Chroma whole-file ranks (ids in rank order) + per-file metadata.
-    Returns ([], {}) when the collection is empty; raises on backend
-    failure so the caller can degrade loudly."""
+def _vector_ranks(
+    query: str, depth: int
+) -> tuple[list[str], dict[str, dict], dict[str, float]]:
+    """Chroma whole-file ranks (ids in rank order), per-file metadata,
+    and per-file cosine similarity 1-distance (issue #297 floor
+    evidence — RRF consumes the ranks, the floor consumes the raw
+    similarity). Returns ([], {}, {}) when the collection is empty;
+    raises on backend failure so the caller can degrade loudly."""
     import nav  # lazy: `nav.py --config` rebinds after this module loads
 
     col = nav._collection()
     count = col.count()
     if count == 0:
-        return [], {}
+        return [], {}, {}
     vector = nav.embed([query])[0]
     got = nav.chroma_read(
         "vector ranks",
         lambda: col.query(
             query_embeddings=[vector],
             n_results=min(depth, count),
-            include=["metadatas"],
+            include=["metadatas", "distances"],
         ),
     )
     ids = list(got["ids"][0])
     metas = {fid: (m or {}) for fid, m in zip(ids, got["metadatas"][0])}
-    return ids, metas
+    sims = {fid: 1.0 - float(d) for fid, d in zip(ids, got["distances"][0])}
+    return ids, metas, sims
 
 
 def _rrf(
@@ -426,6 +446,12 @@ def search(
     degraded BM25F-only contract is served without it. ``rrf_k``
     overrides the fusion constant for bench sweeps.
 
+    Hits carry ``weak: True`` when EVERY side's raw evidence for that
+    file sits under the absolute relevance floor (issue #297: cos <
+    ``RELEVANCE_FLOOR_SIM`` and raw BM25 < ``RELEVANCE_FLOOR_BM25`` —
+    AND-rule, one real-grade side vouches). Mark-only: ranks, membership
+    and every bench golden number are unchanged.
+
     ``query_prefix`` (issues #75/#217, JCE card): task-instruction
     text prepended to the EMBEDDED query only — pass 1 and the two-pass
     augmented retrieve both; the lexical side keeps the raw query so
@@ -469,9 +495,12 @@ def search(
 
     vec: list[str] = []
     metas: dict[str, dict] = {}
+    sim_ev: dict[str, float] = {}  # issue #297: raw cosine per file (floor evidence)
+    lex_ev: dict[str, float] = {}  # raw BM25 per file — max across query/aug sides
     reason: str | None = None
     try:
-        vec, metas = _vector_ranks(pfx + query, depth)
+        vec, metas, sims = _vector_ranks(pfx + query, depth)
+        sim_ev.update(sims)
         if not vec:
             reason = "vector index is empty (call rescan first)"
     except Exception as exc:  # backend down = degraded, never a crash
@@ -491,7 +520,10 @@ def search(
 
         g = graph.get_graph()
         if bm25:
-            lex = [p for p, _s in _cached_index(g.files).scores(query)[:depth]]
+            lex_rows = _cached_index(g.files).scores(query)[:depth]
+            lex = [p for p, _s in lex_rows]
+            lex_ev.update(lex_rows)
+
 
     sides: list[tuple[str, list[str], float]] = [
         ("vec", vec, w_vec),
@@ -510,7 +542,8 @@ def search(
         aug = _augment(query, pool, g, tp_budget, tp_imports)
         if aug:
             try:
-                vec2, metas2 = _vector_ranks(pfx + aug, depth)  # embed 2 of 2
+                vec2, metas2, sims2 = _vector_ranks(pfx + aug, depth)  # embed 2 of 2
+
             except Exception as exc:
                 import nav  # lazy: same truthful classifier as pass 1
 
@@ -522,13 +555,20 @@ def search(
             else:
                 lex2: list[str] = []
                 if bm25:
-                    lex2 = [p for p, _s in _cached_index(g.files).scores(aug)[:depth]]
+                    for p, s in _cached_index(g.files).scores(aug)[:depth]:
+                        lex2.append(p)
+                        if s > lex_ev.get(p, -1.0):  # best raw evidence wins
+                            lex_ev[p] = s
                 sides += [
                     ("vec", vec2, w_vec * tp_weight),
                     ("bm25", lex2, w_lex * tp_weight),
                 ]
                 metas.update(metas2)
+                for f2, s2 in sims2.items():
+                    if s2 > sim_ev.get(f2, -1.0):
+                        sim_ev[f2] = s2
                 engaged = True
+
 
     fused = _rrf(sides, krrf)
     if reason is None and lam > 0.0 and g is not None:
@@ -552,6 +592,15 @@ def search(
             hit["class_name"] = str(meta.get("class_name", ""))
             hit["extends"] = str(meta.get("extends", ""))
             hit["ext"] = str(meta.get("ext", ""))
+        # issue #297: absolute floor — flag rows no side vouches for
+        # (missing side counts as under; a graph-boosted neighbor with
+        # no own evidence still needs one real-grade side to clear)
+        sim = sim_ev.get(f)
+        raw = lex_ev.get(f)
+        if (sim is None or sim < RELEVANCE_FLOOR_SIM) and (
+            raw is None or raw < RELEVANCE_FLOOR_BM25
+        ):
+            hit["weak"] = True
         if reason:
             hit["degraded"] = True
             hit["degraded_reason"] = reason
