@@ -1520,8 +1520,8 @@ def _fresh_folder_scenario() -> None:
               cfg["extensions"] == [".ts", ".tsx", ".mts", ".cts",
                                     ".js", ".jsx", ".mjs", ".cjs",
                                     ".json", ".md"]
-              and cfg["state_dir"] == "default" and cfg["root"] == str(mdrepo),
-              json.dumps(cfg))
+              and cfg["state_dir"] == "default" and cfg["root"] == ".",
+              json.dumps(cfg))   # #298: scaffold pins portable root
         rec = text_of(call(6, "rescan", {}))
         check("fresh240: in-session recovery on the next rescan",
               "rebound the boot" in rec and "files 2/" in rec, rec[:160])

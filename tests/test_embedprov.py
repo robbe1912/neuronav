@@ -745,5 +745,42 @@ check("229: same-rev rescan stays sha-gated after the rev heal",
       f"{st['added']}+/{st['updated']}~/{st['unchanged']}=")
 
 print()
+# ---- #298: import_base gates provider drift (same model, foreign space) ------
+# #159 made dim/model the fingerprint; a same-NAME model behind a different
+# provider is not the same vector space (#17), so the manifest gate grew a
+# None-safe provider leg — foreign providers abort, unstamped ones import.
+write_cfg(embed_model="m-298", embed_provider="ollama")
+with gzip.GzipFile(nav.BASE_DIR / "shard-0000.jsonl.gz", mode="wb", compresslevel=9, mtime=0) as f:
+    for rid, emb in (("f1.txt", [1.0, 0.9]), ("f2.txt", [5.0, 3.0])):
+        f.write((json.dumps({"id": rid, "emb": emb, "meta": {"sha": rid}},
+                            sort_keys=True) + "\n").encode("utf-8"))
+def _wipe298():
+    try:
+        cl.delete_collection(nav.COLLECTION)
+    except Exception:
+        pass
+def _manifest298(**over):
+    (nav.BASE_DIR / nav.MANIFEST_NAME).write_text(
+        json.dumps({"model": "m-298", "count": 2, "shards": 1,
+                    "exported_at": "2026-09-17T00:00:00+00:00", **over},
+                   indent=2) + "\n", encoding="utf-8")
+_wipe298()
+_manifest298(provider="openai")
+try:
+    nav.import_base()
+    check("#298 foreign provider aborts import even at matching model",
+          False, "no exception")
+except RuntimeError as e:
+    check("#298 foreign provider aborts import even at matching model",
+          "openai" in str(e) and "m-298" in str(e), str(e)[:140])
+_wipe298()
+_manifest298(provider="ollama")
+try:
+    _rep298 = nav.import_base()
+    check("#298 matching provider imports fine",
+          _rep298.get("imported") == 2, str(_rep298))
+except RuntimeError as e:
+    check("#298 matching provider imports fine", False, str(e)[:140])
+
 print(f"{len(FAILS)} failure(s)" + (": " + ", ".join(FAILS) if FAILS else ""))
 sys.exit(1 if FAILS else 0)

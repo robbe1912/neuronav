@@ -38,7 +38,6 @@ import math
 import re
 import sys
 from collections import Counter
-import weakref
 
 RRF_K = 30.0
 BM25_K1 = 1.2
@@ -272,7 +271,7 @@ def _vector_ranks(
 def _rrf(
     sides: list[tuple[str, list[str], float]], rrf_k: float = RRF_K
 ) -> list[tuple[str, float, str]]:
-    """Reciprocal-rank fusion (default k=60) over (tag, rank-list,
+    """Reciprocal-rank fusion (default k=RRF_K=30) over (tag, rank-list,
     weight) sides, tag in {"vec", "bm25"}: a doc any vec side found is
     "vec", any bm25 side "bm25", both "both". Sorted by (-score, path)
     — byte-stable for identical rank lists."""
@@ -406,7 +405,10 @@ def _augment(query: str, top: list[str], g, budget: int = TWO_PASS_BUDGET,
     (#74 A/B): body text diluted short queries (hit@1 0.40 -> 0.36,
     hit@5 0.84 -> 0.80) while identifiers alone lift hit@10
     (0.92 -> 0.96, one full miss recovered) at hit@5 parity. Returns ""
-    when the graph knows none of the hits (pass 2 skipped)."""
+    when the graph knows none of the hits or the char budget is <= 0
+    (pass 2 skipped either way)."""
+    if budget <= 0:
+        return ""   # #298: two_pass={"budget": 0} means pass 2 OFF — no re-embed, no stamp
     parts: list[str] = []
     seen: set[str] = set()
     for f in top:

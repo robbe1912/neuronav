@@ -253,6 +253,41 @@ shutil.rmtree(scratch, ignore_errors=True)
 CFG.unlink(missing_ok=True)
 
 print()
+# ---- #298: battery pool reports in COMPLETION order --------------------------
+# The old loop consumed futures in submit order, so a slow early suite
+# withheld every later PASS line — the "prints as they finish" contract lied.
+import importlib as _imp298
+import io as _io298, contextlib as _cx298
+import time as _t298
+_rb298 = _imp298.import_module("tools.run_battery")
+_real298 = (_rb298.run_suite, _rb298.classify, _rb298.SERIAL, _rb298.GATED, sys.argv)
+def _fake298(root, name, extra_env):
+    _d298 = {"test_slow.py": 0.30, "test_fast.py": 0.02}[name]
+    _t298.sleep(_d298)
+    return name, 0, _d298, ""
+_rb298.run_suite = _fake298
+_rb298.classify = lambda root: (["test_slow.py", "test_fast.py"], {})
+_rb298.SERIAL, _rb298.GATED = set(), {}
+sys.argv = ["run_battery.py"]
+_buf298 = _io298.StringIO()
+try:
+    with _cx298.redirect_stdout(_buf298):
+        _rb298.main()
+except SystemExit:
+    pass
+finally:
+    (_rb298.run_suite, _rb298.classify, _rb298.SERIAL, _rb298.GATED) = _real298[:4]
+    sys.argv = _real298[4]
+_order298 = [l for l in _buf298.getvalue().splitlines()
+             if l.startswith(("PASS ", "FAIL "))]
+_i_fast = _order298.index("PASS test_fast rc=0 0.0s") if "PASS test_fast rc=0 0.0s" in _order298 else -1
+_i_slow = _order298.index("PASS test_slow rc=0 0.3s") if "PASS test_slow rc=0 0.3s" in _order298 else -1
+if not (0 <= _i_fast < _i_slow):
+    FAILS.append("battery completion order")
+    print(f"FAIL battery pool reports in completion order (#298): {_order298}")
+else:
+    print("ok - battery pool reports in completion order (#298)")
+
 if FAILS:
     print(f"{len(FAILS)} FAIL: {FAILS}")
     sys.exit(1)
