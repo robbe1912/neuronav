@@ -570,6 +570,7 @@ def chroma_retry_unit() -> None:
             return {
                 "ids": [["src/one.py", "src/two.py"]],
                 "metadatas": [[{"path": "src/one.py"}, {"path": "src/two.py"}]],
+                "distances": [[0.25, 0.5]],
             }
 
     try:
@@ -615,13 +616,14 @@ def chroma_retry_unit() -> None:
             real_col = nav._collection
             nav._collection = lambda: FlakyCol()
             try:
-                ids, metas = recall._vector_ranks("kiln fire", 8)
+                ids, metas, sims = recall._vector_ranks("kiln fire", 8)
             finally:
                 nav._collection = real_col
             check(
                 "settle unit: recall vector ranks survive one transient",
                 ids == ["src/one.py", "src/two.py"]
                 and metas["src/two.py"]["path"] == "src/two.py"
+                and sims["src/one.py"] == 0.75
                 and calls["vec"] == 2,
                 f"ids={ids} attempts={calls['vec']}",
             )
