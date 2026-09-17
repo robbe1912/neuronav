@@ -30,6 +30,7 @@ from pathlib import Path
 
 import nav
 import predicates
+import recall
 from extractors import (
     ASSET_SCENE_GLOB,
     BUILD_SEQUENCE,
@@ -1543,7 +1544,10 @@ def find_functions(query: str, n: int = 6) -> list[dict[str, object]]:
     """Semantic search over individual functions (vector index).
     Over-fetches 3n then collapses chunk siblings by (path, parent fn)
     (_fold_parents), so one monster's chunks cannot crowd out the
-    top-k."""
+    top-k. Rows under the absolute relevance floor carry ``weak: True``
+    (issue #297, mark-only — calibrated in recall.py; the real-embed
+    noise band overlaps short-identifier golden tails, so flagging is
+    honest where dropping would cost recall)."""
     col = _fn_collection()
     count = col.count()
     if count == 0:
@@ -1562,15 +1566,18 @@ def find_functions(query: str, n: int = 6) -> list[dict[str, object]]:
         got["ids"][0], got["distances"][0], got["metadatas"][0]
     ):
         meta = meta or {}
-        out.append(
-            {
-                "key": rid,
-                "score": round(1.0 - float(dist), 4),
-                "path": str(meta.get("path", "")),
-                "func": str(meta.get("name", "")),
-                "line": int(meta.get("line", 0)),
-            }
-        )
+        score = round(1.0 - float(dist), 4)
+        row = {
+            "key": rid,
+            "score": score,
+            "path": str(meta.get("path", "")),
+            "func": str(meta.get("name", "")),
+            "line": int(meta.get("line", 0)),
+        }
+        # issue #297: one floor, two surfaces — recall owns the constant
+        if score < recall.RELEVANCE_FLOOR_SIM:
+            row["weak"] = True
+        out.append(row)
     return _fold_parents(out, n)
 
 

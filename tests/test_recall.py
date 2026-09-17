@@ -468,5 +468,33 @@ check("degraded + boost keeps the BM25F-only contract",
       and "BM25F-only" in err.getvalue())
 check("degraded + boost deterministic", json.dumps(dgb) == json.dumps(dgb2))
 
+# 11. absolute relevance floor (issue #297): pure-noise queries used to
+# fuse into confident unmarked rows (the PR-254 standing red). The floor
+# is MARK-ONLY: a row is weak when every side's raw evidence is under
+# the calibrated floor (cos < 0.48 AND bm25 < 6.0); ranks, membership,
+# and scores are unchanged — bench/golden pins the quality contract.
+gq = recall.search("flumph zorp blorptastic quarble snorfle", k=5)
+check("garbage query: every fused row weak-flagged",
+      len(gq) == 5 and all(h.get("weak") is True for h in gq),
+      str([(h["file"], h["src"], h.get("weak")) for h in gq[:3]]))
+tq = recall.search("graph signal wiring edges", k=12)
+check("real query: top rows clear the floor (not all weak)",
+      any("weak" not in h for h in tq[:3]),
+      str([(h["file"], h.get("weak")) for h in tq[:3]]))
+
+import graph  # noqa: E402  (fn-level floor shares the same constant)
+import server  # noqa: E402  (_fmt is the MCP render surface for hits)
+
+fng = graph.find_functions("flumph zorp blorptastic quarble snorfle", 4)
+check("garbage fn query: rows weak-flagged (mark-only)",
+      bool(fng) and all(r.get("weak") is True for r in fng),
+      str([(r["func"], r["score"], r.get("weak")) for r in fng[:2]]))
+rendered = server._fmt(gq)
+check("weak rows reach the wire with a floor footer",
+      rendered.count("  weak") == len(gq) and "relevance floor" in rendered,
+      rendered[-140:])
+check("floor constants pinned (self-index calibration)",
+      recall.RELEVANCE_FLOOR_SIM == 0.48 and recall.RELEVANCE_FLOOR_BM25 == 6.0)
+
 print(f"\n{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)
