@@ -23,7 +23,12 @@ a cfg'd ``mod`` attribute themselves — uncalled cfg'd helpers stay dead);
 lib.rs's bare-``pub`` top-level fns plus the transitive closure over
 ``pub mod`` declarations are the crate's exported API (roots). Cargo
 targets beyond the src/main.rs + src/lib.rs convention ([[bin]] path
-overrides) are NOT parsed — Cargo.toml is not a Rust source file.
+overrides) are NOT parsed — Cargo.toml is not a Rust source file. A
+file directly under a ``bin`` directory is a cargo bin target walked
+as its OWN crate root: ``crate::``/bare module heads anchor at its own
+module dir (``src/bin/x.rs`` → ``src/bin/x/``), never at the sibling
+lib's ``src/`` (issue #284; dir-shaped ``src/bin/x/main.rs`` bins were
+already anchored by the main.rs walk).
 
 pub-visibility analysis: only bare ``pub`` counts as exported;
 ``pub(crate)`` / ``pub(super)`` / ``pub(in ..)`` are crate-local and
@@ -174,7 +179,16 @@ def _crate_root_dir(path: Path) -> Path:
         cur = cur.parent
 
 
+def _is_bin_target(path: Path) -> bool:
+    """A file directly under a directory named ``bin`` is a cargo bin
+    target (src/bin/x.rs): its OWN crate root, never the sibling lib's
+    src/ (issue #284)."""
+    return path.parent.name == "bin"
+
+
 def _crate_root_file(path: Path) -> Path | None:
+    if _is_bin_target(path):
+        return path
     root = _crate_root_dir(path)
     for nm in ("lib.rs", "main.rs"):
         if (root / nm).is_file():
@@ -220,14 +234,16 @@ def _resolve_chain(path: Path, segments):
     if not segments:
         return (None, None)
     head = segments[0]
+    # bin targets anchor at their own module dir, never the lib's src/
+    anchor = _mod_dir(path) if _is_bin_target(path) else _crate_root_dir(path)
     if head == "crate":
-        directory, segs = _crate_root_dir(path), segments[1:]
+        directory, segs = anchor, segments[1:]
     elif head == "self":
         directory, segs = _mod_dir(path), segments[1:]
     elif head == "super":
         directory, segs = _mod_dir(path).parent, segments[1:]
     else:
-        directory, segs = _crate_root_dir(path), segments
+        directory, segs = anchor, segments
     if not segs and head in ("crate", "self", "super"):
         return (None, directory)
     cur = None
@@ -757,7 +773,10 @@ def _module_dsts(mod_rel: str, name: str, ctx) -> list[tuple[str, str]]:
 
 def _crate_root_rel(fs: FileSym, ctx) -> str:
     """Rel of the crate root file nearest fs.path (ctx.files truth)."""
-    parts = fs.path.split("/")[:-1]
+    parts = fs.path.split("/")
+    if len(parts) > 1 and parts[-2] == "bin":
+        return fs.path  # cargo bin target: its own crate root (#284)
+    parts = parts[:-1]
     for i in range(len(parts), -1, -1):
         d = "/".join(parts[:i])
         for nm in ("lib.rs", "main.rs"):
@@ -779,7 +798,12 @@ def _ctx_mod_rel(fs: FileSym, ctx, segments: list[str]) -> str:
             return ""
         if not rest:
             return root
-        directory = root.rsplit("/", 1)[0] if "/" in root else ""
+        # root files declare sibling modules; a bin target (its own
+        # root) declares <dir>/<stem>/*.rs — src/bin/x.rs -> src/bin/x/
+        name = root.rsplit("/", 1)[-1]
+        d = root.rsplit("/", 1)[0] if "/" in root else ""
+        directory = d if name in _ROOT_FILES else (
+            f"{d}/{name[:-3]}" if d else name[:-3])
     elif head == "super":
         d = fs.path.rsplit("/", 1)[0] if "/" in fs.path else ""
         directory = d.rsplit("/", 1)[0] if "/" in d else ""

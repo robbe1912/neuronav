@@ -100,7 +100,7 @@ _INSTRUCTIONS = (
     "The index auto-refreshes on file drift; a tool marked 'degraded' "
     "still answers completely from the current index, though vector "
     "recall may be unavailable. An empty index answers with first-call "
-    "guidance; onboard.py init --preset ts|js|python|cpp|gdscript "
+    "guidance; onboard.py init --preset ts|js|python|cpp|gdscript|rust "
     "scaffolds a config for unmatched file types."
 )
 
@@ -314,7 +314,7 @@ def _raw_text_banner(census: dict[str, int]) -> None:
         f"neuronav: no structural extractor for {named} — indexed as raw "
         "text (semantic_search/search_text work), but find_functions/"
         "symbol_graph/dead_code return nothing for these files "
-        "(onboard.py init --preset ts|js|python|cpp|gdscript curates "
+        "(onboard.py init --preset ts|js|python|cpp|gdscript|rust curates "
         "extensions; these files index as raw text until extractors "
         "land for them)",
         file=sys.stderr,
