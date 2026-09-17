@@ -171,6 +171,34 @@ def main():
     finally:
         _L._RELAX_BLOCK = orig_blk
     # byte pin: nodes/links summary + banner — kept local
+
+    # ---- section 9: sparse-path digest pin (issue #309) --------------------
+    # The dense kcoef matrix is gated to the n <= 2048 branch; this leg
+    # builds a sparse-path layout (n=2600, just past the cut, lean wiring)
+    # and pins its digest: any numeric drift in the sparse force path —
+    # including an accidental kcoef read — changes the hash. ~98s.
+    N9 = 2600
+    import random as _random9
+    rng9 = _random9.Random(5)
+    links9 = []
+    for i in range(N9 - 1):
+        if i % 3 != 2:
+            links9.append({"s": i, "t": i + 1, "w": 2.0, "ty": "call"})
+    for _ in range(600):
+        a9, b9 = rng9.randrange(N9), rng9.randrange(N9)
+        if a9 != b9:
+            links9.append({"s": a9, "t": b9, "w": 1.0,
+                           "ty": rng9.choice(("call", "inst", "attach"))})
+    sims9 = [(i, i + 1, rng9.uniform(0.5, 0.95))
+             for i in range(0, N9 - 1, 26)]
+    hot9 = [rng9.choice((0.0, 1.0)) for _ in range(N9)]
+    cid9 = [min(i * 4 // N9, 3) for i in range(N9)]
+    out9 = layout_fn(N9, links9, sims9, cid9, hot=hot9)
+    h9 = hashlib.sha256(
+        json.dumps(out9, separators=(",", ":")).encode()).hexdigest()
+    check("sparse-path n=2600 digest pinned (#309)",
+          h9 == "5a015fc88f7270fc0e27d965b06a2ec1553ad427bd952fad2bf49e57b8a3aea4",
+          h9)
     print(f"\n{N} nodes · {len(links)} links · {len(FAILURES)} failure(s)")
     if FAILURES:
         print("FAILED:", ", ".join(FAILURES))
