@@ -75,6 +75,14 @@ def split_key(key: str) -> str:
 DEAD_TIER_WEIGHTS = {"likely": 1.0, "review": 0.5}
 DEAD_SHARE_THRESHOLD = 0.4
 
+# impact walk knobs (issue #280): default and ceiling for the transitive
+# closure depth. The walk itself is linear in edges, but the ANSWER is
+# agent-facing token budget — past ~8 hops the depth histogram has said
+# its falloff shape and the "+N past the cap" marker carries the rest
+# honestly (#125 law).
+IMPACT_DEFAULT_DEPTH = 4
+IMPACT_MAX_DEPTH = 8
+
 
 
 # ---- data model ----------------------------------------------------------------
@@ -460,6 +468,81 @@ class Graph:
         c_in = ", ".join(short(c) for c in callers[:8]) or "-"
         c_out = ", ".join(short(c) for c in callees[:8]) or "-"
         return f"{short(key)}\n    callers: {c_in}\n    callees: {c_out}"
+
+    def impact(
+        self, symbol: str, direction: str = "callers",
+        max_depth: int = IMPACT_DEFAULT_DEPTH,
+    ) -> dict[str, object] | None:
+        """Transitive blast radius of a symbol (issue #280): everything
+        that transitively CALLS it (direction="callers" — what breaks if
+        it changes or disappears) or everything it transitively calls
+        (direction="callees" — what it depends on), over the same
+        fn-level edges symbol_graph walks one hop at a time.
+
+        Cycle-safe deterministic BFS: visited set, sorted frontier,
+        depth-bounded. Repo call chains contain cycles — layout.py
+        carries the SCC machinery for the viz bake; the closure walk
+        only needs to terminate and stay byte-stable, so it never
+        re-enqueues. Scene pseudo-keys (*::tscn) are neither counted
+        nor traversed: the answer is fn-level (v1 law — no file
+        rollup).
+
+        Returns the walk payload for server-side rendering (#125
+        division — this method walks, it never formats): sorted seed
+        keys, the clamped max_depth, total closure size, per-hop sorted
+        key lists, ``beyond`` (nodes one hop past the depth cap — 0
+        when the closure completed inside the budget, so a capped
+        answer can say "+N more" honestly), and ``entries`` (closure
+        members that are known entry points: chains anchored at a
+        test/registration/export read differently than dead ends).
+        None when the symbol misses resolution."""
+        if direction not in ("callers", "callees"):
+            raise ValueError(
+                f"direction must be 'callers' or 'callees', got '{direction}'"
+            )
+        depth = max(1, min(max_depth, IMPACT_MAX_DEPTH))
+        seeds = sorted(self._resolve(symbol))
+        if not seeds:
+            return None
+        step = self.reverse if direction == "callers" else self.edges
+        visited: set[str] = set(seeds)
+        by_depth: list[list[str]] = []
+        level: list[str] = seeds
+        for _ in range(depth):
+            nxt: set[str] = set()
+            for key in level:
+                nxt |= {
+                    n for n in step.get(key, ())
+                    if not n.endswith(TSCN_SUFFIX)
+                }
+            nxt -= visited
+            if not nxt:
+                break
+            visited |= nxt
+            by_depth.append(sorted(nxt))
+            level = by_depth[-1]
+        beyond = 0
+        if len(by_depth) == depth:
+            # the budget ran out, not the graph: count one more hop so
+            # the cut can be announced instead of implied
+            edge = set()
+            for key in by_depth[-1]:
+                edge |= {
+                    n for n in step.get(key, ())
+                    if not n.endswith(TSCN_SUFFIX)
+                }
+            beyond = len(edge - visited)
+        entries = sorted(k for k in visited - set(seeds) if k in self.roots)
+        return {
+            "symbol": symbol,
+            "seeds": seeds,
+            "direction": direction,
+            "max_depth": depth,
+            "total": sum(len(hop) for hop in by_depth),
+            "by_depth": by_depth,
+            "beyond": beyond,
+            "entries": entries,
+        }
 
     # -- duplicates ---------------------------------------------------------------
 

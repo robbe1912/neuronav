@@ -91,6 +91,8 @@ _INSTRUCTIONS = (
     "Workflow: call repo_map once per project for the layout; explore(topic) "
     "to orient on a subsystem; semantic_search / find_functions for lookups; "
     "symbol_graph / dead_code / duplicates for structure questions; "
+    "impact(symbol) for the pre-refactor blast-radius check — run it "
+    "before renaming or removing anything; "
     "visualize opens the graph.html bake. Tools are read-only except "
     "rescan (forces reindex) and memory (set/get/list/delete persistent "
     "project notes - save durable findings there, not transient state). "
@@ -820,19 +822,7 @@ def _symbol_view(g, symbol: str, depth: int) -> str:
     closest matches instead of dead-ending — context()'s precedent."""
     keys = g._resolve(symbol)
     if not keys:
-        import difflib
-
-        names = sorted({n for fs in g.files.values() for n in fs.funcs})
-        by_lower = {n.lower(): n for n in names}
-        close = difflib.get_close_matches(
-            symbol.lower(), sorted(by_lower), n=3, cutoff=0.4
-        )
-        sug = (
-            f" Closest matches: {', '.join(by_lower[c] for c in close)}"
-            if close
-            else ""
-        )
-        return f"no function matching '{symbol}'{sug}"
+        return _miss_view(g, symbol)
     blocks: list[str] = []
     seen: set[str] = set()
     frontier = set(keys)
@@ -866,6 +856,70 @@ def _symbol_view(g, symbol: str, depth: int) -> str:
     return "\n".join(out)
 
 
+def _miss_view(g, symbol: str) -> str:
+    """A resolution miss rendered as closest-match suggestions, not a
+    dead end — the context() precedent _symbol_view set (issue #125);
+    impact shares the shape (issue #280)."""
+    import difflib
+
+    names = sorted({n for fs in g.files.values() for n in fs.funcs})
+    by_lower = {n.lower(): n for n in names}
+    close = difflib.get_close_matches(
+        symbol.lower(), sorted(by_lower), n=3, cutoff=0.4
+    )
+    sug = (
+        f" Closest matches: {', '.join(by_lower[c] for c in close)}"
+        if close
+        else ""
+    )
+    return f"no function matching '{symbol}'{sug}"
+
+
+def _impact_view(g, symbol: str, direction: str, max_depth: int) -> str:
+    """graph.impact's payload rendered under the #125 line law: the
+    total is always the full closure size, per-hop rows carry true
+    counts with "+N more" past the name cap, and a depth cut announces
+    "+N more past the depth cap" instead of stopping silently."""
+    res = g.impact(symbol, direction=direction, max_depth=max_depth)
+    if res is None:
+        return _miss_view(g, symbol)
+    what = (
+        "callers — what breaks"
+        if res["direction"] == "callers"
+        else "callees — what it depends on"
+    )
+    seeds = ", ".join(_sg_short(k) for k in res["seeds"][:3])
+    seed_more = (
+        f" +{len(res['seeds']) - 3} more" if len(res["seeds"]) > 3 else ""
+    )
+    out = [
+        f"impact of {res['symbol']} ({seeds}{seed_more}): {what}",
+        f"total: {res['total']} within {res['max_depth']} hops",
+    ]
+    for hop, keys in enumerate(res["by_depth"], start=1):
+        out.append(_sg_row(f"depth {hop}", keys))
+    if res["beyond"]:
+        cap = res["max_depth"]
+        hint = (
+            f"pass max_depth={cap + 1} to expand"
+            if cap < graph.IMPACT_MAX_DEPTH
+            else f"max_depth is capped at {graph.IMPACT_MAX_DEPTH}"
+        )
+        out.append(
+            f"    … +{res['beyond']} more past the depth cap — {hint}"
+        )
+    if res["direction"] == "callers" and res["total"]:
+        if res["entries"]:
+            out.append(_sg_row("entries reached", res["entries"]))
+        else:
+            out.append(
+                "    entries reached: 0 — no known entry (test / "
+                "registration / export) anchors these callers; verify "
+                "dispatch manually"
+            )
+    return "\n".join(out)
+
+
 @mcp.tool(annotations=READONLY)
 def symbol_graph(symbol: str, depth: int = 1, dir: str = "") -> str:
     """Structural map around a function or class: who calls it, what it calls.
@@ -891,6 +945,43 @@ def symbol_graph(symbol: str, depth: int = 1, dir: str = "") -> str:
         _auto_rescan()
         depth = max(1, min(depth, 3))
         return _symbol_view(graph.get_graph(), symbol, depth)
+
+
+@mcp.tool(annotations=READONLY)
+def impact(symbol: str, direction: str = "callers", max_depth: int = 4,
+           dir: str = "") -> str:
+    """Transitive blast radius of a function or class — the pre-refactor check.
+
+    Everything that transitively calls it (direction="callers": what
+    BREAKS if it changes, moves, or disappears) or everything it
+    transitively calls (direction="callees": what it depends on). Run it
+    before renaming or removing a hub: the response carries the full
+    closure total plus a per-hop histogram (depth 1: N, depth 2: M, ...)
+    for the falloff shape, and caller chains anchored at known entries
+    (tests, registrations, exports) are listed as "entries reached" —
+    a chain that dead-ends reads as such instead. Counts never truncate
+    silently (issue #125): "+N more" past 8 names per row, "+N more
+    past the depth cap" when the walk stops early. max_depth caps at 8;
+    a bad direction answers with guidance, not an error.
+
+    Same resolution as symbol_graph (exact name, then class methods,
+    then substring — up to 10 seeds): use symbol_graph for the 1-hop
+    detail view, dead_code for the no-caller verdict.
+
+    dir="" serves the boot config's repo; any other path routes this one
+    call to that checkout (issue #131 — a fresh dir onboards on first
+    contact).
+    """
+    with _route(dir) as prelude:
+        if prelude:
+            return prelude
+        _auto_rescan()
+        try:
+            return _impact_view(
+                graph.get_graph(), symbol, direction, max_depth
+            )
+        except ValueError as e:
+            return str(e)
 
 
 @mcp.tool(annotations=READONLY)
