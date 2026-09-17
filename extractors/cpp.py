@@ -25,7 +25,7 @@ macros. General call-graph edges and writes/mut_params are deferred (v1.1)
 
 import bisect
 import re
-from extractors.common import balanced_span, entry_keys
+from extractors.common import balanced_span, entry_keys, line_starts_of
 from pathlib import Path
 from typing import Iterable, NamedTuple
 
@@ -354,7 +354,7 @@ def parse(path: Path, rel: str) -> FileSym:
     src = text.encode("utf-8")
     tree = _PARSER.parse(src)
     caps = QueryCursor(_QUERY).captures(tree.root_node)
-    line_starts = [0] + [i + 1 for i, b in enumerate(src) if b == 0x0A]
+    line_starts = line_starts_of(src)
 
     def bytewise(key: str) -> list:
         return sorted(caps.get(key, ()), key=lambda n: n.start_byte)
@@ -548,7 +548,7 @@ def scan_calls(path: Path, rel: str) -> list[dict]:
     src = text.encode("utf-8")
     tree = _PARSER.parse(src)
     caps = QueryCursor(_QUERY).captures(tree.root_node)
-    line_starts = [0] + [i + 1 for i, b in enumerate(src) if b == 0x0A]
+    line_starts = line_starts_of(src)
     sites: list[dict] = []
     for kind, key in (
         ("call", "call.field"),

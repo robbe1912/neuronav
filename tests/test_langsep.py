@@ -211,6 +211,45 @@ check("LJ-3: py _mystery_thing on unresolved base lands 'review'",
 check("LJ-3: py do_get stand-in lands 'review'",
       rows.get("do_get") == "review", f"got {rows.get('do_get')!r}")
 
+# ---- pin 5 (#302): extractor front-end leaf families live in common.py --------
+# The >=3-copy leaf families (node helpers, line_starts, _rel_of_target,
+# the import-liveness sweep shell, the scan-body receiver prologue) are
+# hoisted to extractors/common.py; ts/js/rust import them. A verbatim
+# per-module spelling is drift by definition — the ts-js pair had
+# already diverged before the hoist.
+import extractors.common as _common  # noqa: E402
+import extractors.js as _js  # noqa: E402
+import extractors.rust as _rust  # noqa: E402
+import extractors.ts as _ts  # noqa: E402
+check("front-end leaf helpers are common.py's (identity, ts/js/rust)",
+      _ts._text is getattr(_common, "node_text", None)
+      and _ts._line is getattr(_common, "node_line", None)
+      and _ts._rel_of_target is getattr(_common, "rel_of_target", None)
+      and _js._text is getattr(_common, "node_text", None)
+      and _js._line is getattr(_common, "node_line", None)
+      and _js._rel_of_target is getattr(_common, "rel_of_target", None)
+      and _rust._text is getattr(_common, "node_text", None)
+      and _rust._line is getattr(_common, "node_line", None)
+      and _rust._rel_of_target is getattr(_common, "rel_of_target", None),
+      "extractors must alias common's node_text/node_line/rel_of_target")
+_leaf_src = {m: (HERE / "extractors" / f"{m}.py").read_text(encoding="utf-8")
+             for m in ("ts", "js", "rust")}
+_verbatim = sorted(
+    f"{m}.py:{pat}" for m, s in _leaf_src.items()
+    for pat in ("def _text(", "def _line(", "def _ident_child(", "def _rel_of_target(")
+    if pat in s
+)
+check("no verbatim node-helper/_rel_of_target spelling remains in ts/js/rust",
+      not _verbatim, ", ".join(_verbatim) or "clean")
+_hoist_src = {m: (HERE / "extractors" / f"{m}.py").read_text(encoding="utf-8")
+              for m in ("ts", "js", "rust", "python")}
+_unhoisted = sorted(
+    m + ".py" for m, s in _hoist_src.items()
+    if "make_import_liveness_sweep" not in s or "receiver_env" not in s
+)
+check("sweep shell + receiver prologue hoisted (ts/js/rust/python)",
+      not _unhoisted, ", ".join(_unhoisted) or "all four import the shells")
+
 # ---- summary -------------------------------------------------------------------
 print()
 if FAILS:

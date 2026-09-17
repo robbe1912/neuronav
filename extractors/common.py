@@ -9,6 +9,9 @@ their divergence IS the language layer, not duplication to flatten.
 
 from __future__ import annotations
 
+import bisect
+import os
+import posixpath
 import re
 
 from typing import Callable, Iterable, Iterator
@@ -179,3 +182,88 @@ def fold_continuations(body: str) -> str:
     if buf:
         out.append(buf)
     return "\n".join(out)
+
+# ---- tree-sitter front-end mechanics (shared by ts/js/rust, #302) ---------------
+# Byte/child lookups the grammar front-ends share verbatim; the language
+# knobs are DATA passed in (identifier node types, block child name,
+# '$' in identifiers) — language semantics stay in the language modules.
+
+
+def node_text(node, src: bytes) -> str:
+    return src[node.start_byte:node.end_byte].decode("utf-8", "replace")
+
+
+def node_line(node, line_starts: list[int]) -> int:
+    return bisect.bisect_right(line_starts, node.start_byte)
+
+
+def line_starts_of(src: bytes) -> list[int]:
+    return [0] + [i + 1 for i, b in enumerate(src) if b == 0x0A]
+
+
+def ident_child(node, src: bytes, ident_types) -> str:
+    for ch in node.children:
+        if ch.type in ident_types:
+            return node_text(ch, src)
+    return ""
+
+
+def last_ident(text_val: str, dollar: bool = False) -> str:
+    ids = re.findall(r"[A-Za-z_$][\w$]*" if dollar else r"[A-Za-z_]\w*", text_val)
+    return ids[-1] if ids else ""
+
+
+def body_block(node, src: bytes, block_type: str) -> str:
+    for ch in node.children:
+        if ch.type == block_type:
+            return node_text(ch, src)
+    return ""
+
+
+def rel_of_target(abs_target, path, rel: str) -> str:
+    """Repo-rel posix id of an absolute path, derived from the importing
+    file's own (abs, rel) pair — parse never learns the walk root."""
+    r = os.path.relpath(abs_target, path.parent).replace(os.sep, "/")
+    d = posixpath.dirname(rel)
+    return posixpath.normpath(posixpath.join(d, r)) if d else posixpath.normpath(r)
+
+
+def receiver_env(fs: FileSym, fn: Func, *, module_vars: bool = True,
+                 params: bool = True) -> tuple[str, str, dict[str, str]]:
+    """Scan-body prologue shared by the body scanners: (src_key, body,
+    receiver type env) — members (+ module vars per language), seeded
+    with typed params where the grammar carries them."""
+    var_types: dict[str, str] = dict(fs.members)
+    if module_vars:
+        var_types.update(fs.module_vars)
+    if params:
+        for p, t in fn.params:
+            if t:
+                var_types[p] = t
+    return fn.key, fn.body or "", var_types
+
+
+def make_import_liveness_sweep(exts, doc: str, *, from_imports: bool = False):
+    """Build the registry's import_liveness_sweep(ctx) hook: every whole-
+    module import (python `import x`, ts/js `import * as x`/side-effect,
+    rust `use x::*`) keeps the target module's entire func surface alive
+    — dynamic reachability is presumed. from_imports=True adds the python
+    `from x import y` arm (only the imported name survives there). The
+    per-language gate set and docstring stay at the call site."""
+
+    def import_liveness_sweep(ctx) -> None:
+        for rel in sorted(ctx.files):
+            fs = ctx.files[rel]
+            if fs.ext not in exts:
+                continue
+            for mod in sorted(fs.imported_modules):
+                if mod in ctx.files:
+                    for other in ctx.files[mod].funcs.values():
+                        ctx.referenced.add(other.key)
+            if from_imports:
+                for mod, nm in sorted(fs.from_imports):
+                    if mod in ctx.files and nm in ctx.files[mod].funcs:
+                        ctx.referenced.add(f"{mod}{FN_KEY_SEP}{nm}")
+
+    import_liveness_sweep.__doc__ = doc
+    return import_liveness_sweep

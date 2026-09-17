@@ -20,9 +20,10 @@ class Func:
     line: int  # 1-based def line
     body: str
     # declared IO surface (params/ret from the signature; writes/mut_params
-    # from a body scan). gd + py fill all four; cpp fills params/ret and
-    # defers writes/mut_params to v1.1 (its cpp.py header notes this).
-    # powers fn-panel signature display + mutator filter
+    # from a body scan). gd + py fill all four; ts/rust/cpp fill params/ret
+    # (js: params only — the grammar carries no types); the other
+    # front-ends leave writes/mut_params empty (cpp.py notes the v1.1
+    # deferral). powers fn-panel signature display + mutator filter
     params: list = field(default_factory=list)      # [(name, type)]
     ret: str = ""                                   # declared return type
     writes: set = field(default_factory=set)        # members assigned (self.x =)
@@ -74,27 +75,29 @@ class FileSym:
     # just that name (plus the receiver const) survives
     imported_modules: set[str] = field(default_factory=set)
     from_imports: set[tuple[str, str]] = field(default_factory=set)
-    # c++ file-scope variables (name -> type): unused statics are honest
-    # dead-code material; visibility precedes any tier-pass consumption
+    # file-scope variables (name -> type), cpp statics + rust static
+    # items: unused statics are honest dead-code material; visibility
+    # precedes any tier-pass consumption
     globals: dict[str, str] = field(default_factory=dict)
-    # c++ typedef / using-alias declarations (name -> target type text)
+    # type-alias declarations (name -> target type text): cpp
+    # typedef/using, ts type aliases, rust `type` items
     aliases: dict[str, str] = field(default_factory=dict)
     # c++ members declared under a private access region (stronger dead
     # candidates than public-unused once a tier pass consumes this)
     private_members: set[str] = field(default_factory=set)
-    # python module-level receiver vars (name -> "module:<rel path>" or
-    # class name): `LOG = CheckLog()` — body scans resolve LOG.finish(
+    # module-level receiver vars (name -> "module:<rel path>" or class
+    # name): python `LOG = CheckLog()`, ts/js module-scope bindings,
+    # rust `use`-namespace bindings — body scans resolve LOG.finish(
     # through them (module vars are visible in every body)
     module_vars: dict[str, str] = field(default_factory=dict)
     # python method names on classes referenced at module scope
     # (injected stand-ins handed to opaque consumers): runtime-dispatch
     # candidates — the dead scan tiers them review, never likely
     dispatch_names: set[str] = field(default_factory=set)
-    # python bare-identifier call-argument references (#177): name
-    # tokens in argument position (keyword values and bare positionals
-    # — AST Name expressions only, so string contents and attribute
-    # refs never land here). A def passed by reference has no call
-    # site; the graph attributes same-file defs alive from these.
+    # bare-identifier call-argument references: python harvests AST Name
+    # arguments (#177); ts/js donate JSX member-expression props (jprop)
+    # into this surface. A def passed by reference has no call site; the
+    # graph attributes same-file defs alive from these.
     arg_refs: set[str] = field(default_factory=set)
 
 

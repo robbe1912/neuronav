@@ -736,7 +736,9 @@ def stand_in_review(fs: FileSym, name: str) -> bool:
 
 
 def mention_review(name: str, mentions: dict) -> bool:
-    """Cpp-only rule (mention floor)."""
+    """No mention floor for this language (cpp/ts/js/rust implement
+    one); the hook stays registry-uniform — graph consumes
+    mod.mention_review."""
     return False
 
 
@@ -792,7 +794,13 @@ def _hint_value_classes(hint: str) -> list[str]:
 
 
 # ---- build passes + body scan (langsep: moved from graph.py, ctx=Graph) -------
-from extractors.common import FN_KEY_SEP, fold_continuations, fn_key  # noqa: E402
+from extractors.common import (  # noqa: E402  (leaf module, #302 shells)
+    FN_KEY_SEP,
+    fold_continuations,
+    fn_key,
+    make_import_liveness_sweep,
+    receiver_env,
+)
 
 
 def rebind_reexports_sweep(ctx) -> None:
@@ -821,21 +829,13 @@ def rebind_reexports_sweep(ctx) -> None:
         fs.from_imports = rebound
 
 
-def import_liveness_sweep(ctx) -> None:
-    """A PLAIN `import x` binds the namespace - the module may be
-    reached dynamically, so its funcs stay alive as a unit. A
-    `from x import y` selects exactly one name: only that func (if it
-    is one) survives the import; siblings do not."""
-    for fs in ctx.files.values():
-        if fs.ext != ".py":
-            continue
-        for mod in fs.imported_modules:
-            if mod in ctx.files:
-                for other in ctx.files[mod].funcs.values():
-                    ctx.referenced.add(other.key)
-        for mod, nm in fs.from_imports:
-            if mod in ctx.files and nm in ctx.files[mod].funcs:
-                ctx.referenced.add(f"{mod}{FN_KEY_SEP}{nm}")
+import_liveness_sweep = make_import_liveness_sweep(
+    frozenset({".py"}),
+    "A PLAIN `import x` binds the namespace - the module may be "
+    "reached dynamically, so its funcs stay alive as a unit. A "
+    "`from x import y` selects exactly one name: only that func (if it "
+    "is one) survives the import; siblings do not.",
+    from_imports=True)
 
 
 def arg_refs_sweep(ctx) -> None:
@@ -873,12 +873,10 @@ def scan_file(fs: FileSym, ctx) -> None:
 def _scan_body_py(fs: FileSym, fn: Func, ctx) -> None:
     """Python body scan: call edges via typed receivers, class_map
     classes, and from-import consts (module-file receivers)."""
-    src_key = fn.key
-    scan_text = fold_continuations(fn.body)
-    # receiver types: self-members from the extractor + typed params
-    # + constructor locals in this body
-    var_types = dict(fs.members)
-    var_types.update(fs.module_vars)
+    # receiver types: self-members + module vars from the extractor;
+    # typed params + constructor locals fill from the body below
+    src_key, body, var_types = receiver_env(fs, fn, params=False)
+    scan_text = fold_continuations(body)
     for pm in PY_PARAM_TYPED_RE.finditer(scan_text):
         var_types[pm.group(1)] = pm.group(2)
     for m in PY_ANNOT_ASSIGN_RE.finditer(scan_text):

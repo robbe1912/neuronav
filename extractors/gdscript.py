@@ -529,7 +529,9 @@ def stand_in_review(fs: FileSym, name: str) -> bool:
 
 
 def mention_review(name: str, mentions: dict) -> bool:
-    """Cpp-only rule (mention floor)."""
+    """No mention floor for this language (cpp/ts/js/rust implement
+    one); the hook stays registry-uniform — graph consumes
+    mod.mention_review."""
     return False
 
 

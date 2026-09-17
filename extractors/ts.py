@@ -25,7 +25,6 @@ cross-file work lives in the ctx-driven sweeps below.
 
 from __future__ import annotations
 
-import bisect
 import json
 import os
 import posixpath
@@ -33,12 +32,24 @@ import re
 import sys
 import weakref
 from collections.abc import Iterator
+from functools import partial
 from pathlib import Path
 
 from tree_sitter import Language, Node, Parser, Query, QueryCursor
 
 import tree_sitter_typescript as _tst
 
+from extractors.common import (  # leaf module: shared text mechanics (#302)
+    body_block,
+    ident_child,
+    last_ident,
+    line_starts_of,
+    make_import_liveness_sweep,
+    node_line as _line,
+    node_text as _text,
+    receiver_env,
+    rel_of_target as _rel_of_target,
+)
 from extractors.model import FileSym, Func
 
 TS_EXTS = frozenset({".ts", ".tsx", ".mts", ".cts"})
@@ -88,25 +99,12 @@ _TSX_QUERY = Query(TSX_LANG, _QUERY_SRC + _TSX_EXTRA)
 
 
 # ---- node helpers (no Point reads — module header law) --------------------------
-
-def _text(node, src: bytes) -> str:
-    return src[node.start_byte:node.end_byte].decode("utf-8", "replace")
-
-
-def _line(node, line_starts: list[int]) -> int:
-    return bisect.bisect_right(line_starts, node.start_byte)
-
-
-def _ident_child(node, src: bytes) -> str:
-    for ch in node.children:
-        if ch.type in _IDENT_TYPES:
-            return _text(ch, src)
-    return ""
-
-
-def _last_ident(text_val: str) -> str:
-    ids = re.findall(r"[A-Za-z_$][\w$]*", text_val)
-    return ids[-1] if ids else ""
+# shared front-end mechanics live in extractors.common.py (#302); the
+# per-language knobs are data: identifier node types, block child name,
+# '$' allowed in identifiers.
+_ident_child = partial(ident_child, ident_types=_IDENT_TYPES)
+_last_ident = partial(last_ident, dollar=True)
+_body_block = partial(body_block, block_type="statement_block")
 
 
 def _find_first_ident(node, src: bytes) -> str:
@@ -147,12 +145,6 @@ def _signature(node, src: bytes) -> tuple[list[tuple[str, str]], str]:
             ret = _type_text(ch, src)
     return params, ret
 
-
-def _body_block(node, src: bytes) -> str:
-    for ch in node.children:
-        if ch.type == "statement_block":
-            return _text(ch, src)
-    return ""
 
 
 # ---- tsconfig alias resolution (§1.3) -------------------------------------------
@@ -312,14 +304,6 @@ def _abs_candidates(abs_base: Path) -> list[Path]:
             seen.add(c)
             uniq.append(c)
     return uniq
-
-
-def _rel_of_target(abs_target: Path, path: Path, rel: str) -> str:
-    """Repo-rel posix id of an absolute path, derived from the importing
-    file's own (abs, rel) pair — parse never learns the walk root."""
-    r = os.path.relpath(abs_target, path.parent).replace(os.sep, "/")
-    d = posixpath.dirname(rel)
-    return posixpath.normpath(posixpath.join(d, r)) if d else posixpath.normpath(r)
 
 
 def _is_specifier_relative(spec: str) -> bool:
@@ -602,7 +586,7 @@ def parse(path: Path, rel: str) -> FileSym:
     ext = path.suffix.lower()
     fs = FileSym(path=rel, ext=ext)
     root = _PARSERS.get(ext, _PARSERS[".ts"]).parse(src).root_node
-    line_starts = [0] + [i + 1 for i, b in enumerate(src) if b == 0x0A]
+    line_starts = line_starts_of(src)
     caps = QueryCursor(_TSX_QUERY if ext == ".tsx" else _TS_QUERY).captures(root)
 
     def bytewise(*keys: str) -> list:
@@ -1002,7 +986,7 @@ def _jsx_sites(path: Path, fs: FileSym) -> list[tuple[str, int]]:
                   "sites skipped for this file", file=sys.stderr)
         return []
     caps = QueryCursor(_TSX_QUERY).captures(_PARSERS[".tsx"].parse(src).root_node)
-    line_starts = [0] + [i + 1 for i, b in enumerate(src) if b == 0x0A]
+    line_starts = line_starts_of(src)
     sites = [(name, _line(node, line_starts))
              for node in sorted(caps.get("jsxcomp", ()), key=lambda n: n.start_byte)
              for name in (_text(node, src),) if name[:1].isupper()]
@@ -1045,13 +1029,7 @@ def scan_file(fs: FileSym, ctx) -> None:
 
 
 def _scan_body_ts(fs: FileSym, fn: Func, ctx) -> None:
-    src_key = fn.key
-    body = fn.body or ""
-    var_types: dict[str, str] = dict(fs.members)
-    var_types.update(fs.module_vars)
-    for p, t in fn.params:
-        if t:
-            var_types[p] = t
+    src_key, body, var_types = receiver_env(fs, fn)
     for m in TS_TYPED_LOCAL_RE.finditer(body):
         var_types[m.group(1)] = m.group(2)
     for m in TS_NEW_LOCAL_RE.finditer(body):
@@ -1264,17 +1242,10 @@ def rebind_reexports_sweep(ctx) -> None:
                     fs.consts[nm] = org
 
 
-def import_liveness_sweep(ctx) -> None:
-    """Star/side-effect/dynamic imports: the whole target module's funcs
-    enter ctx.referenced (python plain-import semantics verbatim)."""
-    for rel in sorted(ctx.files):
-        fs = ctx.files[rel]
-        if fs.ext not in TS_EXTS:
-            continue
-        for mod in sorted(fs.imported_modules):
-            if mod in ctx.files:
-                for other in ctx.files[mod].funcs.values():
-                    ctx.referenced.add(other.key)
+import_liveness_sweep = make_import_liveness_sweep(
+    TS_EXTS,
+    "Star/side-effect/dynamic imports: the whole target module's funcs "
+    "enter ctx.referenced (python plain-import semantics verbatim).")
 
 
 # registry choreography binds (langsep) — see extractors/python.py's
