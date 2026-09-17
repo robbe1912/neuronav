@@ -171,6 +171,52 @@ def main():
     finally:
         _L._RELAX_BLOCK = orig_blk
     # byte pin: nodes/links summary + banner — kept local
+
+    # ---- section 9: sparse-path digest pin (issue #309) --------------------
+    # The dense kcoef matrix is gated to the n <= 2048 branch; this leg
+    # builds a sparse-path layout (n=2600, just past the cut, lean wiring)
+    # and pins its digest: any numeric drift in the sparse force path —
+    # including an accidental kcoef read — changes the hash. The pin is
+    # PER-PLATFORM: the sparse grid path floor-quantizes positions into
+    # cells whose size goes through libm pow, and msvcrt vs glibc differ
+    # ~1 ulp there, so a node near a cell boundary flips cells and the
+    # digest avalanches across machines while staying deterministic
+    # in-process (CI run 35278733357: 8a6fa788… on Linux vs 5a015fc8… on
+    # Windows). Unknown platforms fall back to a two-build determinism
+    # check so a new runner never fails on libm alone. ~98s.
+    N9 = 2600
+    import random as _random9
+    rng9 = _random9.Random(5)
+    links9 = []
+    for i in range(N9 - 1):
+        if i % 3 != 2:
+            links9.append({"s": i, "t": i + 1, "w": 2.0, "ty": "call"})
+    for _ in range(600):
+        a9, b9 = rng9.randrange(N9), rng9.randrange(N9)
+        if a9 != b9:
+            links9.append({"s": a9, "t": b9, "w": 1.0,
+                           "ty": rng9.choice(("call", "inst", "attach"))})
+    sims9 = [(i, i + 1, rng9.uniform(0.5, 0.95))
+             for i in range(0, N9 - 1, 26)]
+    hot9 = [rng9.choice((0.0, 1.0)) for _ in range(N9)]
+    cid9 = [min(i * 4 // N9, 3) for i in range(N9)]
+    out9 = layout_fn(N9, links9, sims9, cid9, hot=hot9)
+    h9 = hashlib.sha256(
+        json.dumps(out9, separators=(",", ":")).encode()).hexdigest()
+    _sparse_pins = {
+        "win32": "5a015fc88f7270fc0e27d965b06a2ec1553ad427bd952fad2bf49e57b8a3aea4",
+        "linux": "8a6fa788ec0ddf5492e9645a668e21d7611424ce71411a348c0e145e5046263c",
+    }
+    pin9 = _sparse_pins.get(sys.platform)
+    if pin9 is not None:
+        check("sparse-path n=2600 digest pinned per-platform (#309)",
+              h9 == pin9, h9)
+    else:
+        out9b = layout_fn(N9, links9, sims9, cid9, hot=hot9)
+        h9b = hashlib.sha256(
+            json.dumps(out9b, separators=(",", ":")).encode()).hexdigest()
+        check("sparse-path n=2600 deterministic on unlisted platform (#309)",
+              h9 == h9b, h9)
     print(f"\n{N} nodes · {len(links)} links · {len(FAILURES)} failure(s)")
     if FAILURES:
         print("FAILED:", ", ".join(FAILURES))

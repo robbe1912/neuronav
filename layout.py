@@ -203,8 +203,14 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
     dbar = float(deg.mean()) + 1.0
     ds = ((deg + 1.0) ** 0.35).astype(np.float32)
     # spread constant ~2x the old browser value: the frozen layout has fewer
-    # integration steps, so repulsion needs more authority to open the graph
-    kcoef = (110000.0 * np.outer(ds, ds) / (dbar * dbar)).astype(np.float32)
+    # integration steps, so repulsion needs more authority to open the graph.
+    # Dense-path-only materialization (issue #309): the N×N pairwise matrix
+    # is read solely by the dense repulsion branch below (n <= 2048); the
+    # grid-binned sparse path recomputes the coefficient scalarly per pair
+    # (KC * ds[i] * ds[j] * hh[ci, cj]), so above the scale cut the matrix
+    # is ~137 MB of dead weight at 6k nodes and is not built at all
+    if n <= 2048:
+        kcoef = (110000.0 * np.outer(ds, ds) / (dbar * dbar)).astype(np.float32)
 
     carr = np.asarray(cluster_ids, dtype=np.int64)
     cids, cinv = np.unique(carr, return_inverse=True)
@@ -224,7 +230,8 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
     # repulsion between them and the centroid blob repulsion — related
     # clusters are allowed to sit close
     hh = np.where(CP >= 0.6, 0.5, 1.0).astype(np.float32)
-    kcoef = (kcoef * hh[np.ix_(cinv, cinv)]).astype(np.float32)
+    if n <= 2048:
+        kcoef = (kcoef * hh[np.ix_(cinv, cinv)]).astype(np.float32)
 
     alpha = 1.0
     # scale path runs 300 steps (spec §4 row 6 fallback): the sim is
