@@ -178,8 +178,10 @@ def main() -> None:
     time.sleep(TTL_WAIT)
     r2 = calls["rescans"]
     err = io.StringIO()
+    import asyncio  # issue #315: read tools are async shells now
+
     with contextlib.redirect_stderr(err):
-        out1 = server.semantic_search("fluxcapacitor", 5)
+        out1 = asyncio.run(server.semantic_search("fluxcapacitor", 5))
     check(
         "embed failure: tool still answers (degraded, hits intact)",
         "zeta_flux" in out1 and "degraded" in out1,
@@ -194,7 +196,7 @@ def main() -> None:
 
     time.sleep(TTL_WAIT)  # TTL expires, cooldown must still suppress
     with contextlib.redirect_stderr(err):
-        server.semantic_search("fluxcapacitor", 3)
+        asyncio.run(server.semantic_search("fluxcapacitor", 3))
     check(
         "cooldown: retry suppressed after failure",
         calls["rescans"] == r2 + 1 and err.getvalue().count("auto-rescan FAILED") == 1,
@@ -203,7 +205,7 @@ def main() -> None:
     server._rescan_failed_at = None  # simulate cooldown expiry
     time.sleep(TTL_WAIT)
     with contextlib.redirect_stderr(err):
-        server.semantic_search("fluxcapacitor", 3)
+        asyncio.run(server.semantic_search("fluxcapacitor", 3))
     check(
         "cooldown expiry: retry happens",
         calls["rescans"] == r2 + 2 and err.getvalue().count("auto-rescan FAILED") == 2,

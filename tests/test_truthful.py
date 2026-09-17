@@ -8,6 +8,7 @@
 #   .venv/Scripts/python.exe -X utf8 tests/test_truthful.py
 # (self-selects the self-index config below; the shell must not
 # pre-export NEURONAV_CONFIG)
+import asyncio  # issue #315: semantic_search is an async shell in-process
 import contextlib
 import io
 import os
@@ -306,7 +307,7 @@ def main() -> int:
 
         recall._vector_ranks = _mismatch_vr
         try:
-            sm = server.semantic_search("cluster labeling", 4)
+            sm = asyncio.run(server.semantic_search("cluster labeling", 4))
         finally:
             recall._vector_ranks = orig_vr
         check("semantic_search degraded header carries the true reason (#115)",
