@@ -311,6 +311,167 @@ for label, env in (
     warns = _guard_lines(proc)
     check(f"{label}: scope hint stays silent", len(warns) == 0, f"lines={len(warns)}")
 
+# ---- issue #296: include fallback walks everything; gitignore-aware
+# walking; one canonical prune set -------------------------------------------
+# Children under a third scratch root (the suite process stays bound to
+# cfg_a): (A) a config WITHOUT include_dirs must walk + index a generic
+# tree — the pre-#296 fallback to one Godot repo's layout ("scripts",
+# "scenes", "VFX", "ai", "tests", "tools") indexed nothing on any other
+# tree; (B) the root .gitignore's dir-entry lines prune like .neuroignore
+# names — bare names (trailing slash optional); anchored ("/src/"), glob
+# ("*.log") and "!" negation lines stay git's business, and a .neuroignore
+# name still excludes despite a "!name" negation; (C) gitignore-sourced
+# prunes stay loud: ONE stderr note when a name keeps >= WARN_N files
+# out of the walk, once per process, silent under FAKE embeds; (D) the
+# walk-all exclude default and the wiring floor derive from one canonical
+# set (post-#290 drift: __pycache__/.team_scratch missing floor-side,
+# .godot missing defaults-side).
+SCRATCH3 = Path(tempfile.gettempdir()) / "neuronav_walkguard_296"
+shutil.rmtree(SCRATCH3, ignore_errors=True)
+T3 = SCRATCH3 / "tree"
+for sub in ("src", "tools", "scripts", "target", "genout", ".tmp", ".git", "keepme"):
+    (T3 / sub).mkdir(parents=True)
+(T3 / "src" / "app.py").write_text("def main():\n    pass\n", encoding="utf-8")
+(T3 / "tools" / "helper.py").write_text("def helper():\n    pass\n", encoding="utf-8")
+(T3 / "scripts" / "godot_side.py").write_text("def gd():\n    pass\n", encoding="utf-8")
+(T3 / "target" / "gen.py").write_text("target_junk = 1\n", encoding="utf-8")
+for i in range(5):
+    (T3 / "genout" / f"g{i}.py").write_text("gen_junk = 1\n", encoding="utf-8")
+    (T3 / ".tmp" / f"t{i}.py").write_text("tmp_junk = 1\n", encoding="utf-8")
+    (T3 / ".git" / f"n{i}.py").write_text("git_junk = 1\n", encoding="utf-8")
+(T3 / "keepme" / "keep.py").write_text("def kept():\n    pass\n", encoding="utf-8")
+(T3 / ".gitignore").write_text(
+    "# build output\ntarget/\ngenout/\n.tmp/\n/src/\n*.log\n!keepme\n",
+    encoding="utf-8",
+)
+cfg_296 = SCRATCH3 / "config_296.json"
+cfg_296.write_text(json.dumps({
+    "root": str(T3),
+    "collection": "walkguard_296",
+    "state_dir": "default",
+    "extensions": [".py"],  # no include_dirs: leg A's whole point
+}), encoding="utf-8")
+
+PROBE_A = SCRATCH3 / "probe_a.py"
+PROBE_A.write_text(
+    "import sys\n"
+    f"sys.path.insert(0, {str(HERE)!r})\n"
+    "import nav\n"
+    "names = sorted(str(p.relative_to(nav.ROOT)).replace(chr(92), '/')\n"
+    "               for p in nav.iter_files())\n"
+    "print(nav.INCLUDE_DIRS)\n"
+    "print('|'.join(names))\n"
+    "nav.rescan()\n"
+    "print(nav.count())\n",
+    encoding="utf-8",
+)
+proc = subprocess.run(
+    [sys.executable, "-X", "utf8", str(PROBE_A)],
+    capture_output=True, text=True,
+    env={**CLEAN_ENV, "NEURONAV_CONFIG": str(cfg_296), "NEURONAV_EMBED_FAKE": "1"},
+    cwd=str(HERE),
+)
+check("296: include-fallback child completed", proc.returncode == 0, proc.stderr[-400:])
+lines_a = [ln for ln in proc.stdout.strip().splitlines() if ln]
+check(
+    "296-A: config without include_dirs walks everything (opt-in only)",
+    len(lines_a) == 3
+    and lines_a[0] == "('.',)"
+    and lines_a[1] == "keepme/keep.py|scripts/godot_side.py|src/app.py|tools/helper.py"
+    and lines_a[2] == "4",
+    proc.stdout.strip(),
+)
+
+# .neuroignore precedence: "keepme" excluded via .neuroignore even though
+# the root .gitignore carries a "!keepme" negation — the exclude union is
+# additive-only; gitignore processing can never re-include
+CFGDIR = SCRATCH3 / "cfgdir"
+CFGDIR.mkdir()
+(CFGDIR / ".neuroignore").write_text("keepme\n", encoding="utf-8")
+cfg_prec = CFGDIR / "config.json"
+cfg_prec.write_text(json.dumps({
+    "root": str(T3),
+    "collection": "walkguard_296_prec",
+    "state_dir": "default",
+    "extensions": [".py"],
+}), encoding="utf-8")
+PROBE_D = SCRATCH3 / "probe_d.py"
+PROBE_D.write_text(
+    "import sys\n"
+    f"sys.path.insert(0, {str(HERE)!r})\n"
+    "import nav\n"
+    "names = sorted(str(p.relative_to(nav.ROOT)).replace(chr(92), '/')\n"
+    "               for p in nav.iter_files())\n"
+    "print('|'.join(names))\n",
+    encoding="utf-8",
+)
+proc = subprocess.run(
+    [sys.executable, "-X", "utf8", str(PROBE_D)],
+    capture_output=True, text=True,
+    env={**CLEAN_ENV, "NEURONAV_CONFIG": str(cfg_prec), "NEURONAV_EMBED_FAKE": "1"},
+    cwd=str(HERE),
+)
+check("296-B: precedence child completed", proc.returncode == 0, proc.stderr[-400:])
+check(
+    "296-B: .neuroignore beats a gitignore !negation (union is additive-only)",
+    proc.stdout.strip() == "scripts/godot_side.py|src/app.py|tools/helper.py",
+    proc.stdout.strip(),
+)
+
+# gitignore-sourced prunes stay loud: threshold lowered in the child (the
+# crossing logic is the contract), .git junk stays baseline-silent, the
+# second walk stays silent (once per process), FAKE stays silent
+PROBE_C = SCRATCH3 / "probe_c.py"
+PROBE_C.write_text(
+    "import sys\n"
+    f"sys.path.insert(0, {str(HERE)!r})\n"
+    "import nav\n"
+    "nav.GITIGNORE_PRUNE_WARN_N = 3\n"
+    "list(nav.iter_files())\n"
+    "list(nav.iter_files())\n",
+    encoding="utf-8",
+)
+
+
+def _note_lines(proc):
+    return [ln for ln in proc.stderr.splitlines() if "gitignore" in ln.lower()]
+
+
+proc = subprocess.run(
+    [sys.executable, "-X", "utf8", str(PROBE_C)],
+    capture_output=True, text=True,
+    env={**CLEAN_ENV, "NEURONAV_CONFIG": str(cfg_296)},
+    cwd=str(T3),
+)
+check("296-C: note child completed", proc.returncode == 0, proc.stderr[-400:])
+notes = _note_lines(proc)
+check(
+    "296-C: one-shot stderr note names gitignore-pruned dirs (genout; never baseline .git)",
+    len(notes) == 1 and "genout" in notes[0] and "not indexed" in notes[0]
+    and notes[0].count(".git") == 1,  # the ".gitignore" word alone — no .git dir named
+    f"lines={len(notes)}",
+)
+proc = subprocess.run(
+    [sys.executable, "-X", "utf8", str(PROBE_C)],
+    capture_output=True, text=True,
+    env={**CLEAN_ENV, "NEURONAV_CONFIG": str(cfg_296), "NEURONAV_EMBED_FAKE": "1"},
+    cwd=str(HERE),
+)
+check(
+    "296-C: hermetic FAKE run stays silent",
+    proc.returncode == 0 and len(_note_lines(proc)) == 0,
+    f"lines={len(_note_lines(proc))}",
+)
+
+check(
+    "296-D: canonical prune set — WALK_DEFAULTS exclude == _PRUNE_FLOOR",
+    set(nav.WALK_DEFAULTS["exclude_dirs"]) == set(nav._PRUNE_FLOOR)
+    and {"__pycache__", ".team_scratch", ".godot"} <= nav._PRUNE_FLOOR,
+    f"defaults={sorted(nav.WALK_DEFAULTS['exclude_dirs'])} "
+    f"floor={sorted(nav._PRUNE_FLOOR)}",
+)
+
+shutil.rmtree(SCRATCH3, ignore_errors=True)
 shutil.rmtree(SCRATCH2, ignore_errors=True)
 
 shutil.rmtree(SCRATCH, ignore_errors=True)

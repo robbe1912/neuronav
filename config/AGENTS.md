@@ -80,6 +80,17 @@ line — ``#`` comments and blank lines ignored, matched at any depth
 scratch conventions (``.tmp``, ``.team_scratch``); users adjust it
 without touching the config json.
 
+The walk is also gitignore-aware (issue #296): directory-prune entries
+from the target repo's root ``.gitignore`` (bare names like ``target/``
+or ``dist/``; comments, ``!negations``, globs and anchored/nested paths
+are ignored) are unioned into the exclude set on every leg. The union is
+additive-only, so precedence stays: explicit ``exclude_dirs`` ==
+``.neuroignore`` (both land in ``exclude_dirs``) > ``.gitignore`` dir
+entries — a ``.gitignore`` entry never re-includes anything, and listing
+a name in ``exclude_dirs`` simply credits it to you instead of the
+gitignore. A one-shot stderr note names gitignore-sourced dirs that hide
+large subtrees (>= 10k files) so a vanished index is never silent.
+
 ## Fields (consumed by `nav._apply_config`)
 
 | field | default | meaning |
@@ -87,7 +98,7 @@ without touching the config json.
 | `root` | parent of the install | target repo root (relative -> resolve against the profile's dir). Project-local `.neuronav/config.json` special case (issue #240): `"."` or absent resolves to the PARENT of `.neuronav/` (the project itself), since the config-dir-relative default would otherwise walk `.neuronav/`; any other explicit root resolves against the config's dir as usual |
 | `state_dir` | required — aborts without it (issue #91) | ALL generated state for the profile: `chroma/` vectordb, `base/` shards, `graph.html` bake (relative -> resolve against the profile's dir); `"default"` = explicit opt-in to `<root>/.neuronav` (`onboard.py init` writes it) — the silent in-root default once wiped a live store |
 | `collection` | `"main"` | chroma collection name; fn-level index lives at `<collection>-fns` |
-| `include_dirs` | `scripts, scenes, VFX, ai, tests, tools` | walked under root |
+| `include_dirs` | `.` (walk everything) | walked under root; strictly opt-in — a config without this key walks the whole root under the excludes (issue #296; the old `scripts, scenes, VFX, ai, tests, tools` fallback was one target repo's layout and walked 0 files everywhere else) |
 | `extensions` | `.gd, .tscn` | suffixes kept (registered ones parse structurally; the rest — the #240 raw-text web set `.ts .tsx .js .jsx .mjs .mts .cts .json .md`, scaffolded by `onboard.py init [--preset ts\|js\|python\|cpp\|gdscript\|rust]` — index as raw `file_doc`: searchable, but find_functions/symbol_graph/dead_code return nothing for them until extractors land) |
 | `exclude_dirs` | `.git, __pycache__` | pruned from the directory walk |
 | `.neuroignore` | (file beside config) | extra exclude dir names, one per line, merged into `exclude_dirs` at load |
