@@ -105,7 +105,7 @@ _INSTRUCTIONS = (
     "The index auto-refreshes on file drift; a tool marked 'degraded' "
     "still answers completely from the current index, though vector "
     "recall may be unavailable. An empty index answers with first-call "
-    "guidance; onboard.py init --preset ts|js|python|cpp|gdscript|rust "
+    "guidance; onboard.py init --preset " + "|".join(PRESETS) + " "
     "scaffolds a config for unmatched file types."
 )
 
@@ -203,9 +203,10 @@ _CENSUS_DENY = frozenset({
 
 def _preset_hint(suggestions: list[str]) -> str | None:
     """The preset covering a guidance's suggested suffixes (issue #240):
-    first hit in a fixed preference order — ts before js, so a mixed web
-    repo suggests the fuller list. None when no preset applies."""
-    for name in ("ts", "js", "python", "cpp", "gdscript", "rust"):
+    first hit in a fixed preference order — the insertion order of
+    extractors.PRESETS (ts before js, so a mixed web repo suggests the
+    fuller list). None when no preset applies."""
+    for name in PRESETS:
         if set(PRESETS[name]) & set(suggestions):
             return name
     return None

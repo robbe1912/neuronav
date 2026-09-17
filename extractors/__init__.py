@@ -52,6 +52,7 @@ EXTENSIONS: dict[str, object] = {
     ".gd": gdscript,
     ".tscn": gdscript,
     ".py": python,
+    ".pyi": python,
     ".h": cpp,
     ".hpp": cpp,
     ".cpp": cpp,
@@ -81,10 +82,12 @@ PRESETS: dict[str, tuple[str, ...]] = {
     "js": (".js", ".jsx", ".mjs", ".cjs", ".json", ".md"),
     "python": (".py", ".pyi", ".json", ".md"),
     "cpp": (".h", ".hpp", ".cpp", ".cc", ".cxx"),
-    "gdscript": (".gd", ".tscn"),
+    # gdscript's walk suffixes ARE gdscript.WALK_EXTS (issue #295: single
+    # truth — the module constant is the one spelling; nav's Godot-profile
+    # default and this preset must never drift apart)
+    "gdscript": gdscript.WALK_EXTS,
     "rust": (".rs", ".json", ".md"),
 }
-
 
 def sync_parseable(suffix: str) -> bool:
     """True when sync_functions may parse the suffix into funcs: an

@@ -34,13 +34,17 @@ import re
 from collections import Counter
 from pathlib import Path
 
-import clusters
-import nav
+import graph  # noqa: E402  (edge-type taxonomy; graph imports nothing from here — no cycle)
+import clusters  # noqa: E402
+import nav  # noqa: E402
 
 RULES_NAME = "arch-rules.json"
 KINDS = ("forbid", "budget")
 SEVERITIES = ("error", "warn")
-EDGE_TYPES = ("call", "var", "signal", "inst", "attach", "alias")
+# the canonical edge-type roster lives beside graph's emission funnel
+# (issue #295: single truth); rules validate against the same six types
+# the emitters actually produce
+EDGE_TYPES = graph.EDGE_TYPES
 TOP_FILES = 5  # offending file pairs shown per violation
 
 _RULE_KEYS = ("id", "kind", "from", "to", "max", "types", "severity")

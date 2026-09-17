@@ -484,6 +484,22 @@ UNDERSCORE_SHIELD = VIRTUALS
 # GDScript func head keyword (graph _is_micro heuristic sniff).
 FUNC_KEYWORD = "func "
 
+# Language-owned grammar for graph's dup/delegate/chunk/file-doc passes
+# (issue #295): the statement shapes graph's packing algorithm matches,
+# spelled per language. A gd body carries no signature line (parse()
+# strips the `func` head), `#` is the only comment prefix, docstrings
+# are triple-quoted. Bodies mirror the graph.py expressions they
+# replace byte-for-byte.
+
+SIGNATURE_RE = re.compile(r"^(?:async\s+)?func\s+\w+")
+GUARD_RE = re.compile(r"^(?:el)?if\s+[^():]+:$")
+GUARD_RET_RE = re.compile(r"^return\s+[^()]*$")
+ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*(?:\.\w+)* = [^()=]+$")
+FORWARD_RE = re.compile(r"^return\s+(?:await\s+)?[A-Za-z_][\w.]*\([\w\s,]*\)$")
+COMMENT_PREFIXES = ("#",)
+TRIPLE_QUOTES = ('"""', "'''")
+DEDENT_RE = re.compile(r"^(\s+)else:|^(\s+)elif\s|^(\s*)@(\w)")
+
 from extractors.common import DYNAMIC_HINT_RE  # noqa: E402  (kept with the hooks it serves)
 
 DYNAMIC_HINT = DYNAMIC_HINT_RE

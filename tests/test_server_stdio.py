@@ -1087,7 +1087,7 @@ def _truncation_scenario() -> None:
             f"def d{i}():\n    return {100 + i}\n\n" for i in range(7)
         ),
         "big2.py": (
-            'def main():\n    t = Hub()\n    t.connect("sig")\n    return t\n\n'
+            'def main():\n    t = Hub()\n    t = getattr(t, "sig")\n    return t\n\n'
             "def r00():\n    return 200\n"
         ),
     })

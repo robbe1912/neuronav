@@ -75,8 +75,8 @@ def digest(g) -> str:
 
 
 # ---- hermetic section (no profile needed) ------------------------------
-check("file_doc shaper revision is 2 (the imports head line)",
-      graph.FILE_DOC_REV == 2, f"rev={graph.FILE_DOC_REV}")
+check("file_doc shaper revision is the pinned one (#295: language-owned intros —\n`//`-block/ts doc shapes changed, so doc shapes re-embed loudly per #220)",
+      graph.FILE_DOC_REV == 3, f"rev={graph.FILE_DOC_REV}")
 
 g = graph.get_graph(rebuild=True)
 d1 = digest(g)

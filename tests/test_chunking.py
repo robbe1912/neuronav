@@ -7,8 +7,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from extractors import registry_for
 from extractors.model import Func, FileSym, add_class_ctx
 import graph  # noqa: E402
+
+PY_MOD = registry_for(".py")
+GD_MOD = registry_for(".gd")
 
 FAILS = []
 
@@ -61,8 +65,8 @@ body = """    a = 1
     d = 4
     return d
 """
-check("offsets see each top-level stmt", graph._chunk_line_offsets(body) == [1, 2, 4, 5],
-      str(graph._chunk_line_offsets(body)))
+check("offsets see each top-level stmt", graph._chunk_line_offsets(body, PY_MOD) == [1, 2, 4, 5],
+      str(graph._chunk_line_offsets(body, PY_MOD)))
 
 # sequential statements at the same indent as the first are separate blocks
 body2 = """    x = (1 +
@@ -70,7 +74,7 @@ body2 = """    x = (1 +
     y = x
     return y
 """
-offs = graph._chunk_line_offsets(body2)
+offs = graph._chunk_line_offsets(body2, PY_MOD)
 check("offsets skip bracket continuation bodies", offs == [2, 3], str(offs))
 
 # string content at column 0 is NOT a boundary (triple-quoted block)
@@ -80,7 +84,7 @@ col0 inside string
 \'\'\'
     return s
 """
-offs3 = graph._chunk_line_offsets(body3)
+offs3 = graph._chunk_line_offsets(body3, PY_MOD)
 check("offsets skip triple-quoted content", offs3 == [4], str(offs3))
 # heredoc INSIDE a triple-quoted string stays inert even at lazy indent
 body3b = """    s = \'\'\'
@@ -89,7 +93,7 @@ col0
 \'\'\'
     return s
 """
-offs3b = graph._chunk_line_offsets(body3b)
+offs3b = graph._chunk_line_offsets(body3b, PY_MOD)
 check("offsets keep heredoc contents inert", offs3b == [4], str(offs3b))
 # a triple string opened on the FIRST statement line is honored too
 body3c = """    s = \'\'\'doc
@@ -97,7 +101,7 @@ line
 \'\'\'
     return s
 """
-offs3c = graph._chunk_line_offsets(body3c)
+offs3c = graph._chunk_line_offsets(body3c, PY_MOD)
 check("offsets honor triple open on stmt 0", offs3c == [3], str(offs3c))
 
 # brace closure and else are boundaries; deeper-level lines are not
@@ -108,8 +112,8 @@ gd_body = """\tdo_thing()
 \t\tc()
 \tdone()
 """
-check("offsets handle gd else", graph._chunk_line_offsets(gd_body) == [1, 3, 5],
-      str(graph._chunk_line_offsets(gd_body)))
+check("offsets handle gd else", graph._chunk_line_offsets(gd_body, GD_MOD) == [1, 3, 5],
+      str(graph._chunk_line_offsets(gd_body, GD_MOD)))
 
 # ---- monster splitting -----------------------------------------------------
 

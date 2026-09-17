@@ -303,19 +303,6 @@ func _on_button_pressed() -> void:
 """
 
 
-def _title_src() -> str:
-    return """class_name TitleScreen
-extends Control
-# Helios title (dead scene): nothing instances this script's funcs.
-
-func spin_logo() -> void:
-\tpass
-
-func fade_in(_seconds: float) -> void:
-\tpass
-"""
-
-
 def _main_scene_src() -> str:
     return """class_name MainRun
 extends Node2D

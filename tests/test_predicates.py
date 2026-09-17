@@ -42,7 +42,7 @@ PROJ = WORK / "proj"
 #   app.main -> mid.mid -> core.leaf        (transitive caller chain)
 #   app.main -> cyc_a.ping <-> cyc_b.pong   (2-cycle pair)
 #   core.orphan, d1.twin, d2.twin           (dead; twins share a body)
-#   dyn.dispatch                            (dead in a .connect( file -> review)
+#   dyn.dispatch                            (dead in a getattr file -> review)
 (PROJ / "core.py").write_text(
     '''def leaf():
     total = 1
@@ -112,7 +112,7 @@ TWIN_BODY = '''def twin():
 (PROJ / "d2.py").write_text(TWIN_BODY, encoding="utf-8")
 (PROJ / "dyn.py").write_text(
     '''def dispatch(target):
-    target.connect("ready")
+    target = getattr(target, "ready")
     return target
 ''',
     encoding="utf-8",

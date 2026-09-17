@@ -603,20 +603,23 @@ class Graph:
             return self._pred["dups"], self._pred["dup_skips"]
         groups: dict[str, list[str]] = defaultdict(list)
         norms: dict[str, str] = {}
+        mods: dict[str, object] = {}
         for rel, fs in self.files.items():
+            mod = registry_for(fs.ext)
             for name, fn in fs.funcs.items():
-                norm = _normalize_body(fn.body)
+                norm = _normalize_body(fn.body, mod)
                 if len(norm.splitlines()) < 3:
                     continue  # trivial
                 h = hashlib.sha1(norm.encode()).hexdigest()
                 groups[h].append(fn.key)
                 norms[h] = norm
+                mods.setdefault(h, mod)  # group language = first member's
         dups: list[dict[str, object]] = []
         skipped = 0
         for h, v in groups.items():
             if len(v) < 2:
                 continue
-            if _pure_delegate(norms[h]):
+            if _pure_delegate(norms[h], mods[h]):
                 skipped += 1  # issue #268: thin wrapper, not logic
                 continue
             dups.append({"hash": h[:8], "members": sorted(v)})
@@ -746,50 +749,69 @@ class Graph:
         return "\n".join(lines)
 
 
-def _normalize_body(body: str) -> str:
+def _normalize_body(body: str, mod=None) -> str:
+    """Uniform-indent, comment-stripped body text for dup grouping.
+    Comment prefixes are language-owned (issue #295): each extractor
+    declares COMMENT_PREFIXES; a language with none (or a bare ``mod=None``
+    call) keeps its lines verbatim — conservative, never mangling."""
+    prefixes = getattr(mod, "COMMENT_PREFIXES", ())
     out = []
     for line in body.splitlines():
-        s = line.split("#", 1)[0].rstrip()
+        s = line
+        for p in prefixes:
+            s = s.split(p, 1)[0]
+        s = s.rstrip()
         if not s.strip():
             continue
         out.append("  " + s.strip())  # unify indent
     return "\n".join(out)
 
 
-_SIG_LINE_RE = re.compile(r"^(?:async\s+)?(?:def|func|fn)\s+\w+")
-_GUARD_RE = re.compile(r"^(?:el)?if\s+[^():]+:$")
-_GUARD_RET_RE = re.compile(r"^return\s+[^()]*$")
-_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*(?:\.\w+)* = [^()=]+$")
-_FORWARD_RE = re.compile(r"^return\s+(?:await\s+)?[A-Za-z_][\w.]*\([\w\s,]*\)$")
-
-
-def _pure_delegate(norm: str) -> bool:
-    """True for thin delegation wrappers (issue #268): after an
-    optional signature line, the body is only call-free guards (if/elif
-    whose one-line body is a call-free return — an early-out — or a
-    call-free assignment — arg normalization; at most two), at most one
-    call-free assignment, and a single forwarding `return call(args)`.
-    The regexes carry #116's conservatism — parens in guards/
-    assignments, operators in the forwarding call's args, any extra
-    statement, or a brace-language body never classify, so the filter
-    can miss a wrapper but never drops real duplicated logic."""
+def _pure_delegate(norm: str, mod=None) -> bool:
+    """True for thin delegation wrappers (issue #268): dispatch is
+    language-owned (issue #295). A language with a ``pure_delegate`` hook
+    classifies its own bodies; a language with SIGNATURE_RE supplies the
+    statement shapes and this packing algorithm runs them; anything else
+    (no grammar declared) never classifies — conservative. The #116 law
+    holds everywhere: it can miss a wrapper, never drop real duplicated
+    logic. After an optional signature line, the body is only call-free
+    guards (if/elif whose one-line body is a call-free return — an
+    early-out — or a call-free assignment — arg normalization; at most
+    two), at most one call-free assignment, and a single forwarding
+    ``return call(args)``."""
+    hook = getattr(mod, "pure_delegate", None)
+    if hook is not None:
+        return bool(hook(norm))
+    sig_re = getattr(mod, "SIGNATURE_RE", None)
+    if sig_re is None:
+        return False  # language declares no delegate grammar
     # _normalize_body emits a uniform two-space indent; strip it so the
     # statement regexes match shape, not indentation
     lines = [ln.strip() for ln in norm.splitlines()]
-    if lines and _SIG_LINE_RE.match(lines[0]):
-        lines = lines[1:]  # python bodies keep their signature line
+    if lines and sig_re.match(lines[0]):
+        lines = lines[1:]  # py bodies keep their signature line; gd strip it
     if not 2 <= len(lines) <= 5:
         return False
     i = 0
-    while i + 1 < len(lines) and _GUARD_RE.match(lines[i]):
+    while i + 1 < len(lines) and mod.GUARD_RE.match(lines[i]):
         if not (
-            _GUARD_RET_RE.match(lines[i + 1]) or _ASSIGN_RE.match(lines[i + 1])
+            mod.GUARD_RET_RE.match(lines[i + 1]) or mod.ASSIGN_RE.match(lines[i + 1])
         ):
             break
         i += 2
-    if i < len(lines) and _ASSIGN_RE.match(lines[i]):
+    if i < len(lines) and mod.ASSIGN_RE.match(lines[i]):
         i += 1
-    return i == len(lines) - 1 and _FORWARD_RE.match(lines[i]) is not None
+    return i == len(lines) - 1 and mod.FORWARD_RE.match(lines[i]) is not None
+
+
+# -- canonical edge-type taxonomy (issue #295) ----------------------------------
+# Every emitter funnels through Graph._edge naming a member of this roster;
+# consumers (archrules rule validation, clusters weighting) name subsets
+# from it instead of re-spelling type literals (layout.py's ("inst",
+# "attach") flag stays local: its stdlib+numpy import law forbids the
+# graph import — documented deviation, PR #309 body).
+EDGE_TYPES = ("call", "var", "signal", "inst", "attach", "alias")
+EDGE_TYPE_SET = frozenset(EDGE_TYPES)
 
 
 # -- function-level vector index (chroma "<collection>-fns") -------------------
@@ -834,10 +856,8 @@ def _cast_scale() -> float:
     0.0 (treated as off)."""
     return max(0.0, float(getattr(nav, "CHUNK_CAST", 0.0)))
 
-
-_IF_DEDENT_RE = re.compile(r"^(\s+)else:|^(\s+)elif\s|^(\s+)except|^(\s+)finally:|^(\s+)catch|^(\s+)case\b|^(\s*)@(\w)|^(\s*)}$")
 _OPEN_RE = re.compile(r"[(\[{]$")
-_TRIPLE_RE = re.compile(r'"""|\'\'\'')
+
 
 
 def _fn_body_start(fn: Func) -> int:
@@ -855,18 +875,22 @@ def _fn_body_start(fn: Func) -> int:
     return len(lines)
 
 
-def _chunk_line_offsets(body: str) -> list[int]:
+def _chunk_line_offsets(body: str, mod=None) -> list[int]:
     """Line indices of top-level statement-block starts within a fn body
     PROPER (line 0 = the first statement, past the signature) — the cAST
     AST-boundary split points. base is the first statement's indent, so a
     later statement at that same indent (sequential or following a dedent)
-    starts a new block, as do brace closures (`}`), decorators, and
-    else/elif/catch lines. Bracket continuations never count: the opener
-    line ends with an open bracket, continuation lines sit deeper than the
-    statement indent, and closing-bracket lines start with the closer.
-    Triple-quoted string content is skipped regardless of its indent (a
+    starts a new block, as do the language's dedent boundaries — brace
+    closures, decorators, else/elif/catch — per the extractor's DEDENT_RE
+    (issue #295: language-owned; none declared = only same-indent starts).
+    Bracket continuations never count: the opener line ends with an open
+    bracket, continuation lines sit deeper than the statement indent, and
+    closing-bracket lines start with the closer. Triple-quoted string
+    content is skipped when the language declares TRIPLE_QUOTES (a
     heredoc can mine column-0 lines that merely LOOK like dedents).
-    Deterministic — a pure function of the body text."""
+    Deterministic — a pure function of the body text + grammar."""
+    dedent_re = getattr(mod, "DEDENT_RE", None)
+    marks = tuple(getattr(mod, "TRIPLE_QUOTES", ()))
     lines = body.splitlines()
     if not lines:
         return []
@@ -877,10 +901,10 @@ def _chunk_line_offsets(body: str) -> list[int]:
 
     def _find_triple(ln: str) -> tuple[str | None, str | None]:
         """(opener, rest) — the first triple-quote mark on the line, if any."""
-        for mark in ('"""', "'''"):
+        for mark in marks:
             pos = ln.find(mark)
             if pos >= 0:
-                return mark, ln[pos + 3 :]
+                return mark, ln[pos + len(mark) :]
         return None, None
 
     # the first statement may open a triple-quoted docstring itself
@@ -915,7 +939,7 @@ def _chunk_line_offsets(body: str) -> list[int]:
             prev_end_open = False
         ind = len(ln) - len(ln.lstrip(" \t"))
         if (
-            (ind <= base or _IF_DEDENT_RE.match(ln))
+            (ind <= base or (dedent_re.match(ln) if dedent_re is not None else False))
             and not prev_end_open
             and not stripped.startswith((")", "]", "}"))
         ):
@@ -1001,28 +1025,33 @@ def _chunks(fn: Func, sig: str, blocks: list[int], scale: float = 1.0) -> list[t
     return out
 
 
-def _chunk_intro(fn: Func) -> str:
+def _chunk_intro(fn: Func, mod=None) -> str:
     """The fn's big-picture title line, if one opens the body: the first
-    line of a docstring or a `#`/`##` comment. Kept short; anything else
-    (a real first statement) is not an intro."""
+    line of a docstring or a leading comment — per the language's grammar
+    (issue #295): TRIPLE_QUOTES docstrings, COMMENT_PREFIXES comments
+    (`#` for py/gd, `//` — and `///` — for brace languages). Kept short;
+    anything else (a real first statement) is not an intro."""
+    prefixes = tuple(getattr(mod, "COMMENT_PREFIXES", ()))
+    triples = tuple(getattr(mod, "TRIPLE_QUOTES", ()))
     lines = fn.body.splitlines()
     if len(lines) < 2:
         return ""
     first = lines[1].strip()
-    if first.startswith(('"""', "'''")):
+    if triples and first.startswith(triples):
         return first.strip("'\" ")[:48]
-    if first.startswith("#") and len(first) <= 96:
-        return first.lstrip("#").strip()[:48]
+    if prefixes and first.startswith(prefixes) and len(first) <= 96:
+        return first.lstrip("".join(sorted(set("".join(prefixes))))).strip()[:48]
     return ""
 
 
-def _chunk_docs(fn: Func, sig: str, blocks: list[int], scale: float = 1.0) -> list[tuple[str, int]]:
+def _chunk_docs(fn: Func, sig: str, blocks: list[int], scale: float = 1.0,
+                mod=None) -> list[tuple[str, int]]:
     """(doc, line) pairs for a monster fn's statement-block chunks. A body
     that opens with a docstring/title comment keeps that intro on EVERY
     later chunk (`# <first line>`), so prose retrieval does not lose the
     big-picture orientation (cAST keeps signature-first docs; a leading
     intro is part of the signature surface)."""
-    intro = _chunk_intro(fn)
+    intro = _chunk_intro(fn, mod)
     if not intro:
         return _chunks(fn, sig, blocks, scale)
     chunks = _chunks(fn, sig, blocks, scale)
@@ -1136,7 +1165,8 @@ def _chunked_docs(fs: FileSym, fn: Func, sig: str, scale: float = 1.0) -> list[t
     body_proper = "\n".join(lines[nb:]) if nb < len(lines) else ""
     if not body_proper:
         return [(_fn_doc(fs, fn, sig), fn.line, fn.name)]
-    offs = _chunk_line_offsets(body_proper)
+    mod = registry_for(fs.ext)
+    offs = _chunk_line_offsets(body_proper, mod)
     blocks = [nb] + [nb + i for i in offs]  # absolute (first stmt included)
     if len(blocks) < 2:
         # monster with a single giant statement: hard-bisect the body
@@ -1148,7 +1178,7 @@ def _chunked_docs(fs: FileSym, fn: Func, sig: str, scale: float = 1.0) -> list[t
             seg = min(nlines - 1, seg + step)
             blocks.append(seg)
     docs: list[tuple[str, int, str]] = []
-    for i, (chunk, aline) in enumerate(_chunk_docs(fn, sig, blocks, scale), 1):
+    for i, (chunk, aline) in enumerate(_chunk_docs(fn, sig, blocks, scale, mod), 1):
         docs.append((chunk, aline, f"{fn.name}#chunk{i}"))
     return docs
 
@@ -1172,13 +1202,17 @@ def _chunk_plan(fs: FileSym, funcs: dict[str, Func], scale: float = 1.0) -> None
 # truncation are invisible to the vector side today (viz.py 462k = 6.5%
 # visible; graph.py/nav.py/server.py all >50k); fn bodies p50=547 chars,
 # micro (<=220) = 28%, monster (>2000) = 15% — the #76 thresholds already
-# sit at the p25/p90 boundaries, so the file layer reuses them unchanged.
-FILE_DOC_REV = 2        # shaper semantics version — bump whenever the
+FILE_DOC_REV = 3        # shaper semantics version — bump whenever the
                         # shaper changes docs for the same input bytes;
                         # nav's doc_shape stamp rides it so shape-lineaged
                         # stores re-embed loudly instead of serving stale
                         # vectors under sha-gating (#220 law, doc side).
                         # rev 2: the "# imports:" head line (#229 extension)
+                        # rev 3: language-owned intros (#295) — `//`/`///`
+                        # comment blocks become real intros for brace
+                        # languages, `#` lines in those files stop
+                        # misreading as intros, per-language dedent
+                        # boundaries refine monster splits
 FILE_SYMBOLS_CAP = 1200  # symbol-surface line budget (chars)
 FILE_IMPORTS_CAP = 400   # import-surface line budget (chars) — the file's
                          # resolved imports ride the doc head (cAST's
@@ -1186,30 +1220,37 @@ FILE_IMPORTS_CAP = 400   # import-surface line budget (chars) — the file's
                          # augmentation), ~1.3% of the 30k embed budget
 FILE_INTRO_CAP = 400     # module docstring / leading-comment budget
 
-_ENC_RE = re.compile(r"^#.*?coding[:=]")
+_ENC_RE = re.compile(r"^#.*?coding[:=]")  # PEP 263 coding line: py-owned
 
 
-def _file_intro(text: str) -> str:
+def _file_intro(text: str, mod=None) -> str:
     """The file's big-picture opener (cAST keeps intros on chunks; the
-    file analog): the leading module docstring or `#` comment block,
-    past shebang/encoding lines. '' when the file opens with code.
-    Language-neutral — both block spellings are cross-language text
-    shapes, no suffix dispatch. Deterministic."""
+    file analog): the leading module docstring or comment block, past
+    shebang/encoding lines. Grammar is language-owned (issue #295):
+    TRIPLE_QUOTES docstrings, COMMENT_PREFIXES comment blocks (`#` for
+    py/gd, `//` — and `///` — for brace languages; a `#include` line in
+    a cpp file is preprocessor, not prose). The shebang skip stays
+    universal; the PEP 263 coding-line skip applies where the language
+    declares ENCODING_RE. '' when the file opens with code. A language
+    declaring no grammar yields no intro. Deterministic."""
+    prefixes = tuple(getattr(mod, "COMMENT_PREFIXES", ()))
+    triples = tuple(getattr(mod, "TRIPLE_QUOTES", ()))
+    enc_re = getattr(mod, "ENCODING_RE", None)
     lines = text.splitlines()
     i = 0
     while i < len(lines) and (
         not lines[i].strip()
         or lines[i].startswith("#!")
-        or _ENC_RE.match(lines[i])
+        or (enc_re is not None and enc_re.match(lines[i]))
     ):
         i += 1
     if i >= len(lines):
         return ""
     out: list[str] = []
     first = lines[i].lstrip()
-    if first.startswith(('"""', "'''")):
-        mark = first[:3]
-        rest = first[3:]
+    if triples and first.startswith(triples):
+        mark = next(m for m in triples if first.startswith(m))
+        rest = first[len(mark):]
         close = rest.find(mark)
         if close >= 0:
             out.append(rest[:close])
@@ -1224,9 +1265,10 @@ def _file_intro(text: str) -> str:
                     break
                 out.append(ln)
                 i += 1
-    elif first.startswith("#"):
-        while i < len(lines) and lines[i].lstrip().startswith("#"):
-            stripped = lines[i].lstrip().lstrip("#").strip()
+    elif prefixes and first.startswith(prefixes):
+        strip_chars = "".join(sorted(set("".join(prefixes))))
+        while i < len(lines) and lines[i].lstrip().startswith(prefixes):
+            stripped = lines[i].lstrip().lstrip(strip_chars).strip()
             if stripped:
                 out.append(stripped)
             i += 1
@@ -1321,7 +1363,7 @@ def file_doc(path: Path, rel: str, text: str, scale: float = 1.0) -> str:
                 used += len(mod) + 1
             line = "# imports: " + " ".join(keep) + f" (+{len(imps) - len(keep)})"
         head.append(line)
-    intro = _file_intro(text)
+    intro = _file_intro(text, mod)
     if intro:
         head.append(intro)
     doc_head = "\n".join(head)

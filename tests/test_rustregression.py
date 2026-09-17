@@ -95,8 +95,10 @@ def dead_flags(g):
 
 # ---------------- hermetic leg (always on) ----------------
 
-check("file_doc contract revision is the pinned one",
-      graph.FILE_DOC_REV == 2, str(graph.FILE_DOC_REV))
+check("file_doc contract revision is the pinned one (#295: language-owned "
+      "intros — rust /// module docs became real file intros, so doc "
+      "shapes changed)",
+      graph.FILE_DOC_REV == 3, str(graph.FILE_DOC_REV))
 
 g = graph.get_graph(rebuild=True)
 

@@ -581,6 +581,12 @@ from extractors.common import entry_keys  # late: package cycle, ts.py precedent
 MENTION_FLOOR = 2
 DYNAMIC_HINT = re.compile(r"\bdyn\b")  # trait-object dispatch: erased receivers
 
+# graph's dup normalizer strips these before hashing (issue #295);
+# rust `///` doc comments and `//` line comments share the prefix —
+# raw strings r#"..."# are NOT comments and stay whole (pre-#295 the
+# `#`-split truncated them)
+COMMENT_PREFIXES = ("//",)
+
 # std-trait methods invoked without a textual call site: operator
 # overloads (infix syntax), `for`-loop desugaring (into_iter/next),
 # `{}`-formatting (fmt), scope-end drops, HashMap hashing. The cpp

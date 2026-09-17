@@ -35,6 +35,11 @@ from extractors.model import FileSym, Func
 
 # suffixes handled here (extractors/__init__.py registry maps them)
 CPP_EXTS = frozenset({".h", ".hpp", ".cpp", ".cc", ".cxx"})
+# impl/header split (issue #295): _pair_cpp pairs an impl file with its
+# own-header — single-truth beside the registry suffixes so a new impl
+# suffix never has to be re-spelled at the pairing site.
+CPP_IMPL_EXTS = frozenset({".cpp", ".cc", ".cxx"})
+CPP_HEADER_EXTS = frozenset({".h", ".hpp"})
 
 CPP_LANG = Language(__import__("tree_sitter_cpp").language())
 _PARSER = Parser(CPP_LANG)
@@ -620,10 +625,38 @@ def _entry_gdvirtual(fs: FileSym, ctx) -> Iterable[str]:
 
 ENTRY_RULES = [_entry_classdb, _entry_virtuals, _entry_gdvirtual]
 
+
 # ---- uniform shared-surface hooks (langsep) -----------------------------------
 # Bodies mirror the graph.py expressions they replace byte-for-byte.
 
 DYNAMIC_HINT = CPP_DYNAMIC_RE
+
+# Thin C++ forwarder classification for graph's dup filter (issue #295:
+# language-owned; the #116 conservatism law holds — a body classifies
+# only when it is a signature line, exactly one forwarding call, and the
+# closing brace; anything richer never classifies). Takes the body graph
+# already normalized (comment-stripped, uniform indent).
+_CPP_DEL_SIG_RE = re.compile(r"^(?:[\w:~]+\s+)?[\w:~]+\s*\([^(){};]*\)\s*(?:const)?\s*\{$")
+_CPP_DEL_FWD_RE = re.compile(r"^(?:return\s+)?[\w:]*\w+\s*\([^(){};]*\)\s*;$")
+
+
+# graph's dup normalizer strips these before hashing (issue #295):
+# C++ line comments — `#include`/`#pragma` lines are preprocessor, NOT
+# comments, and stay whole (a `#`-split would corrupt them)
+COMMENT_PREFIXES = ("//",)
+
+def pure_delegate(norm: str) -> bool:
+    # Allman bodies put the opening brace on its own line; fold it back
+    # onto the signature so both brace styles hit the same 3-line shape
+    lines = [ln.strip() for ln in norm.splitlines()]
+    if len(lines) == 4 and lines[1] == "{":
+        lines = [lines[0] + " {"] + lines[2:]
+    return (
+        len(lines) == 3
+        and _CPP_DEL_SIG_RE.match(lines[0]) is not None
+        and _CPP_DEL_FWD_RE.match(lines[1]) is not None
+        and lines[2] == "}"
+    )
 
 
 def is_entry_exempt(name: str) -> bool:
@@ -744,21 +777,21 @@ def wire(ctx) -> None:
 
 
 def _pair_cpp(ctx) -> None:
-    """Give each .cpp its header's class identity (spec §2 pairing).
+    """Give each impl file its header's class identity (spec §2 pairing).
 
-    Convention: a .cpp's first quoted include is its own header
+    Convention: an impl file's first quoted include is its own header
     (path-ordered includes in engine code). The header stays the
-    canonical class_map owner; the .cpp only fills in if unclaimed.
+    canonical class_map owner; the impl only fills in if unclaimed.
     """
     for rel in sorted(ctx.files):
         fs = ctx.files[rel]
-        if fs.ext != ".cpp" or fs.class_name:
+        if fs.ext not in CPP_IMPL_EXTS or fs.class_name:
             continue
         own_stem = rel.rsplit("/", 1)[-1].split(".")[0]
         pair = ""
         for inc in sorted(fs.imported_modules):
             resolved = _resolve_include(ctx, rel, inc)
-            if not resolved or ctx.files[resolved].ext not in (".h", ".hpp"):
+            if not resolved or ctx.files[resolved].ext not in CPP_HEADER_EXTS:
                 continue
             if resolved.rsplit("/", 1)[-1].split(".")[0] == own_stem:
                 pair = resolved

@@ -711,11 +711,31 @@ def _entry_module(fs: FileSym, ctx):
 ENTRY_RULES = [_entry_virtuals, _entry_tests, _entry_module]
 
 # ---- uniform shared-surface hooks (langsep) -----------------------------------
-# Bodies mirror the graph.py expressions they replace byte-for-byte.
+# Language-owned grammar for graph's dup/delegate/chunk/file-doc passes
+# (issue #295): the statement shapes graph's packing algorithm matches,
+# spelled per language. A py body keeps its signature line (graph skips
+# it before classifying); `#` is the only comment prefix; docstrings are
+# triple-quoted. Bodies mirror the graph.py expressions they replace
+# byte-for-byte (minus the cross-language `fn`/`catch`/`case` branches
+# py code never writes).
 
-from extractors.common import DYNAMIC_HINT_RE  # noqa: E402  (kept with the hooks it serves)
+SIGNATURE_RE = re.compile(r"^(?:async\s+)?def\s+\w+")
+GUARD_RE = re.compile(r"^(?:el)?if\s+[^():]+:$")
+GUARD_RET_RE = re.compile(r"^return\s+[^()]*$")
+ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*(?:\.\w+)* = [^()=]+$")
+FORWARD_RE = re.compile(r"^return\s+(?:await\s+)?[A-Za-z_][\w.]*\([\w\s,]*\)$")
+COMMENT_PREFIXES = ("#",)
+TRIPLE_QUOTES = ('"""', "'''")
+DEDENT_RE = re.compile(r"^(\s+)else:|^(\s+)elif\s|^(\s+)except|^(\s+)finally:|^(\s*)@(\w)")
+ENCODING_RE = re.compile(r"^#.*?coding[:=]")
 
-DYNAMIC_HINT = DYNAMIC_HINT_RE
+# py dynamic-dispatch idioms (issue #295): the reflection/late-binding
+# surfaces python actually has — attribute plumbing, dynamic evaluation,
+# import machinery. NOT gd's dispatch vocab.
+DYNAMIC_HINT = re.compile(
+    r"\bgetattr\s*\(|\bsetattr\s*\(|\beval\s*\(|\bexec\s*\("
+    r"|\bglobals\s*\(\)|\blocals\s*\(\)|\b__getattr__\b"
+)
 
 
 def is_entry_exempt(name: str) -> bool:

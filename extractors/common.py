@@ -27,9 +27,10 @@ PY_CONTROL_KEYWORDS = frozenset({
 })
 
 # File-level dynamic-dispatch hints enabling the quoted-ident harvest and
-# the dead-tier "review" gate. Shared spelling: the gd scanner AND the py
-# dead-tier gate consult the same pattern today — divergence would shift
-# tiers silently, so one home (graph.py's original moved here verbatim).
+# the dead-tier "review" gate. This is the GODOT dispatch surface — the
+# gd scanner's own vocab (language-owned, issue #295). python.py spells
+# its own py-idiom pattern; re-binding this one there made `.connect(`/`Callable(`
+# flip py files dynamic for dispatch vocab python never uses.
 DYNAMIC_HINT_RE = re.compile(
     r'\.call\(|\.call_deferred|Callable\(|has_method\(|\.connect\(|\.rpc\(|\.emit\('
 )
