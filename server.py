@@ -549,7 +549,7 @@ def _fmt(hits: list[dict]) -> str:
 
 @mcp.tool(annotations=READONLY)
 def explore(
-    query: str,
+    query: str = "",
     n: int = 4,
     anchor: str = "",
     orientation: bool = True,
@@ -563,10 +563,10 @@ def explore(
     hit. Slices are capped at a 100-line window (issue #69); when a file
     continues past the window the slice ends with
     `... +N more lines - pass anchor="path:start-end" to continue` —
-    call explore again with exactly that anchor string (query ignored)
-    to page forward without re-querying. Weak hits become pointer lines
-    instead of noise; total output is budget-capped so nothing
-    externalizes to a file mid-answer.
+    call explore again with exactly that anchor string ALONE (query not
+    required when anchor is present, issue #276) to page forward without
+    re-querying. Weak hits become pointer lines instead of noise; total
+    output is budget-capped so nothing externalizes to a file mid-answer.
 
     orientation=False (issue #125, repeat calls) skips the constant
     repo-map + cluster-map preamble and spends that budget on the file
@@ -576,6 +576,10 @@ def explore(
     call to that checkout (issue #131 — a fresh dir onboards on first
     contact).
     """
+    if not query and not anchor:
+        return ('explore: pass query="how does X work", or anchor='
+                '"path:start-end" exactly as printed at the end of a '
+                "previous slice to page forward (one of the two is required)")
     with _route(dir) as prelude:
         if prelude:
             return prelude
