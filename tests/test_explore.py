@@ -71,30 +71,27 @@ def main() -> int:
     finally:
         s.graph.find_functions = orig
 
-    # Unknown concept: guidance, not failure. Deterministic no-hit
-    # construction (issue #249): a fixed nonsense string does NOT
-    # guarantee no hits — find_functions has no relevance floor, so on
-    # a populated fn store it returns top-n cosine neighbors for EVERY
-    # query (0.08 under FAKE hash vectors, 0.549 against real embeds
-    # on the recreated venv — the standing red; CI's pass was a
-    # neighbor slice happening to contain 'rescan'). Force the vector
-    # side's real empty-index contract instead (find_functions returns
-    # [] when the fn collection is empty) and use absent tokens so the
-    # lexical fallback misses provably on any platform.
+    # Unknown concept: guidance, not failure. Issue #297 gave
+    # find_functions an absolute relevance floor — a pure-noise query on
+    # a POPULATED fn store now degrades to the lexical fallback with a
+    # reason naming the floor (PR-254's monkeypatched empty-index
+    # stand-in for this gap is replaced by the real contract). Absent
+    # tokens make the lexical fallback miss provably on any platform.
     nohit_q = "qqzzxxwwyy_no_such_token_kkvvp"
     check("no-hit query is lexically absent (lexical fallback: zero hits)",
           bool(xp._tokens(nohit_q)) and xp._lexical_fallback(nohit_q, 3) == [])
-    _ff = s.graph.find_functions
-    s.graph.find_functions = lambda *a, **k: []
-    try:
-        seeds, degraded, reason = xp._seed_hits(nohit_q, 3)
-        check("no-hit seeds empty under the empty-index contract",
-              (seeds, degraded, reason) == ([], True, None),
-              f"{seeds[:1]} degraded={degraded} reason={reason}")
-        out3 = s.explore(nohit_q, n=3)
-        check("no-hit returns next-step guidance", "no hits for" in out3, out3[:150])
-    finally:
-        s.graph.find_functions = _ff
+    fn_rows = s.graph.find_functions(nohit_q, 3)
+    check("noise fn rows exist but sit under the floor (all weak)",
+          bool(fn_rows) and all(r.get("weak") is True for r in fn_rows),
+          str([(r["func"], r["score"], r.get("weak")) for r in fn_rows[:2]]))
+    seeds, degraded, reason = xp._seed_hits(nohit_q, 3)
+    check("all-weak seeds drop to lexical fallback with a floor reason",
+          seeds == [] and degraded is True
+          and reason is not None and "relevance floor" in reason,
+          f"{seeds[:1]} degraded={degraded} reason={reason}")
+    out3 = s.explore(nohit_q, n=3)
+    check("no-hit returns next-step guidance", "no hits for" in out3, out3[:150])
+
 
     # Funnel shape: constant repo-map preamble and cluster map precede the
     # query-dependent file shortlist and symbol slices. Preamble must not
@@ -127,16 +124,61 @@ def main() -> int:
           f"{len(sec(out4))} vs {len(sec(out4b))}")
     check("orientation=True stays the default (preamble present)",
           out4b.startswith("== repo map =="))
-    _ff = s.graph.find_functions
-    s.graph.find_functions = lambda *a, **k: []
-    try:
-        out5 = s.explore(nohit_q, n=3, orientation=False)
-    finally:
-        s.graph.find_functions = _ff
-    check("orientation=False no-hit path drops the preamble too",
-          not out5.startswith("== repo map ==") and "no hits for" in out5, out5[:120])
+    # Post-#297 the no-hit path needs no monkeypatch: the floor itself
+    # drops the all-weak fn rows to the (empty) lexical fallback.
+    out5 = s.explore(nohit_q, n=3, orientation=False)
     check("orientation=False output still budget-capped",
           len(out4) <= 22000, f"{len(out4)} chars")
+
+    # Empty fn store (issue #297, #116 law): files rescanned, fns never
+    # synced — explore must degrade with the EMPTY-INDEX wording and
+    # rescan guidance, never as a backend failure. Hermetic child probe
+    # over a temp repo (rescan only, no sync_functions).
+    import json
+    import shutil
+    import subprocess
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp(prefix="neuronav_explore_empty_"))
+    try:
+        (tmp / "src").mkdir()
+        (tmp / "src" / "app.py").write_text(
+            "def clustering(m):\n    return m + 1\n", encoding="utf-8"
+        )
+        cfg = tmp / "config.json"
+        cfg.write_text(json.dumps({
+            "root": str(tmp),
+            "collection": "explore_empty_fix",
+            "include_dirs": ["."],
+            "extensions": [".py"],
+            "exclude_dirs": [],
+            "state_dir": str(tmp / "state"),
+        }), encoding="utf-8")
+        child = tmp / "child.py"
+        child.write_text(
+            "import os, sys\n"
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
+            f"os.environ['NEURONAV_CONFIG'] = {str(cfg)!r}\n"
+            "os.environ['NEURONAV_EMBED_FAKE'] = '1'\n"
+            "import nav, explore\n"
+            "nav.rescan()  # files only — the fn store stays empty\n"
+            "print(explore.run('clustering', n=2, orientation=False))\n",
+            encoding="utf-8",
+        )
+        env = {k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}
+        proc = subprocess.run(
+            [sys.executable, "-X", "utf8", str(child)],
+            capture_output=True, text=True, env=env, cwd=str(tmp),
+        )
+        check("empty-fn-store: child probe completed",
+              proc.returncode == 0, proc.stderr[-300:])
+        check("empty fn store degrades with the empty-index wording, "
+              "never backend blame (#116 law)",
+              "fn-level index empty" in proc.stdout
+              and "unreachable" not in proc.stdout,
+              proc.stdout[:160])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
     # Windowed slices (issue #69): 100-line cap + deterministic continuation
     # anchors. Hermetic core first: a synthetic 250-line file under .tmp

@@ -20,6 +20,7 @@ from pathlib import Path
 
 import graph
 import nav
+import recall
 
 TOTAL_CAP = 20_000          # chars; hosts externalize bigger results to files,
                             # which re-introduces a Read (codegraph tools.ts)
@@ -68,14 +69,27 @@ def _lexical_fallback(query: str, n: int) -> list[dict]:
 
 def _seed_hits(query: str, n: int) -> tuple[list[dict], bool, str | None]:
     """(hits, degraded, reason). chroma fn-level seeds with lexical
-    fallback. `reason` names the backend failure when there was one
+    fallback. `reason` names the failure mode when there was one
     (issue #116: a model/config mismatch must not render as a generic
-    'unreachable' marker); it stays None when the index was simply
-    empty, which degrades without blaming the backend."""
+    'unreachable' marker; issue #297: an all-under-floor result names
+    the floor); it stays None when the index was simply empty, which
+    degrades without blaming anything."""
     try:
         hits = graph.find_functions(query, n)
         if hits:
-            return hits, False, None
+            strong = [h for h in hits if not h.get("weak")]
+            if strong:
+                return hits, False, None
+            # issue #297: every fn row sits under the calibrated floor
+            # — noise shape (PR-254's standing red). Serve the lexical
+            # fallback degraded, with a reason naming the floor, never
+            # hash-neighbor noise rendered as confident slices.
+            return (
+                _lexical_fallback(query, n),
+                True,
+                f"no fn hit cleared the relevance floor "
+                f"(cos < {recall.RELEVANCE_FLOOR_SIM})",
+            )
         return _lexical_fallback(query, n), True, None
     except Exception as exc:
         return _lexical_fallback(query, n), True, nav.embed_failure_reason(exc)
@@ -211,8 +225,14 @@ def _symbol_slices(
     parts: list[str] = []
     if degraded:
         # issue #116: carry the real reason (model mismatch reads as
-        # such), keep 'lexical fallback' so clients keying on it survive
-        note = f"(degraded: {reason or 'embedding backend unreachable'} - lexical fallback)"
+        # such; all-under-floor reads as the floor). reason=None means
+        # the fn index was EMPTY — degrade honestly as that, never as a
+        # backend failure the caller cannot fix by retrying. Keep
+        # 'lexical fallback' so clients keying on it survive.
+        note = (
+            f"(degraded: {reason or 'fn-level index empty — call rescan first'}"
+            " - lexical fallback)"
+        )
         parts.append(note)
         total += len(note) + 2
 

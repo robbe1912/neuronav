@@ -49,7 +49,7 @@ owner-side `test_chunking` and `test_truthful`.
 | `test_target_regression` | byte-stability over the target repo: floor pins + liveness canaries | chromadb import + the target repo configured in `config.json` |
 | `test_tsregression` | TS target byte-stability + liveness canaries + parse-coverage floors (per-command untracked profile); hermetic section pins the judge-C1 dead-file registry resolution (`.ts` flags like the `.gd` control) + the `# imports:` doc header | chromadb import + the TS target via `NEURONAV_CONFIG` |
 | `test_rustregression` | Rust target byte-stability + fn-level liveness canaries + parse-coverage floors (per-command untracked profile, issue #284); hermetic section pins the crate shape — lib.rs pub-mod closure, wiring-only barrel, bin target as its OWN crate root, integration-test name-level wiring (no cross-crate static edges, pinned as a non-goal) — plus dead-file flags and the `# imports:` doc header | chromadb import + the Rust target via `NEURONAV_CONFIG` |
-| `test_explore` | explore() happy/degraded/no-hit paths, windowed slices + anchor paging (issue #69) + MCP tool annotations; CI leg self-bootstraps the self-index under FAKE (issue #180) | mcp + chroma + populated self-index (CI: self-populated via FAKE rescan) |
+| `test_explore` | explore() happy/degraded/no-hit paths, windowed slices + anchor paging (issue #69) + MCP tool annotations; no-hit legs ride the #297 relevance floor (all-weak fn seeds drop to lexical fallback with a floor-naming reason) + empty-fn-store child probe pins the empty-index wording over backend blame (#116 law); CI leg self-bootstraps the self-index under FAKE (issue #180) | mcp + chroma + populated self-index (CI: self-populated via FAKE rescan) |
 | `test_server_stdio` | MCP stdio end-to-end: spawns server.py, drives JSON-RPC, asserts the context tool answers; drift/stat-gate, routed-freshness, recall-knobs (graph_boost/two_pass), degraded-shape scenarios (issue #180); dead_code truncation footer + duplicates pure-delegate skip footer on hermetic corpora (issues #266/#268) | mcp + default-config target repo (CI: self-index FAKE bootstrap) |
 | `test_autorescan` | auto-rescan stat gate (issue #19): read-tool freshness, TTL burst guard, embed-failure cooldown, `watch_interval_s` watcher — in-process pins + two stdio e2e servers + the #239 chroma hnsw-settle retry pin (constructed interleaving, no real race needed) | mcp + chromadb + numpy/networkx/scipy/scikit-learn (hermetic temp target + `NEURONAV_EMBED_FAKE=1`) |
 | `test_delegates` | pure-delegate duplicate filter (issue #268): thin wrappers drop from exact_duplicates with a counted skip, genuine groups stay, predicate cache stores the filtered list (#71/#116 laws) | chromadb import (hermetic temp fixture, build-only) |
@@ -62,7 +62,7 @@ owner-side `test_chunking` and `test_truthful`.
 | `test_mwires` | named-wire map exports (`mwires`/`fns`/`meta` contract, map-spec-v2 §0) | chromadb import only (self-sets `NEURONAV_EMBED_FAKE=1`) |
 | `test_clusterinv` | cluster partition invariant + crosstalk parity (issue #114): finalize's family moves vs full-weld regroups can double-assign a file — repaired by weld plurality (last pass, identity on healthy input); crosstalk counts only wiring the clusterer's structural graph sees (tests/ endpoints tallied separately, no cluster number) | numpy + chromadb import only (crafted shapes + stub graph, self-sets `NEURONAV_EMBED_FAKE=1`) |
 | `test_archrules` | arch-rule engine over crosstalk (issue #70): planted per-kind violations caught (exact wire counts + ranked offending file pairs — the sabotage teeth), typed rules, cluster ref forms (label / case-fold / cN id), typo guard (unknown kind/cluster/type/key, malformed JSON, duplicate ids — named errors, never silently skipped), absent-rules answer, determinism, #114 parity vs `crosstalk()` (tests/ + unclustered wiring feeds no rule number), rules follow the routed state dir | numpy + chromadb import only (synthetic partitions + stub graphs, self-sets `NEURONAV_EMBED_FAKE=1`) |
-| `test_recall` | hybrid recall fusion, ctx hops, degraded mode (real+fake modes), query-prefix construction pin (#217) | chromadb import; exact-rank pins need a real-embedded store |
+| `test_recall` | hybrid recall fusion, ctx hops, degraded mode (real+fake modes), query-prefix construction pin (#217), absolute relevance floor (issue #297: mark-only `weak` flag on noise rows + `_fmt` floor footer, fn-level sharing the same constant) | chromadb import; exact-rank pins need a real-embedded store |
 | `test_embedprov` | embed provider contract (issue #17): provider select/auto-detect, ollama+openai wire adapters, env-vs-config key precedence, keyless no-header, 401 loud, 429 retry, batch chunking, no-pad mismatches, fake-mode isolation, pre-#17 store heal vs provider-drift refusal + raw-provider messages (#159) | stdlib http.server stub on an ephemeral loopback port + chromadb import |
 | `test_project_mode` | onboarding (issue #27): discovery precedence env > project-local > checkout, `onboard.init`/`wire` scaffolds incl. `.neuroignore` (issue #36), init re-run NEVER clobbers a customized config (issue #121), wire BOM-tolerant + loud on malformed MCP jsons + atomic writes (issue #121), `wire --omp` mcpServers fragment shape (issue #130: default/`--omp-name` server names, merge-preserving writes, two-project no-collision, hermetic `NEURONAV_OMP_MCP` reroute), viz add-on degrade | stdlib + chromadb import (fresh subprocesses, fake embeds) |
 | `test_viz` | Playwright harness over the real baked page (200+ checks, corpus-dependent); CI mode = frozen corpus (issue #100), local mode = the active config's store (default `config.json` or the self-index); [#89] refuses a bake older than `viz.py` (no auto-bake — regenerate first); [#123] executed-check floor pinned to the CI corpus (`FLOOR_BASE`/`FLOOR_MAP`, data-gated on `DATA.mwires`) + quiescence waits (`__dbg.settled`) instead of blanket sleeps; [#279] affinity legs (species cap/LOD/toggle/card + two-bake byte identity) data-gated on `DATA.semAff` | playwright + chrome + a fresh `graph.html` bake |
@@ -105,17 +105,17 @@ Suites pick their own config; the shell must not pre-export one:
   (issue #180: one FAKE rescan + fn sync when count == 0, the #166
   pattern) — a populated real store is never touched.
 - `test_explore`'s no-hit legs are deterministic by construction
-  (issue #249 decode): `find_functions` has no relevance floor — on any
-  populated fn store it returns top-n cosine neighbors for EVERY query,
-  so a nonsense string's score is embed-space-dependent (0.08 under
-  FAKE hash vectors, 0.549 against real embeds on the recreated venv)
-  and "no hits" is unreachable through query choice alone. The legs
-  force the empty-index contract (`find_functions` -> `[]`, the
-  `count == 0` branch) and assert the scoring internals first —
-  absent-token query -> `_lexical_fallback == []` and
-  `_seed_hits == ([], True, None)` — then pin the guidance marker
-  `no hits for` (the old `rescan` substring also matched repo-map
-  signatures like `rescan(timeout)`: vacuous passes).
+  (issue #249 decode, superseded shape after #297): `find_functions`
+  now marks sub-floor rows `weak` (absolute floor, self-index
+  calibrated) and `_seed_hits` drops an all-weak seed set to the
+  lexical fallback with a reason naming the floor — so a
+  nonsense-token query reaches `no hits for` through the REAL path on
+  any populated fn store, no empty-index monkeypatch needed. Absent
+  tokens still make the lexical miss provable on any platform
+  (`_lexical_fallback == []` asserted first). A hermetic child probe
+  (files rescanned, fns never synced) pins the OTHER reason state:
+  empty fn store degrades with `fn-level index empty — call rescan
+  first`, never backend blame (#116 law).
 - `test_pyhard` / `test_mwires` write a generated temp config under the
   system temp dir pointing at `tests/fixtures/<name>` only — they never touch
   the real index.
