@@ -1812,14 +1812,22 @@ def _bake_loop() -> None:
             try:
                 import viz
 
+                # Both arms hold _SCOPE_LOCK (PR #318 gate, GK P1 race): a
+                # bake reads nav globals (STATE_DIR, its one chroma fetch)
+                # minutes deep in _build_data — a concurrent dir-routed call
+                # would swap them mid-bake and mix stores. RLock, no
+                # deadlock: the boot gate opened before the lock was
+                # released (READY is set after the boot sequence drops it)
+                # and routed bodies release on exit — the bake just
+                # serializes like any other scoped op.
                 if _BOOT_THREAD is not None:
                     # in-process imports have no boot thread (pre-#273
                     # semantics) — the gate is already open for them
                     _BOOT_READY.wait(_BOOT_WAIT_S + LOCK_WAIT_S + 60.0)
-                    out = viz.ensure_bake()
+                    with _SCOPE_LOCK:
+                        out = viz.ensure_bake()
                 else:
-                    # hold the scope lock only for foreign stores: nav's
-                    # globals must not swap mid-swap for routed readers
+                    # foreign store: swap nav's globals for the bake only
                     with _SCOPE_LOCK:
                         with nav.config_scope(target):
                             out = viz.ensure_bake()
