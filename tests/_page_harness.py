@@ -124,7 +124,14 @@ def require_fresh_bake(state_dir) -> None:
     store, and the store the gate serves must be exactly what the runner
     baked (the NEURONAV_CONFIG scratch-config law, tests/AGENTS.md)."""
     bake = Path(state_dir) / "graph.html"
-    template = Path(__file__).resolve().parents[1] / "viz.py"
+    # #299 A: the template now lives in vizjs/ (17 modules joined at bake
+    # time) — the gate watches every source the bake is built FROM, else a
+    # vizjs-only edit would green-light yesterday's product again (#89).
+    here = Path(__file__).resolve().parents[1]
+    template = max(
+        [here / "viz.py", *sorted((here / "vizjs").glob("*.py"))],
+        key=lambda p: p.stat().st_mtime,
+    )
     try:
         bake_mtime = bake.stat().st_mtime
     except OSError:
