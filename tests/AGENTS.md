@@ -1,6 +1,6 @@
 # AGENTS.md — tests/
 
-Thirty-two self-contained suites. Each is a standalone script — no pytest — run in
+Thirty-three self-contained suites. Each is a standalone script — no pytest — run in
 its own process:
 
 ```
@@ -9,9 +9,9 @@ its own process:
 
 Exit 0 = all pass. Each suite bootstraps `sys.path` to the repo root and
 uses a local `check(name, cond)` helper (PASS/FAIL lines + failure count).
-CI (`.github/workflows/ci.yml`) runs twenty-five hermetic suites on ubuntu
+CI (`.github/workflows/ci.yml`) runs twenty-eight hermetic suites on ubuntu
 with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
-`test_pyhard`, `test_cpphard`, `test_autorescan`, `test_server_stdio`,
+`test_pyhard`, `test_cpphard`, `test_jshard`, `test_autorescan`, `test_server_stdio`,
 `test_searchtext`, `test_project_mode`, `test_baseindex`, `test_mwires`,
 `test_clusterinv`, `test_archrules`, `test_recall`, `test_embedprov`,
 `test_repomap`, `test_selfindex`, `test_explore`, `test_verifier`,
@@ -42,6 +42,7 @@ owner-side `test_chunking` and `test_truthful`.
 | `test_pyhard` | python extractor edge cases on `fixtures/pyhard` | numpy + chromadb import only (hermetic fixture config) |
 | `test_cpphard` | C++ extractor edge cases on `fixtures/cpp` (issue #13): macro surface, .h/.cpp pairing, registration harvest, dead tiers, determinism | tree-sitter + tree-sitter-cpp import only (hermetic fixture config) |
 | `test_tshard` | TS extractor edge cases (grammar split, barrels, aliases, overloads, defaults, decorators, JSX, dead tiers, determinism) | tree-sitter + tree-sitter-typescript wheels (hermetic fixtures) |
+| `test_jshard` | JavaScript extractor edge cases (issue #277: grammar split js/jsx + binding-name pin, CJS require/module.exports beside ESM + interop defaults, ESM/CJS barrels wiring-only with origin rebind, jsconfig aliases (good + malformed), React entry rules, mixed .ts+.js resolution both directions, dead tiers + mention floor, registry/RAW_TEXT_EXTS/preset pins, determinism) | tree-sitter + tree-sitter-javascript/-typescript wheels (hermetic fixtures) |
 | `test_rusthard` | Rust extractor edge cases (pub-mod API closure, `pub use` rebinding, trait dispatch, test attrs, macros, dead tiers, sabotage leg, determinism) | tree-sitter + tree-sitter-rust wheels (hermetic fixtures) |
 | `test_selfindex` | self-index structural invariants: likely-dead zero, handlers stay review, deterministic rebuild | chromadb import (structural only) |
 | `test_target_regression` | byte-stability over the target repo: floor pins + liveness canaries | chromadb import + the target repo configured in `config.json` |
@@ -199,6 +200,12 @@ Suites pick their own config; the shell must not pre-export one:
   degraded-mode sibling), overload collapse, default exports, decorators,
   super calls, ambient `.d.ts`, and the dead-tier pair (`dead_helpers.ts`
   + mention partners in `barrel_view.tsx`).
+- `fixtures/js/*` — JS extractor fixtures (issue #277): grammar-split JSX
+  composition, ESM + CJS barrels, interop defaults, jsconfig aliasing
+  (incl. a malformed-jsconfig degraded sibling), React entry rules
+  (exported components, render target, stories), super calls, mixed
+  .ts+.js resolution, and the dead-tier pair (`dead_helpers.js` +
+  `mention_sink.js`).
 - `fixtures/tsreg/*` — TS dead-share + import-header fixtures: the `.ts`
   pair (dead-share denominator, resolved import line), a `.gd` control
   for the judge-C1 registry-resolution pin, and a `.py` pair for the

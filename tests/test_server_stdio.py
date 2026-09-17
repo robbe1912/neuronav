@@ -1103,8 +1103,8 @@ def _fresh_folder_scenario() -> None:
     pre-handshake). A TS-only repo now boots STRUCTURAL (the ts
     extractor landed, #245), so that half pins the structural boot:
     initialize answers, tools/list works, repo_map serves the real map.
-    The degraded-boot guidance UX lives on for raw-text-only repos (JS
-    is the tracked follow-up): a js-only sibling pins the #240/#41/#91
+    The degraded-boot guidance UX lives on for raw-text-only repos
+    (.md — JS left that club in #277): an md-only sibling pins the
     contract verbatim — read tools answer first-call guidance naming
     the scanned extensions + the paste-ready config for the suffixes
     actually on disk, the explicit rescan TOOL stays loud (#41 law),
@@ -1178,8 +1178,8 @@ def _fresh_folder_scenario() -> None:
             print("--- fresh240 ts server stderr (tail) ---")
             print("\n".join(srv.stderr_lines[-15:]))
 
-    # --- js-only sibling: the raw-text degraded-boot UX (issue #240,
-    #     preserved verbatim for the languages without an extractor) ---
+    # --- js-only sibling: structural now too (issue #277 — the js
+    #     extractor landed; the registry default walk covers .js) ---
     jsrepo = scratch / "jsonly"
     (jsrepo / "src").mkdir(parents=True)
     (jsrepo / "src" / "main.js").write_text(
@@ -1203,25 +1203,72 @@ def _fresh_folder_scenario() -> None:
         send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = [t["name"] for t in recv(2)["result"]["tools"]]
+        check("fresh240: tools/list works on the structural js boot",
+              "repo_map" in names and "rescan" in names, "")
+
+        g = text_of(call(3, "repo_map", {"budget_tokens": 256}))
+        check("fresh240: js boot serves the structural map, not guidance "
+              "(issue #277)",
+              g.startswith(f"you are here: {jsrepo.resolve().as_posix()}")
+              and "main.js" in g and "EMPTY INDEX" not in g, g[:160])
+        g2 = text_of(call(4, "semantic_search", {"query": "jgreet"}))
+        check("fresh240: js boot semantic_search serves, not guidance",
+              "main.js" in g2 and "EMPTY INDEX" not in g2, g2[:160])
+
+        r = call(5, "rescan", {})
+        check("fresh240: js boot rescan succeeds (structural, #277)",
+              not bool(r.get("isError")) and "files" in text_of(r),
+              text_of(r)[:200])
+    finally:
+        srv.kill()
+        if FAILS:
+            print("--- fresh240 js server stderr (tail) ---")
+            print("\n".join(srv.stderr_lines[-15:]))
+
+    # --- md-only sibling: the raw-text degraded-boot UX (issue #240,
+    #     preserved verbatim for the languages without an extractor —
+    #     .md never registers; JS left this club in #277) ---
+    mdrepo = scratch / "mdonly"
+    (mdrepo / "src").mkdir(parents=True)
+    (mdrepo / "src" / "main.md").write_text(
+        "# notes\n\nyo\n", encoding="utf-8", newline="\n")
+    (mdrepo / "package.json").write_text(
+        '{\n  "name": "mdonly"\n}\n', encoding="utf-8", newline="\n")
+
+    mdenv = dict(base)
+    mdenv["NEURONAV_EMBED_FAKE"] = "1"
+    srv = _spawn(mdenv, cwd=mdrepo)
+    send, recv = srv.send, srv.recv
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "fresh", "version": "0"}}})
+        init = recv(1)
+        check("fresh240: md-only pure-defaults boot answers initialize "
+              "(server stays up — the v0.1.5 fatal)",
+              "result" in init and srv.proc.poll() is None, "")
+        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        names = [t["name"] for t in recv(2)["result"]["tools"]]
         check("fresh240: tools/list works while degraded",
               "repo_map" in names and "rescan" in names, "")
 
         g = text_of(call(3, "repo_map", {"budget_tokens": 256}))
-        check("fresh240: repo_map answers guidance naming .js",
-              "EMPTY INDEX" in g and ".js" in g, g[:160])
+        check("fresh240: repo_map answers guidance naming .md",
+              "EMPTY INDEX" in g and ".md" in g, g[:160])
         check("fresh240: guidance carries the paste-ready config "
               "(state_dir opt-in, issue #91)",
               '"state_dir": "default"' in g and "config.json" in g, g)
         check("fresh240: guidance names the preset one-liner "
-              "(the ts preset covers .js — ts hints first)",
+              "(the ts preset covers .md — ts hints first)",
               "--preset ts" in g, g)
         check("fresh240: guidance names the raw-text degradation",
               "raw text" in g and "find_functions" in g, g)
         check("fresh240: guidance names extensions actually scanned",
               "extensions scanned:" in g, g[:300])
-        g2 = text_of(call(4, "semantic_search", {"query": "jgreet"}))
+        g2 = text_of(call(4, "semantic_search", {"query": "yo"}))
         check("fresh240: semantic_search answers the same guidance",
-              "EMPTY INDEX" in g2 and ".js" in g2, g2[:120])
+              "EMPTY INDEX" in g2 and ".md" in g2, g2[:120])
 
         # issue #41 law: degraded boot must not neuter the explicit
         # rescan tool — it errors loudly (names the 0-file walk), never
@@ -1234,15 +1281,15 @@ def _fresh_folder_scenario() -> None:
         # the guidance's exact fix, applied in-session via the CLI
         subprocess.run(
             [sys.executable, "-X", "utf8", str(HERE / "onboard.py"),
-             "init", "--project", str(jsrepo), "--preset", "ts"],
-            cwd=jsrepo, env=jsenv, capture_output=True, text=True, check=True)
-        cfg = json.loads((jsrepo / ".neuronav" / "config.json")
+             "init", "--project", str(mdrepo), "--preset", "ts"],
+            cwd=mdrepo, env=mdenv, capture_output=True, text=True, check=True)
+        cfg = json.loads((mdrepo / ".neuronav" / "config.json")
                          .read_text(encoding="utf-8"))
         check("fresh240: preset ts scaffold pins extensions + state_dir",
               cfg["extensions"] == [".ts", ".tsx", ".mts", ".cts",
-                                    ".js", ".jsx", ".mjs",
+                                    ".js", ".jsx", ".mjs", ".cjs",
                                     ".json", ".md"]
-              and cfg["state_dir"] == "default" and cfg["root"] == str(jsrepo),
+              and cfg["state_dir"] == "default" and cfg["root"] == str(mdrepo),
               json.dumps(cfg))
         rec = text_of(call(6, "rescan", {}))
         check("fresh240: in-session recovery on the next rescan",
@@ -1250,20 +1297,20 @@ def _fresh_folder_scenario() -> None:
         time.sleep(0.3)  # stderr drain settle
         err = "".join(srv.stderr_lines)
         check("fresh240: boot banner names the raw-text degradation",
-              "no structural extractor for" in err and ".js" in err,
+              "no structural extractor for" in err and ".md" in err,
               "\n".join(srv.stderr_lines[-6:]))
-        g3 = text_of(call(7, "semantic_search", {"query": "jgreet"}))
-        check("fresh240: post-recovery search finds the js file (raw)",
-              "main.js" in g3, g3[:200])
+        g3 = text_of(call(7, "semantic_search", {"query": "yo"}))
+        check("fresh240: post-recovery search finds the md file (raw)",
+              "main.md" in g3, g3[:200])
         g4 = text_of(call(8, "repo_map", {"budget_tokens": 256}))
         check("fresh240: post-recovery repo_map serves with the "
               "structural degradation visible",
-              g4.startswith(f"you are here: {jsrepo.resolve().as_posix()}")
+              g4.startswith(f"you are here: {mdrepo.resolve().as_posix()}")
               and "0 files" in g4, g4[:120])
     finally:
         srv.kill()
         if FAILS:
-            print("--- fresh240 js server stderr (tail) ---")
+            print("--- fresh240 md server stderr (tail) ---")
             print("\n".join(srv.stderr_lines[-15:]))
 
     # ---- embedder probe (issue #240 pin 4): no FAKE in these legs ----
