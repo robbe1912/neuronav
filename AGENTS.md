@@ -236,6 +236,23 @@ Terse bodies explaining WHY, not WHAT.
   (claims vs artifacts: real runs, real numbers, real files) before push. Read-only
   research stays exempt until it promotes to an issue — then the reviewer gates
   the filing.
+  Reviewer charter (owner directive, 2026-09): grounding is necessary,
+  never sufficient — every gate also reviews engineering. KISS: needless
+  abstraction, speculative generality, or a knob without a concrete
+  failure mode is FIX REQUIRED even when every claim is grounded. DRY:
+  N inline copies of one pattern demand the shared leaf (the `bake/`
+  pure-job pattern is the promotion precedent). Monolith punishment:
+  modules accumulating unrelated responsibilities get extracted along the
+  existing seams (`layout.py`, `bake/*`, `recall.py` are the models).
+  Exhaustive bug hunting: boundaries/off-by-one, empty/None paths,
+  error-swallowing try/except and silent fallbacks (violates the
+  loud-failures law), unordered iteration in byte-stability paths,
+  unicode/encoding, Windows file locks and paths. Race conditions: any
+  constructible failing schedule — cross-process `_db_lock`, boot thread
+  vs the anyio stdio loop (the C-import deadlock class), watcher vs
+  rescan, re-stamp TOCTOU, `os.replace` atomicity — is FIX REQUIRED with
+  the schedule named. Grammar, wording, and prose-style nitpicks are out
+  of scope: verdicts carry defects, not style.
 Every change lands via pull request — main is protected: 1 approval +
   green "suites" CI required, enforce_admins OFF. Agent PRs are authored
   under the owner's token (authors cannot approve their own PRs), so the
