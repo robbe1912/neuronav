@@ -525,6 +525,23 @@ def build_files() -> dict[str, str]:
         cls = f"Legacy{i:02d}"
         f[f"legacy/legacy_{i:02d}.gd"] = _dead_src(cls, "retired path")
 
+    # -- parked duplicates (#279): byte-identical twins with ZERO structural
+    # footprint — comment-only, so file_doc's raw-text fallback keeps the
+    # two documents identical (the shaped path leads with "# {rel}" and the
+    # path alone would decorrelate the fake embeddings). Identical docs ->
+    # cosine 1.0 -> mutual top-1 neighbours -> exactly the J9 affinity pairs
+    # the overlay renders, with no structural leg perturbed. Both twins sit
+    # in legacy/ so every schedule touch appends the same variant() rev
+    # footer and the pair stays identical.
+    parked = (
+        "# Helios parked snapshot (synthetic corpus file).\n"
+        "# Retired module kept for reference; nothing references it.\n"
+        "# Deliberately symbol-free: inert for every structural pass.\n"
+    )
+    for stem in ("alpha", "bravo", "gold"):
+        for side in ("1", "2"):
+            f[f"legacy/parked_{stem}_{side}.gd"] = parked
+
     # -- scenes ----------------------------------------------------------
     f["legacy/title.tscn"] = _tscn(  # dead scene (kept with its script)
         "Title", ['[node name="Logo" type="TextureRect" parent="."]'],
