@@ -15,12 +15,16 @@
 # qa_readability's affordance subject filter — routes through the registry
 # predicate is_scene_path; tools/ carries no allowlist entries).
 #
-# Temporary, line-anchored allowlist: viz.py:2790 is queued behind
-# HarnessPro's #123/#89 and nav's walk filters are config truth (not
-# language truth). clusters.py carried PR-2 deferrals until its cutover
-# landed — it must stay clean now, so its block is GONE and this
-# asserts it. Every allowlisted line is individually anchored and
-# REQUIRES a live detector hit — a stale entry fails this suite.
+# Temporary, content-anchored allowlist (#301 B: line numbers pin
+# nothing anymore — a routine upstream insert no longer needs allowlist
+# surgery; the anchor is a unique signature substring instead): the viz
+# template's .tscn regex is queued behind HarnessPro's #123/#89 and
+# nav's walk filters are config truth (not language truth). clusters.py
+# carried PR-2 deferrals until its cutover landed — it must stay clean
+# now, so its block is GONE and this asserts it. Every allowlisted
+# entry covers a line that still trips a detector — a signature whose
+# line stops tripping (or vanishes entirely) goes stale and fails this
+# suite.
 #
 # Hermetic: text pins read source only; the tier pin builds a graph over
 # tests/fixtures/langsep with a generated temp config + temp state dir and
@@ -71,15 +75,24 @@ RES_VERB = re.compile(
 # JS-side suffix regexes in the embedded viz template (viz.py:2783 class)
 JS_SUFFIX = re.compile(r"""/\\.(?:tscn|gd|tres|res|py|cpp|h|hpp)\b""")
 
-# ---- temporary, line-anchored allowlist (see header) ---------------------------
-ALLOWED = {}
-ALLOWED[("vizjs/focus_vis.py", 208)] = "V-1: queued behind #123/#89 (data-flag contract; moved verbatim from viz.py:3086 by #299 A)"
-# config/parametric walk filters — EXTS is the user's config include-set
-# and `suffixes` arrives as a caller argument (registry datum at the call
-# site); neither is a language truth hard-coded in nav
-ALLOWED[("nav.py", 651)] = "config walk filter (EXTS = user config; all_suffixes=#240 census)"  # #298: line moved, idiom unchanged
-ALLOWED[("nav.py", 705)] = "parametric walk filter (caller-supplied suffixes)"
-ALLOWED[("nav.py", 736)] = "config walk filter (EXTS = user config)"
+# ---- temporary, content-anchored allowlist (see header) ------------------------
+# keys are (file, signature substring); each signature must stay unique
+# in its file — a second occurrence trips the sweep below, a missing one
+# goes stale. The signature pins the idiom, never its line number.
+ALLOWED = {
+    ("vizjs/focus_vis.py", "const tscn = fi >= 0 && /\\.tscn$/i.test"):
+        "V-1: queued behind #123/#89 (data-flag contract; moved verbatim"
+        " from viz.py:3086 by #299 A)",
+    # config/parametric walk filters — EXTS is the user's config include-set
+    # and `suffixes` arrives as a caller argument (registry datum at the
+    # call site); neither is a language truth hard-coded in nav
+    ("nav.py", "if all_suffixes or Path(name).suffix in EXTS:"):
+        "config walk filter (EXTS = user config; all_suffixes=#240 census)",
+    ("nav.py", "if Path(name).suffix in suffixes:"):
+        "parametric walk filter (caller-supplied suffixes)",
+    ("nav.py", "if Path(e.name).suffix not in EXTS:"):
+        "config walk filter (EXTS = user config)",
+}
 
 
 def detectors(line: str) -> list[str]:
@@ -109,9 +122,13 @@ for f in SHARED:
         why = detectors(line)
         if "pseudo" in why and rel == "graph.py" and GRAMMAR_DEF.match(line):
             why.remove("pseudo")
-        if why and (rel, i) in ALLOWED:
-            used_allowlist.add((rel, i))
-            continue
+        if why:
+            # #301 B: content anchor — the entry covers this hit only when
+            # the line carries its signature, wherever that line lives now
+            covered = next((k for k in ALLOWED if k[0] == rel and k[1] in line), None)
+            if covered is not None:
+                used_allowlist.add(covered)
+                continue
         for kind in why:
             hits.setdefault(kind, []).append(f"{rel}:{i}: {line.strip()[:90]}")
 
