@@ -91,6 +91,31 @@ def _knn_sims(paths, emb):
         return sims, None
     return sims, emb
 
+# #279: rendered-affinity ink budget. The layout keeps riding ALL J9 pairs
+# (the springs want the full field); only the INK channel is capped, like
+# the wire/highway budgets. Hundreds, not thousands.
+SEM_AFF_CAP = 220
+
+
+def _sem_aff(paths, emb, sims, idx):
+    """#279: semantic-affinity overlay rows — the J9 kNN pairs promoted
+    from layout-only springs to also-rendered ink. Same pairs, same ONE
+    embedding fetch, no second bake job (grounding: issue #279 comment).
+    Rows are [i, j, sim] NODE indices (i < j), ranked by (-sim, path_i,
+    path_j) and cut at SEM_AFF_CAP so the served ink is deterministic.
+    Returns (rows, dropped)."""
+    if emb is None or not sims:
+        return [], 0
+    emb_paths = [p for p in paths if p in emb[0]]
+    path_of = {v: k for k, v in idx.items()}
+    rows = [
+        (idx[emb_paths[a]], idx[emb_paths[b]], s) for a, b, s in sims
+    ]
+    rows.sort(key=lambda r: (-r[2], path_of[r[0]], path_of[r[1]]))
+    dropped = max(0, len(rows) - SEM_AFF_CAP)
+    return [[a, b, s] for a, b, s in rows[:SEM_AFF_CAP]], dropped
+
+
 
 def _supergroups(clusters, paths, emb):
     """J10: coarse supergroups over the fine clusters, from the kNN
@@ -154,7 +179,7 @@ def _layout_stage(nodes, links, sims, ckeys, cmat):
 def _assemble(nodes, links, fedges, mwires, fns, hw, fio, pos, hot,
               groups2, n_clusters, dead_flag, dead, cluster_names,
               depths, cyc_ids, crosstalk, sig_resolved, sig_unresolved,
-              wire_dropped, hw_dropped, fio_dropped):
+              wire_dropped, hw_dropped, fio_dropped, sem_aff, sem_dropped):
     """J18: final DATA assembly with conditional channels."""
     data = {
         "nodes": nodes,
@@ -164,6 +189,9 @@ def _assemble(nodes, links, fedges, mwires, fns, hw, fio, pos, hot,
         "fns": fns,
         "hw": hw,
         "fio": fio,
+        # #279: semantic-affinity rows — the J9 layout pairs promoted to
+        # ink (already ranked + capped); [] when the store is unusable
+        "semAff": sem_aff,
         "pos": pos,
         "meta": {
             "files": len(nodes),
@@ -196,7 +224,7 @@ def _assemble(nodes, links, fedges, mwires, fns, hw, fio, pos, hot,
         data["hot"] = hot
     if groups2:
         data["groups"] = groups2
-    if wire_dropped or hw_dropped or fio_dropped:
+    if wire_dropped or hw_dropped or fio_dropped or sem_dropped:
         # export budget engagement record (spec §4 row 10) — present only
         # when a cap actually trimmed something, so small-repo DATA stays
         # byte-identical to the uncapped pipeline
@@ -204,6 +232,7 @@ def _assemble(nodes, links, fedges, mwires, fns, hw, fio, pos, hot,
             "wireRowsDropped": wire_dropped,
             "hwArcsDropped": hw_dropped,
             "fioDropped": fio_dropped,
+            "semAffDropped": sem_dropped,
         }
     return data
 
@@ -241,6 +270,8 @@ def _build_data() -> dict:
     emb = _fetch_embeddings(paths)
     sims, emb_knn = _knn_sims(paths, emb)
     cid_gid, groups2 = _supergroups(clusters, paths, emb_knn)
+    # #279: promote the J9 pairs (layout springs) to also-rendered ink
+    sem_aff, sem_dropped = _sem_aff(paths, emb, sims, idx)
 
     # supergroup id per node (gid; -1 = unclustered / groups unavailable)
     for nd in nodes:
@@ -263,7 +294,7 @@ def _build_data() -> dict:
         nodes, links, fedges, mwires, fns, hw, fio, pos_baked, hot,
         groups2, n_clusters, dead_flag, dead, cluster_names,
         depths, cyc_ids, crosstalk, sig_resolved, sig_unresolved,
-        wire_dropped, hw_dropped, fio_dropped,
+        wire_dropped, hw_dropped, fio_dropped, sem_aff, sem_dropped,
     )
 
 
@@ -355,6 +386,7 @@ _HTML_HEAD = r"""<!DOCTYPE html>
   .lgChev { width:0; height:0; border-left:5px solid transparent;
     border-right:5px solid transparent; border-bottom:9px solid #f5a623; }
   .lgDash { width:16px; border-top:2px dashed #546e7a; }
+  .lgSem { width:16px; border-top:3px dotted #b892ff; }
   #edgeLegend { display:flex; flex-wrap:wrap; gap:3px 10px; margin-top:6px;
     font-size:10px; color:#78909c; }
   .eKey { display:flex; align-items:center; gap:4px; }
@@ -518,6 +550,7 @@ _HTML_HEAD = r"""<!DOCTYPE html>
   <div id="toggles">
   <button id="bCalls" class="on">calls</button>
   <button id="bSignals" class="on">signals</button>
+  <button id="bSemAff" class="on" title="semantic-affinity wires — file twins with near-duplicate embeddings (mutual top-6, cosine ≥ 0.45); a hint layer, NOT a dependency; serves only at close zoom">affinity</button>
 <button id="bMut" title="fn layer: only functions that write member state (✎ badge)">mutators</button>
     <button id="bInst">contains</button>
   <button id="bVar" title="member-var references — dense, off by default">var</button>
@@ -541,11 +574,14 @@ _HTML_HEAD = r"""<!DOCTYPE html>
   <ul id="iUses"></ul>
   <div class="kind" id="kUsedBy">USED BY (0)</div>
   <ul id="iUsedBy"></ul>
+  <div class="kind" id="kSem">SEMANTIC NEIGHBORS (0)</div>
+  <ul id="iSem"></ul>
 </div>
 <div id="tip"></div>
 <div id="lg3d" title="what am I looking at?">?</div>
 <div id="lg3dx">
   <span><i class="lgTrunk"></i>trunk = bundled calls (one corridor)</span>
+  <span><i class="lgSem"></i>violet dotted = semantic affinity twins (embedding cosine — not a dependency)</span>
   <span><i class="lgDot"></i>ivory dot = junction (wires merge)</span>
   <span><i class="lgChev"></i>amber chevron = delivery direction</span>
   <span><i class="lgDash"></i>dashed = quiet (many thin calls)</span>
@@ -2413,6 +2449,7 @@ function tick() {
       pos[i*3+2] = posSaved[i*3+2] + (compactTgt[i*3+2] - posSaved[i*3+2]) * e;
     }
     syncEdgePos();
+    syncSemAff();   // #279: affinity rows track the eased layout with the chords
     if (focusArcs && focusArcs.lines.visible) rebuildFocusWires();
     // fn boxes orbit owner spheres — park the layer while the spheres
     if (fnMesh) fnMesh.visible = false;
@@ -2570,6 +2607,7 @@ function updateEdgeLegend(focusing) {
   };
   if (!focusing) {
     addKey("edges", new THREE.Color(0.55, 0.60, 0.66));
+    if (showSemAff) addKey("affinity", SEM_AFF_COLOR);
     const hint = document.createElement("span");
     hint.className = "eHint";
     hint.textContent = "colors appear when you focus a node";
@@ -2579,6 +2617,7 @@ function updateEdgeLegend(focusing) {
     if (showSignals) addKey("signal", TYPE_COLORS.signal);
     if (showInst) addKey("contains", TYPE_COLORS.inst);
     if (showVar) addKey("var", TYPE_COLORS.var);
+    if (showSemAff) addKey("affinity", SEM_AFF_COLOR);
   }
 }
 // boot updateEdgeLegend(false) deleted - boot applyVisibility() re-runs it
@@ -2755,6 +2794,90 @@ const level = new Int16Array(N).fill(-1);
 // fn interconnection renders; HUB_FN_BUDGET is retired).
 const HUB_EDGE_BUDGET = 12;
 const GHOST_K = 0.08;
+// ---- semantic-affinity wires (#279) ---------------------------------------
+// The J9 mutual-kNN pairs the layout springs on, promoted to INK: violet
+// dotted strands in their own color family (no structural type is violet),
+// a hint layer, never a dependency. Serve law mirrors the straight chords:
+// the row inventory always exists in the buffers (presence), but a row
+// serves ink only while the toggle is on, the zoom tier resolves file
+// boxes (lodClose — the corridor-tier gate; at overview these pairs read
+// as salad) and both endpoints survive the current filters (ghost law:
+// alphaTgt < 0.05 collapses the row, exactly like a chord).
+let showSemAff = true;   // UI state only — DATA never changes (#279)
+let semServed = 0;       // rows serving ink this frame (probe truth)
+const semAff = DATA.semAff || [];
+const SEM_AFF_COLOR = new THREE.Color(0.72, 0.57, 1.0);   // violet family
+// card rows ride the SAME capped rows the wires ride (#279 parity)
+const semByNode = new Map();
+const semAdd = (i, j, s) => {
+  if (!semByNode.has(i)) semByNode.set(i, []);
+  semByNode.get(i).push({ j, s });
+};
+semAff.forEach(([a, b, s]) => { semAdd(a, b, s); semAdd(b, a, s); });
+let semMesh = null, semPosIB = null, semColIB = null;
+if (semAff.length) {
+  const g = new LineSegmentsGeometry();
+  g.setPositions(new Float32Array(semAff.length * 6));
+  g.setColors(new Float32Array(semAff.length * 6));
+  const m = new LineMaterial({
+    vertexColors: true, linewidth: 1.25, worldUnits: false,
+    // faint on purpose: hint ink must never compete with the call/signal
+    // corridors — own hue + dotted + sub-bucket opacity
+    transparent: true, opacity: 0.30, alphaToCoverage: false,
+    blending: THREE.NormalBlending, depthWrite: false,
+    dashed: true, dashSize: 2.5, gapSize: 6,
+  });
+  m.resolution.set(glW(), innerHeight);
+  semMesh = new LineSegments2(g, m);
+  semMesh.frustumCulled = false;   // positions mutate per frame
+  scene.add(semMesh);
+  semPosIB = g.attributes.instanceStart.data;
+  semColIB = g.attributes.instanceColorStart.data;
+}
+function syncSemAff() {
+  if (!semMesh) return;
+  const pa = semPosIB.array, ca = semColIB.array;
+  const gate = showSemAff && lodClose;
+  semServed = 0;
+  semAff.forEach(([a, b, s], k) => {
+    const o = k * 6;
+    const ax = dpos[a*3], ay = dpos[a*3+1], az = dpos[a*3+2];
+    // collapse law (syncEdgePos): hidden rows degenerate onto endpoint a —
+    // black alone is NOT hidden under normal blending
+    if (!gate || alphaTgt[a] < 0.05 || alphaTgt[b] < 0.05 ||
+        nodeFiltered(nodes[a]) || nodeFiltered(nodes[b])) {
+      pa[o] = ax; pa[o+1] = ay; pa[o+2] = az;
+      pa[o+3] = ax; pa[o+4] = ay + 0.05; pa[o+5] = az;
+      ca[o] = ca[o+1] = ca[o+2] = ca[o+3] = ca[o+4] = ca[o+5] = 0;
+      return;
+    }
+    const bx = dpos[b*3], by = dpos[b*3+1], bz = dpos[b*3+2];
+    let ex = bx - ax, ey = by - ay, ez = bz - az;
+    const el = Math.sqrt(ex*ex + ey*ey + ez*ez);
+    const trA = trimAt(a), trB = trimAt(b);
+    if (el - trA - trB <= 0.05) {   // stub law: never feed normalize(0)
+      pa[o] = ax; pa[o+1] = ay; pa[o+2] = az;
+      pa[o+3] = ax; pa[o+4] = ay + 0.05; pa[o+5] = az;
+      ca[o] = ca[o+1] = ca[o+2] = ca[o+3] = ca[o+4] = ca[o+5] = 0;
+      return;
+    }
+    ex /= el; ey /= el; ez /= el;
+    pa[o]   = ax + ex * trA; pa[o+1] = ay + ey * trA; pa[o+2] = az + ez * trA;
+    pa[o+3] = bx - ex * trB; pa[o+4] = by - ey * trB; pa[o+5] = bz - ez * trB;
+    // brightness carries the score: cosine 0.45 (the J9 floor) -> 0.55,
+    // cosine 1.0 (byte-identical twins) -> 1.0
+    const kb = 0.55 + 0.45 * Math.min(1, (s - 0.45) / 0.55);
+    ca[o] = ca[o+3] = SEM_AFF_COLOR.r * kb;
+    ca[o+1] = ca[o+4] = SEM_AFF_COLOR.g * kb;
+    ca[o+2] = ca[o+5] = SEM_AFF_COLOR.b * kb;
+    semServed++;
+  });
+  semPosIB.needsUpdate = true;
+  semColIB.needsUpdate = true;
+  semMesh.visible = showSemAff;   // the toggle kills the species outright
+  if (semMesh.visible) semMesh.computeLineDistances();   // dashes track endpoints
+}
+syncSemAff();   // boot fill; later syncs hook applyVisibility + tick's ease
 """
 
 _JS_FOCUS_VIS = r"""
@@ -3274,6 +3397,7 @@ function applyVisibility() {
   });
   touched.forEach((t, b) => { if (t) bucketColIB[b].needsUpdate = true; });
   syncEdgePos();   // geometry follows the new filter state (collapse/restore)
+  syncSemAff();   // #279: affinity serve state follows the filter pass
   hoverGreyIdx = -1;   // baseline rebuilt — next hover re-greys from here
   rebuildFocusWires();   // budget arcs track budgetLit + live pos
   if (focusing) {
@@ -5585,6 +5709,11 @@ document.getElementById("bInst").onclick = e => {
 document.getElementById("bVar").onclick = e => {
   showVar = !showVar;
   e.target.classList.toggle("on", showVar);
+  applyVisibility();
+};
+document.getElementById("bSemAff").onclick = e => {
+  showSemAff = !showSemAff;   // UI state only — DATA never changes
+  e.target.classList.toggle("on", showSemAff);
   applyVisibility();
 };
 document.getElementById("bGhost").onclick = e => {
@@ -8951,6 +9080,30 @@ function showInfo(i) {
   const jump = j => { pushFocusState(); showInfo(j); focusSeeds.clear(); focusSeeds.add(j); applyVisibility(); focus(j); };
   renderSection("kUses", "iUses", outs, outDeg, "downstream", jump);
   renderSection("kUsedBy", "iUsedBy", ins, inDeg, "upstream", jump);
+  // #279: semantic neighbors — the card rides the SAME capped rows the
+  // wires ride (bake-ranked, descending cosine); render gates are UI-only
+  const nbrs = semByNode.get(i) || [];
+  const kSemEl = document.getElementById("kSem");
+  const iSemEl = document.getElementById("iSem");
+  const hasN = nbrs.length > 0;
+  kSemEl.style.display = hasN ? "" : "none";
+  iSemEl.style.display = hasN ? "" : "none";
+  if (hasN) {
+    kSemEl.textContent = `SEMANTIC NEIGHBORS (${nbrs.length})`;
+    iSemEl.innerHTML = "";
+    nbrs.slice(0, 5).forEach(({ j, s }) => {
+      const li = document.createElement("li");
+      li.textContent = `${nodes[j].label} · cos ${s.toFixed(2)}`;
+      li.onclick = () => jump(j);
+      iSemEl.appendChild(li);
+    });
+    if (nbrs.length > 5) {
+      const li = document.createElement("li");
+      li.className = "more";
+      li.textContent = `+${nbrs.length - 5} more hidden`;
+      iSemEl.appendChild(li);
+    }
+  }
 }
 function focus(i) {
   // tween the camera around node i (400ms ease-out). Distance frames the
@@ -9455,6 +9608,7 @@ function resize3D() {
   camera.aspect = w/h; camera.updateProjectionMatrix();
   renderer.setSize(w, h);
   bucketMat.forEach(m => m.resolution.set(w, h));
+  if (semMesh) semMesh.material.resolution.set(w, h);
   // fat-line overlays live in screen px too — stale resolution = wrong width
   if (fnLines) fnLines.material.resolution.set(w, h);
   if (fnQuiet) fnQuiet.material.resolution.set(w, h);
@@ -9840,6 +9994,12 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   sphR,
   get focusArcRef() { return focusArcs; },
   get rfwProbe() { return { fa: !!focusArcs, focusActive, budgetN: budgetLit ? budgetLit.size : null, fi: focusFileIdx }; } ,
+  get semAff() { return {   // [#279] affinity species probe — counts plus the
+    rows: semAff.length,     // top row's endpoints so gates can drive cards
+    served: semServed, on: showSemAff, lod: lodClose,
+    sample: semAff.length ? { a: nodes[semAff[0][0]].path,
+                              b: nodes[semAff[0][1]].path,
+                              s: semAff[0][2] } : null }; },
   // [#123] quiescence probe for the page harness: camera tween done,
   // compaction done, every node alpha and hover-scale at target (the
   // same 0.003 / 0.004 snap thresholds the tick loop eases with). The

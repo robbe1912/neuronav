@@ -117,6 +117,15 @@ rigs serve it via `python tools/serve.py` (no-cache, 127.0.0.1:8791).
   (`"L|fi|st|li"`) and trunk (`"sf>tf"`) with endpoint world coords, serve
   state, and anchor registration — the independent-verification hook the
   harnesses read.
+- **semantic-affinity wires (#279)**: the bake's J9 mutual-kNN pairs
+  (cosine >= 0.45) ride `DATA.semAff` as a second ink species — violet
+  dotted strands in their own color family (never confusable with the
+  call/signal corridors), globally capped (`SEM_AFF_CAP = 220`, ranked by
+  score then endpoint paths), LOD-gated like the corridor tiers (ink only
+  while `lodClose` resolves file boxes), ghost law as chords (endpoint
+  alpha < 0.05 collapses the row). The `affinity` toggle is UI state only
+  — DATA never changes; file cards list the same capped pairs with cosine
+  scores (`#iSem`); `__dbg.semAff` is the probe.
 
 ### Vendored three.js
 

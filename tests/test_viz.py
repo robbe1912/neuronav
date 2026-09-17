@@ -4,6 +4,7 @@
 import os
 import sys
 import re
+import json
 from pathlib import Path
 
 from playwright.sync_api import TimeoutError as PwTimeout, sync_playwright
@@ -21,6 +22,7 @@ if os.environ.get("NEURONAV_STRICT_DEFAULT") == "1" and os.environ.get("NEURONAV
     sys.exit("test_viz: NEURONAV_STRICT_DEFAULT=1 refuses an exported NEURONAV_CONFIG "
              f"({os.environ['NEURONAV_CONFIG']!r}) — unset one of the two")
 import nav  # noqa: E402  (the bake lives in the active config's state dir)
+import viz  # noqa: E402  (determinism bake + SEM_AFF_CAP for the #279 legs)
 
 LOG = CheckLog()
 check = LOG.check  # the 157 call sites below keep their bare check(...) form
@@ -6057,6 +6059,62 @@ def run_tests(port: int):
                   str(ref8))
             page.keyboard.press("Escape")
             quiesce(page)
+        # -- #279: semantic-affinity overlay — the J9 mutual-kNN pairs the
+        # layout springs on, promoted to ink: a capped violet dotted wire
+        # species, LOD-gated like the corridor tiers, plus card rows and a
+        # UI-only toggle. Data-gated like every species leg: a store with no
+        # mutual-kNN pair at cosine >= 0.45 skips loudly (#97 law).
+        sem = page.evaluate("() => window.__dbg.semAff")
+        if not sem["rows"]:
+            print("SKIP #279 semantic-affinity overlay - bake carries no "
+                  "affinity pairs (store lacks mutual-kNN cosine >= 0.45)")
+        else:
+            check("[#279] affinity rows ride DATA, under the global cap",
+                  0 < sem["rows"] <= viz.SEM_AFF_CAP, str(sem))
+            check("[#279] species LOD-gated: overview serves no affinity ink",
+                  sem["on"] and not sem["lod"] and sem["served"] == 0, str(sem))
+            page.evaluate(
+                """() => { const d = window.__dbg;
+                     d.controls.target.set(0, 0, 0);
+                     // dist ~115 < the lodDist floor (420) — deterministic
+                     // pose for the corridor-tier zoom gate
+                     d.camera.position.set(60, 40, 90);
+                     d.controls.dispatchEvent({ type: 'change' }); }""")
+            quiesce(page)
+            semz = page.evaluate("() => window.__dbg.semAff")
+            check("[#279] close zoom serves the species (corridor-tier gate)",
+                  semz["lod"] and semz["served"] == semz["rows"], str(semz))
+            page.click("#bSemAff")
+            page.wait_for_timeout(120)
+            semt = page.evaluate("() => window.__dbg.semAff")
+            check("[#279] toggle hides the species (UI state, DATA intact)",
+                  semt["on"] is False and semt["served"] == 0
+                  and semt["rows"] == sem["rows"]
+                  and "on" not in (page.get_attribute("#bSemAff", "class") or ""),
+                  str(semt))
+            page.click("#bSemAff")   # back on for the card leg
+            page.wait_for_timeout(120)
+            # card rows ride the SAME capped pairs: focus sample.a by search
+            # row click (focus entry law, #33)
+            page.fill("#search", sem["sample"]["a"].rsplit("/", 1)[-1].split(".")[0])
+            page.dispatch_event("#search", "input")
+            wait_rows(page, sem["sample"]["a"])
+            page.locator(
+                f"#searchResults .row[title='{sem['sample']['a']}']").click()
+            quiesce(page)
+            card = page.evaluate(
+                """() => ({ head: document.getElementById('kSem').textContent,
+                           rows: [...document.querySelectorAll('#iSem li')]
+                             .map(li => li.textContent) })""")
+            check("[#279] card gains a semantic-neighbors section",
+                  card["head"].startswith("SEMANTIC NEIGHBORS (")
+                  and any("cos" in r for r in card["rows"]), str(card))
+            b_lab = sem["sample"]["b"].rsplit("/", 1)[-1]
+            check("[#279] card rows list neighbours with cosine scores",
+                  any(b_lab in r and "cos" in r for r in card["rows"]), str(card))
+            page.keyboard.press("Escape")
+            quiesce(page)
+
 
         # #98 watchdog: NO console error and NO uncaught JS error may fire
         # anywhere in the session — boot, search-focus entry, depth
@@ -6074,6 +6132,35 @@ def run_tests(port: int):
               not real_errors, "; ".join(real_errors[:5]))
 
         browser.close()
+
+    # -- #279 determinism law (bake side, no browser): two generates of the
+    # SAME store must be byte-identical modulo meta.generated_at. The
+    # affinity rows ride a ranked (score, then path-tie) capped transform —
+    # any ordering wobble lands here as a byte diff.
+    outs = []
+    try:
+        for tag in ("a", "b"):
+            outs.append(Path(viz.generate(
+                out=ROOT / ".tmp" / f"viz_det_{tag}.html")))
+
+        def norm(h: bytes) -> bytes:
+            return re.sub(rb'"generated_at":"[^"]*"', b'"generated_at":""', h)
+
+        ha, hb = (norm(p.read_bytes()) for p in outs)
+        check("[#279] two bakes byte-identical modulo generated_at",
+              ha == hb,
+              f"{outs[0].stat().st_size} vs {outs[1].stat().st_size} bytes")
+        da = json.loads(re.search(rb"const DATA = (.+);\n", ha).group(1))
+        db = json.loads(re.search(rb"const DATA = (.+);\n", hb).group(1))
+        if not da.get("semAff"):
+            print("SKIP #279 affinity-row determinism detail - "
+                  "bake carries no affinity pairs")
+        else:
+            check("[#279] affinity rows identical across bakes",
+                  da["semAff"] == db["semAff"], str(da["semAff"][:3]))
+    finally:
+        for p in outs:   # no .tmp residue (byte-law hygiene)
+            p.unlink(missing_ok=True)
 
     LOG.finish(f"{n_files} files indexed")
 
