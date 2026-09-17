@@ -699,6 +699,10 @@ from extractors.common import entry_keys  # noqa: E402  (late: package cycle)
 MENTION_FLOOR = 2
 DYNAMIC_HINT = re.compile(r"\beval\(|\bnew\s+Function\(|\bsetTimeout\(\s*['\"]")
 
+# graph's dup normalizer strips these before hashing (issue #295);
+# js has no triple-quote docstrings, so nothing else is declared
+COMMENT_PREFIXES = ("//",)
+
 
 def is_entry_exempt(name: str) -> bool:
     return False

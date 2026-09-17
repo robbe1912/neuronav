@@ -753,6 +753,30 @@ from extractors.common import entry_keys  # noqa: E402  (late: package cycle)
 MENTION_FLOOR = 2
 DYNAMIC_HINT = re.compile(r"\bReflect\.|\bProxy\(|\beval\(")
 
+# graph's dup normalizer strips these before hashing (issue #295)
+COMMENT_PREFIXES = ("//",)
+
+# Thin TS/JS forwarder classification for graph's dup filter (issue #295:
+# language-owned; #116 conservatism — signature line, exactly one
+# forwarding return, closing brace; anything richer never classifies).
+# Takes the body graph already normalized (comment-stripped, uniform
+# indent).
+_TS_DEL_SIG_RE = re.compile(
+    r"^(?:export\s+)?(?:async\s+)?function\s+\w+\s*\([^(){};]*\)"
+    r"(?:\s*:\s*[\w<>\[\]|, ]+)?\s*\{$"
+)
+_TS_DEL_FWD_RE = re.compile(r"^return\s+[\w.]+\([^(){};]*\)\s*;$")
+
+
+def pure_delegate(norm: str) -> bool:
+    lines = [ln.strip() for ln in norm.splitlines()]
+    return (
+        len(lines) == 3
+        and _TS_DEL_SIG_RE.match(lines[0]) is not None
+        and _TS_DEL_FWD_RE.match(lines[1]) is not None
+        and lines[2] == "}"
+    )
+
 TS_BASE_VIRTUALS = frozenset({
     "render", "componentDidMount", "componentDidUpdate", "componentDidCatch",
     "componentWillUnmount", "shouldComponentUpdate", "getDerivedStateFromProps",

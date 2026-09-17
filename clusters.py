@@ -369,9 +369,14 @@ def communities_graph(
             if df == sf or df not in idset or id_of[df] in tests:
                 continue
             tys = g.edge_types.get((src_key, dk), set())
-            if tys & {"call", "signal"}:
+            # weighting names subsets of the canonical roster (issue #295),
+            # not independent re-spellings that could drift from the
+            # emitters: code-flow pairs vs scene-structure pairs
+            call_tys = {t for t in _graph.EDGE_TYPES if t in ("call", "signal")}
+            scene_tys = {t for t in _graph.EDGE_TYPES if t in ("inst", "attach")}
+            if tys & call_tys:
                 call_pairs[(sf, df)] += 1
-            if tys & {"attach", "inst"}:
+            if tys & scene_tys:
                 # tested attach at 0.8 to split scene<->script blobs: worse —
                 # weaker binding lets scene-sim communities absorb the logic
                 # core (19 logic/scene clashes vs 8 at 1.5)

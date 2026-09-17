@@ -10,8 +10,9 @@ path. Same pattern as explore.py (focused, self-contained).
 - init: write ``<project>/.neuronav/config.json`` (walk-everything
   defaults, extensions = every registered extractor suffix + the common
   raw-text web suffixes (issue #240: .ts/.tsx/.js/... index as raw
-  text until extractors land); ``--preset ts|js|python|cpp|gdscript|rust``
-  writes exactly that language's list — extractors.PRESETS is the one
+  text until extractors land); ``--preset NAME`` (see the preset keys
+  of extractors.PRESETS) writes exactly that language's list —
+  extractors.PRESETS is the one
   home of the suffix facts,
   ``"state_dir": "default"`` opting into the project store — issue #91:
   a state_dir-less config aborts at load, the silent live-store default
@@ -57,8 +58,7 @@ def scaffold(project: Path | None = None, preset: str | None = None) -> Path:
     Returns the config path. Shared by init() and the universal mount's
     fresh-dir first contact (server.py, issue #131): one literal, so a
     scaffold written mid-call is byte-identical to `onboard.py init`'s.
-    preset (issue #240): a named language's extension list
-    (ts|js|python|cpp|gdscript|rust — extractors.PRESETS) instead of the
+    (a preset key of extractors.PRESETS) instead of the
     walk-everything default. Idempotent on the config (issue #121): an
     existing config.json is left byte-identical — the same existence
     guard as .neuroignore, so a re-run never discards user

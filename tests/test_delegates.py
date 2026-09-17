@@ -81,7 +81,14 @@ CRUNCH_BODY = '''def crunch(nums):
 os.environ["NEURONAV_CONFIG"] = str(PROJ / "config" / "neuronav.json")
 
 import graph  # noqa: E402  (binds the fixture config)
+from extractors import registry_for  # noqa: E402
 import predicates  # noqa: E402
+
+_PY = registry_for(".py")
+_GD = registry_for(".gd")
+_CPP = registry_for(".cpp")
+_TS = registry_for(".ts")
+_RS = registry_for(".rs")
 
 FAILS: list[str] = []
 
@@ -92,72 +99,105 @@ def check(name: str, cond: bool, detail: str = "") -> None:
         FAILS.append(name)
 
 
-def is_delegate(body: str) -> bool:
-    return graph._pure_delegate(graph._normalize_body(body))
+def is_delegate(body: str, mod=None) -> bool:
+    return graph._pure_delegate(graph._normalize_body(body, mod), mod)
 
 
 def main() -> int:
     # -- classifier shapes (#116 law: miss a wrapper, never flag logic) ----
     check("py wrapper with signature line classifies",
-          is_delegate(WRAP_BODY))
+          is_delegate(WRAP_BODY, _PY))
     check("gd-style wrapper without signature line classifies",
-          is_delegate("if v == null:\n\treturn null\nreturn _shared(v)\n"))
+          is_delegate("if v == null:\n\treturn null\nreturn _shared(v)\n", _GD))
     check("assignment + forwarding call classifies",
-          is_delegate("def fwd(x):\n    t = x or 0\n    return _shared(t)\n"))
+          is_delegate("def fwd(x):\n    t = x or 0\n    return _shared(t)\n", _PY))
     check("double guard chain (<=2 guards) classifies",
           is_delegate(
               "def pick(v, w):\n"
               "    if v is None:\n        return None\n"
               "    elif w is None:\n        return 0\n"
               "    return _shared(v)\n"
-          ))
+          , _PY))
     check("guard-assignment null guard classifies (#268 review)",
-          is_delegate(GUARD_ASSIGN_BODY))
+          is_delegate(GUARD_ASSIGN_BODY, _PY))
     check("guard-return + assignment + forward classifies",
           is_delegate(
               "def w(v):\n"
               "    if v is None:\n        return None\n"
               "    t = v or 0\n"
               "    return _shared(t)\n"
-          ))
+          , _PY))
     check("guard assigning a call stays (guard body has parens)",
           not is_delegate(
               "def w(v):\n"
               "    if v is None:\n        v = make()\n"
               "    return shared(v)\n"
-          ))
+          , _PY))
     check("guard returning a call stays (not a thin wrapper)",
           not is_delegate(
               "def wrap(v):\n"
               "    if v is None:\n        return _shared(None)\n"
               "    return _shared(v)\n"
-          ))
+          , _PY))
     check("assignment carrying a call stays (real preprocessing)",
           not is_delegate(
               "def prep(x):\n    t = compute(x)\n    return render(t)\n"
-          ))
+          , _PY))
     check("trailing expression after the forward stays",
           not is_delegate(
               "def wrap(v):\n    if v is None:\n        return None\n"
               "    return _shared(v) or 0\n"
-          ))
+          , _PY))
     check("three guards stay (past the conservative cap)",
           not is_delegate(
               "def pick(a, b, c):\n"
               "    if a is None:\n        return None\n"
-              "    elif b is None:\n        return 0\n"
-              "    elif c is None:\n        return 1\n"
+              "    if b is None:\n        return None\n"
+              "    if c is None:\n        return None\n"
               "    return _shared(a)\n"
-          ))
-    check("brace-language body stays (semicolons never classify)",
+          , _PY))
+    # -- language-owned dispatch (issue #295) ------------------------------------
+    # brace languages own their classifier: a pure_delegate hook on the
+    # extractor classifies the language's thin forwarders, which the old
+    # def|func|fn grammar in graph.py could never see
+    check("cpp method forwarder classifies (hook-owned)",
+          is_delegate(
+              "int Widget::fwd(int x)\n"
+              "{\n"
+              "    return _shared(x);\n"
+              "}\n"
+          , _CPP))
+    check("ts exported forwarder classifies (hook-owned)",
+          is_delegate(
+              "export function fwd(x: number): number {\n"
+              "    return shared(x);\n"
+              "}\n"
+          , _TS))
+    check("cpp wrapper with real logic stays (hook conservatism)",
+          not is_delegate(
+              "int Widget::compute(int x)\n"
+              "{\n"
+              "    int t = x * 2;\n"
+              "    return _shared(t);\n"
+              "}\n"
+          , _CPP))
+    check("rust declares no grammar: fn forwarder never classifies",
+          not is_delegate(
+              "fn fwd(x: i32) -> i32 {\n"
+              "    shared(x)\n"
+              "}\n"
+          , _RS))
+    check("no mod (bare call) stays conservative: never classifies",
+          not is_delegate(WRAP_BODY))
+    check("brace-language body stays (py grammar rejects semicolons)",
           not is_delegate(
               "int wrap(int v) {\n"
               "  if (!v) return 0;\n"
               "  return shared(v);\n"
               "}\n"
-          ))
+          , _PY))
     check("genuine 6-line duplicated logic stays",
-          not is_delegate(CRUNCH_BODY))
+          not is_delegate(CRUNCH_BODY, _PY))
 
     # -- fixture graph: filtered serve, honest count, control kept --------
     g = graph.get_graph(rebuild=True)
