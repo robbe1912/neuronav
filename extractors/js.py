@@ -56,6 +56,7 @@ import json
 import os
 import posixpath
 import re
+import sys
 import weakref
 from collections.abc import Iterator
 from pathlib import Path
@@ -388,6 +389,7 @@ def _take_export(node, src: bytes, path: Path, rel: str, fs: FileSym,
     for ch in node.children:
         if ch.type == "string":
             spec = _string_of(ch, src)
+    if not spec:
         _take_default_export(node, src, fs, line_starts)
         # local export names join the exported surface (component rule)
         for ch in node.children:
@@ -788,6 +790,8 @@ def _entry_package(fs: FileSym, ctx) -> Iterator[str]:
     done = _PKG_SEEN.setdefault(ctx, set())
     if done:
         return
+    done.add("")  # sentinel: the root walk itself is one-shot per ctx —
+    # trees with no package.json anywhere must not re-walk per js file
     root_dir = ctx.path_for("")
     for path in sorted(ctx.walk_root_files({".json"})):
         rel = path.relative_to(root_dir).as_posix()
@@ -914,11 +918,20 @@ def _module_dsts(mod_rel: str, name: str, ctx) -> list[tuple[str, str]]:
     return out
 
 
+_WARNED_JSX_READ = False
+
 def _jsx_sites(path: Path, fs: FileSym) -> list[tuple[str, int]]:
     """Capitalized JSX element names + their lines (.jsx grammar only)."""
+    global _WARNED_JSX_READ
     try:
         src = path.read_bytes()
     except OSError:
+        # scan_file runs after parse read the same file fine; a failure
+        # here means it vanished mid-build — loud once, never per file
+        if not _WARNED_JSX_READ:
+            _WARNED_JSX_READ = True
+            print(f"neuronav: jsx scan re-read failed at {path}: "
+                  "sites skipped for this file", file=sys.stderr)
         return []
     caps = QueryCursor(_JSX_QUERY).captures(_PARSERS[".jsx"].parse(src).root_node)
     line_starts = [0] + [i + 1 for i, b in enumerate(src) if b == 0x0A]
