@@ -250,6 +250,42 @@ check("f13 .d.ts contributes zero funcs", g.files["ambient.d.ts"].funcs == {})
 check("f13 .d.ts wiring-only", ts_x.is_wiring_only(g.files["ambient.d.ts"]))
 check("f13 impl stays alive", alive("ambient_impl.ts", "wrapper"))
 
+# fixture 14: vite-style React entry trio (tsx twin of the js React
+# fixture, #293 defect 1 — pre-fix the whole exported component tree
+# landed in review-tier dead rows)
+check("f14 exported PascalCase App -> entry hint",
+      "App" in g.files["App.tsx"].entry_hints, sorted(g.files["App.tsx"].entry_hints))
+check("f14 exported PascalCase Button -> entry hint",
+      "Button" in g.files["Button.tsx"].entry_hints,
+      sorted(g.files["Button.tsx"].entry_hints))
+check("f14 render-root keeps App alive", alive("App.tsx", "App"))
+check("f14 JSX-in-body edge keeps Button alive", alive("Button.tsx", "Button"))
+check("f14 vite trio: zero dead rows",
+      not ({("App.tsx", "App"), ("Button.tsx", "Button")} & set(DEAD)),
+      str(sorted(set(DEAD))))
+
+# fixture 14b: a tsx re-read failure is loud ONCE, never silent (#293
+# defect 3 — a vanishing .tsx used to drop JSX mention counts quietly)
+from extractors.model import FileSym as _FS14  # noqa: E402
+
+setattr(ts_x, "_WARNED_TSX_READ", False)  # re-arm (tsconfig-warn precedent)
+_e1, _e2 = StringIO(), StringIO()
+_vanishing = FIX / "no_such.tsx"
+with redirect_stderr(_e1):
+    _sites = ts_x._jsx_sites(_vanishing, _FS14(path="no_such.tsx", ext=".tsx"))
+with redirect_stderr(_e2):
+    ts_x._jsx_sites(_vanishing, _FS14(path="no_such.tsx", ext=".tsx"))
+_lines1 = [ln for ln in _e1.getvalue().splitlines() if ln.strip()]
+_lines2 = [ln for ln in _e2.getvalue().splitlines() if ln.strip()]
+check("f14b vanishing tsx: sites empty, exactly ONE warn line",
+      _sites == [] and len(_lines1) == 1, str(_lines1))
+check("f14b warn is one-shot", len(_lines2) == 0, str(_lines2))
+
+# suite pin: the package walk is one-shot per ctx even with no package.json
+# anywhere (#293 defect 2 — the no-package sentinel)
+check("suite package-walk sentinel recorded for this ctx",
+      "" in ts_x._PKG_SEEN.get(g, set()), str(ts_x._PKG_SEEN.get(g)))
+
 
 def _pin_dead_share_hook() -> None:
     """Plan C1 contract (consumed by bake/files_model via the registry):

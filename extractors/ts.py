@@ -42,6 +42,10 @@ import tree_sitter_typescript as _tst
 from extractors.model import FileSym, Func
 
 TS_EXTS = frozenset({".ts", ".tsx", ".mts", ".cts"})
+# js-family suffix set ships here beside its ts twin (single spelling,
+# #293): js.py imports it — js -> ts is the dependency direction (the
+# alias machinery), so a ts -> js import would cycle.
+JS_EXTS = frozenset({".js", ".jsx", ".mjs", ".cjs"})
 TS_LANG = Language(_tst.language_typescript())
 TSX_LANG = Language(_tst.language_tsx())
 _PARSERS = {ext: Parser(TSX_LANG if ext == ".tsx" else TS_LANG) for ext in TS_EXTS}
@@ -285,15 +289,20 @@ _EXT_REWRITES = (
     (".cjs", (".cts",)),
 )
 
+# extensionless candidates: ts suffixes first (a ts importer prefers
+# ts files), then the js suffixes — mixed .ts+.js repos resolve both
+# directions (#293: `from './helper'` where only helper.js exists)
+_RESOLVE_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
+
 
 def _abs_candidates(abs_base: Path) -> list[Path]:
     """Filesystem candidates for an absolute base, in §1.4 order."""
     out = [abs_base]
     s = str(abs_base)
-    for e in (".ts", ".tsx", ".mts", ".cts"):
+    for e in _RESOLVE_SUFFIXES:
         out.append(Path(s + e))
-    out.append(abs_base / "index.ts")
-    out.append(abs_base / "index.tsx")
+    for idx in ("index.ts", "index.tsx", "index.js", "index.jsx"):
+        out.append(abs_base / idx)
     for src_e, dsts in _EXT_REWRITES:
         if s.endswith(src_e):
             out.extend(Path(s[:-len(src_e)] + d) for d in dsts)
@@ -346,12 +355,11 @@ def _resolve_spec(spec: str, path: Path, rel: str) -> str:
             if not abs_cand.is_file():
                 continue
             # the bare-specifier candidate only counts when it already
-            # names an indexed TS file — or, since #277, an indexed JS
-            # file (mixed .ts+.js repos resolve both directions; the js
-            # suffix set is spelled literally: js.py imports this
-            # module's alias machinery, a back-import would cycle)
-            if abs_cand == abs_base and abs_cand.suffix.lower() not in (
-                    TS_EXTS | frozenset({".js", ".jsx", ".mjs", ".cjs"})):
+            # names an indexed ES-family file — ts or js (#277 opened
+            # the js direction; JS_EXTS ships here for both modules,
+            # #293, so the family suffix sets keep one spelling)
+            if (abs_cand == abs_base
+                    and abs_cand.suffix.lower() not in TS_EXTS | JS_EXTS):
                 continue
             return _rel_of_target(abs_cand, path, rel)
     return ""
@@ -464,6 +472,30 @@ def _take_export(node, src: bytes, path: Path, rel: str, fs: FileSym,
             spec = _string_of(ch, src)
     if not spec:
         _take_default_export(node, src, fs, line_starts)
+        # local export names join the exported surface (component rule)
+        for ch in node.children:
+            if ch.type in ("function_declaration",
+                           "generator_function_declaration"):
+                nm = _ident_child(ch, src)
+                if nm:
+                    fs._ts_exported.add(nm)
+            elif ch.type in ("lexical_declaration", "variable_declaration"):
+                for d in ch.children:
+                    if d.type == "variable_declarator":
+                        dn = _ident_child(d, src)
+                        if dn:
+                            fs._ts_exported.add(dn)
+            elif ch.type in ("class", "abstract_class"):
+                nm = _ident_child(ch, src)
+                if nm:
+                    fs._ts_exported.add(nm)
+            elif ch.type == "export_clause":
+                for sp in ch.children:
+                    if sp.type != "export_specifier":
+                        continue
+                    names = [c for c in sp.children if c.type == "identifier"]
+                    if names:
+                        fs._ts_exported.add(_text(names[-1], src))
         return
     got = _resolve_spec(spec, path, rel) if spec else ""
     if not got:
@@ -493,18 +525,24 @@ def _take_default_export(node, src: bytes, fs: FileSym,
                          line_starts: list[int]) -> None:
     """`export default <anon fn/class/expr>` -> Func "default".
 
-    Named defaults are captured by the def queries; the anonymous forms
-    are only reachable here. Unique per module by construction.
+    Named defaults are captured by the def queries (and their names join
+    the exported surface for the component entry rule); the anonymous
+    forms are only reachable here. Unique per module by construction.
     """
     if "default" in fs.funcs or not any(ch.type == "default" for ch in node.children):
         return
     for ch in node.children:
         if ch.type in ("function_declaration", "generator_function_declaration"):
             if _ident_child(ch, src):
-                return  # named: the def queries own it
+                fs._ts_exported.add(_ident_child(ch, src))  # named default
+                return  # the def queries own it
             body = _body_block(ch, src) or _text(ch, src)
-        elif ch.type in ("arrow_function", "function_expression", "class"):
+        elif ch.type in ("arrow_function", "function_expression",
+                         "class", "abstract_class"):
             body = _body_block(ch, src) or _text(ch, src)
+        elif ch.type == "identifier":
+            fs._ts_exported.add(_text(ch, src))  # export default App;
+            return
         else:
             continue
         fs.funcs["default"] = Func(path=fs.path, name="default",
@@ -697,7 +735,13 @@ def parse(path: Path, rel: str) -> FileSym:
     for node in bytewise("jprop"):
         fs.arg_refs.add(_text(node, src))
 
+    fs._ts_exported = set()
     _walk_modules(root, src, path, rel, fs, line_starts)
+
+    # -- exported PascalCase fn/class components are UI entries (§1.7) ----------
+    for nm in sorted(fs._ts_exported):
+        if nm[:1].isupper() and (nm in fs.funcs or nm == fs.class_name):
+            fs.entry_hints.add(nm)
     return fs
 
 
@@ -808,6 +852,9 @@ def _entry_package(fs: FileSym, ctx) -> Iterator[str]:
     done = _PKG_SEEN.setdefault(ctx, set())
     if done:
         return
+    done.add("")  # sentinel: the root walk itself is one-shot per ctx —
+    # trees with no package.json anywhere must not re-walk per ES-family
+    # file (the seen-dict is shared with js.py, #293)
     root_dir = ctx.path_for("")
     for path in sorted(ctx.walk_root_files({".json"})):
         rel = path.relative_to(root_dir).as_posix()
@@ -850,13 +897,16 @@ def _entry_package(fs: FileSym, ctx) -> Iterator[str]:
                 yield from entry_keys(ctx.files[entry], sorted(ctx.files[entry].funcs))
 
 
-def _entry_decorated(fs: FileSym, ctx) -> Iterator[str]:
+def _entry_components(fs: FileSym, ctx) -> Iterator[str]:
+    """Decorated methods and exported PascalCase fn/class components
+    (React convention) — a component is a UI entry, so dead tiers
+    never false-flag one."""
     if fs.ext not in TS_EXTS:
         return
     yield from entry_keys(fs, sorted(fs.entry_hints))
 
 
-ENTRY_RULES = (_entry_tests, _entry_package, _entry_decorated)
+ENTRY_RULES = (_entry_tests, _entry_package, _entry_components)
 
 
 # ---- facts + call scanning (§1.5) ---------------------------------------------------
@@ -935,11 +985,21 @@ def _module_dsts(mod_rel: str, name: str, ctx) -> list[tuple[str, str]]:
     return out
 
 
+_WARNED_TSX_READ = False
+
+
 def _jsx_sites(path: Path, fs: FileSym) -> list[tuple[str, int]]:
     """Capitalized JSX element names + their lines (tsx grammar only)."""
+    global _WARNED_TSX_READ
     try:
         src = path.read_bytes()
     except OSError:
+        # scan_file runs after parse read the same file fine; a failure
+        # here means it vanished mid-build — loud once, never per file
+        if not _WARNED_TSX_READ:
+            _WARNED_TSX_READ = True
+            print(f"neuronav: tsx scan re-read failed at {path}: "
+                  "sites skipped for this file", file=sys.stderr)
         return []
     caps = QueryCursor(_TSX_QUERY).captures(_PARSERS[".tsx"].parse(src).root_node)
     line_starts = [0] + [i + 1 for i, b in enumerate(src) if b == 0x0A]
@@ -966,9 +1026,16 @@ def scan_file(fs: FileSym, ctx) -> None:
     if fs.ext == ".tsx":
         for name, line in _jsx_sites(ctx.path_for(fs.path), fs):
             fn = container(line)
-            if fn is None:
-                continue
             got = _import_target(fs, name, ctx)
+            if fn is None:
+                # module scope = a render site (createRoot(...).render(
+                # <App/>), ReactDOM.render): the target is an entry root
+                # so dead tiers never flag the mounted component
+                if name in fs.funcs:
+                    ctx.roots.add(fs.funcs[name].key)
+                elif got:
+                    ctx.roots.add(f"{got[0]}::{got[1]}")
+                continue
             if got:
                 ctx._emit_call(fn.key, got[0], got[1])
             else:

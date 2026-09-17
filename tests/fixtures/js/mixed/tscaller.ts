@@ -1,2 +1,3 @@
 import { jsFunc } from './plain.js';
-export function useJs(): number { return jsFunc(); }
+import { jsTwo } from './plain';
+export function useJs(): number { return jsFunc() + jsTwo(); }

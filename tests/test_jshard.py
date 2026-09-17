@@ -253,6 +253,11 @@ check("f9 .ts importer resolves .js specifier (ts gate opened, #277)",
 check("f9 cross-language callees alive",
       alive("mixed/util.ts", "tsFunc") and alive("mixed/plain.js", "jsFunc"))
 
+check("f9 .ts importer resolves EXTENSIONLESS .js-only specifier (#293)",
+      ("mixed/plain.js", "jsTwo") in g.files["mixed/tscaller.ts"].from_imports,
+      str(sorted(g.files["mixed/tscaller.ts"].from_imports)))
+check("f9 extensionless cross-language callee alive", alive("mixed/plain.js", "jsTwo"))
+
 # fixture 10: package + framework-config entries
 check("f10 package.json main roots the entry file",
       alive("entry_index.js", "libmain"))
@@ -285,6 +290,11 @@ check("registry: RAW_TEXT_EXTS shrunk to json+md",
       RAW_TEXT_EXTS == (".json", ".md"))
 check("registry: ts preset carries .cjs (asymmetry fix)",
       ".cjs" in PRESETS["ts"], str(PRESETS["ts"]))
+
+check("registry: ES suffix sets single-spelled — js imports JS_EXTS from ts (#293)",
+      js_x.JS_EXTS is ts_x.JS_EXTS)
+check("registry: package-walk seen-dict shared across the ES family (#293)",
+      js_x._PKG_SEEN is ts_x._PKG_SEEN)
 
 # suite-level pins
 _js_rows = [(p, n) for (p, n) in DEAD if p.endswith((".js", ".jsx", ".mjs", ".cjs"))]
