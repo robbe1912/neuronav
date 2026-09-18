@@ -218,7 +218,10 @@ def main():
     #     and passes silently (#322) — this leg is the guard that class
     #     cannot dodge. AST, not grep: the explanatory comments at
     #     layout.py:208-210 mention kcoef and a text scan would
-    #     false-positive on them.
+    #     false-positive on them. Guard collection is BODY statements only:
+    #     the orelse of `if n <= 2048:` IS the sparse region (#323
+    #     follow-up — GK's dead-code sabotage in the else arm passed the
+    #     first cut because ast.walk(If) traverses orelse too).
     def _kcoef_sparse_lines(src: str) -> list[int]:
         tree = _ast.parse(src)
         fn = next(n for n in _ast.walk(tree)
@@ -234,7 +237,8 @@ def main():
                     and len(t.comparators) == 1
                     and isinstance(t.comparators[0], _ast.Constant)
                     and t.comparators[0].value == 2048):
-                guarded.update(id(x) for x in _ast.walk(ifn))
+                guarded.update(id(x) for stmt in ifn.body
+                               for x in _ast.walk(stmt))
         return [x.lineno for x in _ast.walk(fn)
                 if isinstance(x, _ast.Name) and x.id == "kcoef"
                 and id(x) not in guarded]
@@ -247,6 +251,15 @@ def main():
     check("kcoef contract bites: a bare read outside the gate is flagged",
           _kcoef_sparse_lines("def _layout(n):\n    return kcoef\n") == [2],
           "synthetic violation not flagged")
+    _dense_else_src = ("def _layout(n):\n"
+                       "    if n <= 2048:\n"
+                       "        a = kcoef\n"
+                       "    else:\n"
+                       "        if False:\n"
+                       "            b = kcoef\n")
+    check("kcoef contract bites in the sparse else-region (dead code too)",
+          _kcoef_sparse_lines(_dense_else_src) == [6],
+          str(_kcoef_sparse_lines(_dense_else_src)))
     print(f"\n{N} nodes · {len(links)} links · {len(FAILURES)} failure(s)")
     if FAILURES:
         print("FAILED:", ", ".join(FAILURES))
