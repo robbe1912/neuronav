@@ -292,6 +292,23 @@ check("registry: ES suffix sets single-spelled — js imports JS_EXTS from ts (#
 check("registry: package-walk seen-dict shared across the ES family (#293)",
       js_x._PKG_SEEN is ts_x._PKG_SEEN)
 
+# fixture: file-based routing (#328, js twin of tshard f28) — convention-
+# mounted anonymous-default routes are entries; exclusive deps revive;
+# the lowercase orphan outside routing roots stays dead
+check("f28 js anon-default route under app/ is an entry",
+      alive("app/home.js", "default"))
+check("f28 js the route's exclusive lowercase helper revives",
+      alive("lib/route_chip.js", "renderChip"))
+check("f28 js lowercase orphan OUTSIDE routing roots stays dead",
+      tier("orphan_chip.js", "renderChipAlone") == "likely",
+      str(tier("orphan_chip.js", "renderChipAlone")))
+_routed = sorted(
+    p.relative_to(FIX).as_posix()
+    for root in ("app", "pages") for p in (FIX / root).rglob("*")
+    if p.is_file())
+check("f28 js routing-root family is exactly the #328 fixture set",
+      _routed == ["app/home.js"], str(_routed))
+
 # suite-level pins
 _js_rows = [(p, n) for (p, n) in DEAD if p.endswith((".js", ".jsx", ".mjs", ".cjs"))]
 _alive_js = [f"{rel}::{nm}" for rel, fs in g.files.items()
