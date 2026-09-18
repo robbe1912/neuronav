@@ -48,6 +48,26 @@ import httpx
 import recall
 from extractors import WALK_EXTS, registry_for  # noqa: E402
 
+# ---- build observability (issue #315) --------------------------------------
+# Rescan/first-contact embed loops report (phase, count, total) through
+# registered observers. The CLI registers none (zero behavior change);
+# the MCP server registers one that feeds its progress snapshot.
+# Observers must never break the build they observe: a raising hook is
+# reported loudly on stderr and skipped.
+PROGRESS_HOOKS: list = []
+
+
+def _report_progress(phase: str, count: int, total: int) -> None:
+    for hook in list(PROGRESS_HOOKS):
+        try:
+            hook(phase, count, total)
+        except Exception as e:  # noqa: BLE001 — loud, never fatal
+            print(
+                f"neuronav: progress hook {getattr(hook, '__name__', hook)!r} "
+                f"raised: {e!r} — ignored, the index build continues",
+                file=sys.stderr,
+            )
+
 TOOL_DIR = Path(__file__).resolve().parent
 
 
@@ -1177,6 +1197,7 @@ def _rescan_locked() -> dict[str, int]:
         nonlocal pending_ids, pending_docs, pending_meta
         if not pending_ids:
             return
+        _report_progress("embed", len(seen), len(files))  # issue #315
         vectors = embed([EMBED_DOC_PREFIX + d for d in pending_docs]) if EMBED_DOC_PREFIX else embed(pending_docs)
         col.upsert(
             ids=pending_ids,
@@ -1185,6 +1206,7 @@ def _rescan_locked() -> dict[str, int]:
             metadatas=pending_meta,
         )
         pending_ids, pending_docs, pending_meta = [], [], []
+        _report_progress("embed", len(seen), len(files))
 
     for path in files:
         fid = file_id(path)

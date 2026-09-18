@@ -81,6 +81,21 @@ without tool traffic, set `"watch_interval_s": 0.5` (seconds; absent/0 = off)
 in the config: a stdlib daemon thread then polls the same stat gate and
 rescans after a ~2s quiet debounce.
 
+## First contact on a large repo (issue #315)
+
+The first `rescan()`/`visualize` against a big checkout is minutes of embed +
+graph work, and the viz bake is another long pass. None of it blocks silently:
+build progress (phase, count/total, ETA) streams as `notifications/progress`
+to clients that sent a progress token and as `neuronav: …` stderr heartbeats;
+the `neuronav://onboarding/status` resource is the always-answerable poll
+state (boot / build / bake / queue); `visualize` answers immediately with
+"bake accepted" + live progress while a background baker writes graph.html
+(its completion — or loud failure — lands on stderr and the resource); and
+`repo_map`/`semantic_search` answer from a partially-built index tagged
+`stale: true` instead of parking on the boot gate past a client timeout.
+An MCP call that arrives mid-build therefore reads as *alive and working*,
+never as the generic timeout of a dead server.
+
 ## Two-pass retrieval (optional, issue #74)
 
 `semantic_search` normally retrieves once. Setting `"recall_two_pass": true`

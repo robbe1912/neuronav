@@ -50,8 +50,14 @@ def main() -> int:
     import explore as xp
     import server as s
 
+    # issue #315: the read tools are async shells now — drive them through
+    # a tiny asyncio.run wrapper so this in-process suite keeps its shape.
+    def explore(*args, **kwargs):
+        import asyncio
+        return asyncio.run(s.explore(*args, **kwargs))
+
     # Happy path: real query against the self-index.
-    out = s.explore("cluster labeling", n=3)
+    out = explore("cluster labeling", n=3)
     check("returns source slices", ("func " in out or "def " in out) and "\t" in out, out[:120])
     check("line numbers are cat -n style", any(
         ln.split("\t", 1)[0].strip().isdigit() for ln in out.splitlines() if "\t" in ln
@@ -70,7 +76,7 @@ def main() -> int:
 
     try:
         s.graph.find_functions = _boom
-        out2 = s.explore("cluster labeling", n=3)
+        out2 = explore("cluster labeling", n=3)
         check("ollama-down still returns guidance+hits, not error",
               ("func " in out2 or "def " in out2) and "degraded" in out2.lower(), out2[:200])
     finally:
@@ -98,7 +104,7 @@ def main() -> int:
           seeds == [] and degraded is True
           and reason is not None and "relevance floor" in reason,
           f"{seeds[:1]} degraded={degraded} reason={reason}")
-    out3 = s.explore(nohit_q, n=3)
+    out3 = explore(nohit_q, n=3)
     check("no-hit returns next-step guidance", "no hits for" in out3, out3[:150])
 
 
@@ -119,7 +125,7 @@ def main() -> int:
     # orientation=False (issue #125): repeat calls skip the constant
     # preamble; the freed budget flows to the slices section (monotone
     # in budget given identical seeds), and the no-hit path drops it too.
-    out4 = s.explore("cluster labeling", n=4, orientation=False)
+    out4 = explore("cluster labeling", n=4, orientation=False)
     check("orientation=False skips the preamble",
           "== repo map ==" not in out4 and "== clusters ==" not in out4,
           out4[:120])
@@ -127,7 +133,7 @@ def main() -> int:
           out4.startswith("== file shortlist ==") and "== symbols ==" in out4,
           out4[:120])
     sec = lambda o: o.split("== symbols ==")[1]
-    out4b = s.explore("cluster labeling", n=4)
+    out4b = explore("cluster labeling", n=4)
     check("orientation=False spends the savings on slices (monotone)",
           len(sec(out4)) >= len(sec(out4b)),
           f"{len(sec(out4))} vs {len(sec(out4b))}")
@@ -135,7 +141,7 @@ def main() -> int:
           out4b.startswith("== repo map =="))
     # Post-#297 the no-hit path needs no monkeypatch: the floor itself
     # drops the all-weak fn rows to the (empty) lexical fallback.
-    out5 = s.explore(nohit_q, n=3, orientation=False)
+    out5 = explore(nohit_q, n=3, orientation=False)
     check("orientation=False output still budget-capped",
           len(out4) <= 22000, f"{len(out4)} chars")
 

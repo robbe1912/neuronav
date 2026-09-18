@@ -26,6 +26,7 @@ import os
 import sys
 import tempfile
 import threading
+import asyncio  # issue #315: the rescan/semantic tools are async shells
 import time
 from pathlib import Path
 
@@ -156,7 +157,7 @@ def main() -> None:
             nav.CONFIG_PATH == cfg_path.resolve(),
             f"CONFIG_PATH={nav.CONFIG_PATH}",
         )
-        served = server.semantic_search("dossier", 2)
+        served = asyncio.run(server.semantic_search("dossier", 2))
         check(
             "recovery-retry: tools serve the recovered index",
             "note_a.md" in served,
@@ -215,7 +216,7 @@ def main() -> None:
 
         def _rescan_call() -> None:
             try:
-                outcome["out"] = server.rescan("")
+                outcome["out"] = asyncio.run(server.rescan(""))
             except BaseException as e:  # SystemExit is the expected loud abort
                 outcome["exc"] = e
 
@@ -244,7 +245,7 @@ def main() -> None:
         finally:
             server.LOCK_WAIT_S = real_wait
             holder.release()
-        warm = server.rescan("")
+        warm = asyncio.run(server.rescan(""))
         check(
             "bounded rescan: lock released, the tool serves again",
             isinstance(warm, str) and warm.startswith("rescan: files"),

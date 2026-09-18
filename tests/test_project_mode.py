@@ -502,15 +502,18 @@ def main() -> None:
         out = run_nav(proj, "import sys; import nav, recall, graph, clusters; print('viz' in sys.modules)")
         check("core modules never import viz", out.strip() == "False")
         sys.path.insert(0, str(ROOT))
+        import asyncio  # issue #315: visualize is an async shell in-process
+
         import server  # noqa: E402
 
         server._auto_rescan = lambda: None  # gate off; we test the degrade path
         sys.modules["viz"] = None  # import viz now raises ImportError
-        msg = server.visualize()
+        msg = asyncio.run(server.visualize())
         check("visualize degrades loudly without the add-on", "viz add-on not installed" in msg, msg[:60])
 
-        # 6b. issue #133: a real bake answers with an openable file:// URI —
-        # production opens <project>/.neuronav/graph.html directly, no server
+        # 6b. issues #133 + #315: the bake no longer blocks the call — the
+        # ack is immediate, the bake runs on the background baker and its
+        # landing (or loud failure) surfaces via the status resource
         import types
         nav_state = Path(run_nav(proj, "import nav; print(nav.STATE_DIR)",
                                  {"NEURONAV_CONFIG": str(cfg_path)}).strip())
@@ -518,14 +521,22 @@ def main() -> None:
         fake_viz.ensure_bake = lambda: nav_state / "graph.html"
         sys.modules["viz"] = fake_viz
         try:
-            msg2 = server.visualize()
+            msg2 = asyncio.run(server.visualize())
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                with server._BAKE_LOCK:
+                    landed = bool(server._BAKE_STATE["out"]) or bool(server._BAKE_STATE["error"])
+                if landed:
+                    break
+                time.sleep(0.1)
         finally:
             del sys.modules["viz"]
-        check("visualize: happy path appends the openable file:// URI",
-              msg2.startswith("3D graph written to")
-              and str(nav_state / "graph.html") in msg2
-              and "file://" in msg2,
-              msg2[:120])
+        status = server._onboarding_status()
+        check("visualize: bake queued + lands via the baker (issues #133/#315)",
+              msg2.startswith("bake accepted")
+              and str(nav_state / "graph.html") in status
+              and "bake: done" in status,
+              f"{msg2[:80]} | {status[:140]}")
 
         # 6c. issue #133: onboard prints the per-OS open command for the
         # baked file — win32 `start`, darwin `open`, POSIX `xdg-open`
