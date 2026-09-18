@@ -75,7 +75,9 @@ TMP = Path(tempfile.mkdtemp(prefix="neuronav_agentab_"))
     encoding="utf-8",
 )
 
-CFG = Path(tempfile.gettempdir()) / "neuronav_agentab_config.json"
+# issue #321 lever 3: the fixed config name raced twin runs (its bytes
+# embed this run's mkdtemp TMP) — inside TMP it is unique per run
+CFG = TMP / "config.json"
 CFG.write_text(
     json.dumps(
         {
