@@ -33,8 +33,10 @@ HERE = Path(__file__).resolve().parents[1]
 from harness import FAILURES as FAILS, check
 
 # ---- scratch corpus + config -------------------------------------------------
-SCRATCH = Path(tempfile.gettempdir()) / "neuronav_walkguard_scratch"
-shutil.rmtree(SCRATCH, ignore_errors=True)
+# issue #321 lever 3: mkdtemp per run — fixed names collided across
+# concurrent same-suite processes (twin battery/standalone runs); the
+# end-of-suite rmtree below still cleans up
+SCRATCH = Path(tempfile.mkdtemp(prefix="neuronav_walkguard_"))
 SRC = SCRATCH / "src"
 (SRC / "tests").mkdir(parents=True)
 (SRC / "keep").mkdir()
@@ -224,8 +226,7 @@ check(
 # The suite process is config-bound (cfg_a above), so these legs run as
 # children under a second scratch root; the guard threshold is lowered in
 # the child to keep the fixture tiny — the crossing logic is the contract.
-SCRATCH2 = Path(tempfile.gettempdir()) / "neuronav_walkguard_bare"
-shutil.rmtree(SCRATCH2, ignore_errors=True)
+SCRATCH2 = Path(tempfile.mkdtemp(prefix="neuronav_walkguard_bare_"))
 TREE = SCRATCH2 / "tree"
 for sub in (".git", ".tmp", ".team_scratch", "team_scratch", "src"):
     (TREE / sub).mkdir(parents=True)
@@ -321,8 +322,7 @@ for label, env in (
 # walk-all exclude default and the wiring floor derive from one canonical
 # set (post-#290 drift: __pycache__/.team_scratch missing floor-side,
 # .godot missing defaults-side).
-SCRATCH3 = Path(tempfile.gettempdir()) / "neuronav_walkguard_296"
-shutil.rmtree(SCRATCH3, ignore_errors=True)
+SCRATCH3 = Path(tempfile.mkdtemp(prefix="neuronav_walkguard_296_"))
 T3 = SCRATCH3 / "tree"
 for sub in ("src", "tools", "scripts", "target", "genout", ".tmp", ".git", "keepme"):
     (T3 / sub).mkdir(parents=True)

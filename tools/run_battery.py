@@ -10,9 +10,14 @@
 # self-contained hermetic scratch trees by convention — distinct temp-dir
 # names, own state dirs).
 # Classification (recomputed per run from tests/test_*.py at HEAD):
-#   pool      — every suite except the four below (FAKE embeds, scrubbed
-#               NEURONAV_CONFIG so no ambient profile rebinds a hermetic
-#               suite mid-battery)
+#   pool      — every suite except the serial/gated names below, plus
+#               test_target_regression whenever the checkout-local
+#               config.json exists (issue #321 lever 1: the treg leg
+#               overlaps into the pool — its profile store is
+#               checkout-local and CPU-only, no port/store/scratch
+#               overlap with any pool member). Pool legs get FAKE
+#               embeds and a scrubbed NEURONAV_CONFIG so no ambient
+#               profile rebinds a hermetic suite mid-battery.
 #   serial    — test_qa_smoke: leg A only (NEURONAV_QA_SMOKE_NO_BROWSER=1);
 #               the full-browser leg B belongs to the CI viz job;
 #               test_crosslang: the chroma store race (issue #301 C) — its
@@ -24,13 +29,19 @@
 #               hold that store at -j4; observed as chroma InternalError
 #               "Error finding id" (PR #312 battery; attribution GK). One
 #               entry — the #283 parallelization win stands.
-#   gated     — test_target_regression: runs only when the checkout-local
-#               config.json exists (the owner's .gd target profile, issue
-#               #97 — the suite itself skips loudly without one);
-#               test_viz: runs only when the machine-local vizcorpus
-#               profile exists (~/vizcorpus/config.json, CI viz job shape);
-#               both skip loudly with the missing profile named
+#   gated     — test_viz: runs only when the machine-local vizcorpus
+#               profile exists (~/vizcorpus/config.json, CI viz job shape),
+#               STRICTLY LAST, post-pool on a quiet machine —
+#               viz-under-concurrent-load is the documented flake class
+#               (#299-era triage). test_target_regression without the
+#               checkout-local config.json skips loudly (issue #97).
+# Dispatch (issue #321 lever 2): the pool runs longest-first (LPT) off a
+# persisted per-suite timing cache (gitignored .tmp/battery_timings.json,
+# last run's dt; cache miss = alphabetical cold start) — makespan was set
+# by slow suites starting mid-pool. Default -j stays 4; a -j 6 trial is
+# unlocked by the mkdtemp fixes (issue #321 lever 3).
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -45,7 +56,6 @@ SERIAL = {
     "test_crosslang.py",
 }
 GATED = {
-    "test_target_regression.py": "checkout-local config.json (owner .gd target profile, issue #97)",
     "test_viz.py": "~/vizcorpus/config.json (CI viz job builds the corpus)",
 }
 TIMEOUT_S = 1200  # per-suite ceiling, the scratch-driver precedent
@@ -63,11 +73,18 @@ def classify(root: Path) -> tuple[list[str], dict[str, str]]:
     for name in all_suites:
         if name in SERIAL:
             continue
+        if name == "test_target_regression.py":
+            # issue #321 lever 1: pool the treg leg when the profile is
+            # present; without it, a loud skip beats a silent pool entry
+            if (root / "config.json").is_file():
+                pool.append(name)
+            else:
+                skipped[name] = ("checkout-local config.json "
+                                 "(owner .gd target profile, issue #97)")
+            continue
         if name in GATED:
-            if name == "test_target_regression.py" and (root / "config.json").is_file():
-                continue  # owner machine: the suite binds it via discovery
             if name == "test_viz.py" and (Path.home() / "vizcorpus" / "config.json").is_file():
-                continue  # runs serial with the corpus profile below
+                continue  # strictly last: post-pool, quiet machine
             skipped[name] = GATED[name]
             continue
         pool.append(name)
@@ -112,6 +129,19 @@ def main() -> None:
 
     root = Path(args.cwd).resolve()
     pool, skipped = classify(root)
+
+    # issue #321 lever 2: LPT dispatch — the 7a54b9e baseline had strata
+    # 208.8s and server_stdio 99.2s starting mid-pool (alphabetical), so
+    # the makespan waited on them. Longest first, name tie-break, off the
+    # persisted timing cache; PASS lines still print in completion order
+    # (#298), so output is submit-order-insensitive.
+    cache = root / ".tmp" / "battery_timings.json"
+    try:
+        loaded = json.loads(cache.read_text(encoding="utf-8")) if cache.is_file() else {}
+    except (OSError, ValueError):
+        loaded = {}
+    timings = loaded if isinstance(loaded, dict) else {}
+    pool.sort(key=lambda n: (-float(timings.get(n) or 0.0), n))
     serial = [n for n in sorted(SERIAL) if (root / "tests" / n).is_file()]
     gated_run = [n for n in GATED
                  if n not in skipped and (root / "tests" / n).is_file()]
@@ -165,6 +195,15 @@ def main() -> None:
 
     for name, reason in sorted(skipped.items()):
         print(f"SKIP {name[:-3]} — gated: {reason}", flush=True)
+
+    for name, _rc, dt in results:
+        timings[name] = round(float(dt), 1)
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(timings, indent=1, sort_keys=True) + "\n",
+                         encoding="utf-8")
+    except OSError:
+        pass  # advisory cache — a failed persist never fails the battery
 
     fails = [(n, rc) for n, rc, _ in results if rc != 0]
     wall = time.perf_counter() - t0

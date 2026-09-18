@@ -22,8 +22,9 @@ HERE = Path(__file__).resolve().parents[1]
 from harness import check, finish
 
 # ---- scratch corpus + config (the vizcorpus_build shape, miniature) --------
-SCRATCH = Path(tempfile.gettempdir()) / "neuronav_bakeint_scratch"
-shutil.rmtree(SCRATCH, ignore_errors=True)
+# issue #321 lever 3: mkdtemp per run — the fixed name collided across
+# concurrent same-suite processes; end-of-suite rmtree still cleans up
+SCRATCH = Path(tempfile.mkdtemp(prefix="neuronav_bakeint_"))
 SRC = SCRATCH / "src"
 SRC.mkdir(parents=True)
 for i in range(6):
