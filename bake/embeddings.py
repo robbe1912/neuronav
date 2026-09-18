@@ -28,9 +28,7 @@ def _fetch_embeddings(paths):
 
         col = nav._collection()
         if col.count():
-            got = nav.chroma_read(
-                "bake embeddings", lambda: col.get(include=["embeddings"])
-            )
+            got = nav.col_get_all(col, ["embeddings"], "bake embeddings")
             emb_idx = {rid: i for i, rid in enumerate(got["ids"])}
             emb_paths = _store_paths(paths, emb_idx)
             rows = [emb_idx[p] for p in emb_paths]

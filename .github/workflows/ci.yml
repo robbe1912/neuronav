@@ -93,6 +93,8 @@ jobs:
         run: python -X utf8 tests/test_bootrecovery.py
       - name: onboardprogress (first-contact observability, issue #315)
         run: python -X utf8 tests/test_onboardprogress.py
+      - name: chromabounds (bounded full-store reads, issue #327)
+        run: python -X utf8 tests/test_chromabounds.py
       - name: impact (transitive blast-radius walk, issue #280)
         run: python -X utf8 tests/test_impact.py
       # issue #120/#124: serve.py bake-only surface + qa gate smoke. Leg B

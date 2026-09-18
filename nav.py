@@ -937,9 +937,8 @@ def _restamp(col: chromadb.Collection,
             # issue #239 rider: retry the hnsw-settle transient so the
             # re-stamp heals instead of tripping the raced-collection
             # fallback on self-healing noise; real failures still fall
-            data = chroma_read(
-                "re-stamp read",
-                lambda: col.get(include=["embeddings", "documents", "metadatas"]),
+            data = col_get_all(
+                col, ["embeddings", "documents", "metadatas"], "re-stamp read"
             )
         except Exception as e:
             print(f"neuronav: collection '{name}' needs a metadata re-stamp but "
@@ -1076,6 +1075,43 @@ def chroma_read(what: str, read):
 _HNSW_SETTLING = "hnsw segment reader"
 _CHROMA_READ_PAUSES_S = (0.5, 1.0, 2.0, 4.0)
 
+GET_CHUNK = 512  # bounded reads (#327): safely under the ~999 SQL
+# variable ceiling of old bundled sqlite builds and far under the
+# ~32766 of modern ones — an unfiltered col.get() binds every row's
+# columns at once and dies with InternalError "too many SQL variables"
+# at monorepo scale
+
+
+def col_get_all(col, include, what="chunked read"):
+    """Full-collection read via bounded, deterministically-ordered pages
+    (issue #327). One unfiltered col.get() trips the sqlite build's
+    bound-variable ceiling on stores past it, so reads page through
+    GET_CHUNK-sized chunks (each under the caller's store lock, each
+    with the hnsw-settle retry) and merge sorted by id — the result,
+    and every export or store-copy built from it, is a function of the
+    data alone, not of chroma's internal row order. A row-count
+    mismatch across pages is a loud error, never a silent short read."""
+    total = col.count()
+    rows: list[tuple] = []
+    for off in range(0, total, GET_CHUNK):
+        got = chroma_read(
+            f"{what} (rows {off + 1}..{min(off + GET_CHUNK, total)})",
+            lambda off=off: col.get(
+                include=include, limit=GET_CHUNK, offset=off
+            ),
+        )
+        rows.extend(zip(got["ids"], *(got[k] for k in include)))
+    if len(rows) != total:
+        raise RuntimeError(
+            f"neuronav: {what} on '{col.name}' merged {len(rows)} of "
+            f"{total} rows — the store changed mid-read despite the lock"
+        )
+    rows.sort(key=lambda r: r[0])
+    out: dict[str, list] = {"ids": [r[0] for r in rows]}
+    for pos, key in enumerate(include, start=1):
+        out[key] = [r[pos] for r in rows]
+    return out
+
 
 def embed_mode() -> str:
     """Vector-space lineage of the current process (#220): "fake" under
@@ -1175,7 +1211,7 @@ def _rescan_locked() -> dict[str, int]:
         )
     existing: dict[str, dict] = {}
     if col.count():
-        got = col.get(include=["metadatas"])
+        got = col_get_all(col, ["metadatas"], "rescan existing-rows read")
         existing = {
             rid: (meta or {})
             for rid, meta in zip(got["ids"], got["metadatas"])
@@ -1389,8 +1425,8 @@ def export_base() -> dict[str, object]:
         col = _collection()
         if col.count() == 0:
             raise RuntimeError("nothing indexed — run rescan first")
-        got = chroma_read(
-            "base export", lambda: col.get(include=["metadatas", "embeddings"])
+        got = col_get_all(
+            col, ["metadatas", "embeddings"], "base export"
         )
         embeddings = got.get("embeddings")
         embeddings = [] if embeddings is None else list(embeddings)
