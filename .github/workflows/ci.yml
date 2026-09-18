@@ -38,6 +38,8 @@ jobs:
         run: python -X utf8 tests/test_cpphard.py
       - name: jshard (JavaScript extractor edge cases, issue #277)
         run: python -X utf8 tests/test_jshard.py
+      - name: gohard (Go extractor edge cases, issue #334)
+        run: python -X utf8 tests/test_gohard.py
       - name: javahard (Java extractor edge cases, issue #335)
         run: python -X utf8 tests/test_javahard.py
       - name: autorescan (stat-gate freshness, watcher, stdio e2e)
