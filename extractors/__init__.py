@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from extractors import cpp
 from extractors import gdscript
+from extractors import java
 from extractors import js
 from extractors import python
 from extractors import rust
@@ -67,6 +68,7 @@ EXTENSIONS: dict[str, object] = {
     ".mjs": js,
     ".cjs": js,
     ".rs": rust,
+    ".java": java,
 }
 
 # issue #240: language presets + the raw-text walk suffixes — language
@@ -87,6 +89,7 @@ PRESETS: dict[str, tuple[str, ...]] = {
     # default and this preset must never drift apart)
     "gdscript": gdscript.WALK_EXTS,
     "rust": (".rs", ".json", ".md"),
+    "java": (".java", ".json", ".md"),
 }
 
 def sync_parseable(suffix: str) -> bool:
@@ -126,6 +129,7 @@ BUILD_SEQUENCE = (
     js.import_liveness_sweep,
     rust.rebind_reexports_sweep,
     rust.import_liveness_sweep,
+    java.import_liveness_sweep,
 )
 
 WIRE_SEQUENCE = (
