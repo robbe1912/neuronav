@@ -43,6 +43,9 @@ AUTHOR = "Helios Bot <helios@neuronav.invalid>"
 CODE_DIRS = [
     "core", "combat", "world", "ui", "audio", "net",
     "fx", "save_sys", "quests", "nav_ai", "legacy", "scenes", "tests",
+    # poison-name dir (#325): rides include_dirs so the template
+    # dir-name index sees a dir literally named hasOwnProperty
+    "hasOwnProperty",
 ]
 
 # commit history: (day_offset, subject, touched dirs/files)
@@ -61,6 +64,7 @@ FEATURE_COMMITS: list[tuple[int, str, list[str]]] = [
     (18, "nav_ai: steering", ["nav_ai"]),
     (17, "legacy: retired paths parked", ["legacy"]),
     (16, "scenes + tests scaffold", ["scenes", "tests"]),
+    (15, "hasOwnProperty: poison-name fixture", ["hasOwnProperty"]),
 ]
 HOTFIX_COMMITS: list[tuple[int, str, list[str]]] = [
     (12, "state: guard flag pushes", ["core/state.gd"]),
@@ -360,6 +364,59 @@ func collect() -> void:
 \th.clear(null)
 """
 
+def _poly_caller_src() -> str:
+    return """class_name PolyCaller
+extends Node
+# Helios poison-name fixture (#325): fn identifiers colliding with
+# Object.prototype members. The DIR is named hasOwnProperty so the
+# template's dir-name index rides the same class. constructor/__proto__
+# appear as CALLER fn names on cross-file edges.
+
+const SinkScene = preload("res://hasOwnProperty/poly_sink.gd")
+const StateScene = preload("res://core/state.gd")
+
+# _ready roots the file (GDScript virtual): the poison island is live
+# code, so the corpus dead-set shape stays at its authored extent.
+func _ready() -> void:
+\tconstructor()
+\t__proto__()
+\thasOwnProperty()
+
+func constructor() -> void:
+\tvar s: PolySink = SinkScene.new()
+\ts.sink()
+\tvar g: GameState = StateScene.new()
+\tg.read_flag("boot")
+
+func __proto__() -> void:
+\tvar s: PolySink = SinkScene.new()
+\ts.sink()
+
+func hasOwnProperty() -> void:
+\tvar s: PolySink = SinkScene.new()
+\ts.constructor()
+\tvar g: GameState = StateScene.new()
+\tg.bump_score(1)
+"""
+
+
+def _poly_sink_src() -> str:
+    return """class_name PolySink
+extends Node
+# Helios poison-name fixture (#325): callee side — a fn LITERALLY named
+# constructor, so the name-keyed index sees it in both fedges columns.
+
+const StateScene = preload("res://core/state.gd")
+
+func sink() -> void:
+\tvar g: GameState = StateScene.new()
+\tg.push_flag("poly")
+
+func constructor() -> void:
+\tpass
+"""
+
+
 
 def _test_src(mods: list[tuple[str, list[str]]], stem: str) -> str:
     """One test file touching SEVERAL subsystems — the tests community
@@ -557,6 +614,12 @@ def build_files() -> dict[str, str]:
         scripts=[("res://world/pickup.gd", "Pickup")])
     f["scenes/fx_layer.tscn"] = _tscn(
         "FxLayer", ['[node name="Particles" type="GPUParticles2D" parent="."]'])
+
+    # -- poison-name fixture (#325): fn identifiers colliding with
+    # Object.prototype members (constructor/__proto__) in a dir named
+    # hasOwnProperty — exercises the template name-keyed indexes ----
+    f["hasOwnProperty/poly_caller.gd"] = _poly_caller_src()
+    f["hasOwnProperty/poly_sink.gd"] = _poly_sink_src()
 
     # -- tests community: each file spans 3-5 subsystems so the tests
     # dir keeps its OWN community centroid (not any single hub's) —

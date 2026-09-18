@@ -56,8 +56,8 @@ let cLabs = [], cRings = [];
 function buildContainment() {
   cRings.forEach(r => { scene.remove(r); r.geometry.dispose(); r.material.dispose(); });
   cRings = []; cLabs.forEach(c => c.el.remove()); cLabs = [];
-  const byC = {};
-  // groups mode draws the halo ring per SUPERGROUP (matching node colors)
+  // [#325 audit] gid/cluster int keys — safe as {}.
+  const byC = {};  // groups mode draws the halo ring per SUPERGROUP (matching node colors)
   const keyOf = n => groupsMode ? n.gid : n.cluster;
   nodes.forEach((n, i) => {
     const k = keyOf(n);

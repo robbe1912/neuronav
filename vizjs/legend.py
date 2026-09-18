@@ -10,8 +10,8 @@ function buildLegend() {
   if (groupsMode && groups) {
     // supergroup chips: one per group; clicking isolates all member
     // fine-clusters at once (activeClusters stays fine-grained underneath)
-    const byG = {};
-    nodes.forEach(n => { if (n.gid >= 0) byG[n.gid] = (byG[n.gid] || 0) + 1; });
+    // [#325 audit] n.gid int keys — safe as {}.
+    const byG = {};    nodes.forEach(n => { if (n.gid >= 0) byG[n.gid] = (byG[n.gid] || 0) + 1; });
     Object.entries(byG).sort((a, b) => b[1] - a[1]).forEach(([gid, count]) => {
       const g = +gid;
       const c = new THREE.Color().setHSL(hue(g), 0.72, lightOf(g));
@@ -72,8 +72,10 @@ document.getElementById("bGroups").onclick = e => {
 const dirsEl = document.getElementById("dirs");
 const dirChips = new Map();   // dir -> chip element (empty-state undo)
 {
-  const byDir = {};
-  nodes.forEach(n => { if (!isTestNode(n)) byDir[n.dir] = (byDir[n.dir] || 0) + 1; });
+  // [#325] DIR-NAME keys are repo data: dir named hasOwnProperty ->
+  // (inherited fn || 0)+1 = NaN chip count; __proto__ dir -> assignment
+  // swallowed by the prototype setter, count lost. Null-proto object.
+  const byDir = Object.create(null);  nodes.forEach(n => { if (!isTestNode(n)) byDir[n.dir] = (byDir[n.dir] || 0) + 1; });
   Object.entries(byDir).sort((a, b) => b[1] - a[1]).slice(0, 8).forEach(([dir, count]) => {
     const chip = document.createElement("span");
     chip.className = "chip";

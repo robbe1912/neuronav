@@ -21,6 +21,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
   get fnTrunkW() { return fnTrunkW; }, get fnJstubN() { return fnJstubN; },
   get fnQuietTrunkW() { return fnQuietTrunkW; },
   get fnStations() { return fnStationsArr; },
+  get fnOfProbe() { return { n: fnNames.length, ctor: fnOf["constructor"] ? fnOf["constructor"].size : 0, proto: fnOf["__proto__"] ? fnOf["__proto__"].size : 0 }; },   // #325 poison-name index teeth
   get fnLod() { return fnLodV ? Object.assign({}, fnLodV) : null; }, get fnJclear() { return fnJclearV; },
   get lodServe() { return _lodServe; },   // serveAll master gate (chain-integrity census)
   get compactBall() {   // #97 shape probe: what the serve gate actually sees

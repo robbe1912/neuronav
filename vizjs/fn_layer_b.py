@@ -401,8 +401,9 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
         }
       }
       for (const x of grp) {
-        let m = stations.get(x.tk); if (!m) stations.set(x.tk, m = {});
-        m[x.role] = S;
+        // [#325 audit] m keys are x.role booleans coerced to "true"/
+        // "false" — enum domain, safe as {}.
+        let m = stations.get(x.tk); if (!m) stations.set(x.tk, m = {});        m[x.role] = S;
       }
       stList.push(S);
     }

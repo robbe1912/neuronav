@@ -108,6 +108,21 @@ def run_tests(port: int):
         check("stats line", bool(m), stats.strip()[:90])
         n_files = int(m.group(1)) if m else 0
 
+        # 1b. [#325] poison-name teeth: fn identifiers colliding with
+        # Object.prototype members (constructor/__proto__ fns in a dir
+        # named hasOwnProperty) must neither kill the boot (pre-fix:
+        # fnOf[e[1]].add TypeError -> black page) nor corrupt the
+        # name-keyed indexes. fnOfProbe is the __dbg teeth hook.
+        probe = page.evaluate("() => window.__dbg.fnOfProbe")
+        has_poison = page.evaluate(
+            "() => window.__dbg.nodes.some(n => (n.dir || '') === 'hasOwnProperty')")
+        if has_poison:
+            check("#325 poison fnOf counts (ctor 2 files / proto 1)",
+                  probe and probe["ctor"] == 2 and probe["proto"] == 1,
+                  str(probe))
+        else:
+            check("#325 fnOf probe present", bool(probe), str(probe))
+
         # 1c. boot-state LOD law: the default view gates the whole bus
         # tier — junction bollards and trunk conduits render ONLY when
         # their served boxes are resolvable (viewport-fraction floors).

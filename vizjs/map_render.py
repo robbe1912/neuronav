@@ -1380,8 +1380,9 @@ _JS_MAP_RENDER = r"""function mapRender() {
   // (source-row port -> dest-row port, clamped to the boxes). Consumed
   // ONLY by paint while the pair is pinned (AVI'12 tracing aid); corridor
   // ink itself is untouched - this adds fields, changes no bytes.
-  const pairRiders = {};
-  byPair.forEach((ws, pr) => {
+  // [#325 audit] byPair keys are separator-constructed "sf_df" pair
+  // strings — never a bare prototype name; safe as {}.
+  const pairRiders = {};  byPair.forEach((ws, pr) => {
     const riders = ws.filter(w => !indivSet.has(w));
     if (!riders.length) return;
     const paths = riders.map(w => {
