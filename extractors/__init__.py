@@ -66,6 +66,7 @@ EXTENSIONS: dict[str, object] = {
     ".js": js,
     ".jsx": js,
     ".mjs": js,
+    ".cjs": js,
     ".rs": rust,
     ".java": java,
 }
