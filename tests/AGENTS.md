@@ -18,7 +18,7 @@ named reason in the suite; new suites use the canonical style only
 check floor), not drift.
 CI (`.github/workflows/ci.yml`) runs thirty-three hermetic suites on ubuntu
 with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
-`test_pyhard`, `test_cpphard`, `test_jshard`, `test_autorescan`, `test_server_stdio`,
+`test_pyhard`, `test_cpphard`, `test_jshard`, `test_javahard`, `test_autorescan`, `test_server_stdio`,
 `test_searchtext`, `test_project_mode`, `test_baseindex`, `test_mwires`,
 `test_clusterinv`, `test_archrules`, `test_recall`, `test_embedprov`,
 `test_repomap`, `test_selfindex`, `test_explore`, `test_verifier`,
@@ -53,6 +53,7 @@ owner-side `test_chunking` and `test_truthful`.
 | `test_tshard` | TS extractor edge cases (grammar split, barrels, aliases, overloads, defaults, decorators, JSX, dead tiers, determinism; issue #293: vite-style React entry trio — exported PascalCase components + module-scope render roots — tsx re-read warn-once, package-walk no-package sentinel) | tree-sitter + tree-sitter-typescript wheels (hermetic fixtures) |
 | `test_jshard` | JavaScript extractor edge cases (issue #277: grammar split js/jsx + binding-name pin, CJS require/module.exports beside ESM with interop defaults, ESM/CJS barrels wiring-only with origin rebind, jsconfig aliases (good + malformed), React entry rules, mixed .ts+.js resolution both directions, extensionless .js-only specifier + shared `JS_EXTS`/`_PKG_SEEN` pins (issue #293), dead tiers + mention floor, registry/RAW_TEXT_EXTS/preset pins, determinism) | tree-sitter + tree-sitter-javascript/-typescript wheels (hermetic fixtures) |
 | `test_rusthard` | Rust extractor edge cases (pub-mod API closure, `pub use` rebinding, trait dispatch, test attrs, macros, dead tiers, sabotage leg, determinism) | tree-sitter + tree-sitter-rust wheels (hermetic fixtures) |
+| `test_javahard` | Java extractor edge cases (issue #335: package-path import resolution incl. static-member/wildcard + external loud-degrade, main(String[]) + JUnit entry rules, interface default-method dispatch + @Override review shielding, qualified `new` ctor edges + default-ctor name-level alive, dead tiers, double-build determinism, FAKE end-to-end) | tree-sitter + tree-sitter-java wheels (hermetic fixtures under `fixtures/java`, Maven-style layouts) |
 | `test_selfindex` | self-index structural invariants: likely-dead zero, handlers stay review, deterministic rebuild | chromadb import (structural only) |
 | `test_target_regression` | byte-stability over the target repo: floor pins + liveness canaries | chromadb import + the target repo configured in `config.json` |
 | `test_tsregression` | TS target byte-stability + liveness canaries + parse-coverage floors (per-command untracked profile); hermetic section pins the judge-C1 dead-file registry resolution (`.ts` flags like the `.gd` control) + the `# imports:` doc header | chromadb import + the TS target via `NEURONAV_CONFIG` |
