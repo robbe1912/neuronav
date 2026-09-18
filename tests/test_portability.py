@@ -14,7 +14,10 @@
 #       channel silently disabled itself on the first non-ASCII path;
 #   (3) the nav CLI reconfigures stdout/stderr to UTF-8 at entry, so a
 #       direct `python nav.py search` piped through an ASCII/cp1252
-#       console prints hit paths instead of raising UnicodeEncodeError.
+#       console prints hit paths instead of raising UnicodeEncodeError;
+#   (4) trailing argv on a no-argument subcommand is rejected loudly
+#       (issue #332): `nav.py rescan --config X` must never fall to the
+#       pure-defaults walk that writes <cwd>/.neuronav.
 
 import json
 import os
@@ -289,6 +292,36 @@ def main() -> None:
     finally:
         nav.client = _real_client298
     shutil.rmtree(_d298, ignore_errors=True)
+
+    # ---- (4) trailing-argv rejection (issue #332): `rescan --config X`
+    # used to silently run the PURE-DEFAULTS rescan — walking the cwd
+    # and writing <cwd>/.neuronav (the #91 wipe-door class reachable by
+    # an argument-order slip). It must die loudly naming the token and
+    # the global-prefix form, with no store created by the failed call.
+    _d332 = TMP / "plain332"
+    _d332.mkdir()
+    (_d332 / "victim.py").write_text("x = 1\n", encoding="utf-8")
+    _r332 = run_child(
+        [PY, "-X", "utf8", str(REPO / "nav.py"),
+         "rescan", "--config", str(CFG)],
+        cwd=_d332,
+    )
+    check("#332 trailing --config: rc!=0, not a silent defaults run",
+          _r332.returncode != 0, f"rc={_r332.returncode}")
+    check("#332 trailing --config: names token + global-prefix form",
+          "--config" in _r332.stderr
+          and "global prefix" in _r332.stderr
+          and "nav.py --config <path> rescan" in _r332.stderr,
+          _r332.stderr.strip()[:120])
+    check("#332 trailing --config: no <cwd>/.neuronav store created",
+          not (_d332 / ".neuronav").exists(), str(_d332 / ".neuronav"))
+    _ok332 = run_child(
+        [PY, "-X", "utf8", str(REPO / "nav.py"),
+         "--config", str(CFG), "count"],
+        cwd=_d332,
+    )
+    check("#332 correct global-prefix form still runs",
+          _ok332.returncode == 0, _ok332.stderr.strip()[:100])
 
     finish()
 

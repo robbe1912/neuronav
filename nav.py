@@ -1577,6 +1577,27 @@ def import_base() -> dict[str, int | str]:
         return {"imported": len(ids), "manifest_count": int(manifest.get("count", 0)),
                 "exported_at": str(manifest.get("exported_at", ""))}
 
+
+_NO_ARG_COMMANDS = ("rescan", "count", "export-base", "import-base",
+                    "crosstalk", "drop")  # `search` alone takes free text
+
+
+def _reject_trailing(cmd: str, extra: list[str]) -> None:
+    """Loud rejection of unconsumed trailing argv (issue #332): the
+    no-argument subcommands used to ignore extra argv silently, so
+    `nav.py rescan --config X` ran the PURE-DEFAULTS rescan — walking
+    the cwd and writing <cwd>/.neuronav, the #91 wipe-door class
+    reachable by an argument-order slip. Name the token and the correct
+    global-prefix form instead; no positional tolerance, no fallback."""
+    print(
+        f"nav.py {cmd}: unrecognized argument(s): {' '.join(extra)}\n"
+        "`--config <path>` is a global prefix, not a trailing flag — "
+        f"use: nav.py --config <path> {cmd}",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
 def _cli(argv: list[str] | None = None) -> None:
     """CLI dispatch (nav.py <cmd>); argv override for in-process tests (#298)."""
     # issue #119: a direct run piped through a cp1252/ascii console raises
@@ -1603,6 +1624,8 @@ def _cli(argv: list[str] | None = None) -> None:
         use_config(cfg_file)
         argv = argv[2:]
     cmd = argv[0] if argv else "rescan"
+    if cmd in _NO_ARG_COMMANDS and len(argv) > 1:  # issue #332
+        _reject_trailing(cmd, argv[1:])
     if cmd == "rescan":
         t0 = time.perf_counter()
         s = rescan()
