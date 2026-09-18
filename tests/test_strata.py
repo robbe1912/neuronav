@@ -172,18 +172,19 @@ def main():
         _L._RELAX_BLOCK = orig_blk
     # byte pin: nodes/links summary + banner — kept local
 
-    # ---- section 9: sparse-path digest pin (issue #309) --------------------
+    # ---- section 9: sparse-path same-machine determinism (issue #309) -----
     # The dense kcoef matrix is gated to the n <= 2048 branch; this leg
     # builds a sparse-path layout (n=2600, just past the cut, lean wiring)
-    # and pins its digest: any numeric drift in the sparse force path —
-    # including an accidental kcoef read — changes the hash. The pin is
-    # PER-PLATFORM: the sparse grid path floor-quantizes positions into
-    # cells whose size goes through libm pow, and msvcrt vs glibc differ
-    # ~1 ulp there, so a node near a cell boundary flips cells and the
-    # digest avalanches across machines while staying deterministic
-    # in-process (CI run 35278733357: 8a6fa788… on Linux vs 5a015fc8… on
-    # Windows). Unknown platforms fall back to a two-build determinism
-    # check so a new runner never fails on libm alone. ~98s.
+    # TWICE and requires byte-identical digests. The sparse path is NOT
+    # cross-machine digest-stable: cell size goes through libm pow and the
+    # floor-quantization flips boundary nodes between cells, so runner
+    # libm/BLAS backends avalanche the digest — CI observed 8a6fa788… on
+    # linux (run 35278733357, and again on main 49aa2a0's merge runner)
+    # AND 5a015fc8… on a DIFFERENT linux runner (run 35286411566, the
+    # win32 value): the variance axis is the runner's math backend, not
+    # the OS, so no platform pin can hold. The dense n<=2048
+    # path has no quantization thresholds and keeps its absolute byte pins
+    # above. In-process identity is the portable invariant. ~2x98s.
     N9 = 2600
     import random as _random9
     rng9 = _random9.Random(5)
@@ -203,20 +204,11 @@ def main():
     out9 = layout_fn(N9, links9, sims9, cid9, hot=hot9)
     h9 = hashlib.sha256(
         json.dumps(out9, separators=(",", ":")).encode()).hexdigest()
-    _sparse_pins = {
-        "win32": "5a015fc88f7270fc0e27d965b06a2ec1553ad427bd952fad2bf49e57b8a3aea4",
-        "linux": "8a6fa788ec0ddf5492e9645a668e21d7611424ce71411a348c0e145e5046263c",
-    }
-    pin9 = _sparse_pins.get(sys.platform)
-    if pin9 is not None:
-        check("sparse-path n=2600 digest pinned per-platform (#309)",
-              h9 == pin9, h9)
-    else:
-        out9b = layout_fn(N9, links9, sims9, cid9, hot=hot9)
-        h9b = hashlib.sha256(
-            json.dumps(out9b, separators=(",", ":")).encode()).hexdigest()
-        check("sparse-path n=2600 deterministic on unlisted platform (#309)",
-              h9 == h9b, h9)
+    out9b = layout_fn(N9, links9, sims9, cid9, hot=hot9)
+    h9b = hashlib.sha256(
+        json.dumps(out9b, separators=(",", ":")).encode()).hexdigest()
+    check("sparse-path n=2600 digest is same-machine deterministic (#309)",
+          h9 == h9b, f"{h9} vs {h9b}")
     print(f"\n{N} nodes · {len(links)} links · {len(FAILURES)} failure(s)")
     if FAILURES:
         print("FAILED:", ", ".join(FAILURES))
