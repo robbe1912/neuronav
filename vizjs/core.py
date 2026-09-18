@@ -73,8 +73,12 @@ links.forEach(l => {
 const outDeg = adjOut.map(a => new Set(a).size);
 const inDeg = adjIn.map(a => new Set(a).size);
 // fn-name index for search seeding: fn name -> Set(owning/calling files)
-const fnOf = {};
-fedges.forEach(e => {
+// [#325] fn NAME keys are arbitrary repo data: a fn literally named
+// constructor (minified bundles) or __proto__ makes fnOf[name] resolve
+// an inherited Object.prototype member on a plain {} — truthy Function
+// -> .add TypeError kills the whole render (black page). Null-proto
+// object: name keys can never hit the prototype chain.
+const fnOf = Object.create(null);fedges.forEach(e => {
   (fnOf[e[1]] = fnOf[e[1]] || new Set()).add(e[0]);
   (fnOf[e[3]] = fnOf[e[3]] || new Set()).add(e[2]);
 });
@@ -361,8 +365,8 @@ const hot = DATA.hot || null;
 // the "groups" toggle recolors nodes, halos and the legend by supergroup.
 // Absent (no scipy/embeddings) → button hidden, nothing else changes.
 const groups = DATA.groups || null;
-const gNames = {};
-if (groups) groups.forEach(g => { gNames[g.id] = g.label; });
+// [#325 audit] int g.id keys — ints can't hit prototype props; safe as {}.
+const gNames = {};if (groups) groups.forEach(g => { gNames[g.id] = g.label; });
 let groupsMode = false;
 // frozen baked layout: positions were settled offline in Python (seeded,
 // deterministic) — the browser only renders. A missing DATA.pos means the
@@ -620,8 +624,8 @@ function refreshCollapse() {
     supMesh.count = 0; supMesh.visible = false;
     return;
   }
-  const byC = {};
-  for (let i = 0; i < N; i++) {
+  // [#325 audit] nodes[i].cluster int keys — safe as {}.
+  const byC = {};  for (let i = 0; i < N; i++) {
     if (alphaTgt[i] <= 0.05) continue;   // "visible" = would render under current filters/focus
     const c = nodes[i].cluster;
     if (c < 0) continue;
