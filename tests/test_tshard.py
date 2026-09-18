@@ -296,6 +296,27 @@ def _pin_dead_share_hook() -> None:
 
 _pin_dead_share_hook()
 
+# fixture 15: file-based routing (#328) — expo-router `app/**` and Next
+# `pages/**` mount route files by convention, so an anonymous-default
+# route (and its exclusive deps) is an entry, never a dead candidate
+check("f28 anon-default route under app/ is an entry",
+      alive("app/index.tsx", "default"))
+check("f28 the route's exclusive lowercase helper revives",
+      alive("lib/route_row.ts", "renderRow"))
+check("f28 pages/ route is an entry", alive("pages/about.tsx", "default"))
+check("f28 app/(group)/ route is an entry",
+      alive("app/(g)/profile.tsx", "default"))
+check("f28 lowercase orphan OUTSIDE routing roots stays dead",
+      tier("orphan_anon.ts", "renderAlone") == "likely",
+      str(tier("orphan_anon.ts", "renderAlone")))
+_routed = sorted(
+    p.relative_to(FIX).as_posix()
+    for root in ("app", "pages") for p in (FIX / root).rglob("*")
+    if p.is_file())
+check("f28 routing-root family is exactly the #328 fixture set",
+      _routed == ["app/(g)/profile.tsx", "app/index.tsx", "pages/about.tsx"],
+      str(_routed))
+
 # suite-level pins
 _ts_rows = [(p, n) for (p, n) in DEAD if p.endswith((".ts", ".tsx"))]
 _alive_ts = [f"{rel}::{nm}" for rel, fs in g.files.items()

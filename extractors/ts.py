@@ -922,7 +922,26 @@ def _entry_components(fs: FileSym, ctx) -> Iterator[str]:
     yield from entry_keys(fs, sorted(fs.entry_hints))
 
 
-ENTRY_RULES = (_entry_tests, _entry_package, _entry_components)
+def _entry_file_routes(fs: FileSym, ctx) -> Iterator[str]:
+    """File-based routing (#328): expo-router `app/**` and Next `pages/**`
+    mount route files by convention — no import points at them, so an
+    anonymous-default route trends dead alongside its exclusive deps
+    (a named/PascalCase default is already alive via the component rule).
+    A file DIRECTLY under a top-level routing root — or one `(group)`
+    segment inside `app/` — is an entry; imports revive via the
+    reachability walk. Top-level only, deliberately conservative; no
+    config knob."""
+    if fs.ext not in TS_EXTS:
+        return
+    parts = fs.path.split("/")
+    routed = (len(parts) == 2 and parts[0] in ("app", "pages")) or (
+        len(parts) == 3 and parts[0] == "app"
+        and parts[1].startswith("(") and parts[1].endswith(")"))
+    if routed:
+        yield from entry_keys(fs, sorted(fs.funcs))
+
+
+ENTRY_RULES = (_entry_tests, _entry_package, _entry_components, _entry_file_routes)
 
 
 # ---- facts + call scanning (§1.5) ---------------------------------------------------
