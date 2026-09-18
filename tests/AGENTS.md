@@ -1,6 +1,6 @@
 # AGENTS.md — tests/
 
-Forty-five self-contained suites. Each is a standalone script — no pytest — run in
+Forty-six self-contained suites. Each is a standalone script — no pytest — run in
 its own process:
 
 ```
@@ -16,7 +16,7 @@ named reason in the suite; new suites use the canonical style only
 (issue #301). The browser suites ride `tests/_page_harness.py`'s
 `CheckLog` instead — a different finish contract (the #123 executed
 check floor), not drift.
-CI (`.github/workflows/ci.yml`) runs thirty-five hermetic suites on ubuntu
+CI (`.github/workflows/ci.yml`) runs thirty-six hermetic suites on ubuntu
 with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
 `test_pyhard`, `test_cpphard`, `test_jshard`, `test_gohard`, `test_javahard`, `test_autorescan`, `test_server_stdio`,
 `test_searchtext`, `test_project_mode`, `test_baseindex`, `test_mwires`,
@@ -25,7 +25,7 @@ with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
 `test_bench`, `test_bakeint`, `test_portability`, `test_bytelaws`,
 `test_walkguard`, `test_langsep`, `test_delegates`, `test_qa_smoke`,
 `test_bootgate`, `test_bootrecovery`, `test_onboardprogress`,
-`test_chromabounds`, `test_impact`, `test_packaging`) plus a `viz` job that builds
+`test_chromabounds`, `test_csharphard`, `test_impact`, `test_packaging`) plus a `viz` job that builds
 frozen synthetic corpus (`tests/vizcorpus_build.py`) and runs `test_viz`
 against its hermetic store in a real browser (issue #100), then re-runs
 `test_qa_smoke` there so its playwright battery leg executes (the suites
@@ -55,6 +55,7 @@ owner-side `test_chunking` and `test_truthful`.
 | `test_rusthard` | Rust extractor edge cases (pub-mod API closure, `pub use` rebinding, trait dispatch, test attrs, macros, dead tiers, sabotage leg, determinism) | tree-sitter + tree-sitter-rust wheels (hermetic fixtures) |
 | `test_gohard` | Go extractor edge cases (go.mod module-prefix imports + loud no-go.mod degrade, method receivers, interface-satisfaction mirroring, `_test.go` entry rules, main/init entries, String/Error std-interface shields, dead tiers, sabotage leg, determinism; issue #334) | tree-sitter + tree-sitter-go wheels (hermetic fixtures) |
 | `test_javahard` | Java extractor edge cases (issue #335: package-path import resolution incl. static-member/wildcard + external loud-degrade, main(String[]) + JUnit entry rules, interface default-method dispatch + @Override review shielding, qualified `new` ctor edges + default-ctor name-level alive, dead tiers, double-build determinism, FAKE end-to-end) | tree-sitter + tree-sitter-java wheels (hermetic fixtures under `fixtures/java`, Maven-style layouts) |
+| `test_csharphard` | C# extractor edge cases (issue #336): grammar wheel smoke (records/patterns/#if), partial-class declaration merge, Unity MonoBehaviour lifecycle entry roots (Awake/Start/Update/… mirroring the Godot `_ready` rooting), `[Test]`/`[TestMethod]`/`[Fact]` entry hints, static-Main rule, namespace-qualified call resolution (type index + namespace-prefix walk), this-writes, field/property members with types, expression-bodied + ctor bodies, #if-preproc member descent, enum-only wiring-only file, exact dead-tier surface, determinism double-run; pre-fix guard FAILs cleanly when the extractor is absent | tree-sitter + tree-sitter-c-sharp wheels (hermetic fixtures) |
 | `test_selfindex` | self-index structural invariants: likely-dead zero, handlers stay review, deterministic rebuild | chromadb import (structural only) |
 | `test_target_regression` | byte-stability over the target repo: floor pins + liveness canaries | chromadb import + the target repo configured in `config.json` |
 | `test_tsregression` | TS target byte-stability + liveness canaries + parse-coverage floors (per-command untracked profile); hermetic section pins the judge-C1 dead-file registry resolution (`.ts` flags like the `.gd` control) + the `# imports:` doc header | chromadb import + the TS target via `NEURONAV_CONFIG` |
