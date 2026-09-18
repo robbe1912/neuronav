@@ -209,6 +209,44 @@ def main():
         json.dumps(out9b, separators=(",", ":")).encode()).hexdigest()
     check("sparse-path n=2600 digest is same-machine deterministic (#309)",
           h9 == h9b, f"{h9} vs {h9b}")
+
+    # 10. source contract: every kcoef reference in _layout must sit inside
+    #     an `n <= 2048` dense branch — the sparse path must never read the
+    #     N×N matrix (#309's accident class). The §9 digest identity is the
+    #     teeth for NONdeterminism only: deterministic drift (an ungated
+    #     construction, a stray sparse read) shifts both runs identically
+    #     and passes silently (#322) — this leg is the guard that class
+    #     cannot dodge. AST, not grep: the explanatory comments at
+    #     layout.py:208-210 mention kcoef and a text scan would
+    #     false-positive on them.
+    def _kcoef_sparse_lines(src: str) -> list[int]:
+        tree = _ast.parse(src)
+        fn = next(n for n in _ast.walk(tree)
+                  if isinstance(n, _ast.FunctionDef) and n.name == "_layout")
+        guarded: set[int] = set()
+        for ifn in _ast.walk(fn):
+            if not isinstance(ifn, _ast.If):
+                continue
+            t = ifn.test
+            if (isinstance(t, _ast.Compare) and isinstance(t.left, _ast.Name)
+                    and t.left.id == "n" and len(t.ops) == 1
+                    and isinstance(t.ops[0], _ast.LtE)
+                    and len(t.comparators) == 1
+                    and isinstance(t.comparators[0], _ast.Constant)
+                    and t.comparators[0].value == 2048):
+                guarded.update(id(x) for x in _ast.walk(ifn))
+        return [x.lineno for x in _ast.walk(fn)
+                if isinstance(x, _ast.Name) and x.id == "kcoef"
+                and id(x) not in guarded]
+
+    check("kcoef referenced only inside n<=2048 dense branches (#322)",
+          not _kcoef_sparse_lines((ROOT / "layout.py").read_text(
+              encoding="utf-8")),
+          str(_kcoef_sparse_lines((ROOT / "layout.py").read_text(
+              encoding="utf-8"))))
+    check("kcoef contract bites: a bare read outside the gate is flagged",
+          _kcoef_sparse_lines("def _layout(n):\n    return kcoef\n") == [2],
+          "synthetic violation not flagged")
     print(f"\n{N} nodes · {len(links)} links · {len(FAILURES)} failure(s)")
     if FAILURES:
         print("FAILED:", ", ".join(FAILURES))
