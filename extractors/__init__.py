@@ -22,6 +22,7 @@ from extractors import java
 from extractors import js
 from extractors import python
 from extractors import rust
+from extractors import php
 from extractors import ts
 # Re-export surface = consumed surface (#200): every name below has a
 # consumer outside extractors/ (graph.py, clusters.py, nav.py, server.py,
@@ -75,6 +76,7 @@ EXTENSIONS: dict[str, object] = {
     ".java": java,
     ".c": c,
     ".cs": csharp,
+    ".php": php,
 }
 
 # issue #240: language presets + the raw-text walk suffixes — language
@@ -99,6 +101,7 @@ PRESETS: dict[str, tuple[str, ...]] = {
     "java": (".java", ".json", ".md"),
     "c": (".c", ".h", ".json", ".md"),
     "csharp": (".cs", ".json", ".md"),
+    "php": (".php", ".json", ".md"),
 }
 
 def sync_parseable(suffix: str) -> bool:
@@ -143,6 +146,7 @@ BUILD_SEQUENCE = (
     go.import_liveness_sweep,
     c.pair_headers,
     c.import_liveness_sweep,
+    php.import_liveness_sweep,
 )
 
 WIRE_SEQUENCE = (
