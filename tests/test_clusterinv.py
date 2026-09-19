@@ -301,7 +301,7 @@ check(
 
 
 # ------------------------ 7. cluster derivation rides the crosstalk rows (#267)
-# method + confidence already ride nav.clusters() output; crosstalk must
+# method + confidence already ride navstore.clusters() output; crosstalk must
 # surface them so consumers can discount filename/stem-derived clusters.
 rows_sem = {r["label"]: r for r in rep_sem["by_cluster"]}
 check(

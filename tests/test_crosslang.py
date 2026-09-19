@@ -34,7 +34,7 @@ check("py fns re-sync all cached",
 
 # 0c. per-fn cache edges (.team_scratch is excluded from the file walk,
 # so the scratch file never enters any suite's corpus)
-import nav  # noqa: E402
+import navconfig, navstore
 
 def _fn_cache_edges() -> None:
     # nested helpers stay invisible to the self-index dead-scan (its
@@ -75,13 +75,13 @@ def _fn_cache_edges() -> None:
         check("cache warm scratch all cached",
               r3["fns_upserted"] == 0 and r3["fns_cached"] == 3, str(r3))
         # pure line shift must not call the embedder at all (vector reuse)
-        real_embed = nav.embed
+        real_embed = navstore.embed
 
         def _boom(texts):
             raise AssertionError(
                 "embedder called during pure line-move sync")
 
-        nav.embed = _boom
+        navstore.embed = _boom
         try:
             _write("# one more shift line\n"
                    "# header shifts alpha's line; beta's body changes; gamma is new\n"
@@ -100,7 +100,7 @@ def _fn_cache_edges() -> None:
             check("line-shift-only sync embeds nothing",
                   r4["fns_upserted"] == 3 and r4["fns_cached"] == 0, str(r4))
         finally:
-            nav.embed = real_embed
+            navstore.embed = real_embed
         scratch.unlink()
         r5 = graph.sync_functions([], [scratch_rel])
         check("cache deleted file purges fns",
@@ -139,7 +139,7 @@ check("py dead_code runs", 0 < dead["total"] < len(g.edges),
 import json  # noqa: E402
 import tempfile  # noqa: E402
 
-import nav  # noqa: E402
+import navconfig, navstore
 
 _toy = Path(tempfile.mkdtemp(prefix="neuronav_crosslang_"))
 (_toy / "widget.h").write_text(
@@ -167,7 +167,7 @@ _cfg.write_text(json.dumps({
     "extensions": [".py", ".h", ".cpp"],
     "exclude_dirs": [],
 }))
-nav._apply_config(_cfg)
+navconfig._apply_config(_cfg)
 g2 = graph.get_graph(rebuild=True)
 check("cpp registry integration", g2.files["widget.cpp"].class_name == "Widget"
       and g2.class_map.get("Widget") == "widget.h",

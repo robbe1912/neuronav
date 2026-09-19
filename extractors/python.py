@@ -73,7 +73,7 @@ def _module_rel(mod: str, cur: Path) -> str:
     mod = mod.strip()
     if not mod:
         return ""
-    import nav
+    import navconfig
 
     parts = mod.lstrip(".").split(".")
     dots = len(mod) - len(mod.lstrip("."))
@@ -83,19 +83,19 @@ def _module_rel(mod: str, cur: Path) -> str:
             base = base.parent
         cand = base.joinpath(*parts)
     else:
-        # root-relative package path first (nav.ROOT is imported by the
+        # root-relative package path first (navconfig.ROOT is imported by the
         # time graph.py drives parsing; fall back to the file's own dir)
-        cand = nav.ROOT.joinpath(*parts)
+        cand = navconfig.ROOT.joinpath(*parts)
         if not cand.with_suffix(".py").is_file() and not (cand / "__init__.py").is_file():
             cand = cur.parent.joinpath(*parts)
     if cand.with_suffix(".py").is_file():
         try:
-            return cand.with_suffix(".py").relative_to(nav.ROOT).as_posix()
+            return cand.with_suffix(".py").relative_to(navconfig.ROOT).as_posix()
         except ValueError:
             return ""  # outside the indexed root — not a repo module
     if (cand / "__init__.py").is_file():
         try:
-            return (cand / "__init__.py").relative_to(nav.ROOT).as_posix()
+            return (cand / "__init__.py").relative_to(navconfig.ROOT).as_posix()
         except ValueError:
             return ""
     return ""
@@ -132,9 +132,9 @@ def _has_exact(relpath: str) -> bool:
     `is_file()` alone would bless `Vec2.py` when only `vec2.py` exists - the
     graph then records a module id no file has. Compare against the actual
     directory listing instead."""
-    import nav
+    import navconfig
 
-    p = nav.ROOT / relpath
+    p = navconfig.ROOT / relpath
     if not p.is_file():
         return False
     return p.name in {e.name for e in p.parent.iterdir()}
@@ -420,7 +420,7 @@ def _scan_io(body: str, params: list) -> tuple:
 
 def _bind_module_var(asg: ast.Assign, fs: FileSym, classes: dict[str, set[str]]) -> None:
     """Module-level assignment facts:
-    - value ref: `nav.embed = _counting` / `HOOK = helper` hands a file
+    - value ref: `navstore.embed = _counting` / `HOOK = helper` hands a file
       func to another namespace — a genuine use with no call site
     - receiver bind: `LOG = CheckLog()` / `handler = Stub` makes the
       target a typed receiver for every body scan (module vars are

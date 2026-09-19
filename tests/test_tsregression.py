@@ -34,7 +34,7 @@ os.environ["NEURONAV_CONFIG"] = str(CFG)
 from bake import files_model  # noqa: E402
 from extractors import registry_for  # noqa: E402
 import graph  # noqa: E402
-import nav  # noqa: E402
+import navconfig, navindex, navstore
 
 
 from harness import check, finish
@@ -103,24 +103,24 @@ check("zero-callable .d.ts stays wiring-only and out of the dead tier",
       f" funcs={len(g.files[typ].funcs) if typ in g.files else '-'}")
 
 py_rel = "py_importer.py"
-doc = graph.file_doc(nav.ROOT / py_rel, py_rel,
-                     nav._read_text(nav.ROOT / py_rel), nav.FILE_DOC_CAST)
+doc = graph.file_doc(navconfig.ROOT / py_rel, py_rel,
+                     navindex._read_text(navconfig.ROOT / py_rel), navconfig.FILE_DOC_CAST)
 imp_lines = [ln for ln in doc.splitlines() if ln.startswith("# imports:")]
 check(".py doc head carries the resolved imports line",
       bool(imp_lines) and any("py_helper" in ln for ln in imp_lines),
       repr(imp_lines[:1]))
 check("shaped .py doc stays under the embed budget",
-      len(doc) <= nav.MAX_EMBED_CHARS, f"{len(doc)} <= {nav.MAX_EMBED_CHARS}")
+      len(doc) <= navstore.MAX_EMBED_CHARS, f"{len(doc)} <= {navstore.MAX_EMBED_CHARS}")
 
 ts_rel = "caller.ts"
 if ts_rel in g.files:
-    doc = graph.file_doc(nav.ROOT / ts_rel, ts_rel,
-                         nav._read_text(nav.ROOT / ts_rel), nav.FILE_DOC_CAST)
+    doc = graph.file_doc(navconfig.ROOT / ts_rel, ts_rel,
+                         navindex._read_text(navconfig.ROOT / ts_rel), navconfig.FILE_DOC_CAST)
     imp_lines = [ln for ln in doc.splitlines() if ln.startswith("# imports:")]
     check(".ts doc head carries the resolved imports line",
           any("deadshare" in ln for ln in imp_lines), repr(imp_lines[:1]))
     check("shaped .ts doc stays under the embed budget",
-          len(doc) <= nav.MAX_EMBED_CHARS, f"{len(doc)} <= {nav.MAX_EMBED_CHARS}")
+          len(doc) <= navstore.MAX_EMBED_CHARS, f"{len(doc)} <= {navstore.MAX_EMBED_CHARS}")
 else:
     check(".ts fixture parsed by the registry (extractors/ts.py)", False,
           "caller.ts absent from the graph — TS extractor not registered")
@@ -142,15 +142,15 @@ elif prof is None:
     print("SKIP profile legs — no NEURONAV_CONFIG profile and no default "
           "config.json (issue #97: a regression target is named, never assumed)")
 else:
-    nav._apply_config(prof)
+    navconfig._apply_config(prof)
     cfg = json.loads(prof.read_text(encoding="utf-8"))
     parse_floor = float(cfg.get("ts_regression", {}).get("parse_floor", 0.9))
     ts_exts = getattr(ts_mod, "TS_EXTS")
     g = graph.get_graph(rebuild=True)
-    walked = [p for p in nav.iter_files() if p.suffix in ts_exts]
+    walked = [p for p in navindex.iter_files() if p.suffix in ts_exts]
     indexed = {rel for rel, fs in g.files.items() if fs.ext in ts_exts}
     check("profile walks a TS surface", len(walked) > 0,
-          f"{len(walked)} walked, extensions={nav.EXTS}")
+          f"{len(walked)} walked, extensions={navconfig.EXTS}")
     cov = len(indexed) / len(walked) if walked else 0.0
     check("profile parse coverage >= floor", cov >= parse_floor,
           f"{len(indexed)}/{len(walked)} = {cov:.4f} >= {parse_floor}")
@@ -183,11 +183,11 @@ else:
         if fs.ext not in ts_exts or not fs.funcs or not (fs.imported_modules or fs.from_imports):
             continue
         n_docs += 1
-        doc = graph.file_doc(nav.ROOT / rel, rel,
-                             nav._read_text(nav.ROOT / rel), nav.FILE_DOC_CAST)
+        doc = graph.file_doc(navconfig.ROOT / rel, rel,
+                             navindex._read_text(navconfig.ROOT / rel), navconfig.FILE_DOC_CAST)
         if "\n# imports: " not in doc:
             bad_hdr.append(rel)
-        if len(doc) > nav.MAX_EMBED_CHARS:
+        if len(doc) > navstore.MAX_EMBED_CHARS:
             bad_cap.append(rel)
     check(".ts docs carry the imports header", n_docs > 0 and not bad_hdr,
           f"{n_docs} docs, missing on {len(bad_hdr)}: {bad_hdr[:3]}")

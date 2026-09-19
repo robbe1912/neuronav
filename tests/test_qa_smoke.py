@@ -288,10 +288,10 @@ def _build_corpus(td):
         "extensions": [".gd"], "exclude_dirs": [".git"],
         "state_dir": "default"}), encoding="utf-8", newline="\n")
 
-    code = ("import nav, viz\n"
-            "nav.rescan()\n"
+    code = ("import nav, navconfig, navstore, navindex, viz\n"
+            "navindex.rescan()\n"
             "viz.generate()\n"
-            "print('files', nav.count())\n")
+            "print('files', navstore.count())\n")
     r = subprocess.run([PY, "-X", "utf8", "-c", code], cwd=str(ROOT),
                        env=_child_env(cfg), capture_output=True, text=True,
                        timeout=300)

@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT))
 if os.environ.get("NEURONAV_STRICT_DEFAULT") == "1" and os.environ.get("NEURONAV_CONFIG"):
     sys.exit("test_viz: NEURONAV_STRICT_DEFAULT=1 refuses an exported NEURONAV_CONFIG "
              f"({os.environ['NEURONAV_CONFIG']!r}) — unset one of the two")
-import nav  # noqa: E402  (the bake lives in the active config's state dir)
+import navconfig
 import viz  # noqa: E402  (determinism bake + SEM_AFF_CAP for the #279 legs)
 
 LOG = CheckLog()
@@ -76,10 +76,10 @@ def main():
     # read-only — it measures the active config's bake, never the
     # template, and a bake older than viz.py would green-light
     # yesterday's product. Loud refusal, remedy named, no auto-bake.
-    require_fresh_bake(nav.STATE_DIR)
+    require_fresh_bake(navconfig.STATE_DIR)
     # bake is per-project now — the shared harness serves the active
     # config's state dir on an ephemeral loopback port (#132)
-    httpd, port = serve(nav.STATE_DIR)
+    httpd, port = serve(navconfig.STATE_DIR)
     try:
         run_tests(port)
     finally:

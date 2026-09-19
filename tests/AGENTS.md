@@ -1,6 +1,6 @@
 # AGENTS.md — tests/
 
-Forty-six self-contained suites. Each is a standalone script — no pytest — run in
+Forty-seven self-contained suites. Each is a standalone script — no pytest — run in
 its own process:
 
 ```
@@ -25,7 +25,7 @@ with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
 `test_bench`, `test_bakeint`, `test_portability`, `test_bytelaws`,
 `test_walkguard`, `test_langsep`, `test_delegates`, `test_qa_smoke`,
 `test_bootgate`, `test_bootrecovery`, `test_onboardprogress`,
-`test_chromabounds`, `test_csharphard`, `test_impact`, `test_packaging`) plus a `viz` job that builds
+`test_chromabounds`, `test_csharphard`, `test_navsplit`, `test_impact`, `test_packaging`) plus a `viz` job that builds
 frozen synthetic corpus (`tests/vizcorpus_build.py`) and runs `test_viz`
 against its hermetic store in a real browser (issue #100), then re-runs
 `test_qa_smoke` there so its playwright battery leg executes (the suites
@@ -69,6 +69,7 @@ owner-side `test_chunking` and `test_truthful`.
 | `test_bootgate` | fast-handshake boot gate (issue #273): while the parent holds the store's cross-process write lock, `initialize` + `tools/list` must still answer; after release the boot thread completes (startup banner) and serves `repo_map`; server-under-test selectable via argv for pre-fix FAIL evidence | mcp + chromadb (hermetic temp fixture + config, `NEURONAV_EMBED_FAKE=1`) |
 | `test_bootrecovery` | boot recovery retry + bounded rescan (issue #292): a failed in-session recovery rolls the config re-bind back (nav globals + `NEURONAV_CONFIG` env + graph singleton + boot identity) so the `CONFIG_PATH` guard stays a retry latch, not a one-way brick; nav's lock-timeout `SystemExit` lands in the degraded prelude instead of escaping to the caller's thread; the explicit rescan tool aborts loudly within `LOCK_WAIT_S` under a held store lock | mcp + chromadb (hermetic temp root bound as the pure-defaults boot, `NEURONAV_EMBED_FAKE=1`; server-under-test selectable via argv for pre-fix FAIL evidence) |
 | `test_onboardprogress` | onboarding observability (issue #315): the first index build and the viz bake never read as a dead server — `neuronav://onboarding/status` resource advertised + readable mid-build, a progressToken'd rescan streams `notifications/progress`, visualize acks "bake accepted" immediately with the bake landing via the background baker, stale reads engage only past the grace window (`stale: true` banner), and a body SystemExit surfaces unwrapped from the async shell | mcp + chromadb (hermetic temp fixture + config, `NEURONAV_EMBED_FAKE=1`; server-under-test selectable via argv for pre-fix FAIL evidence) |
+| `test_navsplit` | nav split smokes (issue #344): the three leaves carry focused legs — config precedence + the rebind-propagation law (attribute reads propagate to every leaf after `use_config`), embed dims follow the live config, rescan walk dedupe, `config_scope` exact-restore across leaves, store-lock singleton identity across alternation, clusters memo identity, CLI trailing-argv rejection survival (#332), and the atomic-migration law itself (AST scan: zero `nav.X` attribute refs left in production modules; extractors stay nav-leaf-import-light) | hermetic scratch corpus + FAKE embeds |
 | `test_chromabounds` | bounded full-collection reads (issue #327): the four whole-store chroma gets (rescan existing-rows, re-stamp, base export, bake embeddings) page through `nav.col_get_all` under the caller's lock instead of one unfiltered `col.get()` that dies with InternalError "too many SQL variables" past the sqlite build's ceiling — teeth sized to the real ceiling (33k-row direct-add store rescans green; 32.7k just-under control), bounded read equals the unfiltered get id-sorted, base export stays byte-identical across two runs, re-stamp copy lands count-intact and sorted | chromadb import (hermetic temp fixture, `NEURONAV_EMBED_FAKE=1`; checkout-under-test selectable via `--nav-dir` argv for pre-fix FAIL evidence) |
 | `test_impact` | impact() transitive blast radius (issue #280): cycle termination, diamond single-count, honest depth caps with a counted past-the-cap frontier, direction asymmetry, entry-boundary annotation, byte-stable rendering, miss suggestions | mcp import (synthetic graphs; no index, no embeddings) |
 | `test_searchtext` | capped `search_text` tool (issue #68): file:line:row shape, deterministic order, 20-file/3-line caps with markers + totals, `files_only`, glob, graceful regex errors | mcp + chromadb (hermetic temp config, `NEURONAV_EMBED_FAKE=1`) |

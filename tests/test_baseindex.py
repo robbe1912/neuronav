@@ -65,7 +65,7 @@ os.environ["NEURONAV_CONFIG"] = str(CFG)
 os.environ.setdefault("NEURONAV_EMBED_FAKE", "1")
 sys.path.insert(0, str(HERE))
 
-import nav  # noqa: E402  (binds the temp config above)
+import navconfig, navindex, navstore
 
 
 
@@ -74,31 +74,31 @@ from harness import check, finish
 def base_files() -> dict[str, bytes]:
     return {
         p.name: p.read_bytes()
-        for p in sorted(nav.BASE_DIR.iterdir())
+        for p in sorted(navconfig.BASE_DIR.iterdir())
         if p.is_file()
     }
 
 
 def disk_shards() -> list[str]:
-    return sorted(p.name for p in nav.BASE_DIR.glob("shard-*.jsonl.gz"))
+    return sorted(p.name for p in navconfig.BASE_DIR.glob("shard-*.jsonl.gz"))
 
 
 def disk_manifest() -> dict:
     return json.loads(
-        (nav.BASE_DIR / nav.MANIFEST_NAME).read_text(encoding="utf-8")
+        (navconfig.BASE_DIR / navindex.MANIFEST_NAME).read_text(encoding="utf-8")
     )
 
 
 def try_export() -> tuple[dict, str]:
     try:
-        return nav.export_base(), ""
+        return navindex.export_base(), ""
     except OSError as e:
         return {}, f"{type(e).__name__}: {e}"
 
 
 # ---- (a) second-run idempotence ---------------------------------------------
-nav.rescan()
-m1 = nav.export_base()
+navindex.rescan()
+m1 = navindex.export_base()
 check("first export shape", m1["count"] == 4 and m1["shards"] == 1, str(m1))
 bytes1 = base_files()
 
@@ -121,7 +121,7 @@ if not err2:
 (TMP / "src" / "extra_thing.py").write_text(
     "def extra_thing_run(scale):\n    return scale * 99\n", encoding="utf-8"
 )
-nav.rescan()
+navindex.rescan()
 before = base_files()
 check("base carried shards entering the failure legs",
       any(n.startswith("shard-") for n in before), str(sorted(before)))
@@ -146,8 +146,8 @@ check("mid-write failure raises", bool(errA), errA)
 check("live base untouched after mid-write failure", base_files() == before,
       f"before={sorted(before)} after={sorted(base_files())}")
 check("mid-write debris staged outside the live base",
-      "tmp" not in [p.name for p in nav.BASE_DIR.iterdir()],
-      str([p.name for p in nav.BASE_DIR.iterdir()]))
+      "tmp" not in [p.name for p in navconfig.BASE_DIR.iterdir()],
+      str([p.name for p in navconfig.BASE_DIR.iterdir()]))
 
 # leg 2 — interrupt the commit: the live base must stay byte-identical
 # (rolled back), never a mix of two generations. Fires on a per-file
@@ -158,8 +158,8 @@ _os_replace = os.replace
 def _replace_boom(src, dst, *a, **k):
     dst = Path(dst)
     if (
-        dst == nav.BASE_DIR and Path(src).name != "base.prev-export"
-    ) or dst.name == nav.MANIFEST_NAME:
+        dst == navconfig.BASE_DIR and Path(src).name != "base.prev-export"
+    ) or dst.name == navindex.MANIFEST_NAME:
         raise OSError(13, "simulated commit failure (lock/permission)")
     return _os_replace(src, dst, *a, **k)
 
@@ -173,7 +173,7 @@ check("live base byte-identical after commit-phase interruption",
       f"before={sorted(before)} after={sorted(base_files())}")
 
 # retry heals: a clean run after the failures lands the new generation
-mR = nav.export_base()
+mR = navindex.export_base()
 check("retry after failures heals to the new generation",
       mR["count"] == 5 and disk_manifest() == mR and disk_shards() == ["shard-0000.jsonl.gz"],
       f"{mR} disk={disk_shards()}")
@@ -193,31 +193,31 @@ def _rmtree_noop(path, *a, **k):
 
 
 shutil.rmtree = _rmtree_noop
-mC = nav.export_base()
+mC = navindex.export_base()
 shutil.rmtree = _rmtree
 check("cleanup failure does not fail a committed export",
       mC["count"] == 5 and disk_manifest() == mC, str(mC))
 check("prev-generation debris tolerated for the next run",
-      (nav.BASE_DIR.parent / "base.prev-export").is_dir())
-nav.export_base()
+      (navconfig.BASE_DIR.parent / "base.prev-export").is_dir())
+navindex.export_base()
 check("next run self-heals the leftover debris",
-      not (nav.BASE_DIR.parent / "base.prev-export").exists())
+      not (navconfig.BASE_DIR.parent / "base.prev-export").exists())
 
 # ---- (d) stale-shard cleanup on a shrinking re-export ------------------------
-write_tree(5 + nav.SHARD_SIZE + 6)  # 2 full shards + remainder
-nav.rescan()
-m3 = nav.export_base()
+write_tree(5 + navindex.SHARD_SIZE + 6)  # 2 full shards + remainder
+navindex.rescan()
+m3 = navindex.export_base()
 check("grown export spans multiple shards",
       m3["shards"] == 2 and len(disk_shards()) == 2,
       f"{m3['shards']} shards, disk={disk_shards()}")
 
-for i in range(4, 5 + nav.SHARD_SIZE + 6):
+for i in range(4, 5 + navindex.SHARD_SIZE + 6):
     (TMP / "src" / f"mod{i:04d}_thing.py").unlink()
-shrink = nav.rescan()
-m4 = nav.export_base()
+shrink = navindex.rescan()
+m4 = navindex.export_base()
 check("shrink rescan purged the grown files",
-      shrink["deleted"] == nav.SHARD_SIZE + 7 and nav.count() == 5,
-      f"deleted={shrink['deleted']} count={nav.count()}")
+      shrink["deleted"] == navindex.SHARD_SIZE + 7 and navstore.count() == 5,
+      f"deleted={shrink['deleted']} count={navstore.count()}")
 check("stale shard removed, disk set matches manifest",
       disk_shards() == ["shard-0000.jsonl.gz"] and m4["shards"] == 1,
       f"disk={disk_shards()} manifest_shards={m4['shards']}")
@@ -235,14 +235,14 @@ CFG2.write_text(
     ),
     encoding="utf-8",
 )
-nav._apply_config(CFG2)  # selects the second config directly
-shutil.copytree(TMP / "state" / "base", nav.BASE_DIR)
+navconfig._apply_config(CFG2)  # selects the second config directly
+shutil.copytree(TMP / "state" / "base", navconfig.BASE_DIR)
 
-r = nav.import_base()
+r = navindex.import_base()
 check("fresh store imports every id",
       r.get("imported") == 5 and r.get("manifest_count") == 5, str(r))
-check("imported count matches the store", nav.count() == 5, str(nav.count()))
-r2 = nav.import_base()
+check("imported count matches the store", navstore.count() == 5, str(navstore.count()))
+r2 = navindex.import_base()
 check("non-empty store skips re-import",
       r2 == {"skipped": 5}, str(r2))
 
@@ -264,13 +264,13 @@ CFG3.write_text(
     ),
     encoding="utf-8",
 )
-nav._apply_config(CFG3)
-shutil.copytree(TMP / "state" / "base", nav.BASE_DIR)
+navconfig._apply_config(CFG3)
+shutil.copytree(TMP / "state" / "base", navconfig.BASE_DIR)
 
-r3 = nav.import_base()
+r3 = navindex.import_base()
 check("deleted id skipped on import",
       r3.get("imported") == 4 and r3.get("manifest_count") == 5, str(r3))
-check("store holds only surviving ids", nav.count() == 4, str(nav.count()))
+check("store holds only surviving ids", navstore.count() == 4, str(navstore.count()))
 
 # ---- (g) manifest model/dim mismatch guards (issue #124) --------------------
 # a base exported under another model (or dim) must refuse LOUDLY, naming
@@ -289,20 +289,20 @@ def fresh_base(state: str) -> None:
         ),
         encoding="utf-8",
     )
-    nav._apply_config(cfg)
-    if nav.BASE_DIR.is_dir():
-        shutil.rmtree(nav.BASE_DIR)
-    shutil.copytree(TMP / "state" / "base", nav.BASE_DIR)
+    navconfig._apply_config(cfg)
+    if navconfig.BASE_DIR.is_dir():
+        shutil.rmtree(navconfig.BASE_DIR)
+    shutil.copytree(TMP / "state" / "base", navconfig.BASE_DIR)
 
 
 def read_manifest() -> dict:
     return json.loads(
-        (nav.BASE_DIR / nav.MANIFEST_NAME).read_text(encoding="utf-8")
+        (navconfig.BASE_DIR / navindex.MANIFEST_NAME).read_text(encoding="utf-8")
     )
 
 
 def write_manifest(doc: dict) -> None:
-    (nav.BASE_DIR / nav.MANIFEST_NAME).write_text(
+    (navconfig.BASE_DIR / navindex.MANIFEST_NAME).write_text(
         json.dumps(doc, indent=2) + "\n", encoding="utf-8"
     )
 
@@ -313,7 +313,7 @@ def import_refuses(label: str, mutate, needles: list[str]) -> None:
     mutate(doc)
     write_manifest(doc)
     try:
-        res = nav.import_base()
+        res = navindex.import_base()
         check(label, False, f"no refusal — {res}")
     except RuntimeError as e:
         msg = str(e)
@@ -323,12 +323,12 @@ def import_refuses(label: str, mutate, needles: list[str]) -> None:
 import_refuses(
     "model-mismatch manifest refuses",
     lambda d: d.update(model="totally-other-model"),
-    ["base index model mismatch", "totally-other-model", nav.EMBED_MODEL],
+    ["base index model mismatch", "totally-other-model", navconfig.EMBED_MODEL],
 )
 import_refuses(
     "dim-mismatch manifest refuses",
-    lambda d: d.update(dim=nav.EMBED_DIM + 8),
-    ["base index model mismatch", str(nav.EMBED_DIM + 8)],
+    lambda d: d.update(dim=navconfig.EMBED_DIM + 8),
+    ["base index model mismatch", str(navconfig.EMBED_DIM + 8)],
 )
 
 finish()

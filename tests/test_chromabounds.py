@@ -42,7 +42,7 @@ CFG.write_text(
 os.environ["NEURONAV_CONFIG"] = str(CFG)
 os.environ["NEURONAV_EMBED_FAKE"] = "1"
 
-import nav  # noqa: E402  (binds the temp config above)
+import navconfig, navindex, navstore
 
 from harness import check, finish  # noqa: E402
 
@@ -84,9 +84,9 @@ def _mkstore(name: str, rows: int, tree_files: int = 1) -> Path:
         encoding="utf-8",
     )
     os.environ["NEURONAV_CONFIG"] = str(cfg)
-    nav.use_config(cfg)
-    col = nav._collection()
-    vec = [0.01 * (i + 1) for i in range(nav.EMBED_DIM)]
+    navconfig.use_config(cfg)
+    col = navstore._collection()
+    vec = [0.01 * (i + 1) for i in range(navconfig.EMBED_DIM)]
     BATCH = 2000
     for start in range(0, rows, BATCH):
         n = min(BATCH, rows - start)
@@ -101,13 +101,13 @@ def _mkstore(name: str, rows: int, tree_files: int = 1) -> Path:
 def main() -> None:
     # ---- leg A: the bounded helper exists, matches an unfiltered get,
     # and returns id-sorted rows regardless of insertion order ---------
-    have = hasattr(nav, "col_get_all") and hasattr(nav, "GET_CHUNK")
-    check("nav.col_get_all/GET_CHUNK exist (bounded reads, #327)", have,
+    have = hasattr(navstore, "col_get_all") and hasattr(navstore, "GET_CHUNK")
+    check("navstore.col_get_all/GET_CHUNK exist (bounded reads, #327)", have,
           "" if have else "nav module lacks the #327 bounded-read helper")
     if have:
         _mkstore("small", 1300)   # 2 full chunks + 276: crosses the page
-        col = nav._collection()   # boundary both ways
-        got = nav.col_get_all(col, ["documents", "metadatas"], "leg A")
+        col = navstore._collection()   # boundary both ways
+        got = navstore.col_get_all(col, ["documents", "metadatas"], "leg A")
         raw = col.get(include=["documents", "metadatas"])
         raw_rows = sorted(zip(raw["ids"], raw["documents"]),
                           key=lambda r: r[0])
@@ -132,7 +132,7 @@ def main() -> None:
         f"rc={r.returncode} stderr tail={((r.stderr or '')[-300:])!r}",
     )
     if r.returncode == 0:
-        col = nav._collection()
+        col = navstore._collection()
         check("post-rescan store holds just the walked file",
               col.count() == 1, f"count={col.count()}")
 
@@ -155,9 +155,9 @@ def main() -> None:
           f"rc={r.returncode}")
 
     def _digest_base() -> str:
-        nav.use_config(cfg_d)
-        nav.export_base()
-        base = nav.BASE_DIR
+        navconfig.use_config(cfg_d)
+        navindex.export_base()
+        base = navconfig.BASE_DIR
         h = hashlib.sha256()
         files = sorted(p for p in base.rglob("*") if p.is_file())
         for p in files:
@@ -173,9 +173,9 @@ def main() -> None:
     # 600-row (2-chunk) store lands count-intact and id-sorted --------
     if have:
         _mkstore("restamp", 600)
-        col = nav._collection()
-        fresh = nav._restamp(col, embed_mode="fake", doc_shape="raw")
-        got = nav.col_get_all(fresh, ["metadatas"], "leg E")
+        col = navstore._collection()
+        fresh = navstore._restamp(col, embed_mode="fake", doc_shape="raw")
+        got = navstore.col_get_all(fresh, ["metadatas"], "leg E")
         check(
             "re-stamp via bounded read: 600 rows copied, sorted, stamped",
             fresh.count() == 600

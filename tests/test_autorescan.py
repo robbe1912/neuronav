@@ -58,7 +58,7 @@ os.environ["NEURONAV_CONFIG"] = str(CFG)
 os.environ.setdefault("NEURONAV_EMBED_FAKE", "1")
 sys.path.insert(0, str(HERE))
 
-import nav  # noqa: E402  (binds the temp config above)
+import navconfig, navindex, navstore
 import server  # noqa: E402
 
 
@@ -67,26 +67,26 @@ from harness import check, finish
 
 # The stdio sections below spawn server.py subprocesses, which read the
 # real 3s TTL from nav.py — capture it before the in-process speedup.
-REAL_TTL_WAIT = nav.STAT_TTL_S + 0.5
+REAL_TTL_WAIT = navindex.STAT_TTL_S + 0.5
 # Speed the in-process sections up: the TTL logic is what is pinned, not
 # the 3s wall-clock default.
-nav.STAT_TTL_S = 0.6
+navindex.STAT_TTL_S = 0.6
 TTL_WAIT = 0.9
 
 
 def main() -> None:
     # ---- bootstrap + fingerprint contract ---------------------------------
-    stats0 = nav.rescan()
-    nav.stat_mark_synced()
+    stats0 = navindex.rescan()
+    navindex.stat_mark_synced()
     check(
         "bootstrap: 3 files indexed",
-        stats0["added"] == 3 and nav.count() == 3,
+        stats0["added"] == 3 and navstore.count() == 3,
         str(stats0),
     )
-    fp = nav.stat_fingerprint()
+    fp = navindex.stat_fingerprint()
     check(
         "fingerprint keys == iter_files ids (same walk rules)",
-        set(fp) == {nav.file_id(p) for p in nav.iter_files()},
+        set(fp) == {navindex.file_id(p) for p in navindex.iter_files()},
         str(sorted(fp)),
     )
     check(
@@ -97,9 +97,9 @@ def main() -> None:
     calls = {"walks": 0, "rescans": 0, "embeds": 0}
     last_stats: dict = {}
     _orig_fp, _orig_rescan, _orig_embed = (
-        nav.stat_fingerprint,
-        nav.rescan,
-        nav.embed,
+        navindex.stat_fingerprint,
+        navindex.rescan,
+        navstore.embed,
     )
 
     def _fp_wrap():
@@ -116,9 +116,9 @@ def main() -> None:
         calls["embeds"] += 1
         return _orig_embed(texts)
 
-    nav.stat_fingerprint = _fp_wrap
-    nav.rescan = _rescan_wrap
-    nav.embed = _embed_wrap
+    navindex.stat_fingerprint = _fp_wrap
+    navindex.rescan = _rescan_wrap
+    navstore.embed = _embed_wrap
 
     # ---- burst protection + TTL expiry on a clean tree --------------------
     w0 = calls["walks"]
@@ -148,7 +148,7 @@ def main() -> None:
         and last_stats.get("changed") == ["src/zeta_flux.py"],
         str(last_stats),
     )
-    check("external add -> index reflects it", nav.count() == 4)
+    check("external add -> index reflects it", navstore.count() == 4)
     r1 = calls["rescans"]
     server._auto_rescan()  # immediate second call: TTL-cached clean verdict
     check("post-sync burst: no re-rescan", calls["rescans"] == r1)
@@ -156,7 +156,7 @@ def main() -> None:
     # ---- (b) no-change TTL expiry re-embeds nothing ------------------------
     time.sleep(TTL_WAIT)
     e1 = calls["embeds"]
-    stats_d = nav.rescan()
+    stats_d = navindex.rescan()
     check(
         "no-change rescan: all unchanged, zero embed calls",
         stats_d["unchanged"] == 4
@@ -166,13 +166,13 @@ def main() -> None:
         and calls["embeds"] == e1,
         str(stats_d),
     )
-    nav.stat_mark_synced()
+    navindex.stat_mark_synced()
 
     # ---- (d) embed-failure injection: loud degradation + cooldown ----------
     def _boom(texts):
         raise RuntimeError("simulated ollama outage")
 
-    nav.embed = _boom
+    navstore.embed = _boom
     mod0 = TMP / "src" / "mod0_thing.py"
     mod0.write_text(mod0.read_text(encoding="utf-8") + "# failure touch\n", encoding="utf-8")
     time.sleep(TTL_WAIT)
@@ -211,7 +211,7 @@ def main() -> None:
         calls["rescans"] == r2 + 2 and err.getvalue().count("auto-rescan FAILED") == 2,
     )
 
-    nav.embed = _embed_wrap  # backend recovers
+    navstore.embed = _embed_wrap  # backend recovers
     server._rescan_failed_at = None
     time.sleep(TTL_WAIT)
     with contextlib.redirect_stderr(err):
@@ -256,18 +256,18 @@ def main() -> None:
         elapsed < 0.3 + server.WATCH_DEBOUNCE_S + 8.0,
         f"{elapsed:.1f}s",
     )
-    check("watcher: file indexed", nav.count() == 5, f"count={nav.count()}")
+    check("watcher: file indexed", navstore.count() == 5, f"count={navstore.count()}")
 
     # ---- (e) bounded lock wait (issue #206): a holder parks the gate --
     # never the watcher thread: one loud abort, cooldown, retry on release
-    nav.rescan = _orig_rescan  # the counting wrap drops rescan's timeout
+    navindex.rescan = _orig_rescan  # the counting wrap drops rescan's timeout
     real_wait = server.LOCK_WAIT_S
     server.LOCK_WAIT_S = 0.5
     watch_thread = next(
         (t for t in threading.enumerate() if t.name == "neuronav-watch"), None
     )
     check("lock leg: watcher thread located", watch_thread is not None)
-    holder = FileLock(str(nav.DB_DIR / ".write.lock"))  # the other process
+    holder = FileLock(str(navconfig.DB_DIR / ".write.lock"))  # the other process
     holder.acquire()  # BEFORE the touch: no tick may win the rescan race
     lock_err = io.StringIO()
     try:
@@ -302,18 +302,18 @@ def main() -> None:
         "omega_depot" in served,
         served[:160],
     )
-    check("lock held: dirty file not indexed", nav.count() == 5, f"count={nav.count()}")
+    check("lock held: dirty file not indexed", navstore.count() == 5, f"count={navstore.count()}")
 
     rec_err = io.StringIO()
     with contextlib.redirect_stderr(rec_err):
         server._rescan_failed_at = None  # cooldown expiry (leg-d precedent)
         server._auto_rescan()  # the tick after release: rescan must proceed
         deadline = time.monotonic() + 8.0
-        while time.monotonic() < deadline and nav.count() < 6:
+        while time.monotonic() < deadline and navstore.count() < 6:
             time.sleep(0.1)  # the daemon may own the recovery tick
     check(
         "released: next tick rescans the parked delta",
-        nav.count() == 6 and "auto-rescan: files" in rec_err.getvalue(),
+        navstore.count() == 6 and "auto-rescan: files" in rec_err.getvalue(),
         rec_err.getvalue().strip()[-160:],
     )
     server.LOCK_WAIT_S = real_wait
@@ -532,8 +532,8 @@ def chroma_retry_unit() -> None:
     import io
     import recall
 
-    real_pauses = nav._CHROMA_READ_PAUSES_S
-    nav._CHROMA_READ_PAUSES_S = (0.0, 0.0)  # instant pin, same retry count
+    real_pauses = navstore._CHROMA_READ_PAUSES_S
+    navstore._CHROMA_READ_PAUSES_S = (0.0, 0.0)  # instant pin, same retry count
     err = io.StringIO()
     calls = {"flaky": 0, "other": 0}
 
@@ -572,7 +572,7 @@ def chroma_retry_unit() -> None:
 
     try:
         with contextlib.redirect_stderr(err):
-            got = nav.chroma_read("pin-settle", settling)
+            got = navstore.chroma_read("pin-settle", settling)
             check(
                 "settle unit: hnsw transient retries to a clean read",
                 got == {"ids": ["src/one.py"]}
@@ -583,7 +583,7 @@ def chroma_retry_unit() -> None:
             err.truncate(0)
             err.seek(0)
             try:
-                nav.chroma_read("pin-unrelated", unrelated)
+                navstore.chroma_read("pin-unrelated", unrelated)
                 raised = False
             except ValueError:
                 raised = True
@@ -596,26 +596,26 @@ def chroma_retry_unit() -> None:
             err.truncate(0)
             err.seek(0)
             try:
-                nav.chroma_read("pin-exhaust", never_settles)
+                navstore.chroma_read("pin-exhaust", never_settles)
                 raised = False
             except RuntimeError:
                 raised = True
             check(
                 "settle unit: exhaustion raises loud, bounded",
                 raised
-                and calls["other"] == 2 + len(nav._CHROMA_READ_PAUSES_S)
+                and calls["other"] == 2 + len(navstore._CHROMA_READ_PAUSES_S)
                 and err.getvalue().count("chroma read retry")
-                == len(nav._CHROMA_READ_PAUSES_S),
+                == len(navstore._CHROMA_READ_PAUSES_S),
                 f"attempts={calls['other']} "
                 f"notes={err.getvalue().count('chroma read retry')}",
             )
             # consumer leg: recall's vector ranks go through the retry
-            real_col = nav._collection
-            nav._collection = lambda: FlakyCol()
+            real_col = navstore._collection
+            navstore._collection = lambda: FlakyCol()
             try:
                 ids, metas, sims = recall._vector_ranks("kiln fire", 8)
             finally:
-                nav._collection = real_col
+                navstore._collection = real_col
             check(
                 "settle unit: recall vector ranks survive one transient",
                 ids == ["src/one.py", "src/two.py"]
@@ -625,7 +625,7 @@ def chroma_retry_unit() -> None:
                 f"ids={ids} attempts={calls['vec']}",
             )
     finally:
-        nav._CHROMA_READ_PAUSES_S = real_pauses
+        navstore._CHROMA_READ_PAUSES_S = real_pauses
 
 
 if __name__ == "__main__":

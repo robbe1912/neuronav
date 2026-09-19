@@ -8,7 +8,7 @@ Measures 4 configs x the golden query set (bench/golden.json):
   both     recall.search(bm25=True,  expand=True)    the shipped default
 
 Config switching is INTERNAL (kwargs on recall.search; falls back to plain
-nav.search where recall.py does not exist yet, e.g. the pre-fusion baseline
+navstore.search where recall.py does not exist yet, e.g. the pre-fusion baseline
 worktree). NEURONAV_CONFIG is hard-set in-process to the self-index profile
 BEFORE any neuronav import — never exported from the shell (AGENTS.md
 config-leakage trap). Each measured checkout gets its own state store
@@ -58,7 +58,7 @@ from pathlib import Path
 
 BENCH_DIR = Path(__file__).resolve().parent
 DEFAULT_REPO = BENCH_DIR.parent
-K = 12  # contract: nav.search(q, k=12)
+K = 12  # contract: navstore.search(q, k=12)
 CONFIGS = ("vec", "bm25", "expand", "both", "wfused", "gb", "twopass")
 NEEDS = {"vec": (), "bm25": ("bm25",), "expand": ("expand",), "both": ("bm25", "expand"), "wfused": ("bm25", "expand", "weights"), "gb": ("bm25", "expand", "gboost"), "twopass": ("bm25", "expand", "two_pass")}
 WFUSED_WEIGHTS = (1.0, 0.7)  # (vec, bm25) — Main-pinned weighted fusion vs unweighted RRF
@@ -304,7 +304,7 @@ def _override_config(repo: Path, embed: dict) -> Path:
     out.write_text(json.dumps(cfg, indent=1) + "\n", encoding="utf-8", newline="\n")
     return out
 
-def _verify_store_vectors(nav, sample: int = 5) -> bool:
+def _verify_store_vectors(navstore, navconfig, sample: int = 5) -> bool:
     """Issue #220 belt-and-braces: before measuring, re-embed a sample
     of stored documents and compare against the stored vectors. A
     coherent store returns ~1.0 cosine per doc (embedding inference is
@@ -314,15 +314,15 @@ def _verify_store_vectors(nav, sample: int = 5) -> bool:
     hit rates. Refuse loudly, naming the store path and its stamp."""
     import math
 
-    col = nav._collection()
+    col = navstore._collection()
     if col.count() == 0:
-        print(f"ERROR: store {nav.DB_DIR} is empty — rescan produced nothing "
+        print(f"ERROR: store {navconfig.DB_DIR} is empty — rescan produced nothing "
               "to measure")
         return False
     got = col.get(limit=sample, include=["embeddings", "documents"])
     docs = list(got["documents"])
-    texts = [nav.EMBED_DOC_PREFIX + d for d in docs] if nav.EMBED_DOC_PREFIX else docs
-    fresh = nav.embed(texts)
+    texts = [navconfig.EMBED_DOC_PREFIX + d for d in docs] if navconfig.EMBED_DOC_PREFIX else docs
+    fresh = navstore.embed(texts)
 
     def _cos(a, b):
         dot = sum(x * y for x, y in zip(a, b))
@@ -333,7 +333,7 @@ def _verify_store_vectors(nav, sample: int = 5) -> bool:
     sims = [round(_cos(s, v), 4) for s, v in zip(got["embeddings"], fresh)]
     if min(sims) < 0.5:
         meta = col.metadata or {}
-        print(f"ERROR: store {nav.DB_DIR} (embed_model={meta.get('embed_model')!r}, "
+        print(f"ERROR: store {navconfig.DB_DIR} (embed_model={meta.get('embed_model')!r}, "
               f"embed_mode={meta.get('embed_mode')!r}, "
               f"embed_provider={meta.get('embed_provider')!r}) holds doc vectors "
               f"that do not match fresh embeds of the same text (sampled cosines "
@@ -353,7 +353,7 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool,
         os.environ["NEURONAV_CONFIG"] = str(repo / "config" / "neuronav.json")
     sys.path.insert(0, str(repo))
 
-    import nav  # noqa: E402  (binds the self-index profile via NEURONAV_CONFIG)
+    import navconfig, navindex, navstore, nav
 
     try:
         import recall  # noqa: E402
@@ -393,15 +393,15 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool,
     if fake and repo != DEFAULT_REPO:
         import shutil
 
-        db = nav.STATE_DIR  # the worktree's OWN state store (<root>/.neuronav): a
+        db = navconfig.STATE_DIR  # the worktree's OWN state store (<root>/.neuronav): a
         if db.is_dir():  # store would poison fake runs (sha-unchanged rescans skip
             shutil.rmtree(db)  # re-embed -> fake queries vs real docs). Real runs
             # keep the sha-incremental store: docs embed once, reruns only re-embed
             # queries, so Ollama fp jitter cannot shift document-side near-ties.
 
-    stats = nav.rescan()  # coherent index for this mode in this checkout's .neuronav
-    print(f"index: {nav.count()} files (rescan {stats['added']}+/{stats['updated']}~/{stats['deleted']}-)")
-    if not _verify_store_vectors(nav):
+    stats = navindex.rescan()  # coherent index for this mode in this checkout's .neuronav
+    print(f"index: {navstore.count()} files (rescan {stats['added']}+/{stats['updated']}~/{stats['deleted']}-)")
+    if not _verify_store_vectors(navstore, navconfig):
         return 4
 
     # vec/bm25/expand are BASELINE legs: since #228 the shipped default
@@ -424,7 +424,7 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool,
                 if query_prefix is not None:
                     kw["query_prefix"] = query_prefix
                 return recall.search(query, **kw)
-            return nav.search(query, n=K)
+            return navstore.search(query, n=K)
 
         return search
 
@@ -444,12 +444,12 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool,
             "commit": commit,
             "dirty": dirty,
             "mode": "fake" if fake else "real",
-            "model": "hash-embed" if fake else nav.EMBED_MODEL,
+            "model": "hash-embed" if fake else navconfig.EMBED_MODEL,
             **({"query_prefix": effective_prefix} if effective_prefix else {}),
-            **({"doc_prefix": nav.EMBED_DOC_PREFIX}
-               if not fake and nav.EMBED_DOC_PREFIX else {}),
-            **({"doc_shape": nav.doc_shape()} if not fake else {}),
-            "files": nav.count(),
+            **({"doc_prefix": navconfig.EMBED_DOC_PREFIX}
+               if not fake and navconfig.EMBED_DOC_PREFIX else {}),
+            **({"doc_shape": navstore.doc_shape()} if not fake else {}),
+            "files": navstore.count(),
             "k": K,
             "golden": fp,
             **{kk: v for kk, v in result.items() if kk != "per_query"},
@@ -475,7 +475,7 @@ def sweep(repo: Path) -> int:
     os.environ["NEURONAV_CONFIG"] = str(repo / "config" / "neuronav.json")
     sys.path.insert(0, str(repo))
 
-    import nav  # noqa: E402  (binds the self-index profile via NEURONAV_CONFIG)
+    import navconfig, navindex, navstore, nav
     import recall  # noqa: E402
 
     import httpx
@@ -488,9 +488,9 @@ def sweep(repo: Path) -> int:
     if verify_golden(repo):
         return 3
 
-    stats = nav.rescan()  # sha-incremental: docs embed once, cells only re-embed queries
-    print(f"index: {nav.count()} files (rescan {stats['added']}+/{stats['updated']}~/{stats['deleted']}-)")
-    if not _verify_store_vectors(nav):
+    stats = navindex.rescan()  # sha-incremental: docs embed once, cells only re-embed queries
+    print(f"index: {navstore.count()} files (rescan {stats['added']}+/{stats['updated']}~/{stats['deleted']}-)")
+    if not _verify_store_vectors(navstore, navconfig):
         return 4
 
     queries = _load_golden()
@@ -514,8 +514,8 @@ def sweep(repo: Path) -> int:
                 "commit": commit,
                 "dirty": dirty,
                 "mode": "real",
-                "model": nav.EMBED_MODEL,
-                "files": nav.count(),
+                "model": navconfig.EMBED_MODEL,
+                "files": navstore.count(),
                 "k": K,
                 "golden": fp,
                 "gb_lambda": lam,
@@ -546,7 +546,7 @@ def ceiling_sweep(repo: Path) -> int:
     os.environ["NEURONAV_CONFIG"] = str(repo / "config" / "neuronav.json")
     sys.path.insert(0, str(repo))
 
-    import nav  # noqa: E402  (binds the self-index profile via NEURONAV_CONFIG)
+    import navconfig, navindex, navstore, nav
     import recall  # noqa: E402
 
     import httpx
@@ -559,9 +559,9 @@ def ceiling_sweep(repo: Path) -> int:
     if verify_golden(repo):
         return 3
 
-    stats = nav.rescan()  # sha-incremental: docs embed once, cells only re-embed queries
-    print(f"index: {nav.count()} files (rescan {stats['added']}+/{stats['updated']}~/{stats['deleted']}-)")
-    if not _verify_store_vectors(nav):
+    stats = navindex.rescan()  # sha-incremental: docs embed once, cells only re-embed queries
+    print(f"index: {navstore.count()} files (rescan {stats['added']}+/{stats['updated']}~/{stats['deleted']}-)")
+    if not _verify_store_vectors(navstore, navconfig):
         return 4
 
     queries = _load_golden()
@@ -580,8 +580,8 @@ def ceiling_sweep(repo: Path) -> int:
             "commit": commit,
             "dirty": dirty,
             "mode": "real",
-            "model": nav.EMBED_MODEL,
-            "files": nav.count(),
+            "model": navconfig.EMBED_MODEL,
+            "files": navstore.count(),
             "k": K,
             "golden": fp,
             **extra,

@@ -58,12 +58,12 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import nav  # noqa: E402  (the bake lives in the active config's state dir)
+import navconfig
 from extractors import is_scene_path  # noqa: E402  (langsep: registry predicate, never a suffix literal)
 from tests._page_harness import launch, open_page, probe_dbg, serve  # noqa: E402
 from tests._page_harness import quiesce  # noqa: E402  (focus fly-in settle)
 
-STATE = nav.STATE_DIR
+STATE = navconfig.STATE_DIR
 QA = Path(os.environ.get("NEURONAV_QA_DIR") or (ROOT / ".tmp" / "qa"))
 
 # --- focus token: highest-degree node's path stem (tests/test_viz.py:140-150)

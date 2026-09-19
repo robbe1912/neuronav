@@ -1,6 +1,6 @@
 """Project-mode onboarding suite (issue #27): the install stays read-only.
 
-Covers nav._discover_config precedence, onboard.init/wire scaffolding,
+Covers navconfig._discover_config precedence, onboard.init/wire scaffolding,
 and the viz add-on being optional. Hermetic: temp project trees, fake
 embeds, fresh subprocesses for every discovery case (nav binds config
 at import). Never touches the real stores."""
@@ -77,11 +77,11 @@ def main() -> None:
         proj = make_project(tmp)
 
         # 1. no config anywhere -> pure cwd defaults (the npx shape)
-        out = run_nav(proj, "import nav; print(nav.ROOT); print(sorted(nav.EXTS)); print(nav.INCLUDE_DIRS); print(nav.STATE_DIR)")
+        out = run_nav(proj, "import nav, navconfig, navstore, navindex, navconfig, navstore, navindex; print(navconfig.ROOT); print(sorted(navconfig.EXTS)); print(navconfig.INCLUDE_DIRS); print(navconfig.STATE_DIR)")
         lines = out.strip().splitlines()
         check("no-config: root is cwd", lines[0] == str(proj), lines[0])
         check("no-config: walks everything, state under project", lines[2] == "('.',)" and lines[3] == str(proj / ".neuronav"))
-        out2 = run_nav(proj, "import nav; print([str(p) for p in nav.iter_files() if '.tmp' in str(p) or '.team_scratch' in str(p)])")
+        out2 = run_nav(proj, "import nav, navconfig, navstore, navindex, navconfig, navstore, navindex; print([str(p) for p in navindex.iter_files() if '.tmp' in str(p) or '.team_scratch' in str(p)])")
         check("no-config: .tmp/.team_scratch baseline-excluded under bare defaults (issue #286)", out2.strip() == "[]", out2)
         r = subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "init"], cwd=proj,
                            env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}, "NEURONAV_EMBED_FAKE": "1"},
@@ -95,17 +95,17 @@ def main() -> None:
               "(issue #240 — .ts/.md etc index as raw text until extractors land)",
               cfg["extensions"] == sorted(set(EXTENSIONS) | set(RAW_TEXT_EXTS)),
               str(cfg.get("extensions")))
-        out3 = run_nav(proj, "import nav; print([str(p) for p in nav.iter_files() if '.tmp' in str(p) or '.team_scratch' in str(p)])")
+        out3 = run_nav(proj, "import nav, navconfig, navstore, navindex, navconfig, navstore, navindex; print([str(p) for p in navindex.iter_files() if '.tmp' in str(p) or '.team_scratch' in str(p)])")
         check("init: scaffolded .neuroignore prunes .tmp and .team_scratch", out3.strip() == "[]", out3)
         ig = (proj / ".neuronav" / ".neuroignore").read_text(encoding="utf-8")
         check("init: .neuroignore scaffolded once, lists both conventions", ig.count(".tmp") == 1 and ig.count(".team_scratch") == 1, repr(ig))
         igf = proj / ".neuronav" / ".neuroignore"
         saved = igf.read_text(encoding="utf-8")
         igf.write_text("# user extended it\nvendor\n", encoding="utf-8")
-        out4 = run_nav(proj, "import nav; print([str(p) for p in nav.iter_files() if 'vendor' in str(p)])")
+        out4 = run_nav(proj, "import nav, navconfig, navstore, navindex, navconfig, navstore, navindex; print([str(p) for p in navindex.iter_files() if 'vendor' in str(p)])")
         check(".neuroignore: user-adjustable — adding a name excludes it", out4.strip() == "[]", out4)
         igf.write_text("# user trimmed it\n", encoding="utf-8")
-        out5 = run_nav(proj, "import nav; print([str(p) for p in nav.iter_files() if 'vendor' in str(p)])")
+        out5 = run_nav(proj, "import nav, navconfig, navstore, navindex, navconfig, navstore, navindex; print([str(p) for p in navindex.iter_files() if 'vendor' in str(p)])")
         check(".neuroignore: dropping the line re-includes it", out5.strip() != "[]", out5)
         igf.write_text(saved, encoding="utf-8")
         gi = (proj / ".gitignore").read_text(encoding="utf-8")
@@ -184,8 +184,8 @@ def main() -> None:
             trap_cfg.write_text(json.dumps(body), encoding="utf-8")
             out = run_nav(
                 tmp,
-                "import nav; print(nav.ROOT); "
-                "print(sorted(str(p) for p in nav.iter_files()))",
+                "import nav, navconfig, navstore, navindex, navconfig, navstore, navindex; print(navconfig.ROOT); "
+                "print(sorted(str(p) for p in navindex.iter_files()))",
                 {"NEURONAV_CONFIG": str(trap_cfg)})
             lines = out.strip().splitlines()
             label = "root '.'" if root_val else "root absent"
@@ -199,19 +199,19 @@ def main() -> None:
             json.dumps({"root": "sub", "state_dir": "default",
                         "extensions": [".py"], "include_dirs": ["."]}),
             encoding="utf-8")
-        out = run_nav(tmp, "import nav; print(nav.ROOT)",
+        out = run_nav(tmp, "import nav, navconfig, navstore, navindex, navconfig, navstore, navindex; print(navconfig.ROOT)",
                       {"NEURONAV_CONFIG": str(trap_cfg)})
         check("trap: explicit non-'.' root still wins, config-dir-relative",
               out.strip() == str((trap / ".neuronav" / "sub").resolve()), out)
         # 3. discovery: project-local beats the install's checkout config
-        out = run_nav(proj, "import nav; print(nav.ROOT)")
+        out = run_nav(proj, "import nav, navconfig, navstore, navindex, navconfig, navstore, navindex; print(navconfig.ROOT)")
         check("discovery: project-local config wins from project cwd", out.strip() == str(proj))
         # env still beats everything (self-index profile resolves to the repo)
-        out = run_nav(proj, "import nav; print(nav.ROOT)",
+        out = run_nav(proj, "import nav, navconfig, navstore, navindex, navconfig, navstore, navindex; print(navconfig.ROOT)",
                       {"NEURONAV_CONFIG": str(ROOT / "config" / "neuronav.json")})
         check("discovery: env var beats project-local", out.strip() == str(ROOT))
         # checkout config applies only when cwd IS the checkout
-        out = run_nav(ROOT, "import nav; print(nav.COLLECTION); print(nav.ROOT != nav.__file__)")
+        out = run_nav(ROOT, "import nav, navconfig, navstore, navindex, navconfig, navstore, navindex; print(navconfig.COLLECTION); print(navconfig.ROOT != nav.__file__)")
         lines = out.strip().splitlines()
         legacy = (ROOT / "config.json").is_file()
         check("discovery: checkout-cwd keeps machine default", (not legacy) or lines[1] == "True", out.strip())
@@ -499,7 +499,7 @@ def main() -> None:
         check("wire --index: store + bake land in the project", bake.is_file() and store.is_dir() and not (ROOT / ".neuronav" / "chroma" / "main").exists())
 
         # 6. viz is an add-on: core imports never pull it, server degrades
-        out = run_nav(proj, "import sys; import nav, recall, graph, clusters; print('viz' in sys.modules)")
+        out = run_nav(proj, "import sys; import nav, navconfig, navstore, navindex, recall, graph, clusters; print('viz' in sys.modules)")
         check("core modules never import viz", out.strip() == "False")
         sys.path.insert(0, str(ROOT))
         import asyncio  # issue #315: visualize is an async shell in-process
@@ -515,7 +515,7 @@ def main() -> None:
         # ack is immediate, the bake runs on the background baker and its
         # landing (or loud failure) surfaces via the status resource
         import types
-        nav_state = Path(run_nav(proj, "import nav; print(nav.STATE_DIR)",
+        nav_state = Path(run_nav(proj, "import nav, navconfig, navstore, navindex, navconfig, navstore, navindex; print(navconfig.STATE_DIR)",
                                  {"NEURONAV_CONFIG": str(cfg_path)}).strip())
         fake_viz = types.ModuleType("viz")
         fake_viz.ensure_bake = lambda: nav_state / "graph.html"
@@ -606,7 +606,7 @@ def main() -> None:
         cfg_empty.write_text(
             json.dumps({"root": str(p4), "include_dirs": ["nope-dir"], "state_dir": "default"}), encoding="utf-8"
         )
-        r = run_nav_raw(p4, "import nav; nav.rescan()", str(cfg_empty))
+        r = run_nav_raw(p4, "import nav, navconfig, navstore, navindex, navconfig, navstore, navindex; navindex.rescan()", str(cfg_empty))
         err = (r.stderr or "") + (r.stdout or "")
         check("empty effective file set: rescan fails loudly", r.returncode != 0 and "0 files" in err and "nope-dir" in err, err[:120])
 
@@ -648,7 +648,7 @@ def main() -> None:
         cfg_def.write_text(
             json.dumps({"root": str(p6), "include_dirs": ["."], "state_dir": "default"}), encoding="utf-8"
         )
-        out = run_nav(p6, "import nav; print(nav.STATE_DIR)", {"NEURONAV_CONFIG": str(cfg_def)})
+        out = run_nav(p6, "import nav, navconfig, navstore, navindex, navconfig, navstore, navindex; print(navconfig.STATE_DIR)", {"NEURONAV_CONFIG": str(cfg_def)})
         check("opt-in \"default\": resolves to <root>/.neuronav",
               out.strip() == str(p6 / ".neuronav"), out.strip())
         # an explicit scratch state_dir is honored — no abort
@@ -656,7 +656,7 @@ def main() -> None:
         cfg_scr.write_text(
             json.dumps({"root": str(p6), "include_dirs": ["."], "state_dir": str(tmp / "sixth-state")}), encoding="utf-8"
         )
-        out = run_nav(p6, "import nav; print(nav.STATE_DIR)", {"NEURONAV_CONFIG": str(cfg_scr)})
+        out = run_nav(p6, "import nav, navconfig, navstore, navindex, navconfig, navstore, navindex; print(navconfig.STATE_DIR)", {"NEURONAV_CONFIG": str(cfg_scr)})
         check("explicit scratch state_dir: honored, no abort",
               out.strip() == str(tmp / "sixth-state"), out.strip())
 
@@ -672,19 +672,19 @@ def main() -> None:
         )
         code8 = (
             "import json, os\n"
-            "import nav\n"
-            "cold = nav.rescan()\n"
-            "col = nav._collection()\n"
+            "import nav, navconfig, navstore, navindex\n"
+            "cold = navindex.rescan()\n"
+            "col = navstore._collection()\n"
             "ids1 = sorted(col.get()['ids'])\n"
-            "warm = nav.rescan()\n"
+            "warm = navindex.rescan()\n"
             "ids2 = sorted(col.get()['ids'])\n"
-            "p = nav.ROOT / 'src' / 'app.py'\n"
+            "p = navconfig.ROOT / 'src' / 'app.py'\n"
             "p.write_text(p.read_text(encoding='utf-8') + '\\ndef extra():\\n    return 3\\n', encoding='utf-8')\n"
-            "touched = nav.rescan()\n"
-            "q = nav.ROOT / 'src' / 'other.py'\n"
+            "touched = navindex.rescan()\n"
+            "q = navconfig.ROOT / 'src' / 'other.py'\n"
             "st = q.stat()\n"
             "os.utime(q, ns=(st.st_atime_ns + 10**9, st.st_mtime_ns + 10**9))\n"
-            "resaved = nav.rescan()\n"
+            "resaved = navindex.rescan()\n"
             "print(json.dumps({'cold': cold, 'warm': warm, 'ids_stable': ids1 == ids2,\n"
             "                  'touched': touched, 'resaved': resaved}))\n"
         )

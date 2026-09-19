@@ -239,11 +239,11 @@ check("fold is a no-op for unique fns",
 import tempfile
 import types
 
-# hermetic nav stub: file_doc lazily `import nav` for MAX_EMBED_CHARS only —
+# hermetic navstore stub: file_doc lazily `import navstore` for MAX_EMBED_CHARS only —
 # no config, no chroma, no index
-_nav_stub = types.ModuleType("nav")
+_nav_stub = types.ModuleType("navstore")
 _nav_stub.MAX_EMBED_CHARS = 30_000
-sys.modules.setdefault("nav", _nav_stub)
+sys.modules.setdefault("navstore", _nav_stub)
 
 _tmp = tempfile.mkdtemp(prefix="nn-cast229-")
 
@@ -324,7 +324,7 @@ check("later fn embeds before monster chunk 2",
       f"mid@{_imid} chunks@{_mpos}")
 check("mid_thing not folded (non-micro)", _doc.count("def mid_thing") == 1)
 
-# budget: a file of monsters assembles under nav.MAX_EMBED_CHARS — the
+# budget: a file of monsters assembles under navstore.MAX_EMBED_CHARS — the
 # embed-side truncation never clips shaped docs blind
 _p, _src = _write("huge.py", "".join(_mon + "\n\n" for _ in range(30)) + _mid)
 _doc = graph.file_doc(_p, "huge.py", _src)

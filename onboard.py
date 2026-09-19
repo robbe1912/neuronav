@@ -37,7 +37,7 @@ path. Same pattern as explore.py (focused, self-contained).
 - --index chains rescan (+ viz bake when the optional viz add-on is
   installed; skipped with a note otherwise).
 
-Config discovery after init (implemented in nav._discover_config):
+Config discovery after init (implemented in navconfig._discover_config):
 NEURONAV_CONFIG env -> <cwd>/.neuronav/config.json -> install-root
 config.json only when cwd IS the checkout -> pure cwd defaults.
 """
@@ -63,7 +63,7 @@ def scaffold(project: Path | None = None, preset: str | None = None) -> Path:
     existing config.json is left byte-identical — the same existence
     guard as .neuroignore, so a re-run never discards user
     customizations."""
-    import nav
+    import navconfig, navindex
     from extractors import EXTENSIONS, PRESETS, RAW_TEXT_EXTS
 
     if preset is not None and preset not in PRESETS:
@@ -82,7 +82,7 @@ def scaffold(project: Path | None = None, preset: str | None = None) -> Path:
             "root": ".",
             "collection": "main",
             "state_dir": "default",
-            "include_dirs": list(nav.WALK_DEFAULTS["include_dirs"]),
+            "include_dirs": list(navconfig.WALK_DEFAULTS["include_dirs"]),
             # issue #240: the default covers every registered extractor
             # suffix PLUS the common raw-text web suffixes (they ride
             # file_doc's raw fallback — searchable, fns 0 — until
@@ -90,7 +90,7 @@ def scaffold(project: Path | None = None, preset: str | None = None) -> Path:
             # list instead
             "extensions": list(PRESETS[preset]) if preset
             else sorted(set(EXTENSIONS) | set(RAW_TEXT_EXTS)),
-            "exclude_dirs": list(nav.WALK_DEFAULTS["exclude_dirs"]),
+            "exclude_dirs": list(navconfig.WALK_DEFAULTS["exclude_dirs"]),
         }
         cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8", newline="\n")
     else:
@@ -123,10 +123,10 @@ def init(project: Path | None = None, index: bool = False,
          preset: str | None = None) -> Path:
     """scaffold + switch this process (and children, via env) onto the
     new config. Returns the config path."""
-    import nav
+    import navconfig, navindex
 
     cfg_path = scaffold(project, preset)
-    nav.use_config(cfg_path)
+    navconfig.use_config(cfg_path)
     if index:
         _index()
     return cfg_path
@@ -185,14 +185,14 @@ def wire(project: Path | None = None, index: bool = False,
     """init if needed, then write/merge project MCP entries. Returns the
     .mcp.json path; with ``omp`` the omp harness config path is emitted
     too. Never touches the install."""
-    import nav
+    import navconfig, navindex
 
     proj = (project or Path.cwd()).resolve()
     cfg_path = proj / ".neuronav" / "config.json"
     if not cfg_path.is_file():
         init(proj, index=index)
     else:
-        nav.use_config(cfg_path)
+        navconfig.use_config(cfg_path)
         if index:
             _index()
     entry = _entry(cfg_path)
@@ -400,9 +400,9 @@ def global_wire(name: str = "neuronav") -> dict[str, Path]:
 
 def _index() -> None:
     """rescan + (optional) viz bake, with the add-on absent being fine."""
-    import nav
+    import navconfig, navindex
 
-    print(nav.rescan())
+    print(navindex.rescan())
     try:
         import viz
     except ImportError:

@@ -21,7 +21,7 @@ Pure stdlib on the lexical side, no embedding backend dependency:
 - bidirectional 1-hop expansion: each hit carries up to 3 context
   labels — its strongest-wired graph neighbors, never itself.
 
-``search`` is the entry point ``nav.search`` delegates to. When the
+``search`` is the entry point ``navstore.search`` delegates to. When the
 vector side is unavailable (empty collection or embed backend down)
 recall degrades to BM25F-only LOUDLY: one stderr line plus
 ``degraded: True`` on every hit — never a silent fallback.
@@ -247,14 +247,14 @@ def _vector_ranks(
     evidence — RRF consumes the ranks, the floor consumes the raw
     similarity). Returns ([], {}, {}) when the collection is empty;
     raises on backend failure so the caller can degrade loudly."""
-    import nav  # lazy: `nav.py --config` rebinds after this module loads
+    import navstore
 
-    col = nav._collection()
+    col = navstore._collection()
     count = col.count()
     if count == 0:
         return [], {}, {}
-    vector = nav.embed([query])[0]
-    got = nav.chroma_read(
+    vector = navstore.embed([query])[0]
+    got = navstore.chroma_read(
         "vector ranks",
         lambda: col.query(
             query_embeddings=[vector],
@@ -482,9 +482,9 @@ def search(
     pfx = QUERY_PREFIX if query_prefix is None else query_prefix
     depth = max(16, 4 * k)
     if two_pass is None:
-        import nav  # lazy: knob follows the active config (see header)
+        import navconfig, navstore
 
-        two_pass = bool(getattr(nav, "RECALL_TWO_PASS", False))
+        two_pass = bool(getattr(navconfig, "RECALL_TWO_PASS", False))
     if isinstance(two_pass, dict):
         tp = two_pass
         two_pass = True
@@ -506,9 +506,9 @@ def search(
         if not vec:
             reason = "vector index is empty (call rescan first)"
     except Exception as exc:  # backend down = degraded, never a crash
-        import nav  # lazy: truthful labels share nav's classifier (#115)
+        import navstore
 
-        reason = nav.embed_failure_reason(exc)
+        reason = navstore.embed_failure_reason(exc)
     if reason:
         print(
             f"recall: vector recall unavailable — {reason}; serving BM25F-only",
@@ -547,11 +547,11 @@ def search(
                 vec2, metas2, sims2 = _vector_ranks(pfx + aug, depth)  # embed 2 of 2
 
             except Exception as exc:
-                import nav  # lazy: same truthful classifier as pass 1
+                import navstore
 
                 print(
                     f"recall: two-pass retrieve failed "
-                    f"({nav.embed_failure_reason(exc)}); serving pass-1 fusion",
+                    f"({navstore.embed_failure_reason(exc)}); serving pass-1 fusion",
                     file=sys.stderr,
                 )
             else:

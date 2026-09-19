@@ -24,7 +24,7 @@ os.environ.setdefault(
 os.environ.setdefault("NEURONAV_EMBED_FAKE", "1")
 
 import graph  # noqa: E402  (binds config via NEURONAV_CONFIG)
-import nav  # noqa: E402
+import navconfig, navstore
 import recall  # noqa: E402
 import server  # noqa: E402
 
@@ -43,7 +43,7 @@ MISMATCH_MSG = (
 
 def _reason(exc: Exception) -> str | None:
     try:
-        return nav.embed_failure_reason(exc)
+        return navstore.embed_failure_reason(exc)
     except AttributeError:
         return None
 
@@ -91,7 +91,7 @@ def main() -> int:
 
     r = _reason(_http_exc(404, '{"error": "model \'bogus\' not found"}'))
     check("classifier names model+provider on 404 model-not-found",
-          r is not None and nav.EMBED_MODEL in r and nav.EMBED_PROVIDER in r
+          r is not None and navconfig.EMBED_MODEL in r and navconfig.EMBED_PROVIDER in r
           and "model/config error, not connectivity" in r, str(r))
 
     r = _reason(_http_exc(500, '{"error": "internal"}'))
@@ -137,7 +137,7 @@ def main() -> int:
         recall._vector_ranks = orig_vr
     check("HTTP 404 model error surfaces as model/config, named (#115)",
           bool(hits2) and "model/config error" in hits2[0].get("degraded_reason", "")
-          and nav.EMBED_MODEL in hits2[0].get("degraded_reason", ""),
+          and navconfig.EMBED_MODEL in hits2[0].get("degraded_reason", ""),
           str(hits2[0].get("degraded_reason")))
 
     # ---- #115b: no stale lexical index through a recycled dict id --------
@@ -280,12 +280,12 @@ def main() -> int:
               and "model/config mismatch" in out2 and "oldm" in out2
               and "unreachable" not in out2, str(out2)[:200])
 
-        orig_col = nav._collection
+        orig_col = navstore._collection
 
         def _mm_col():
             raise RuntimeError(MISMATCH_MSG)
 
-        nav._collection = _mm_col
+        navstore._collection = _mm_col
         try:
             sem = None
             try:
@@ -294,7 +294,7 @@ def main() -> int:
                 sem = f"{type(exc).__name__}: {exc}"
             lines = server._render_semantic("recall.py")
         finally:
-            nav._collection = orig_col
+            navstore._collection = orig_col
         check("_ctx_semantic separates empty-miss from backend failure (#116)",
               isinstance(sem, tuple) and sem[1] is not None
               and "model/config mismatch" in sem[1], str(sem)[:160])

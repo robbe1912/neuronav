@@ -121,7 +121,7 @@ TWIN_BODY = '''def twin():
 os.environ["NEURONAV_CONFIG"] = str(PROJ / "config" / "neuronav.json")
 
 import graph  # noqa: E402  (binds the fixture config)
-import nav  # noqa: E402
+import navconfig
 import predicates  # noqa: E402
 
 
@@ -269,7 +269,7 @@ try:
     os.remove(CACHE.parent)
 
     # -- self-index parity (real mixed corpus) ------------------------------------
-    with nav.config_scope(ROOT / "config" / "neuronav.json"):
+    with navconfig.config_scope(ROOT / "config" / "neuronav.json"):
         gs = graph.get_graph(rebuild=True)
         check("self-index cache bound", gs._pred is not None)
         outs = tool_outputs(gs)

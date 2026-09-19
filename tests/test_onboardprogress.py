@@ -251,13 +251,13 @@ def main() -> None:
         os.environ.setdefault("NEURONAV_EMBED_FAKE", "1")
         import anyio  # noqa: E402  (server's async shells)
         import asyncio  # noqa: E402
-        import nav  # noqa: E402
+        import navindex
         import server  # noqa: E402
 
-        nav.import_base()
-        stats = nav.rescan()
+        navindex.import_base()
+        stats = navindex.rescan()
         server._sync_chain(stats)
-        nav.stat_mark_synced()
+        navindex.stat_mark_synced()
 
         saved_thread, was_ready = server._BOOT_THREAD, server._BOOT_READY.is_set()
         try:

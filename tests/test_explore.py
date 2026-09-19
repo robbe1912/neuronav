@@ -25,11 +25,11 @@ import server  # noqa: E402  (binds neuronav config via NEURONAV_CONFIG)
 # keep the real-embedded store untouched (the bootstrap is FAKE-gated).
 if os.environ.get("NEURONAV_EMBED_FAKE") == "1":
     import graph  # noqa: E402
-    import nav  # noqa: E402
+    import navconfig, navindex, navstore
 
-    if nav.count() == 0:
-        nav.rescan()
-    if nav.fns_collection().count() == 0:
+    if navstore.count() == 0:
+        navindex.rescan()
+    if navstore.fns_collection().count() == 0:
         graph.sync_functions([], [])  # empty fn col + no changes -> first build
 
 
@@ -175,8 +175,8 @@ def main() -> int:
             f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
             f"os.environ['NEURONAV_CONFIG'] = {str(cfg)!r}\n"
             "os.environ['NEURONAV_EMBED_FAKE'] = '1'\n"
-            "import nav, explore\n"
-            "nav.rescan()  # files only — the fn store stays empty\n"
+            "import nav, navconfig, navstore, navindex, explore\n"
+            "navindex.rescan()  # files only — the fn store stays empty\n"
             "print(explore.run('clustering', n=2, orientation=False))\n",
             encoding="utf-8",
         )
@@ -201,7 +201,7 @@ def main() -> int:
     # index needed for those; run()-level paging targets indexed files only
     # (issue #105 scope guard).
     fixture_rel = ".tmp/test_explore_window.py"
-    fixture = Path(xp.nav.ROOT) / fixture_rel
+    fixture = Path(xp.navconfig.ROOT) / fixture_rel
     fixture.parent.mkdir(parents=True, exist_ok=True)
     fixture.write_text(
         "".join(f"line {i:03d} {'x' * 8}\n" for i in range(1, 251)), encoding="utf-8"
@@ -238,7 +238,7 @@ def main() -> int:
         # indexed file derived from the loaded graph, not the excluded
         # .tmp fixture.
         gidx = s.graph.get_graph()
-        _nlines = lambda p: len((Path(xp.nav.ROOT) / p).read_text(
+        _nlines = lambda p: len((Path(xp.navconfig.ROOT) / p).read_text(
             encoding="utf-8", errors="replace").splitlines())
         ipath = max(sorted(gidx.files), key=_nlines)
         check("self-index has a file tall enough to page (non-vacuous)",

@@ -127,7 +127,7 @@ def main() -> int:
         # (graph.py) then agree on the profile — without the caller ever
         # exporting NEURONAV_CONFIG in a long-lived shell.
         os.environ["NEURONAV_CONFIG"] = str(args.config.resolve())
-    import nav  # noqa: E402  (state dir of the active config holds the bake)
+    import navconfig
 
     # exclusive bind (issue #40): construct dormant, arm SO_EXCLUSIVEADDRUSE,
     # then bind/activate explicitly. socketserver.TCPServer's default
@@ -137,7 +137,7 @@ def main() -> int:
     # stdlib calls it dynamically, which the self-index would flag as dead
     # code.)
     httpd = BakeServer(("127.0.0.1", args.port), NoCacheHandler,
-                       bake=nav.STATE_DIR / "graph.html")
+                       bake=navconfig.STATE_DIR / "graph.html")
     try:
         if sys.platform == "win32":
             httpd.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)

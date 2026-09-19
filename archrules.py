@@ -36,7 +36,7 @@ from pathlib import Path
 
 import graph  # noqa: E402  (edge-type taxonomy; graph imports nothing from here — no cycle)
 import clusters  # noqa: E402
-import nav  # noqa: E402
+import navconfig
 
 RULES_NAME = "arch-rules.json"
 KINDS = ("forbid", "budget")
@@ -53,8 +53,8 @@ _ID_RE = re.compile(r"^c(\d+)$")
 
 def rules_path() -> Path:
     """The active config's rules file — read at call time so a routed
-    call (nav.config_scope) serves that project's rules."""
-    return nav.STATE_DIR / RULES_NAME
+    call (navconfig.config_scope) serves that project's rules."""
+    return navconfig.STATE_DIR / RULES_NAME
 
 
 def load_rules() -> dict:

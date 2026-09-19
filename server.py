@@ -65,7 +65,7 @@ import explore as _explore
 import graph
 from extractors import PRESETS, registry_for, res_to_rel  # noqa: E402
 import memories
-import nav
+import navconfig, navindex, navstore
 import recall
 
 def _version() -> str:
@@ -160,12 +160,12 @@ MUTATING_RESCAN = ToolAnnotations(destructiveHint=False,
 # and repointing them per dir would double-embed on alternation. Alt
 # dirs refresh through the explicit rescan(dir=...).
 
-_BOOT_STORE = (str(nav.STATE_DIR), nav.COLLECTION)
+_BOOT_STORE = (str(navconfig.STATE_DIR), navconfig.COLLECTION)
 _SCOPE_LOCK = threading.RLock()  # nav globals are process-wide: one routed call at a time
 
 
 def _at_boot() -> bool:
-    return (str(nav.STATE_DIR), nav.COLLECTION) == _BOOT_STORE
+    return (str(navconfig.STATE_DIR), navconfig.COLLECTION) == _BOOT_STORE
 
 
 # ---- degraded boot (issue #240) ----------------------------------------------
@@ -228,9 +228,9 @@ def _boot_guidance(census: dict[str, int], probe_fail: str | None) -> str:
         "neuronav: EMPTY INDEX — the boot walk matched 0 files, so this "
         "server serves guidance instead of results (issue #240). Every "
         "tool answers with this text until a config covers the repo.",
-        f"  root: {nav.ROOT.as_posix()}",
-        f"  include_dirs: {list(nav.INCLUDE_DIRS)}",
-        f"  extensions scanned: [{', '.join(sorted(nav.EXTS))}]",
+        f"  root: {navconfig.ROOT.as_posix()}",
+        f"  include_dirs: {list(navconfig.INCLUDE_DIRS)}",
+        f"  extensions scanned: [{', '.join(sorted(navconfig.EXTS))}]",
     ]
     ranked = sorted(
         ((s, c) for s, c in census.items()
@@ -249,7 +249,7 @@ def _boot_guidance(census: dict[str, int], probe_fail: str | None) -> str:
             "walk-all config)"
         )
     suggestions = [s for s, _ in ranked[:_GUIDANCE_SUGGEST_CAP]
-                   if s not in nav.EXTS]
+                   if s not in navconfig.EXTS]
     if suggestions:
         block = {
             # "root": ".." — a project-local config resolves root against
@@ -257,9 +257,9 @@ def _boot_guidance(census: dict[str, int], probe_fail: str | None) -> str:
             "root": "..",
             "collection": "main",
             "state_dir": "default",
-            "include_dirs": list(nav.WALK_DEFAULTS["include_dirs"]),
+            "include_dirs": list(navconfig.WALK_DEFAULTS["include_dirs"]),
             "extensions": suggestions,
-            "exclude_dirs": list(nav.WALK_DEFAULTS["exclude_dirs"]),
+            "exclude_dirs": list(navconfig.WALK_DEFAULTS["exclude_dirs"]),
         }
         lines.append("  fix: write .neuronav/config.json under the root with")
         lines.extend("    " + ln for ln in json.dumps(block, indent=2).splitlines())
@@ -292,20 +292,20 @@ def _probe_embedder() -> str | None:
     if os.environ.get("NEURONAV_EMBED_FAKE"):
         return None  # CI plumbing: no network by contract
     try:
-        nav.embed(["."])
+        navstore.embed(["."])
         return None
     except Exception as e:
-        reason = nav.embed_failure_reason(e)
-        if nav.EMBED_PROVIDER == "ollama":
-            fix = f"ollama pull {nav.EMBED_MODEL}"
+        reason = navstore.embed_failure_reason(e)
+        if navconfig.EMBED_PROVIDER == "ollama":
+            fix = f"ollama pull {navconfig.EMBED_MODEL}"
         else:
             fix = (
-                f"check embed_model '{nav.EMBED_MODEL}' at embed_url "
-                f"'{nav.EMBED_URL}' (auth via NEURONAV_EMBED_KEY)"
+                f"check embed_model '{navconfig.EMBED_MODEL}' at embed_url "
+                f"'{navconfig.EMBED_URL}' (auth via NEURONAV_EMBED_KEY)"
             )
         return (
-            f"embed probe FAILED — model '{nav.EMBED_MODEL}' via "
-            f"{nav.EMBED_PROVIDER} at {nav.EMBED_URL}: {reason}. Fix: {fix}."
+            f"embed probe FAILED — model '{navconfig.EMBED_MODEL}' via "
+            f"{navconfig.EMBED_PROVIDER} at {navconfig.EMBED_URL}: {reason}. Fix: {fix}."
         )
 
 
@@ -317,7 +317,7 @@ def _raw_text_banner(census: dict[str, int]) -> None:
     names it too."""
     hits = sorted(
         (s, c) for s, c in census.items()
-        if s in nav.EXTS and registry_for(s) is None
+        if s in navconfig.EXTS and registry_for(s) is None
     )
     if not hits:
         return
@@ -361,7 +361,7 @@ def _boot_recovery() -> str | None:
     recovers. Returns the prelude the call answers with, or None when
     still degraded."""
     global _BOOT_DEGRADED, _BOOT_STORE
-    if nav.CONFIG_PATH is not None:
+    if navconfig.CONFIG_PATH is not None:
         return None
     cfg_path = Path.cwd() / ".neuronav" / "config.json"
     if not cfg_path.is_file():
@@ -371,10 +371,10 @@ def _boot_recovery() -> str | None:
     # pure-defaults globals, the graph singleton (a mid-sync failure
     # must not leave it serving the candidate store), and the env
     # use_config exports for subprocesses
-    saved_cfg = {f: getattr(nav, f) for f in nav._CONFIG_FIELDS}
+    saved_cfg = {f: getattr(navconfig, f) for f in navconfig._CONFIG_FIELDS}
     saved_graph = graph._graph
     try:
-        nav.use_config(cfg_path)
+        navconfig.use_config(cfg_path)
         stats = _bounded_rescan()
         if stats["added"] or stats["updated"] or stats["deleted"]:
             _progress_set(
@@ -383,12 +383,12 @@ def _boot_recovery() -> str | None:
             )
         g, fns, note = _sync_chain(stats)
         _progress_set("done", note="recovery complete")
-        nav.stat_mark_synced()
-        _raw_text_banner(nav.suffix_census())
+        navindex.stat_mark_synced()
+        _raw_text_banner(navindex.suffix_census())
         # only success re-points the boot identity: a failure past
         # use_config must leave _at_boot() describing the store the
         # session actually serves
-        _BOOT_STORE = (str(nav.STATE_DIR), nav.COLLECTION)
+        _BOOT_STORE = (str(navconfig.STATE_DIR), navconfig.COLLECTION)
         _BOOT_DEGRADED = None
         return (
             f"config appeared mid-session — rebound the boot to "
@@ -405,7 +405,7 @@ def _boot_recovery() -> str | None:
         # nav bound to the candidate config and every later call
         # short-circuited to the guidance until process restart.
         for f, v in saved_cfg.items():
-            setattr(nav, f, v)
+            setattr(navconfig, f, v)
         # pre-recovery the env var cannot have been set: a boot with
         # NEURONAV_CONFIG bound has CONFIG_PATH set and never gets here
         os.environ.pop("NEURONAV_CONFIG", None)
@@ -458,7 +458,7 @@ def _heal_routed_drift() -> None:
     note and an answer from the current index (the issue #19 contract —
     never a crashed call, never silent staleness)."""
     try:
-        if not nav.stat_scan():
+        if not navindex.stat_scan():
             return
         stats = _bounded_rescan()
         if stats["added"] or stats["updated"] or stats["deleted"]:
@@ -466,14 +466,14 @@ def _heal_routed_drift() -> None:
             print(
                 f"neuronav: routed drift healed: files {stats['added']}/{stats['updated']}/"
                 f"{stats['unchanged']}/{stats['deleted']} (a/u/u/d) in "
-                f"{nav.ROOT.as_posix()}",
+                f"{navconfig.ROOT.as_posix()}",
                 file=sys.stderr,
             )
-        nav.stat_mark_synced()
+        navindex.stat_mark_synced()
     except Exception as e:
         print(
             f"neuronav: routed drift heal FAILED ({e}); answering from the "
-            f"current index — call rescan(dir=\"{nav.ROOT.as_posix()}\") once "
+            f"current index — call rescan(dir=\"{navconfig.ROOT.as_posix()}\") once "
             "the embedding backend is back",
             file=sys.stderr,
         )
@@ -485,19 +485,19 @@ def _first_contact() -> str | None:
     heals to the worktree. Returns None when the store already serves;
     else a rescan()-format summary so a long build reports progress the
     same way an explicit rescan does."""
-    if nav._collection().count():
+    if navstore._collection().count():
         _heal_routed_drift()
         return None
-    nav.import_base()
+    navindex.import_base()
     t0 = time.perf_counter()
     stats = _bounded_rescan()
     if stats["added"] or stats["updated"] or stats["deleted"]:
         _progress_set("graph", note=f"rebuilding graph — {len(stats.get('changed', []))} changed")
     g, fns, note = _sync_chain(stats)
     _progress_set("done", note="first contact complete")
-    nav.stat_mark_synced()
+    navindex.stat_mark_synced()
     return (
-        f"onboarded {nav.ROOT.as_posix()} — index built: files "
+        f"onboarded {navconfig.ROOT.as_posix()} — index built: files "
         f"{stats['added']}/{stats['updated']}/{stats['unchanged']}/"
         f"{stats['deleted']} (a/u/u/d), fns {fns['fns_upserted']} upserted, "
         f"graph {len(g.files)} files, in {time.perf_counter() - t0:.1f}s{note}. "
@@ -578,7 +578,7 @@ def _nav_progress_hook(phase: str, count: int, total: int) -> None:
     _progress_set("embed", count=count, total=total)
 
 
-nav.PROGRESS_HOOKS.append(_nav_progress_hook)
+navindex.PROGRESS_HOOKS.append(_nav_progress_hook)
 
 
 def _boot_building() -> bool:
@@ -608,7 +608,7 @@ def _stale_prelude() -> str | None:
         # build is genuinely long enough to threaten client timeouts.
         return None
     try:
-        have = nav._collection().count() > 0
+        have = navstore._collection().count() > 0
     except Exception:  # noqa: BLE001 — store mid-open: fall back to the gate
         return None
     if not have:
@@ -727,7 +727,7 @@ def _route(dir: str):
             onboard.scaffold(resolved)
         else:
             _validate_foreign_config(cfg_path, resolved)
-        with nav.config_scope(cfg_path):
+        with navconfig.config_scope(cfg_path):
             yield _first_contact()
 
 
@@ -819,8 +819,8 @@ def _here(g) -> str:
     """One-line you-are-here header: which checkout, how big, how many
     subsystems — stamped on orientation-tool responses so a client can
     always tell which project it is talking to."""
-    n_clusters = len(nav.clusters())
-    return f"you are here: {nav.ROOT.as_posix()} — {len(g.files)} files, {n_clusters} clusters"
+    n_clusters = len(navstore.clusters())
+    return f"you are here: {navconfig.ROOT.as_posix()} — {len(g.files)} files, {n_clusters} clusters"
 
 
 @mcp.tool(annotations=READONLY)
@@ -950,7 +950,7 @@ async def semantic_search(
             _auto_rescan()
             k = max(1, min(n, 25))  # local: rebinding n would shadow the param
             out = _here(graph.get_graph()) + "\n" + _fmt(
-                nav.search(query, k, two_pass=two_pass, graph_boost=graph_boost)
+                navstore.search(query, k, two_pass=two_pass, graph_boost=graph_boost)
             )
             if k != n:
                 out += f"\n(n clamped to {k} — legal range 1..25)"
@@ -993,7 +993,7 @@ def find_functions(query: str, n: int = 6, dir: str = "") -> str:
             # same-shape lexical fallback tagged degraded (never a raw
             # MCP error, which is worse when a degraded explore answer
             # has just recommended exactly this tool)
-            why = nav.embed_failure_reason(exc)
+            why = navstore.embed_failure_reason(exc)
             hits = _explore._lexical_fallback(query, n)
             if not hits:
                 return f"degraded: {why} — no lexical match for {query!r} either"
@@ -1065,7 +1065,7 @@ def search_text(pattern: str, glob: str = "", files_only: bool = False, dir: str
                 continue
             scanned += 1
             try:
-                text = nav._read_text(nav.ROOT / path)
+                text = navindex._read_text(navconfig.ROOT / path)
             except OSError:
                 continue  # vanished mid-walk; the next rescan reconciles
             hits = [
@@ -1425,7 +1425,7 @@ async def clusters(
             _auto_rescan()
             k_c = max(2, min(k, 12))
             ms = max(0.4, min(min_sim, 0.85))
-            cs = nav.clusters(k=k_c, min_sim=ms)
+            cs = navstore.clusters(k=k_c, min_sim=ms)
             if not cs:
                 return "index empty — call rescan first"
             lines = [f"{len(cs)} cluster(s):", ""]
@@ -1470,7 +1470,7 @@ def crosstalk(dir: str = "") -> str:
         import clusters as _clusters
 
         g = graph.get_graph()
-        rep = _clusters.crosstalk(nav.clusters(), g)
+        rep = _clusters.crosstalk(navstore.clusters(), g)
         return _clusters.fmt_crosstalk(rep, top_n=2)
 
 
@@ -1499,7 +1499,7 @@ def arch_check(dir: str = "") -> str:
         _auto_rescan()
         import archrules as _arch
 
-        return _arch.run(nav.clusters(), graph.get_graph())
+        return _arch.run(navstore.clusters(), graph.get_graph())
 
 
 def _ctx_adjacency(g) -> tuple[dict, dict]:
@@ -1533,13 +1533,13 @@ def _ctx_semantic(path: str, k: int = 6) -> tuple[list[tuple[float, str]], str |
     failure otherwise (issue #116: an embed model mismatch must not
     masquerade as 'file not embedded — rescan first')."""
     try:
-        col = nav._collection()
-        got = nav.chroma_read(
+        col = navstore._collection()
+        got = navstore.chroma_read(
             "ctx vectors", lambda: col.get(ids=[path], include=["embeddings"])
         )
         if not got["ids"]:
             return [], None
-        res = nav.chroma_read(
+        res = navstore.chroma_read(
             "ctx neighbors",
             lambda: col.query(
                 query_embeddings=[got["embeddings"][0]],
@@ -1553,14 +1553,14 @@ def _ctx_semantic(path: str, k: int = 6) -> tuple[list[tuple[float, str]], str |
             if fid != path
         ][:k], None
     except Exception as exc:
-        return [], nav.embed_failure_reason(exc)
+        return [], navstore.embed_failure_reason(exc)
 
 
 def _ctx_overview(g) -> str:
     """All-clusters overview: label, size, top members, external edges."""
     import clusters as _clusters
 
-    cs = nav.clusters()
+    cs = navstore.clusters()
     _adj, indeg = _ctx_adjacency(g)
     ct = _clusters.crosstalk(cs, g)
     ext = {b["id"]: b["external_out"] + b["external_in"] for b in ct["by_cluster"]}
@@ -1777,7 +1777,7 @@ def context(path: str = "", depth: int = 1, dir: str = "") -> str:
             tag = fs.class_name or fs.extends or fs.ext
         lines = [f"res://{p}  [{tag}]"]
         lines += _render_defines(fs)
-        lines += _render_membership(p, nav.clusters(), indeg)
+        lines += _render_membership(p, navstore.clusters(), indeg)
         lines += _render_neighbors(p, adj, indeg, depth)
         lines += _render_semantic(p)
         lines += _render_hub(p, g, indeg)
@@ -1829,7 +1829,7 @@ def _bake_loop() -> None:
                 else:
                     # foreign store: swap nav's globals for the bake only
                     with _SCOPE_LOCK:
-                        with nav.config_scope(target):
+                        with navconfig.config_scope(target):
                             out = viz.ensure_bake()
                 with _BAKE_LOCK:
                     _BAKE_STATE.update(
@@ -1960,7 +1960,7 @@ def _onboarding_status() -> str:
 # ---- auto-rescan freshness gate (issue #19) --------------------------------
 # Every read tool calls _auto_rescan() on entry: nav's stat fingerprint
 # (mtime/size walk, TTL-cached) is compared against the last synced
-# baseline, and a drifted worktree triggers the sha-gated nav.rescan() +
+# baseline, and a drifted worktree triggers the sha-gated navindex.rescan() +
 # graph/fns sync before the tool answers. Failures never crash the call:
 # one stderr warning, a RESCAN_COOLDOWN_S retry suppression, and the
 # tool answers from the current index (the recall degraded-mode
@@ -1983,10 +1983,10 @@ def _bounded_rescan() -> dict[str, int]:
     ride the same wait bound and the same loud abort — nav names the
     lock file and the likely holder when the wait expires, so no path
     copies the boot's inline acquire into a private twin."""
-    return nav.rescan(timeout=LOCK_WAIT_S)
+    return navindex.rescan(timeout=LOCK_WAIT_S)
 
 
-_rescan_busy = threading.Lock()  # in-flight trigger (cross-process is nav._db_lock's job)
+_rescan_busy = threading.Lock()  # in-flight trigger (cross-process is navstore._db_lock's job)
 _rescan_failed_at: float | None = None  # monotonic; None = healthy
 
 
@@ -2015,7 +2015,7 @@ def _auto_rescan() -> None:
             return  # failed recently, or another trigger is already mid-rescan
         try:
             try:
-                if not nav.stat_scan():
+                if not navindex.stat_scan():
                     return
                 stats = _bounded_rescan()
                 if stats["added"] or stats["updated"] or stats["deleted"]:
@@ -2025,7 +2025,7 @@ def _auto_rescan() -> None:
                         f"{stats['unchanged']}/{stats['deleted']} (a/u/u/d)",
                         file=sys.stderr,
                     )
-                nav.stat_mark_synced()
+                navindex.stat_mark_synced()
                 _rescan_failed_at = None
             except SystemExit as e:
                 # issue #206: nav's bounded-lock wait (and its zero-file
@@ -2056,11 +2056,11 @@ def _auto_rescan() -> None:
 def _wait_quiet() -> None:
     """Sleep until the fingerprint stops changing (bounded): rescan a
     coherent tree, not a writer's half-saved state."""
-    last = nav.stat_fingerprint()
+    last = navindex.stat_fingerprint()
     deadline = time.monotonic() + WATCH_DEBOUNCE_MAX_S
     while time.monotonic() < deadline:
         time.sleep(WATCH_DEBOUNCE_S)
-        cur = nav.stat_fingerprint()
+        cur = navindex.stat_fingerprint()
         if cur == last:
             return
         last = cur
@@ -2073,7 +2073,7 @@ def _watch_loop(interval: float) -> None:
     while True:
         time.sleep(interval)
         try:
-            dirty = nav.stat_scan(force=True)
+            dirty = navindex.stat_scan(force=True)
         except Exception as e:
             print(f"neuronav: watch scan failed ({e}); continuing", file=sys.stderr)
             continue
@@ -2095,7 +2095,7 @@ def _start_watcher(interval: float) -> threading.Thread:
 
 
 def _sync_chain(stats: dict) -> tuple[object, object, str]:
-    """nav.rescan -> graph rebuild -> fns sync. fns failures degrade
+    """navindex.rescan -> graph rebuild -> fns sync. fns failures degrade
     gracefully (dirty marker self-heals next run) instead of killing the
     server or blocking file search."""
     g = graph.get_graph(rebuild=True)
@@ -2195,7 +2195,7 @@ async def rescan(dir: str = "", ctx: Context = None) -> str:
                 )
             g, fns, note = _sync_chain(stats)
             _progress_set("done", note="rescan complete")
-            nav.stat_mark_synced()
+            navindex.stat_mark_synced()
             dt = time.perf_counter() - t0
             return (
                 f"rescan: files {stats['added']}/{stats['updated']}/"
@@ -2225,12 +2225,12 @@ def _boot_sequence(t0: float) -> None:
         # issue #240: what the root actually holds, extension filter
         # off — the 0-file verdict, the degraded-boot guidance and
         # the raw-text banner all read this one census
-        census = nav.suffix_census()
+        census = navindex.suffix_census()
         probe_fail = _probe_embedder()
-        if not any(s in nav.EXTS for s in census):
+        if not any(s in navconfig.EXTS for s in census):
             _enter_degraded(census, probe_fail, "boot walk matched 0 files")
         elif probe_fail is not None:
-            if nav.count() == 0:
+            if navstore.count() == 0:
                 # evidence-based abort (issue #240): an empty store
                 # needs embeds to build — every path from here fails
                 # mid-rescan. Exit with the fix in the message; the
@@ -2258,7 +2258,7 @@ def _boot_sequence(t0: float) -> None:
                 # walk emptied between census and rescan — same
                 # degraded path
                 _enter_degraded(
-                    nav.suffix_census(), None,
+                    navindex.suffix_census(), None,
                     "boot rescan found the walk empty",
                 )
             else:
@@ -2269,13 +2269,13 @@ def _boot_sequence(t0: float) -> None:
                     )
                 g, fns, _ = _sync_chain(stats)
                 _progress_set("done", note="boot build complete")
-                nav.stat_mark_synced()
+                navindex.stat_mark_synced()
                 fns_up = fns["fns_upserted"]
                 _raw_text_banner(census)
                 # boot config only by design (issue #131): the
                 # watcher drives _auto_rescan, which is boot-gated —
                 # routed dirs refresh explicitly
-                want_watch = nav.WATCH_INTERVAL_S > 0
+                want_watch = navconfig.WATCH_INTERVAL_S > 0
     # the boot gate opens with the store work done: imports are NOT
     # warmed here — scipy/sklearn on a side thread while the anyio
     # stdio loop runs deadlocks on Windows (the documented law),
@@ -2284,8 +2284,8 @@ def _boot_sequence(t0: float) -> None:
     # started strictly after _BOOT_READY so a fast first tick can
     # never race the boot rescan it would duplicate
     if want_watch:
-        _start_watcher(nav.WATCH_INTERVAL_S)
-        watch_note = f", watcher {nav.WATCH_INTERVAL_S:g}s"
+        _start_watcher(navconfig.WATCH_INTERVAL_S)
+        watch_note = f", watcher {navconfig.WATCH_INTERVAL_S:g}s"
     if _BOOT_DEGRADED is not None:
         state = "DEGRADED, guidance mode, "
     elif probe_fail is not None:
@@ -2354,10 +2354,10 @@ def main() -> None:
     empty-store + dead-embedder abort exits the session after the
     handshake with the fix on stderr."""
     t0 = time.perf_counter()
-    if nav.CONFIG_PATH is not None:
-        print(f"neuronav: config {nav.CONFIG_PATH}", file=sys.stderr)
+    if navconfig.CONFIG_PATH is not None:
+        print(f"neuronav: config {navconfig.CONFIG_PATH}", file=sys.stderr)
     else:
-        print(f"neuronav: pure defaults, root={nav.ROOT}", file=sys.stderr)
+        print(f"neuronav: pure defaults, root={navconfig.ROOT}", file=sys.stderr)
     # warm the clusters stack on the main thread BEFORE the event loop:
     # clusters/context/crosstalk all ride these imports, and importing
     # them inside a fastmcp tool call (anyio loop thread) — or on any

@@ -64,7 +64,7 @@ os.environ["NEURONAV_CONFIG"] = str(CFG)
 os.environ.setdefault("NEURONAV_EMBED_FAKE", "1")
 sys.path.insert(0, str(HERE))
 
-import nav  # noqa: E402  (binds the temp config above)
+import navindex, navstore
 import server  # noqa: E402
 
 
@@ -83,11 +83,11 @@ def rows(out: str) -> list[str]:
 
 
 def main() -> None:
-    stats = nav.rescan()
-    nav.stat_mark_synced()
+    stats = navindex.rescan()
+    navindex.stat_mark_synced()
     check(
         "bootstrap: fixture tree indexed",
-        stats["added"] == N_FILES and nav.count() == N_FILES,
+        stats["added"] == N_FILES and navstore.count() == N_FILES,
         str(stats),
     )
 
