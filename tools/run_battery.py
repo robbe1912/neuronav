@@ -172,7 +172,18 @@ def main() -> None:
 
     t0 = time.perf_counter()
     with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as ex:
-        futs = [ex.submit(run_suite, root, n, {}) for n in pool]
+        # issue #347 lever: the pool trims §9's two-run scale to 2100 —
+        # above the runtime-validated dense cut (the suite fails any
+        # at/below-cut value loudly), keeping the sparse-path identity
+        # teeth while breaking the makespan strata governs (the LPT note
+        # above). The full 2600 default stays the CI-step/solo gate; the
+        # trimmed scale is visible in the suite's own PASS/summary lines.
+        futs = [
+            ex.submit(run_suite, root, n,
+                      {"NEURONAV_STRATA_N": "2100"} if n == "test_strata.py"
+                      else {})
+            for n in pool
+        ]
         # #298: consume in COMPLETION order — submit order withheld later
         # PASS lines behind a slow early suite
         for fut in as_completed(futs):
