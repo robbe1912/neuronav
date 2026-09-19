@@ -20,6 +20,7 @@ from extractors import gdscript
 from extractors import go
 from extractors import java
 from extractors import js
+from extractors import lua
 from extractors import python
 from extractors import rust
 from extractors import php
@@ -77,6 +78,7 @@ EXTENSIONS: dict[str, object] = {
     ".c": c,
     ".cs": csharp,
     ".php": php,
+    ".lua": lua,
 }
 
 # issue #240: language presets + the raw-text walk suffixes — language
@@ -102,6 +104,7 @@ PRESETS: dict[str, tuple[str, ...]] = {
     "c": (".c", ".h", ".json", ".md"),
     "csharp": (".cs", ".json", ".md"),
     "php": (".php", ".json", ".md"),
+    "lua": (".lua", ".json", ".md"),
 }
 
 def sync_parseable(suffix: str) -> bool:
@@ -147,6 +150,9 @@ BUILD_SEQUENCE = (
     c.pair_headers,
     c.import_liveness_sweep,
     php.import_liveness_sweep,
+    lua.required_sweep,
+    lua.index_sweep,
+    lua.import_liveness_sweep,
 )
 
 WIRE_SEQUENCE = (

@@ -37,6 +37,7 @@ dependencies = [
     "tree-sitter-java==0.23.5",
     "tree-sitter-c-sharp==0.23.5",
     "tree-sitter-php==0.24.1",
+    "tree-sitter-lua==0.5.0",
 ]
 
 [project.scripts]
