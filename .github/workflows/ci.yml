@@ -44,6 +44,8 @@ jobs:
         run: python -X utf8 tests/test_javahard.py
       - name: csharphard (C# extractor edge cases, issue #336)
         run: python -X utf8 tests/test_csharphard.py
+      - name: chard (C extractor edge cases, issue #346)
+        run: python -X utf8 tests/test_chard.py
       - name: autorescan (stat-gate freshness, watcher, stdio e2e)
         run: python -X utf8 tests/test_autorescan.py
       # issue #180: stdio E2E without any committed store — the suite

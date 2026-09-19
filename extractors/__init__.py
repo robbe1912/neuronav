@@ -13,6 +13,7 @@ Contract for an extractor module (full details: extractors/README.md):
 
 from __future__ import annotations
 
+from extractors import c
 from extractors import cpp
 from extractors import csharp
 from extractors import gdscript
@@ -72,6 +73,7 @@ EXTENSIONS: dict[str, object] = {
     ".rs": rust,
     ".go": go,
     ".java": java,
+    ".c": c,
     ".cs": csharp,
 }
 
@@ -95,6 +97,7 @@ PRESETS: dict[str, tuple[str, ...]] = {
     "rust": (".rs", ".json", ".md"),
     "go": (".go", ".json", ".md"),
     "java": (".java", ".json", ".md"),
+    "c": (".c", ".h", ".json", ".md"),
     "csharp": (".cs", ".json", ".md"),
 }
 
@@ -138,6 +141,8 @@ BUILD_SEQUENCE = (
     java.import_liveness_sweep,
     go.interface_satisfaction_sweep,
     go.import_liveness_sweep,
+    c.pair_headers,
+    c.import_liveness_sweep,
 )
 
 WIRE_SEQUENCE = (
