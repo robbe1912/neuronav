@@ -36,10 +36,18 @@ check("self likely-dead is zero", dead["by_tier"].get("likely", 0) == 0,
 # the tool funcs are REACHABLE, so the candidate window starts at 0. The
 # reachability pin keeps teeth on that attribution (the pre-fix state had
 # 22 review candidates, all false-dead).
+# issue #345 named cause: the query handlers moved to the server_*
+# family modules (defined there, literal @mcp.tool against servercore's
+# mcp); the reachability pin follows the definition site — server.py
+# binds the returned names for the wire, but the static graph keys a
+# handler where its def lives.
+_explore_key = "server_search.py::explore"
 check("server handlers reachable via resolved imports",
-      "server.py::explore" in g.reachable,
-      f"explore reachable={'server.py::explore' in g.reachable}")
-handlers = [c for c in dead["candidates"] if c["path"] == "server.py"]
+      _explore_key in g.reachable,
+      f"explore reachable={_explore_key in g.reachable}")
+_fam_paths = ("server.py", "server_search.py", "server_structure.py",
+              "server_clusters.py")
+handlers = [c for c in dead["candidates"] if c["path"] in _fam_paths]
 check("server handlers stay review", 0 <= len(handlers) <= 24
       and all(c["tier"] == "review" for c in handlers),
       f"{len(handlers)} handler candidates, tiers={sorted({c['tier'] for c in handlers})}")
