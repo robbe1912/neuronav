@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import graph as _graph
-import nav
+import navstore
 
 def main() -> int:
     g = _graph.get_graph()
@@ -29,7 +29,7 @@ def main() -> int:
     if len(targets) < 2:
         print(f"SKIP: no heavily-instanced scene targets in this index ({len(targets)} found)")
         return 0
-    cs = nav.clusters()
+    cs = navstore.clusters()
     of = {}
     for c in cs:
         for p, _cls in c["paths"]:
@@ -68,7 +68,7 @@ def main() -> int:
         ok = ok and good
 
     # determinism: two runs must produce identical membership
-    cs2 = nav.clusters()
+    cs2 = navstore.clusters()
     m1 = {p: c["id"] for c in cs for p, _ in c["paths"]}
     m2 = {p: c["id"] for c in cs2 for p, _ in c["paths"]}
     checks.append(("deterministic across runs", m1 == m2))

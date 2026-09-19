@@ -746,10 +746,11 @@ def build_store(cfg: Path) -> str:
     """Rescan + bake inside a child process so this script never binds a
     nav config itself (per-command env only)."""
     code = (
-        "import sys, nav, viz\n"
-        "nav.rescan()\n"
+        "import sys, viz\n"
+        "import navindex, navstore\n"
+        "navindex.rescan()\n"
         "p = viz.generate()\n"
-        "print('CORPUS files=%d' % nav.count())\n"
+        "print('CORPUS files=%d' % navstore.count())\n"
         "print('BAKE ' + str(p))\n"
     )
     env = {**os.environ,

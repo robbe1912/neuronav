@@ -24,7 +24,7 @@ def churn(paths: list[str], root) -> list[float] | None:
     """Per-file git churn of the TARGET project, normalized to 0..1.
 
     Counts how often each indexed file appears in the last 90 days of
-    commits (`git log --name-only --since=90.days`) at nav.ROOT — the
+    commits (`git log --name-only --since=90.days`) at navconfig.ROOT — the
     scanned game repo, not the neuronav tooling repo. Git prints paths
     relative to the repo top level, which may sit above ROOT, so those
     are rebased onto ROOT before matching node paths. Returns None
