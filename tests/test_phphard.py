@@ -44,7 +44,7 @@ os.environ["NEURONAV_CONFIG"] = str(TMP / "config.json")
 os.environ.setdefault("NEURONAV_EMBED_FAKE", "1")
 
 import graph  # noqa: E402  (binds the fixture config via NEURONAV_CONFIG)
-import nav  # noqa: E402
+import navindex  # noqa: E402
 from extractors import php as P  # noqa: E402
 from extractors import registry_for  # noqa: E402
 
@@ -177,7 +177,7 @@ check("f7: double build byte-identical (edges + dead candidates)",
 
 # ---- f8 end-to-end ----------------------------------------------------------------
 
-walked = list(nav.iter_files())
+walked = list(navindex.iter_files())
 check("f8: walk finds all 9 fixture files", len(walked) == 9, str(len(walked)))
 check("f8: registry ownership .php -> php", registry_for(".php") is P)
 check("f8: executable files parse (fns > 0; Greets.php is a pure-declaration interface — funcs={} by the java/C declaration law)",

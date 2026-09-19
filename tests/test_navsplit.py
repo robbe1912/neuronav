@@ -79,16 +79,19 @@ def main() -> None:
                 "extensions": [".py"],
                 "exclude_dirs": [".git"],
                 "state_dir": str((root / "state2").resolve()),
+                "embed_model": "scope-probe-model",
             }), encoding="utf-8")
-            pre = (navconfig.ROOT, navconfig.COLLECTION,
-                   navconfig.STATE_DIR, navconfig.DB_DIR)
+            # GK rider (#351 gate leg): snapshot EVERY rebindable, not a
+            # hand-picked tuple — a restore that skips one field (his
+            # sabotage: EMBED_DIM) must fail here, not slip through.
+            pre = {f: getattr(navconfig, f) for f in navconfig._CONFIG_FIELDS}
             with navconfig.config_scope(cfg2):
                 scoped_ok = (navconfig.COLLECTION == "other-smoke"
                              and navconfig.STATE_DIR == (root / "state2").resolve())
             check("config_scope rebinds and exact-restores across leaves",
-                  scoped_ok and (navconfig.ROOT, navconfig.COLLECTION,
-                                 navconfig.STATE_DIR, navconfig.DB_DIR) == pre,
-                  f"post={navconfig.COLLECTION}")
+                  scoped_ok
+                  and {f: getattr(navconfig, f) for f in navconfig._CONFIG_FIELDS} == pre,
+                  f"post={ {f: getattr(navconfig, f) for f in navconfig._CONFIG_FIELDS} }")
 
             # 3. singleton identity: one lock object per store across
             #    alternation — per-leaf re-instantiation would reopen the
