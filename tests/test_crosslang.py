@@ -158,13 +158,25 @@ _toy = Path(tempfile.mkdtemp(prefix="neuronav_crosslang_"))
     "}\n"
 )
 (_toy / "helper.py").write_text("def python_side_tool():\n    return 3\n")
+(_toy / "plug.lua").write_text(
+    "local P = {}\n"
+    "function P.start() return 1 end\n"
+    "function P.idle_tool() return 2 end\n"
+    "return P\n"
+)
+(_toy / "boot.lua").write_text(
+    'local plug = require("plug")\n'
+    "function boot_main()\n"
+    "    plug.start()\n"
+    "end\n"
+)
 _cfg = Path(tempfile.gettempdir()) / "neuronav_crosslang_config.json"
 _cfg.write_text(json.dumps({
     "root": _toy.as_posix(),
     "collection": "crosslang",
     "state_dir": "default",
     "include_dirs": ["."],
-    "extensions": [".py", ".h", ".cpp"],
+    "extensions": [".py", ".h", ".cpp", ".lua"],
     "exclude_dirs": [],
 }))
 navconfig._apply_config(_cfg)
@@ -180,5 +192,11 @@ check("cpp dead tier in mixed tree", ("widget.cpp", "unused_cpp_helper") in _dea
 check("py coexists with cpp", any(f.ext == ".py" for f in g2.files.values())
       and any(f.ext in (".h", ".cpp") for f in g2.files.values()),
       str(sorted(g2.files)))
+check("lua coexists with py+cpp (issue #342)", any(f.ext == ".lua" for f in g2.files.values()),
+      str(sorted(g2.files)))
+check("lua require edge + whole-module liveness in mixed tree",
+      "plug.lua::start" in g2.edges.get("boot.lua::boot_main", set())
+      and ("plug.lua", "idle_tool") not in _dead2,
+      f"edges={sorted(g2.edges.get('boot.lua::boot_main', set()))} dead={sorted(_dead2)}")
 
 finish()

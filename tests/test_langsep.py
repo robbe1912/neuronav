@@ -233,6 +233,7 @@ import extractors.common as _common  # noqa: E402
 import extractors.js as _js  # noqa: E402
 import extractors.rust as _rust  # noqa: E402
 import extractors.ts as _ts  # noqa: E402
+import extractors.lua as _lua  # noqa: E402
 check("front-end leaf helpers are common.py's (identity, ts/js/rust)",
       _ts._text is getattr(_common, "node_text", None)
       and _ts._line is getattr(_common, "node_line", None)
@@ -244,23 +245,27 @@ check("front-end leaf helpers are common.py's (identity, ts/js/rust)",
       and _rust._line is getattr(_common, "node_line", None)
       and _rust._rel_of_target is getattr(_common, "rel_of_target", None),
       "extractors must alias common's node_text/node_line/rel_of_target")
+check("front-end leaf helpers are common.py's (identity, lua #342)",
+      _lua._text is getattr(_common, "node_text", None)
+      and _lua._line is getattr(_common, "node_line", None),
+      "lua must alias common's node_text/node_line (rel_of_target is js-family)")
 _leaf_src = {m: (HERE / "extractors" / f"{m}.py").read_text(encoding="utf-8")
-             for m in ("ts", "js", "rust")}
+             for m in ("ts", "js", "rust", "lua")}
 _verbatim = sorted(
     f"{m}.py:{pat}" for m, s in _leaf_src.items()
     for pat in ("def _text(", "def _line(", "def _ident_child(", "def _rel_of_target(")
     if pat in s
 )
-check("no verbatim node-helper/_rel_of_target spelling remains in ts/js/rust",
+check("no verbatim node-helper/_rel_of_target spelling remains in ts/js/rust/lua",
       not _verbatim, ", ".join(_verbatim) or "clean")
 _hoist_src = {m: (HERE / "extractors" / f"{m}.py").read_text(encoding="utf-8")
-              for m in ("ts", "js", "rust", "python")}
+              for m in ("ts", "js", "rust", "python", "lua")}
 _unhoisted = sorted(
     m + ".py" for m, s in _hoist_src.items()
     if "make_import_liveness_sweep" not in s or "receiver_env" not in s
 )
-check("sweep shell + receiver prologue hoisted (ts/js/rust/python)",
-      not _unhoisted, ", ".join(_unhoisted) or "all four import the shells")
+check("sweep shell + receiver prologue hoisted (ts/js/rust/python/lua)",
+      not _unhoisted, ", ".join(_unhoisted) or "all five import the shells")
 
 # ---- summary -------------------------------------------------------------------
 # summary tail is a pre-#301 byte pin (names failures)

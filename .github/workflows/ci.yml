@@ -48,6 +48,8 @@ jobs:
         run: python -X utf8 tests/test_chard.py
       - name: phphard (PHP extractor edge cases, issue #343)
         run: python -X utf8 tests/test_phphard.py
+      - name: luahard (Lua extractor edge cases, issue #342)
+        run: python -X utf8 tests/test_luahard.py
       - name: autorescan (stat-gate freshness, watcher, stdio e2e)
         run: python -X utf8 tests/test_autorescan.py
       # issue #180: stdio E2E without any committed store — the suite
