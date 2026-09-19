@@ -306,8 +306,23 @@ _routed = sorted(
     p.relative_to(FIX).as_posix()
     for root in ("app", "pages") for p in (FIX / root).rglob("*")
     if p.is_file())
-check("f28 js routing-root family is exactly the #328 fixture set",
-      _routed == ["app/home.js"], str(_routed))
+check("f28 js routing-root family is exactly the #328+#340 fixture set",
+      _routed == ["app/home.js", "app/lib/colo.js", "app/nested/deep.js",
+                  "pages/sub/deep_page.js"],
+      str(_routed))
+
+# fixture: deep route nesting (#340, js twin) — routes at ANY depth under
+# a top-level root are entries; colocation over-approximates toward ALIVE
+check("f28 js #340 deep app/nested/deep.js route is an entry",
+      alive("app/nested/deep.js", "default"))
+check("f28 js #340 deep route's exclusive helper revives",
+      alive("lib/deep_js.js", "renderDeepJs"))
+check("f28 js #340 nested pages/sub/deep_page.js route is an entry",
+      alive("pages/sub/deep_page.js", "default"))
+check("f28 js #340 nested pages helper revives",
+      alive("lib/sub_page.js", "renderSubPage"))
+check("f28 js #340 colocation file inside app/ roots too (over-approx " +
+      "toward ALIVE, honest leg)", alive("app/lib/colo.js", "coloHelperJs"))
 
 # suite-level pins
 _js_rows = [(p, n) for (p, n) in DEAD if p.endswith((".js", ".jsx", ".mjs", ".cjs"))]

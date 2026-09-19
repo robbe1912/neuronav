@@ -830,21 +830,20 @@ def _entry_components(fs: FileSym, ctx) -> Iterator[str]:
 
 
 def _entry_file_routes(fs: FileSym, ctx) -> Iterator[str]:
-    """File-based routing (#328, mirrors ts.py): expo-router `app/**` and
-    Next `pages/**` mount route files by convention — no import points at
-    them, so an anonymous-default route trends dead alongside its
-    exclusive deps (a named/PascalCase default is already alive via the
-    component rule). A file DIRECTLY under a top-level routing root — or
-    one `(group)` segment inside `app/` — is an entry; imports revive via
-    the reachability walk. Top-level only, deliberately conservative; no
-    config knob."""
+    """File-based routing (#328, deepened #340; mirrors ts.py):
+    expo-router `app/**` and Next `pages/**` mount route files by
+    convention at ANY depth — no import points at them, so an
+    anonymous-default route trends dead alongside its exclusive deps
+    (a named/PascalCase default is already alive via the component
+    rule). Every ES-family file under a top-level routing root is an
+    entry; imports revive via the reachability walk. Deliberately
+    over-approximates toward ALIVE for colocation files inside the
+    subtree — the conservative direction for liveness tiers.
+    Top-level roots only; no config knob."""
     if fs.ext not in JS_EXTS:
         return
     parts = fs.path.split("/")
-    routed = (len(parts) == 2 and parts[0] in ("app", "pages")) or (
-        len(parts) == 3 and parts[0] == "app"
-        and parts[1].startswith("(") and parts[1].endswith(")"))
-    if routed:
+    if len(parts) >= 2 and parts[0] in ("app", "pages"):
         yield from entry_keys(fs, sorted(fs.funcs))
 
 

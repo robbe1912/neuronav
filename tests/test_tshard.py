@@ -313,9 +313,34 @@ _routed = sorted(
     p.relative_to(FIX).as_posix()
     for root in ("app", "pages") for p in (FIX / root).rglob("*")
     if p.is_file())
-check("f28 routing-root family is exactly the #328 fixture set",
-      _routed == ["app/(g)/profile.tsx", "app/index.tsx", "pages/about.tsx"],
+check("f28 routing-root family is exactly the #328+#340 fixture set",
+      _routed == ["app/(g)/profile.tsx", "app/(g)/settings/layout.tsx",
+                  "app/a/b.tsx", "app/dashboard/page.tsx", "app/index.tsx",
+                  "app/lib/colo.tsx", "pages/about.tsx", "pages/sub/x.tsx"],
       str(_routed))
+
+# fixture 15b: deep route nesting (#340) — real file-routing trees mount
+# routes at ANY depth under a top-level root; the direct-only rule left
+# every deeper route (and its exclusive helper — the import originates
+# from a dead file) trending dead
+check("f28 #340 deep app/dashboard/page.tsx route is an entry",
+      alive("app/dashboard/page.tsx", "default"))
+check("f28 #340 deep route's exclusive helper revives",
+      alive("lib/page_deep.ts", "renderPageDeep"))
+check("f28 #340 expo deep-tree app/a/b.tsx is an entry",
+      alive("app/a/b.tsx", "default"))
+check("f28 #340 expo deep helper revives",
+      alive("lib/deep_b.ts", "renderDeepB"))
+check("f28 #340 nested pages/sub/x.tsx route is an entry",
+      alive("pages/sub/x.tsx", "default"))
+check("f28 #340 nested pages helper revives",
+      alive("lib/sub_x.ts", "renderSubX"))
+check("f28 #340 group+depth app/(g)/settings/layout.tsx is an entry",
+      alive("app/(g)/settings/layout.tsx", "default"))
+check("f28 #340 group+depth helper revives",
+      alive("lib/layout_g.ts", "renderLayoutG"))
+check("f28 #340 colocation file inside app/ roots too (over-approx " +
+      "toward ALIVE, honest leg)", alive("app/lib/colo.tsx", "coloHelper"))
 
 # suite-level pins
 _ts_rows = [(p, n) for (p, n) in DEAD if p.endswith((".ts", ".tsx"))]
