@@ -7,6 +7,7 @@
 import hashlib
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -184,31 +185,76 @@ def main():
     # win32 value): the variance axis is the runner's math backend, not
     # the OS, so no platform pin can hold. The dense n<=2048
     # path has no quantization thresholds and keeps its absolute byte pins
-    # above. In-process identity is the portable invariant. ~2x98s.
-    N9 = 2600
-    import random as _random9
-    rng9 = _random9.Random(5)
-    links9 = []
-    for i in range(N9 - 1):
-        if i % 3 != 2:
-            links9.append({"s": i, "t": i + 1, "w": 2.0, "ty": "call"})
-    for _ in range(600):
-        a9, b9 = rng9.randrange(N9), rng9.randrange(N9)
-        if a9 != b9:
-            links9.append({"s": a9, "t": b9, "w": 1.0,
-                           "ty": rng9.choice(("call", "inst", "attach"))})
-    sims9 = [(i, i + 1, rng9.uniform(0.5, 0.95))
-             for i in range(0, N9 - 1, 26)]
-    hot9 = [rng9.choice((0.0, 1.0)) for _ in range(N9)]
-    cid9 = [min(i * 4 // N9, 3) for i in range(N9)]
-    out9 = layout_fn(N9, links9, sims9, cid9, hot=hot9)
-    h9 = hashlib.sha256(
-        json.dumps(out9, separators=(",", ":")).encode()).hexdigest()
-    out9b = layout_fn(N9, links9, sims9, cid9, hot=hot9)
-    h9b = hashlib.sha256(
-        json.dumps(out9b, separators=(",", ":")).encode()).hexdigest()
-    check("sparse-path n=2600 digest is same-machine deterministic (#309)",
-          h9 == h9b, f"{h9} vs {h9b}")
+    # issue #347 lever: §9's scale rides NEURONAV_STRATA_N (default 2600,
+    # the pinned full gate for CI and solo runs; run_battery's pool passes
+    # 2100 to break the makespan this leg governs) — but ONLY above the
+    # live cut, extracted from _layout's source at runtime so a tuned cut
+    # can never let a stale hardcoded bound silently flip §9 onto the
+    # dense path and void the leg (the loud-failure law).
+    def _dense_cut(src: str) -> int:
+        """The `n <= C` dense-branch constant in _layout: the cut §9 must
+        clear. AST, not grep — the §10 comments name the constant too.
+        Zero or conflicting constants raise: both change §9's meaning and
+        must be seen, not guessed."""
+        fn = next(n for n in _ast.walk(_ast.parse(src))
+                  if isinstance(n, _ast.FunctionDef) and n.name == "_layout")
+        cuts = {t.comparators[0].value
+                for t in (x.test for x in _ast.walk(fn)
+                          if isinstance(x, _ast.If))
+                if isinstance(t, _ast.Compare) and isinstance(t.left, _ast.Name)
+                and t.left.id == "n" and len(t.ops) == 1
+                and isinstance(t.ops[0], _ast.LtE) and len(t.comparators) == 1
+                and isinstance(t.comparators[0], _ast.Constant)}
+        if len(cuts) != 1:
+            raise ValueError(
+                f"expected one n<=C dense cut in _layout, got {sorted(cuts)}")
+        return cuts.pop()
+
+    def _n9_from_env(env_raw: "str | None", src: str) -> tuple[int, int, str]:
+        """(n9, cut, problem): the env scale or the 2600 default,
+        validated against the live cut. problem == "" means sound to run
+        (env unset → the pinned 2600 default, silent-drift-guarded by §11)."""
+        cut = _dense_cut(src)
+        try:
+            n9 = int(env_raw) if env_raw else 2600
+        except ValueError:
+            return -1, cut, f"NEURONAV_STRATA_N={env_raw!r} is not an integer"
+        if n9 <= cut:
+            return n9, cut, (
+                f"n={n9} is at/below the dense-branch cut {cut} — §9 must "
+                f"run the sparse path: unset NEURONAV_STRATA_N for the 2600 "
+                f"default or pass a value > {cut}")
+        return n9, cut, ""
+
+    _strata_src = (ROOT / "layout.py").read_text(encoding="utf-8")
+    _env9 = os.environ.get("NEURONAV_STRATA_N")
+    N9, _cut9, _prob9 = _n9_from_env(_env9, _strata_src)
+    check(f"§9 scale sound (n={N9}, cut={_cut9}, env={_env9!r})", not _prob9,
+          _prob9 or "sparse leg runs above the live cut (#347)")
+    if not _prob9:
+        import random as _random9
+        rng9 = _random9.Random(5)
+        links9 = []
+        for i in range(N9 - 1):
+            if i % 3 != 2:
+                links9.append({"s": i, "t": i + 1, "w": 2.0, "ty": "call"})
+        for _ in range(600):
+            a9, b9 = rng9.randrange(N9), rng9.randrange(N9)
+            if a9 != b9:
+                links9.append({"s": a9, "t": b9, "w": 1.0,
+                               "ty": rng9.choice(("call", "inst", "attach"))})
+        sims9 = [(i, i + 1, rng9.uniform(0.5, 0.95))
+                 for i in range(0, N9 - 1, 26)]
+        hot9 = [rng9.choice((0.0, 1.0)) for _ in range(N9)]
+        cid9 = [min(i * 4 // N9, 3) for i in range(N9)]
+        out9 = layout_fn(N9, links9, sims9, cid9, hot=hot9)
+        h9 = hashlib.sha256(
+            json.dumps(out9, separators=(",", ":")).encode()).hexdigest()
+        out9b = layout_fn(N9, links9, sims9, cid9, hot=hot9)
+        h9b = hashlib.sha256(
+            json.dumps(out9b, separators=(",", ":")).encode()).hexdigest()
+        check(f"sparse-path n={N9} digest is same-machine deterministic (#309)",
+              h9 == h9b, f"{h9} vs {h9b}")
 
     # 10. source contract: every kcoef reference in _layout must sit inside
     #     an `n <= 2048` dense branch — the sparse path must never read the
@@ -260,7 +306,25 @@ def main():
     check("kcoef contract bites in the sparse else-region (dead code too)",
           _kcoef_sparse_lines(_dense_else_src) == [6],
           str(_kcoef_sparse_lines(_dense_else_src)))
-    print(f"\n{N} nodes · {len(links)} links · {len(FAILURES)} failure(s)")
+    # 11. lever teeth (#347): the §9 scale knob can never silently void
+    #     the sparse leg — default pin, non-integer, below-cut, and
+    #     cut-drift all surface as failures naming the live bound.
+    _n_def, _c_def, _p_def = _n9_from_env(None, _strata_src)
+    check("§9 default scale is the pinned 2600 (env unset)",
+          _p_def == "" and _n_def == 2600, f"n={_n_def} — {_p_def}")
+    _n_bad, _, _p_bad = _n9_from_env("2048", _strata_src)
+    check("§9 rejects a below-cut env value loudly",
+          _n_bad == 2048 and str(_cut9) in _p_bad and "sparse path" in _p_bad,
+          _p_bad)
+    _n_nan, _, _p_nan = _n9_from_env("abc", _strata_src)
+    check("§9 rejects a non-integer env value loudly",
+          _p_nan.startswith("NEURONAV_STRATA_N"), _p_nan)
+    _n_dr, _c_dr, _p_dr = _n9_from_env(
+        "2100", "def _layout(n):\n    if n <= 2200:\n        x = 1\n")
+    check("§9 cut-drift tooth: a tuned cut (2200) fails a stale 2100 scale",
+          _c_dr == 2200 and _p_dr and "2200" in _p_dr, f"cut={_c_dr} — {_p_dr}")
+    print(f"\n{N} nodes · {len(links)} links · §9 n={N9} · "
+          f"{len(FAILURES)} failure(s)")
     if FAILURES:
         print("FAILED:", ", ".join(FAILURES))
         sys.exit(1)
