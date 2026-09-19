@@ -48,10 +48,10 @@ os.environ.setdefault("NEURONAV_EMBED_FAKE", "1")
 sys.path.insert(0, str(HERE))
 
 import clusters as C  # noqa: E402  (binds the temp config via NEURONAV_CONFIG)
-import nav  # noqa: E402
+import navconfig
 import archrules as A  # noqa: E402
 
-RULES = nav.STATE_DIR / "arch-rules.json"
+RULES = navconfig.STATE_DIR / "arch-rules.json"
 
 
 def write_rules(rules, extra=None):
@@ -276,12 +276,12 @@ check("violations sorted severity-first then rule id",
       str([x["rule"] for x in r1["violations"]]))
 
 # ------------------------------------- 10. rules follow the routed state dir
-saved = nav.STATE_DIR
+saved = navconfig.STATE_DIR
 try:
     other = TMP / "other_state"
     other.mkdir()
-    nav.STATE_DIR = other
-    check("rules_path reads nav.STATE_DIR at call time (routing law)",
+    navconfig.STATE_DIR = other
+    check("rules_path reads navconfig.STATE_DIR at call time (routing law)",
           A.rules_path() == other / "arch-rules.json", str(A.rules_path()))
     check("routed project without rules: not configured",
           A.check(CS, G)["configured"] is False)
@@ -293,7 +293,7 @@ try:
     check("routed rules file is the one evaluated",
           rep["configured"] and rep["rules"] == 1 and not rep["violations"], str(rep))
 finally:
-    nav.STATE_DIR = saved
+    navconfig.STATE_DIR = saved
 
 # --------------------- 11. scene->scene wiring feeds no rule number (#267)
 # cross_tallies carves scene->scene resource references (pack composition)

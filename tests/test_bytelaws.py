@@ -58,7 +58,7 @@ os.environ["NEURONAV_CONFIG"] = str(CFG)
 os.environ.setdefault("NEURONAV_EMBED_FAKE", "1")
 sys.path.insert(0, str(HERE))
 
-import nav  # noqa: E402  (binds the scratch config above)
+import navconfig, navindex, navstore
 import viz  # noqa: E402
 
 
@@ -147,12 +147,12 @@ check("onboard scaffold wrote the project config",
       and json.loads(onboard_scaffold.read_text(encoding="utf-8-sig"))["collection"] == "main",
       str(onboard_scaffold))
 
-# (c) the export_base manifest (nav.export_base -> base/manifest.json)
-nav.rescan()
-check("scratch corpus indexed", nav.count() == 5, str(nav.count()))
-m = nav.export_base()
+# (c) the export_base manifest (navindex.export_base -> base/manifest.json)
+navindex.rescan()
+check("scratch corpus indexed", navstore.count() == 5, str(navstore.count()))
+m = navindex.export_base()
 check("export produced a manifest", m["count"] == 5 and m["shards"] == 1, str(m))
-no_bom("export_base manifest", nav.BASE_DIR / nav.MANIFEST_NAME)
+no_bom("export_base manifest", navconfig.BASE_DIR / navindex.MANIFEST_NAME)
 
 # (d) the bake: graph.html carries the DATA + importmap JSON splices.
 #     json.dumps is ASCII-escaped and the vendored JS rides base64, so a

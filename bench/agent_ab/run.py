@@ -125,30 +125,30 @@ def main() -> int:
 
     sys.path.insert(0, str(REPO))
     import graph  # noqa: E402  (binds the booted profile via nav)
-    import nav  # noqa: E402
+    import navconfig, navindex, navstore
 
     from bench.agent_ab import arms as ab_arms
     from bench.agent_ab import tasks as ab_tasks
 
-    stats = nav.rescan()
+    stats = navindex.rescan()
     g = graph.get_graph(rebuild=True)
     graph.sync_functions(stats.get("changed", []),
                          stats.get("deleted_paths", []))
     n_funcs = sum(len(fs.funcs) for fs in g.files.values())
     n_edges = sum(len(e) for e in g.edges.values())
-    print(f"index: {nav.count()} files, {n_funcs} funcs, {n_edges} call "
+    print(f"index: {navstore.count()} files, {n_funcs} funcs, {n_edges} call "
           f"edges (rescan {stats['added']}+/{stats['updated']}~/"
-          f"{stats['deleted']}-, embed {nav.embed_mode()})")
+          f"{stats['deleted']}-, embed {navstore.embed_mode()})")
 
     tasks, notes = ab_tasks.derive_tasks(
-        g, nav.ROOT, per_class=args.per_class, dead_each=args.dead_each)
+        g, navconfig.ROOT, per_class=args.per_class, dead_each=args.dead_each)
     for note in notes:
         print(note)
     if not tasks:
         print("ERROR: no task class could be exercised on this index")
         return 3
 
-    arms = {"grep": ab_arms.make_grep_arm(nav.ROOT),
+    arms = {"grep": ab_arms.make_grep_arm(navconfig.ROOT),
             "neuronav": ab_arms.make_nav_arm()}
     rows1 = ab_arms.run_battery(tasks, arms)
     rows2 = ab_arms.run_battery(tasks, arms)
@@ -171,9 +171,9 @@ def main() -> int:
             "commit": _git("rev-parse", "--short", "HEAD") or "unknown",
             "dirty": bool(_git("status", "--porcelain")),
             "mode": "fake" if args.fake else "real",
-            "model": "hash-embed" if args.fake else nav.EMBED_MODEL,
+            "model": "hash-embed" if args.fake else navconfig.EMBED_MODEL,
             "index": {
-                "files": nav.count(), "funcs": n_funcs, "edges": n_edges,
+                "files": navstore.count(), "funcs": n_funcs, "edges": n_edges,
                 "tasks": len(tasks),
             },
             "notes": notes,

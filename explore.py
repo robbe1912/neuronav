@@ -19,7 +19,7 @@ import re
 from pathlib import Path
 
 import graph
-import nav
+import navconfig, navstore
 import recall
 
 TOTAL_CAP = 20_000          # chars; hosts externalize bigger results to files,
@@ -92,7 +92,7 @@ def _seed_hits(query: str, n: int) -> tuple[list[dict], bool, str | None]:
             )
         return _lexical_fallback(query, n), True, None
     except Exception as exc:
-        return _lexical_fallback(query, n), True, nav.embed_failure_reason(exc)
+        return _lexical_fallback(query, n), True, navstore.embed_failure_reason(exc)
 
 
 def _flow(g, path: str, fn_name: str) -> str:
@@ -127,7 +127,7 @@ def _slice(path: str, start: int, end: int, cap: int) -> str | None:
     None when the file is unreadable; "" when no line fits (start past
     EOF, or a cap smaller than the first line)."""
     try:
-        text = (nav.ROOT / path).read_text(encoding="utf-8", errors="replace")
+        text = (navconfig.ROOT / path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
     lines = text.splitlines()
@@ -285,11 +285,11 @@ def run(query: str, n: int = 4, anchor: str = "", orientation: bool = True) -> s
     # nothing rescans between them, so sharing the result is semantically
     # identical and halves the pipeline cost (issue #44)
     try:
-        cs = nav.clusters()
+        cs = navstore.clusters()
         cs_err = None
     except Exception as exc:
         cs = None
-        cs_err = nav.embed_failure_reason(exc)
+        cs_err = navstore.embed_failure_reason(exc)
     # orientation=False (issue #125): repeat calls skip the constant
     # preamble (~27% of the hard budget) — the shared clusters pass still
     # feeds slice labels, and the freed budget flows to the stages below

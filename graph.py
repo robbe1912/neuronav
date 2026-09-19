@@ -27,8 +27,7 @@ import re
 import sys
 from collections import Counter, defaultdict, deque
 from pathlib import Path
-
-import nav
+import navconfig, navindex, navstore
 import predicates
 import recall
 from extractors import (
@@ -135,8 +134,8 @@ class Graph:
     # -- build -------------------------------------------------------------------
 
     def build(self) -> "Graph":
-        for path in nav.iter_files():
-            rel = nav.file_id(path)
+        for path in navindex.iter_files():
+            rel = navindex.file_id(path)
             extractor = registry_for(path.suffix)
             if extractor is None:
                 continue
@@ -157,15 +156,15 @@ class Graph:
         # autoload singletons via the registry harvest (one home shared
         # with clusters.py's inverse map); script-form only, and only
         # files the index actually carries
-        amap = harvest_autoloads(nav.ROOT, scripts_only=True)
+        amap = harvest_autoloads(navconfig.ROOT, scripts_only=True)
         self.autoloads = {n: r for n, r in amap.items() if r in self.files}
         for name, rel in self.autoloads.items():
             self.class_map.setdefault(name, rel)
 
         # asset scenes sit outside the search index but carry animation method
         # tracks + connections that fire script funcs — parse for wiring only
-        for path in (nav.ROOT / "assets").rglob(ASSET_SCENE_GLOB) if (nav.ROOT / "assets").is_dir() else ():
-            rel = nav.file_id(path)
+        for path in (navconfig.ROOT / "assets").rglob(ASSET_SCENE_GLOB) if (navconfig.ROOT / "assets").is_dir() else ():
+            rel = navindex.file_id(path)
             if rel not in self.files:
                 self.files[rel] = registry_for(path.suffix).parse(path, rel)
 
@@ -259,13 +258,13 @@ class Graph:
     # thin wrappers so the walk/read contracts (config excludes, #117
     # race guards) stay single-sourced in nav.
     def read_file(self, rel: str) -> str:
-        return nav._read_text(nav.ROOT / rel)
+        return navindex._read_text(navconfig.ROOT / rel)
 
     def path_for(self, rel: str) -> Path:
-        return nav.ROOT / rel
+        return navconfig.ROOT / rel
 
     def walk_root_files(self, suffixes):
-        return nav.iter_root_files(suffixes)
+        return navindex.iter_root_files(suffixes)
 
     def script_rels(self, fs: FileSym) -> list[str]:
         """Indexed scripts for a scene, in resolution order: ext_resource
@@ -331,7 +330,7 @@ class Graph:
             counts: Counter = Counter()
             for rel in sorted(self.files):
                 try:
-                    text = nav._read_text(nav.ROOT / rel)
+                    text = navindex._read_text(navconfig.ROOT / rel)
                 except OSError:
                     continue
                 counts.update(MENTION_TOKEN_RE.findall(text))
@@ -820,7 +819,7 @@ EDGE_TYPE_SET = frozenset(EDGE_TYPES)
 def _fn_collection() -> "chromadb.Collection":
     # per-config collection: two checkouts/projects sharing one .chroma dir
     # must not mix function vectors (hardcoded name collided across configs)
-    return nav.fns_collection()
+    return navstore.fns_collection()
 
 
 def _all_filesyms() -> dict[str, FileSym]:
@@ -854,7 +853,7 @@ def _cast_scale() -> float:
     ids/docs/metadata; 1.0 = calibrated thresholds; other positive
     values scale MICRO_FN_CHARS/MONSTER_FN_CHARS. Negative clamps to
     0.0 (treated as off)."""
-    return max(0.0, float(getattr(nav, "CHUNK_CAST", 0.0)))
+    return max(0.0, float(getattr(navconfig, "CHUNK_CAST", 0.0)))
 
 _OPEN_RE = re.compile(r"[(\[{]$")
 
@@ -1198,7 +1197,7 @@ def _chunk_plan(fs: FileSym, funcs: dict[str, Func], scale: float = 1.0) -> None
 # fresh-store A/B showed no lift), so the size-aware shape earns its keep
 # on the docs nav embeds per FILE: recall's vector side queries exactly
 # that collection. Self-index distribution that calibrates the reuse:
-# 12/58 files exceed nav.MAX_EMBED_CHARS (30k) — their bytes past the
+# 12/58 files exceed navstore.MAX_EMBED_CHARS (30k) — their bytes past the
 # truncation are invisible to the vector side today (viz.py 462k = 6.5%
 # visible; graph.py/nav.py/server.py all >50k); fn bodies p50=547 chars,
 # micro (<=220) = 28%, monster (>2000) = 15% — the #76 thresholds already
@@ -1297,7 +1296,7 @@ def _fn_sections(fs: FileSym, fn: Func, scale: float = 1.0) -> list[str]:
 
 def file_doc(path: Path, rel: str, text: str, scale: float = 1.0) -> str:
     """The cAST-shaped embed document for one file (issue #229) — what
-    nav._rescan_locked embeds and stores in place of the raw file text.
+    navindex._rescan_locked embeds and stores in place of the raw file text.
     Size-aware, signature-first (cAST 2025; RepoBench):
     - head: path, class/extends, the full symbol surface (every fn name
       rides the doc, capped), the resolved import surface (`# imports:`,
@@ -1310,7 +1309,7 @@ def file_doc(path: Path, rel: str, text: str, scale: float = 1.0) -> str:
     - sections flatten by (chunk index, source line): chunk 1 of EVERY
       fn embeds before chunk 2 of ANY fn, so a 460k file no longer
       buries its later fns under the 30k embed truncation;
-    - assembly stays under nav.MAX_EMBED_CHARS — the embed-side
+    - assembly stays under navstore.MAX_EMBED_CHARS — the embed-side
       truncation never clips shaped docs blind.
     Fallbacks keep the raw text verbatim: scale <= 0 (knob off — the
     byte-identical pre-#229 surface), no parser for the suffix, or a
@@ -1325,7 +1324,7 @@ def file_doc(path: Path, rel: str, text: str, scale: float = 1.0) -> str:
     fs = mod.parse(path, rel)
     if not fs.funcs:
         return text
-    import nav  # lazy: the budget mirrors the embed-side truncation
+    import navconfig, navindex, navstore
 
     head = [f"# {rel}"]
     if fs.class_name:
@@ -1381,7 +1380,7 @@ def file_doc(path: Path, rel: str, text: str, scale: float = 1.0) -> str:
                 f"-- {m.name} --\n{m.body}" for m in micros
             )
         per_fn.append(sections)
-    budget = int(nav.MAX_EMBED_CHARS)
+    budget = int(navstore.MAX_EMBED_CHARS)
     parts: list[str] = [doc_head]
     used = len(doc_head)
     for idx in range(max((len(s) for s in per_fn), default=0)):
@@ -1410,7 +1409,7 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
     correct and cheap. Purges resolve ids via where-get then
     delete(ids=...): chroma's delete(where=...) was observed to no-op
     silently under client churn while get(where=...) and delete(ids=...)
-    stay reliable. Every chroma write rides nav._db_lock (issue #117):
+    stay reliable. Every chroma write rides navstore._db_lock (issue #117):
     the parse/read phase runs lock-free, purges and upserts serialize
     with all other writers (server auto-rescan vs CLI rescan)."""
     col = _fn_collection()
@@ -1419,17 +1418,17 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
     # wrong vector space (sha-gating sees unchanged docs and would skip).
     # An absent key is pre-#220 real lineage, never a mismatch.
     stamped_mode = (col.metadata or {}).get("embed_mode", "real")
-    mode_mismatch = stamped_mode != nav.embed_mode()
+    mode_mismatch = stamped_mode != navstore.embed_mode()
     if mode_mismatch:
         print(
             f"neuronav: fn store '{col.name}' holds {stamped_mode!r}-mode "
-            f"vectors but this pass embeds {nav.embed_mode()!r} — re-embedding "
+            f"vectors but this pass embeds {navstore.embed_mode()!r} — re-embedding "
             "every function (#220)",
             file=sys.stderr,
         )
         changed = sorted(rel for rel, fs in _all_filesyms().items() if fs.funcs)
     cast = _cast_scale()  # nav CHUNK_CAST: 0.0 = legacy single-doc pass
-    dirty = nav.DB_DIR / "fns.dirty"
+    dirty = navconfig.DB_DIR / "fns.dirty"
     if dirty.is_file() and not changed:
         changed = sorted(rel for rel, fs in _all_filesyms().items() if fs.funcs)
     if col.count() == 0 and not changed:
@@ -1446,9 +1445,9 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
     # other writer per _db_lock's contract; the parse/read phase above
     # them stays lock-free (readers skip the lock)
     def _purge_path(rel: str) -> None:
-        """Whole-path fn purge. Caller holds nav._db_lock."""
+        """Whole-path fn purge. Caller holds navstore._db_lock."""
         nonlocal purged_paths, purged_fns
-        got = nav.chroma_read(
+        got = navstore.chroma_read(
             f"fn purge {rel}", lambda: col.get(where={"path": rel}, include=[])
         )
         if got["ids"]:
@@ -1465,7 +1464,7 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
     gone_batches: list[list[str]] = []
     cached = 0
     for rel in changed:
-        path = nav.ROOT / rel
+        path = navconfig.ROOT / rel
         suffix = path.suffix
         # scenes have no funcs; only languages with an extractor are
         # parseable — a file that left parseable space is purged, not kept
@@ -1479,7 +1478,7 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
         current: set[str] = set()
         existing: dict[str, dict[str, object]] = {}
         if populated:
-            got = nav.chroma_read(
+            got = navstore.chroma_read(
                 f"fn cache {rel}",
                 lambda: col.get(where={"path": rel}, include=["metadatas"]),
             )
@@ -1519,24 +1518,24 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
         if gone:
             gone_batches.append(gone)
     try:
-        with nav._db_lock():
+        with navstore._db_lock():
             for rel in purge_rels:
                 _purge_path(rel)
             for gone in gone_batches:
                 col.delete(ids=gone)
                 purged_fns += len(gone)
             added = 0
-            for i in range(0, len(ids), nav.EMBED_BATCH):
-                vecs = nav.embed(docs[i : i + nav.EMBED_BATCH])
+            for i in range(0, len(ids), navstore.EMBED_BATCH):
+                vecs = navstore.embed(docs[i : i + navstore.EMBED_BATCH])
                 col.upsert(
-                    ids=ids[i : i + nav.EMBED_BATCH],
+                    ids=ids[i : i + navstore.EMBED_BATCH],
                     embeddings=vecs,
-                    documents=docs[i : i + nav.EMBED_BATCH],
-                    metadatas=metas[i : i + nav.EMBED_BATCH],
+                    documents=docs[i : i + navstore.EMBED_BATCH],
+                    metadatas=metas[i : i + navstore.EMBED_BATCH],
                 )
                 added += len(vecs)
             for rid, doc, meta in moved:
-                got = nav.chroma_read(
+                got = navstore.chroma_read(
                     f"fn move {rid}",
                     lambda: col.get(ids=[rid], include=["embeddings"]),
                 )
@@ -1552,7 +1551,7 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
     dirty.unlink(missing_ok=True)
     if mode_mismatch:
         # stamp the healed fn store so the next same-mode pass caches again
-        nav._restamp(col, embed_mode=nav.embed_mode())
+        navstore._restamp(col, embed_mode=navstore.embed_mode())
     return {
         "fns_upserted": added,
         "fns_cached": cached,
@@ -1594,8 +1593,8 @@ def find_functions(query: str, n: int = 6) -> list[dict[str, object]]:
     count = col.count()
     if count == 0:
         return []
-    vector = nav.embed([query])[0]
-    got = nav.chroma_read(
+    vector = navstore.embed([query])[0]
+    got = navstore.chroma_read(
         "fn vector ranks",
         lambda: col.query(
             query_embeddings=[vector],

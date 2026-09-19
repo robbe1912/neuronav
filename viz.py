@@ -20,7 +20,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-import nav
+import navconfig, navindex, navstore
 import graph
 from layout import _strata_analysis, _layout
 from bake.files_model import _attach, _dead_flags, _build_nodes, _build_links
@@ -50,7 +50,7 @@ def _layout_stage(nodes, links, sims, ckeys, cmat):
     # commit can never bake layout ≠ legend. The overlap relax MUST
     # use the same radii the browser draws or hot files overlap
     # neighbors; None when git/history is unavailable.
-    hot = churn([nd["path"] for nd in nodes], str(nav.ROOT))
+    hot = churn([nd["path"] for nd in nodes], str(navconfig.ROOT))
     try:
         pos_baked = _layout(
             len(nodes), links, sims, [nd["cluster"] for nd in nodes],
@@ -85,7 +85,7 @@ def _assemble(nodes, links, fedges, mwires, fns, hw, fio, pos, hot,
             "deadFiles": len(dead_flag),
             "deadLikely": dead["by_tier"].get("likely", 0),
             "deadReview": dead["by_tier"].get("review", 0),
-            # cid -> human name from nav.clusters() labeler cascade
+            # cid -> human name from navstore.clusters() labeler cascade
             "clusterNames": cluster_names,
             # freshness stamp: when this DATA was generated and from which
             # neuronav commit (rendered in #stats so stale pages are obvious)
@@ -124,7 +124,7 @@ def _assemble(nodes, links, fedges, mwires, fns, hw, fio, pos, hot,
 
 def _build_data() -> dict:
     g = graph.get_graph()
-    clusters = nav.clusters()
+    clusters = navstore.clusters()
 
     file_cluster, cluster_names = _attach(clusters)
     dead_flag, dead_likely, dead = _dead_flags(
@@ -232,23 +232,23 @@ def _bake_store_guard() -> None:
         documented override for deliberate tiny hermetic stores; a
         real-provider run never gets the waiver.
     """
-    walk_n = sum(1 for _ in nav.iter_files())
+    walk_n = sum(1 for _ in navindex.iter_files())
     if walk_n == 0:
         raise RuntimeError(
-            f"refusing to bake graph.html: the walk over root={nav.ROOT} "
-            f"found 0 files (include_dirs={list(nav.INCLUDE_DIRS)}, "
-            f"extensions={sorted(nav.EXTS)}) — a bake over nothing is the "
+            f"refusing to bake graph.html: the walk over root={navconfig.ROOT} "
+            f"found 0 files (include_dirs={list(navconfig.INCLUDE_DIRS)}, "
+            f"extensions={sorted(navconfig.EXTS)}) — a bake over nothing is the "
             "silent-empty-graph failure (issues #64/#41); fix the config "
             "or point it at a real checkout"
         )
-    store_n = nav.count()
+    store_n = navstore.count()
     cfg = os.environ.get("NEURONAV_CONFIG")
     rescan_cmd = (f"python nav.py --config {cfg} rescan" if cfg
                   else "python nav.py rescan (in the project root)")
     if store_n == 0:
         raise RuntimeError(
             f"refusing to bake graph.html from an empty store (issue #64): "
-            f"collection '{nav.COLLECTION}' in {nav.DB_DIR} holds 0 "
+            f"collection '{navconfig.COLLECTION}' in {navconfig.DB_DIR} holds 0 "
             f"vectors while the walk found {walk_n} files — this is the "
             "wiped-store shape that silently shipped a ~300KB-short graph. "
             f"Fix: {rescan_cmd}"
@@ -257,8 +257,8 @@ def _bake_store_guard() -> None:
         if not os.environ.get("NEURONAV_EMBED_FAKE"):
             raise RuntimeError(
                 f"refusing to bake graph.html from a near-empty store "
-                f"(issue #64): collection '{nav.COLLECTION}' in "
-                f"{nav.DB_DIR} holds {store_n} vectors for {walk_n} "
+                f"(issue #64): collection '{navconfig.COLLECTION}' in "
+                f"{navconfig.DB_DIR} holds {store_n} vectors for {walk_n} "
                 "walked files (<50%) — a partial bake would silently "
                 f"degrade every semantic channel. Fix: {rescan_cmd} "
                 "(deliberate tiny hermetic store: NEURONAV_EMBED_FAKE=1 "
@@ -348,7 +348,7 @@ def _atomic_write(out: Path, html: str) -> None:
 
 
 def generate(out: str | Path | None = None) -> Path:
-    out = Path(out) if out else nav.STATE_DIR / "graph.html"
+    out = Path(out) if out else navconfig.STATE_DIR / "graph.html"
     out.parent.mkdir(parents=True, exist_ok=True)
     _bake_store_guard()
     data = _build_data()

@@ -51,7 +51,7 @@ from bake import files_model  # noqa: E402  (needs NEURONAV_CONFIG set first)
 from extractors import registry_for  # noqa: E402
 from extractors.rust import RUST_EXTS  # noqa: E402
 import graph  # noqa: E402
-import nav  # noqa: E402
+import navconfig, navindex, navstore
 
 
 def digest(g) -> str:
@@ -99,7 +99,7 @@ check("file_doc contract revision is the pinned one (#295: language-owned "
 
 g = graph.get_graph(rebuild=True)
 
-walked = [p for p in nav.iter_files() if p.suffix in RUST_EXTS]
+walked = [p for p in navindex.iter_files() if p.suffix in RUST_EXTS]
 indexed = {rel for rel, fs in g.files.items() if fs.ext == ".rs"}
 check("hermetic: every walked .rs indexed (parse coverage 1.0)",
       len(walked) == len(indexed) == 6, f"walked={len(walked)} indexed={len(indexed)}")
@@ -166,13 +166,13 @@ check("wiring-only files excluded from dead flags",
       str(sorted(dead_flag)))
 
 # file_doc: structural head for fn-bearing importers; raw for wiring
-_doc = graph.file_doc(nav.ROOT / "src/api.rs", "src/api.rs",
-                      nav._read_text(nav.ROOT / "src/api.rs"), nav.FILE_DOC_CAST)
+_doc = graph.file_doc(navconfig.ROOT / "src/api.rs", "src/api.rs",
+                      navindex._read_text(navconfig.ROOT / "src/api.rs"), navconfig.FILE_DOC_CAST)
 check("api.rs file_doc carries the imports head",
-      "\n# imports: src/net.rs" in _doc and len(_doc) <= nav.MAX_EMBED_CHARS,
+      "\n# imports: src/net.rs" in _doc and len(_doc) <= navstore.MAX_EMBED_CHARS,
       _doc[:120])
-_libdoc = graph.file_doc(nav.ROOT / "src/lib.rs", "src/lib.rs",
-                         nav._read_text(nav.ROOT / "src/lib.rs"), nav.FILE_DOC_CAST)
+_libdoc = graph.file_doc(navconfig.ROOT / "src/lib.rs", "src/lib.rs",
+                         navindex._read_text(navconfig.ROOT / "src/lib.rs"), navconfig.FILE_DOC_CAST)
 check("wiring-only lib.rs embeds as raw text (no funcs)",
       _libdoc.startswith("//! Hermetic rust regression crate"), _libdoc[:80])
 
@@ -196,7 +196,7 @@ elif prof is None or not prof.is_file():
           "(issue #97 — the rust regression target is a named machine-local "
           "repo, never assumed; see tests/AGENTS.md)")
 else:
-    nav._apply_config(prof)
+    navconfig._apply_config(prof)
     cfg = json.loads(prof.read_text(encoding="utf-8"))
     rr = cfg.get("rust_regression", {})
     parse_floor = float(rr.get("parse_floor", 0.9))
@@ -207,7 +207,7 @@ else:
     else:
         g = graph.get_graph(rebuild=True)
 
-        walked = [p for p in nav.iter_files() if p.suffix in RUST_EXTS]
+        walked = [p for p in navindex.iter_files() if p.suffix in RUST_EXTS]
         indexed = {rel for rel, fs in g.files.items() if fs.ext == ".rs"}
         cov = len(indexed) / max(len(walked), 1)
         check(f"profile: parse coverage >= {parse_floor}", cov >= parse_floor,
@@ -253,9 +253,9 @@ else:
                 continue
             if not (fs.imported_modules or fs.from_imports):
                 continue
-            doc = graph.file_doc(nav.ROOT / rel, rel,
-                                 nav._read_text(nav.ROOT / rel), nav.FILE_DOC_CAST)
-            if not ("\n# imports: " in doc and len(doc) <= nav.MAX_EMBED_CHARS):
+            doc = graph.file_doc(navconfig.ROOT / rel, rel,
+                                 navindex._read_text(navconfig.ROOT / rel), navconfig.FILE_DOC_CAST)
+            if not ("\n# imports: " in doc and len(doc) <= navstore.MAX_EMBED_CHARS):
                 check(f"profile: file_doc imports head for {rel}", False, doc[:100])
                 break
             checked_docs += 1

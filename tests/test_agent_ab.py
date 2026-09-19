@@ -94,7 +94,7 @@ os.environ["NEURONAV_CONFIG"] = str(CFG)
 os.environ["NEURONAV_EMBED_FAKE"] = "1"
 
 import graph  # noqa: E402  (binds the temp config above via nav)
-import nav  # noqa: E402
+import navconfig, navindex
 from bench import run_bench  # noqa: E402
 from bench.agent_ab import arms as ab_arms  # noqa: E402
 from bench.agent_ab import run as ab_run  # noqa: E402
@@ -107,12 +107,12 @@ from harness import FAILURES as FAILS, styled
 check = styled("bracket")  # byte pin: [PASS]/[FAIL] tag lines
 
 # -- boot the index the same way run.py does (rescan -> graph -> fns) --------
-stats = nav.rescan()
+stats = navindex.rescan()
 g = graph.get_graph(rebuild=True)
 graph.sync_functions(stats.get("changed", []), stats.get("deleted_paths", []))
 
 # -- derivation: every class exercisable, no silent drops ---------------------
-tasks, notes = ab_tasks.derive_tasks(g, nav.ROOT)
+tasks, notes = ab_tasks.derive_tasks(g, navconfig.ROOT)
 by_cls = {t.cls: t for t in tasks}
 for cls in ab_tasks.CLASSES:
     present = [t for t in tasks if t.cls == cls]
@@ -147,7 +147,7 @@ check("derive:dead-orphan", bool(t_dead)
 check("derive:alive-main", bool(t_alive) and t_alive[0].expected == "alive")
 
 # -- both arms answer on the synthetic corpus ---------------------------------
-arms = {"grep": ab_arms.make_grep_arm(nav.ROOT),
+arms = {"grep": ab_arms.make_grep_arm(navconfig.ROOT),
         "neuronav": ab_arms.make_nav_arm()}
 rows = ab_arms.run_battery(tasks, arms)
 by_key = {(r["task"], r["arm"]): r for r in rows}

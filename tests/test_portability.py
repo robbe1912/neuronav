@@ -60,7 +60,7 @@ os.environ["NEURONAV_CONFIG"] = str(CFG)
 os.environ.setdefault("NEURONAV_EMBED_FAKE", "1")
 sys.path.insert(0, str(REPO))
 
-import nav  # noqa: E402  (binds the BOM'd config above)
+import navconfig, navindex, navstore, nav
 
 
 
@@ -86,28 +86,28 @@ def run_child(
 
 
 def build_store() -> None:
-    nav.rescan()
-    nav.export_base()
+    navindex.rescan()
+    navindex.export_base()
 
 
 def main() -> None:
     # ---- (1a) BOM'd config.json loads + BOM'd .neuroignore still prunes ---
-    check("bom config: import binds the configured root", nav.ROOT == TMP, str(nav.ROOT))
-    check("bom config: state_dir resolved", nav.STATE_DIR == TMP / "state", str(nav.STATE_DIR))
-    check("bom neuroignore: first-line name intact, no \\ufeff prefix", "scr1" in nav.EXCLUDE_DIRS, str(nav.EXCLUDE_DIRS))
-    check("bom neuroignore: \\ufeff-prefixed twin absent", "\\ufeffscr1" not in nav.EXCLUDE_DIRS, str(nav.EXCLUDE_DIRS))
+    check("bom config: import binds the configured root", navconfig.ROOT == TMP, str(navconfig.ROOT))
+    check("bom config: state_dir resolved", navconfig.STATE_DIR == TMP / "state", str(navconfig.STATE_DIR))
+    check("bom neuroignore: first-line name intact, no \\ufeff prefix", "scr1" in navconfig.EXCLUDE_DIRS, str(navconfig.EXCLUDE_DIRS))
+    check("bom neuroignore: \\ufeff-prefixed twin absent", "\\ufeffscr1" not in navconfig.EXCLUDE_DIRS, str(navconfig.EXCLUDE_DIRS))
 
     build_store()
     # the walk must actually reflect the BOM'd .neuroignore: scr1/skip.py is
     # excluded, the non-ASCII file is indexed under its real name
-    ids = {r for r in nav._collection().get()["ids"]}
+    ids = {r for r in navstore._collection().get()["ids"]}
     check("bom neuroignore: excluded dir never indexed", "src/scr1/skip.py" not in ids, str(sorted(ids)))
     check("bom config: non-ASCII file indexed intact", "src/café_helper.py" in ids, str(sorted(ids)))
 
     # fresh-process proofs: nav binds the BOM'd config from scratch, not
     # merely from this suite's in-process import
     r = run_child(
-        [PY, "-X", "utf8", "-c", "import nav; print(nav.ROOT); print(nav.STATE_DIR); print('scr1' in nav.EXCLUDE_DIRS)"],
+        [PY, "-X", "utf8", "-c", "import nav, navconfig, navstore, navindex, navconfig, navstore, navindex; print(navconfig.ROOT); print(navconfig.STATE_DIR); print('scr1' in navconfig.EXCLUDE_DIRS)"],
         TMP,
         env_extra={"NEURONAV_CONFIG": str(CFG)},
     )
@@ -120,7 +120,7 @@ def main() -> None:
     # export wrote a clean manifest; BOM it (PowerShell 5 rewrites) and seed
     # a SECOND store from the shards — import_base must read the BOM'd
     # manifest, not crash on \ufeff
-    m = nav.BASE_DIR / nav.MANIFEST_NAME
+    m = navconfig.BASE_DIR / navindex.MANIFEST_NAME
     m.write_bytes(b"\xef\xbb\xbf" + m.read_bytes())
     cfg2 = TMP / "config2.json"
     cfg2.write_text(
@@ -136,12 +136,12 @@ def main() -> None:
         + "\n",
         encoding="utf-8",
     )
-    nav.use_config(cfg2)
-    shutil.copytree(TMP / "state" / "base", nav.BASE_DIR)
-    imp = nav.import_base()
+    navconfig.use_config(cfg2)
+    shutil.copytree(TMP / "state" / "base", navconfig.BASE_DIR)
+    imp = navindex.import_base()
     check("bom manifest: import reads BOM'd manifest", imp.get("imported") == 2, str(imp))
-    check("bom manifest: imported store populated", nav.count() == 2, str(nav.count()))
-    r = run_child([PY, "-X", "utf8", "-c", "import nav; print(nav.count())"], TMP, env_extra={"NEURONAV_CONFIG": str(cfg2)})
+    check("bom manifest: imported store populated", navstore.count() == 2, str(navstore.count()))
+    r = run_child([PY, "-X", "utf8", "-c", "import nav, navconfig, navstore, navindex, navconfig, navstore, navindex; print(navstore.count())"], TMP, env_extra={"NEURONAV_CONFIG": str(cfg2)})
     check("bom manifest: fresh child imports too", r.returncode == 0 and r.stdout.strip() == "2", (r.stdout or r.stderr or "")[:120])
 
     # ---- (1c) server MCP accepts a BOM'd foreign project config ------------
@@ -155,7 +155,7 @@ def main() -> None:
     check("server: BOM'd foreign config validates", got.get("state_dir") == "default", str(got))
 
     # ---- (3) console encoding: ascii console + non-ASCII hit path ----------
-    nav.use_config(CFG)  # back to the store the CLI search will read
+    navconfig.use_config(CFG)  # back to the store the CLI search will read
     r = run_child(
         [PY, str(REPO / "nav.py"), "search", "helper"],
         TMP,
@@ -232,7 +232,7 @@ def main() -> None:
     }), encoding="utf-8")
     _env298 = {"NEURONAV_CONFIG": str(_cfg298)}
     run_child([sys.executable, "-X", "utf8", "-c",
-               "import sys; sys.path.insert(0, '.'); import nav; nav.rescan()"],
+               "import sys; sys.path.insert(0, '.'); import nav, navconfig, navstore, navindex, navconfig, navstore, navindex; navindex.rescan()"],
               cwd=_d298, env_extra=_env298)
     _bad = run_child([sys.executable, "-X", "utf8", str(REPO / "nav.py"),
                       "--config", str(_cfg298), "search", "zzqxnopenterm"], cwd=_d298)
@@ -258,9 +258,9 @@ def main() -> None:
     check("#298 scaffold pins root='.' (portable, #27 contract)", _root298 == ".", repr(_root298))
     shutil.move(str(_pa), str(_pb))
     _moved = run_child([sys.executable, "-X", "utf8", "-c",
-                        "import sys; sys.path.insert(0, '.'); import nav; "
-                        "nav.use_config(__import__('pathlib').Path(sys.argv[1])); "
-                        "print(nav.ROOT)",
+                        "import sys; sys.path.insert(0, '.'); import nav, navconfig, navstore, navindex, navconfig, navstore, navindex; "
+                        "navconfig.use_config(__import__('pathlib').Path(sys.argv[1])); "
+                        "print(navconfig.ROOT)",
                         str(_pb / ".neuronav" / "config.json")], cwd=_d298)
     check("#298 moved config resolves root at its new home",
           _moved.returncode == 0 and _moved.stdout.strip() == str(_pb),
@@ -272,9 +272,9 @@ def main() -> None:
             self._exc = exc
         def delete_collection(self, name):
             raise self._exc
-    _real_client298 = nav.client
+    _real_client298 = navstore.client
     try:
-        nav.client = lambda: _StubClient(chromadb.errors.NotFoundError())
+        navstore.client = lambda: _StubClient(chromadb.errors.NotFoundError())
         import io as _io298, contextlib as _cx298
         _buf298 = _io298.StringIO()
         with _cx298.redirect_stdout(_buf298):
@@ -282,15 +282,15 @@ def main() -> None:
         check("#298 drop: chroma NotFoundError still reads as 'not present'",
               _buf298.getvalue().count("not present") == 2
               and "dropped" not in _buf298.getvalue(), _buf298.getvalue()[:80])
-        nav.client = lambda: _StubClient(PermissionError("file is locked by another process"))
+        navstore.client = lambda: _StubClient(PermissionError("file is locked by another process"))
         try:
             nav._cli(["drop"])
             check("#298 drop: a locked/IO failure aborts loudly, names the collection", False, "no raise")
         except RuntimeError as e:
             check("#298 drop: a locked/IO failure aborts loudly, names the collection",
-                  "drop:" in str(e) and nav.COLLECTION in str(e) and "locked" in str(e), str(e)[:120])
+                  "drop:" in str(e) and navconfig.COLLECTION in str(e) and "locked" in str(e), str(e)[:120])
     finally:
-        nav.client = _real_client298
+        navstore.client = _real_client298
     shutil.rmtree(_d298, ignore_errors=True)
 
     # ---- (4) trailing-argv rejection (issue #332): `rescan --config X`

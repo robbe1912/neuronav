@@ -29,8 +29,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
-
-import nav
+import navconfig
 
 MEMORIES_DIR = "memories"
 README_NAME = "README.md"
@@ -74,8 +73,8 @@ memory — `list` skips it, and the name `README` is reserved.
 
 def dir_path() -> Path:
     """The active config's memories dir — read at call time so a routed
-    call (nav.config_scope) serves that project's memories."""
-    return nav.STATE_DIR / MEMORIES_DIR
+    call (navconfig.config_scope) serves that project's memories."""
+    return navconfig.STATE_DIR / MEMORIES_DIR
 
 
 def scaffold(state_dir: Path) -> Path:

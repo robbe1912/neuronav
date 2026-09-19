@@ -40,7 +40,7 @@ os.environ["NEURONAV_CONFIG"] = str(TMP / "config.json")
 os.environ.setdefault("NEURONAV_EMBED_FAKE", "1")
 
 import graph  # noqa: E402  (binds the fixture config via NEURONAV_CONFIG)
-import nav  # noqa: E402
+import navindex
 from extractors import c as C  # noqa: E402
 from extractors import cpp as CPP  # noqa: E402
 from extractors import registry_for  # noqa: E402
@@ -158,7 +158,7 @@ check("f7: double build byte-identical (edges + dead candidates)",
 
 # ---- f8 end-to-end --------------------------------------------------------------
 
-walked = sorted(nav.iter_files())
+walked = sorted(navindex.iter_files())
 check("f8: walk finds all 6 fixture files",
       sorted(p.as_posix() for p in walked)
       == sorted((HERE / "tests" / "fixtures" / "c" / r).as_posix() for r in

@@ -4,7 +4,7 @@ rescan, warm C-extension imports) is still in progress — connection time
 may never include creating the store.
 
 Deterministic teeth: the parent process HOLDS the store's cross-process
-write lock (the same FileLock nav.rescan acquires), so the server's boot
+write lock (the same FileLock navindex.rescan acquires), so the server's boot
 is provably blocked mid-rescan; the handshake must still complete. At the
 pre-fix HEAD the boot ran on the main thread before mcp.run(), so
 initialize received no answer until the lock released — this suite FAILS
@@ -102,10 +102,10 @@ def main() -> None:
         # parent-side nav under the SAME config: the lock file derives
         # from the same state_dir, so this is the server's boot lock
         os.environ["NEURONAV_CONFIG"] = str(cfg)
-        import nav  # after env + sys.path setup, by design
-        assert nav.CONFIG_PATH is not None
+        import navconfig, navindex, navstore
+        assert navconfig.CONFIG_PATH is not None
 
-        lock = nav._db_lock(timeout=10)
+        lock = navstore._db_lock(timeout=10)
         lock.acquire()
         try:
             proc = subprocess.Popen(

@@ -1,6 +1,6 @@
-"""Cluster labeling + mega-blob splitting for nav.clusters().
+"""Cluster labeling + mega-blob splitting for navstore.clusters().
 
-Imported lazily by nav.clusters() so module import stays cheap. Works on
+Imported lazily by navstore.clusters() so module import stays cheap. Works on
 paths + class names + embeddings only — no language parsing, so a second
 language's files label the same way.
 
@@ -27,8 +27,7 @@ import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-
-import nav
+import navconfig, navstore
 from extractors import (  # noqa: E402
     harvest_autoloads,
     is_scene_path,
@@ -334,7 +333,7 @@ def communities_graph(
     min_sim: float = 0.6,
     resolution: float = 1.0,
 ) -> tuple[list[dict], dict]:
-    """Louvain hybrid engine for nav.clusters(). Weighted graph over files:
+    """Louvain hybrid engine for navstore.clusters(). Weighted graph over files:
     - semantic edges: mutual-kNN embedding pairs (weight = sim * 0.7)
     - structural edges from graph.py: call/signal func-pair counts capped
       at 5 per file pair; attach/inst 1.5 each
@@ -682,7 +681,7 @@ def _autoload_map() -> dict[str, str]:
     """rel path -> autoload singleton name (inverse of project.godot) —
     the registry's harvest_autoloads is the single home (shared with
     graph.py's entry map); this is its inverse view."""
-    return {rel: name for name, rel in harvest_autoloads(nav.ROOT).items()}
+    return {rel: name for name, rel in harvest_autoloads(navconfig.ROOT).items()}
 
 
 @dataclass
@@ -1586,7 +1585,7 @@ def cross_tallies(cs: list[dict], g=None) -> dict:
     """The ONE cross-cluster wire tally: `crosstalk()` and the arch-rule
     engine (archrules.py, issue #70) both read this, so a rule sees
     exactly the wiring the report counts (#114 parity by construction).
-    Cluster membership comes from `cs` (nav.clusters() output), edges
+    Cluster membership comes from `cs` (navstore.clusters() output), edges
     from the structural graph of the active config. Mirrors the
     clusterer's graph shape: tests/ endpoints and unclustered endpoints
     are tallied separately and feed no cluster number (#114) — and so
@@ -1673,7 +1672,7 @@ def cross_tallies(cs: list[dict], g=None) -> dict:
 def crosstalk(cs: list[dict], g=None) -> dict:
     """Coupling-hotspot report: structural (call/signal/var/inst/attach)
     edges that cross cluster boundaries. Generic over languages — cluster
-    membership comes from `cs` (nav.clusters() output), edges from the
+    membership comes from `cs` (navstore.clusters() output), edges from the
     structural graph of the active config. Answers "which subsystems are
     wired together despite clustering apart" and "which clusters are
     internally hollow". Mirrors the clusterer's graph shape: tests/

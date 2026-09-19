@@ -3,8 +3,7 @@
 # fetch per bake lives here; every downstream stage (kNN sims, semAff,
 # supergroups, cluster matrix) receives the fetch results as arguments
 # and must take the store-index space from them — see _store_paths.
-
-import nav
+import navstore
 
 
 def _store_paths(paths, emb_idx):
@@ -26,9 +25,9 @@ def _fetch_embeddings(paths):
     try:
         import numpy as np
 
-        col = nav._collection()
+        col = navstore._collection()
         if col.count():
-            got = nav.col_get_all(col, ["embeddings"], "bake embeddings")
+            got = navstore.col_get_all(col, ["embeddings"], "bake embeddings")
             emb_idx = {rid: i for i, rid in enumerate(got["ids"])}
             emb_paths = _store_paths(paths, emb_idx)
             rows = [emb_idx[p] for p in emb_paths]
@@ -51,7 +50,7 @@ def _knn_sims(emb):
     mirroring the monolith's shared outer try."""
     # semantic kNN pairs from nav's embedding store — layout-only forces,
     # never rendered as edges: mutual top-6 neighbours with cosine >= 0.45
-    # (mutual links resist transitive chaining, mirroring nav.clusters()).
+    # (mutual links resist transitive chaining, mirroring navstore.clusters()).
     # Degrades to [] if the chroma store is missing/empty.
     sims: list[list] = []
     if emb is None:

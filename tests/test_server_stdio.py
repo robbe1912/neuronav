@@ -62,14 +62,14 @@ if CI_HERMETIC:
 os.environ.setdefault("NEURONAV_STAT_TTL_S", "0.5")
 
 import graph  # noqa: E402  (repo root on path)
-import nav  # noqa: E402
+import navindex, navstore
 
-if CI_HERMETIC and nav.count() == 0:
+if CI_HERMETIC and navstore.count() == 0:
     # GK #166 F1 bootstrap: fresh checkout, empty self-index store — one
     # FAKE-embed rescan self-populates it (deterministic hash vectors,
     # sorted walk); skipped when the store already serves (test_recall
     # ran earlier in the CI job)
-    nav.rescan()
+    navindex.rescan()
 
 _g = graph.get_graph()
 _call_wires: dict[str, int] = {}
@@ -92,7 +92,7 @@ HUBFN = max(
 # the stat gate's TTL cache is real (3s default, 0.5s here via the #286
 # knob) — drift legs wait one window out so the next read tool re-walks
 # (test_autorescan's e2e precedent)
-TTL_WAIT = nav.STAT_TTL_S + 0.5
+TTL_WAIT = navindex.STAT_TTL_S + 0.5
 
 
 
@@ -105,11 +105,11 @@ for _ttl_env, _want in ((None, "3.0"), ("0.5", "0.5")):
     if _ttl_env:
         _env["NEURONAV_STAT_TTL_S"] = _ttl_env
     _pin = subprocess.run(
-        [sys.executable, "-X", "utf8", "-c", "import nav; print(nav.STAT_TTL_S)"],
+        [sys.executable, "-X", "utf8", "-c", "import nav, navconfig, navstore, navindex, navconfig, navstore, navindex; print(navindex.STAT_TTL_S)"],
         capture_output=True, text=True, env=_env, cwd=str(HERE),
     )
     check(
-        f"ttl knob: nav.STAT_TTL_S=={_want} "
+        f"ttl knob: navindex.STAT_TTL_S=={_want} "
         + ("with" if _ttl_env else "without") + " NEURONAV_STAT_TTL_S",
         _pin.stdout.strip() == _want,
         _pin.stdout.strip() or _pin.stderr[-200:],

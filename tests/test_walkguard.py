@@ -10,7 +10,7 @@
 #   3. overlapping include_dirs ([".", "tests"]) yield each file once —
 #      no double "added", no DuplicateIDError from one upsert batch
 #   4. sync_functions purge of deleted files still resolves + deletes
-#      (all chroma writes now ride nav._db_lock — grep-audited in review)
+#      (all chroma writes now ride navstore._db_lock — grep-audited in review)
 # plus a fresh-store determinism leg: two independent stores over the same
 # corpus embed byte-identically (FAKE vectors are content-seeded).
 # plus issue #286: bare config-less defaults exclude .tmp/.team_scratch on
@@ -85,12 +85,12 @@ os.environ.setdefault("NEURONAV_EMBED_FAKE", "1")
 sys.path.insert(0, str(HERE))
 
 import graph  # noqa: E402  (binds the scratch config via NEURONAV_CONFIG)
-import nav  # noqa: E402
+import navconfig, navindex, navstore
 
 EXPECTED = {"app.py", "tests/test_thing.py"}
 
 # ---- case 3: overlapping include_dirs yield each file exactly once -----------
-walked = [nav.file_id(p) for p in nav.iter_files()]
+walked = [navindex.file_id(p) for p in navindex.iter_files()]
 check(
     "overlap: each file yields once (first include wins)",
     len(walked) == len(set(walked)) and set(walked) == EXPECTED,
@@ -101,13 +101,13 @@ check(
     walked == sorted(EXPECTED),
     str(walked),
 )
-stats = nav.rescan()  # pre-fix: DuplicateIDError from one upsert batch
+stats = navindex.rescan()  # pre-fix: DuplicateIDError from one upsert batch
 check(
     "overlap: rescan counts each file once",
-    stats["added"] == len(EXPECTED) and nav.count() == len(EXPECTED),
-    f"added={stats['added']} count={nav.count()}",
+    stats["added"] == len(EXPECTED) and navstore.count() == len(EXPECTED),
+    f"added={stats['added']} count={navstore.count()}",
 )
-warm = nav.rescan()
+warm = navindex.rescan()
 check(
     "overlap: warm rescan adds nothing (dedupe holds)",
     warm["added"] == 0 and warm["changed"] == [],
@@ -134,21 +134,21 @@ check(
 )
 
 # ---- case 1: parse pass isolates a file vanishing mid-build ------------------
-_real_iter = nav.iter_files
+_real_iter = navindex.iter_files
 
 
 def _iter_with_ghost():
     yield from _real_iter()
-    yield nav.ROOT / "ghost.py"  # vanishes between iter_files and parse
+    yield navconfig.ROOT / "ghost.py"  # vanishes between iter_files and parse
 
 
-nav.iter_files = _iter_with_ghost
+navindex.iter_files = _iter_with_ghost
 err = io.StringIO()
 try:
     with contextlib.redirect_stderr(err):
         g2 = graph.Graph().build()
 finally:
-    nav.iter_files = _real_iter
+    navindex.iter_files = _real_iter
 check(
     "vanish: build completes, ghost skipped, real files kept",
     "ghost.py" not in g2.files and EXPECTED <= set(g2.files),
@@ -166,11 +166,11 @@ check(
 first = graph.sync_functions(stats["changed"], [])
 check(
     "purge: first fn sync populates 3 fns",
-    first["fns_upserted"] == 3 and nav.fns_collection().count() == 3,
+    first["fns_upserted"] == 3 and navstore.fns_collection().count() == 3,
     str(first),
 )
 (SRC / "tests" / "test_thing.py").unlink()
-stats3 = nav.rescan()
+stats3 = navindex.rescan()
 check(
     "purge: rescan reports the deleted path once",
     stats3["deleted_paths"] == ["tests/test_thing.py"],
@@ -191,12 +191,12 @@ CHILD.write_text(
     f"sys.path.insert(0, {str(HERE)!r})\n"
     "\n"
     "import graph\n"
-    "import nav\n"
+    "import nav, navconfig, navstore, navindex\n"
     "\n"
-    "stats = nav.rescan()\n"
+    "stats = navindex.rescan()\n"
     "graph.sync_functions(stats['changed'], stats['deleted_paths'])\n"
     "rows = []\n"
-    "for label, col in (('files', nav._collection()), ('fns', nav.fns_collection())):\n"
+    "for label, col in (('files', navstore._collection()), ('fns', navstore.fns_collection())):\n"
     "    got = col.get(include=['embeddings', 'metadatas'])\n"
     "    for rid, emb, met in zip(got['ids'], got['embeddings'], got['metadatas']):\n"
     "        e = hashlib.sha256('|'.join(f'{x:.9g}' for x in emb).encode()).hexdigest()[:16]\n"
@@ -246,12 +246,12 @@ GUARD_PROBE = SCRATCH2 / "guard_probe.py"
 GUARD_PROBE.write_text(
     "import sys\n"
     f"sys.path.insert(0, {str(HERE)!r})\n"
-    "import nav\n"
-    "nav.WALK_SCOPE_WARN_N = 2\n"
-    "names = sorted(str(p.relative_to(nav.ROOT)).replace(chr(92), '/')\n"
-    "               for p in nav.iter_files())\n"
-    "sum(1 for _ in nav.iter_files())\n"
-    "nav.stat_fingerprint()\n"
+    "import nav, navconfig, navstore, navindex\n"
+    "navindex.WALK_SCOPE_WARN_N = 2\n"
+    "names = sorted(str(p.relative_to(navconfig.ROOT)).replace(chr(92), '/')\n"
+    "               for p in navindex.iter_files())\n"
+    "sum(1 for _ in navindex.iter_files())\n"
+    "navindex.stat_fingerprint()\n"
     "print('|'.join(names))\n",
     encoding="utf-8",
 )
@@ -351,13 +351,13 @@ PROBE_A = SCRATCH3 / "probe_a.py"
 PROBE_A.write_text(
     "import sys\n"
     f"sys.path.insert(0, {str(HERE)!r})\n"
-    "import nav\n"
-    "names = sorted(str(p.relative_to(nav.ROOT)).replace(chr(92), '/')\n"
-    "               for p in nav.iter_files())\n"
-    "print(nav.INCLUDE_DIRS)\n"
+    "import nav, navconfig, navstore, navindex\n"
+    "names = sorted(str(p.relative_to(navconfig.ROOT)).replace(chr(92), '/')\n"
+    "               for p in navindex.iter_files())\n"
+    "print(navconfig.INCLUDE_DIRS)\n"
     "print('|'.join(names))\n"
-    "nav.rescan()\n"
-    "print(nav.count())\n",
+    "navindex.rescan()\n"
+    "print(navstore.count())\n",
     encoding="utf-8",
 )
 proc = subprocess.run(
@@ -394,9 +394,9 @@ PROBE_D = SCRATCH3 / "probe_d.py"
 PROBE_D.write_text(
     "import sys\n"
     f"sys.path.insert(0, {str(HERE)!r})\n"
-    "import nav\n"
-    "names = sorted(str(p.relative_to(nav.ROOT)).replace(chr(92), '/')\n"
-    "               for p in nav.iter_files())\n"
+    "import nav, navconfig, navstore, navindex\n"
+    "names = sorted(str(p.relative_to(navconfig.ROOT)).replace(chr(92), '/')\n"
+    "               for p in navindex.iter_files())\n"
     "print('|'.join(names))\n",
     encoding="utf-8",
 )
@@ -420,10 +420,10 @@ PROBE_C = SCRATCH3 / "probe_c.py"
 PROBE_C.write_text(
     "import sys\n"
     f"sys.path.insert(0, {str(HERE)!r})\n"
-    "import nav\n"
-    "nav.GITIGNORE_PRUNE_WARN_N = 3\n"
-    "list(nav.iter_files())\n"
-    "list(nav.iter_files())\n",
+    "import nav, navconfig, navstore, navindex\n"
+    "navindex.GITIGNORE_PRUNE_WARN_N = 3\n"
+    "list(navindex.iter_files())\n"
+    "list(navindex.iter_files())\n",
     encoding="utf-8",
 )
 
@@ -460,10 +460,10 @@ check(
 
 check(
     "296-D: canonical prune set — WALK_DEFAULTS exclude == _PRUNE_FLOOR",
-    set(nav.WALK_DEFAULTS["exclude_dirs"]) == set(nav._PRUNE_FLOOR)
-    and {"__pycache__", ".team_scratch", ".godot"} <= nav._PRUNE_FLOOR,
-    f"defaults={sorted(nav.WALK_DEFAULTS['exclude_dirs'])} "
-    f"floor={sorted(nav._PRUNE_FLOOR)}",
+    set(navconfig.WALK_DEFAULTS["exclude_dirs"]) == set(navindex._PRUNE_FLOOR)
+    and {"__pycache__", ".team_scratch", ".godot"} <= navindex._PRUNE_FLOOR,
+    f"defaults={sorted(navconfig.WALK_DEFAULTS['exclude_dirs'])} "
+    f"floor={sorted(navindex._PRUNE_FLOOR)}",
 )
 
 shutil.rmtree(SCRATCH3, ignore_errors=True)

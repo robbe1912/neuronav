@@ -43,7 +43,7 @@ HERE = Path(__file__).resolve().parents[1]
 from harness import FAILURES as FAILS, check
 
 SHARED = sorted(
-    [HERE / n for n in ("graph.py", "nav.py", "server.py", "viz.py", "layout.py",
+    [HERE / n for n in ("graph.py", "nav.py", "navconfig.py", "navstore.py", "navindex.py", "server.py", "viz.py", "layout.py",
                         "clusters.py", "explore.py", "recall.py", "onboard.py")]
     + list((HERE / "bake").glob("*.py"))
     + list((HERE / "vizjs").glob("*.py"))   # #299 A: the template lives here now
@@ -86,11 +86,11 @@ ALLOWED = {
     # config/parametric walk filters — EXTS is the user's config include-set
     # and `suffixes` arrives as a caller argument (registry datum at the
     # call site); neither is a language truth hard-coded in nav
-    ("nav.py", "if all_suffixes or Path(name).suffix in EXTS:"):
+    ("navindex.py", "if all_suffixes or Path(name).suffix in navconfig.EXTS:"):
         "config walk filter (EXTS = user config; all_suffixes=#240 census)",
-    ("nav.py", "if Path(name).suffix in suffixes:"):
+    ("navindex.py", "if Path(name).suffix in suffixes:"):
         "parametric walk filter (caller-supplied suffixes)",
-    ("nav.py", "if Path(e.name).suffix not in EXTS:"):
+    ("navindex.py", "if Path(e.name).suffix not in navconfig.EXTS:"):
         "config walk filter (EXTS = user config)",
 }
 

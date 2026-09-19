@@ -68,14 +68,14 @@ def main() -> None:
         os.environ.setdefault("NEURONAV_EMBED_FAKE", "1")
         os.chdir(root)
 
-        import nav  # noqa: E402  (binds the scratch root, after chdir by design)
+        import navconfig
         import graph  # noqa: E402
         import server  # noqa: E402  (import runs no boot work — only main() does)
 
         check(
             "setup: pure-defaults boot (no config bound)",
-            nav.CONFIG_PATH is None and nav.ROOT == root.resolve(),
-            f"CONFIG_PATH={nav.CONFIG_PATH} ROOT={nav.ROOT}",
+            navconfig.CONFIG_PATH is None and navconfig.ROOT == root.resolve(),
+            f"CONFIG_PATH={navconfig.CONFIG_PATH} ROOT={navconfig.ROOT}",
         )
 
         degraded = "neuronav: EMPTY INDEX — degraded stand-in"
@@ -103,9 +103,9 @@ def main() -> None:
             # back to the pure-defaults degraded boot between legs: the
             # env use_config exported plus the globals it rebound
             os.environ.pop("NEURONAV_CONFIG", None)
-            nav._apply_config(None)
+            navconfig._apply_config(None)
             server._BOOT_DEGRADED = degraded
-            server._BOOT_STORE = (str(nav.STATE_DIR), nav.COLLECTION)
+            server._BOOT_STORE = (str(navconfig.STATE_DIR), navconfig.COLLECTION)
             graph._graph = None
 
         # ---- (a) failed recovery must roll back and stay retryable ----
@@ -137,8 +137,8 @@ def main() -> None:
         )
         check(
             "recovery-fail: config re-bind rolled back (CONFIG_PATH None)",
-            nav.CONFIG_PATH is None,
-            f"CONFIG_PATH={nav.CONFIG_PATH}",
+            navconfig.CONFIG_PATH is None,
+            f"CONFIG_PATH={navconfig.CONFIG_PATH}",
         )
         check(
             "recovery-fail: NEURONAV_CONFIG env rolled back",
@@ -154,8 +154,8 @@ def main() -> None:
         )
         check(
             "recovery-retry: boot now bound to the appeared config",
-            nav.CONFIG_PATH == cfg_path.resolve(),
-            f"CONFIG_PATH={nav.CONFIG_PATH}",
+            navconfig.CONFIG_PATH == cfg_path.resolve(),
+            f"CONFIG_PATH={navconfig.CONFIG_PATH}",
         )
         served = asyncio.run(server.semantic_search("dossier", 2))
         check(
@@ -197,8 +197,8 @@ def main() -> None:
         )
         check(
             "lock-timeout: re-bind rolled back too",
-            nav.CONFIG_PATH is None,
-            f"CONFIG_PATH={nav.CONFIG_PATH}",
+            navconfig.CONFIG_PATH is None,
+            f"CONFIG_PATH={navconfig.CONFIG_PATH}",
         )
         rec2 = server._boot_recovery()
         check(
@@ -208,7 +208,7 @@ def main() -> None:
         )
 
         # ---- (c) explicit rescan tool: bounded wait under a held lock --
-        holder = FileLock(str(nav.DB_DIR / ".write.lock"))
+        holder = FileLock(str(navconfig.DB_DIR / ".write.lock"))
         holder.acquire()
         real_wait = server.LOCK_WAIT_S
         server.LOCK_WAIT_S = 0.5

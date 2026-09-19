@@ -41,7 +41,7 @@ os.environ["NEURONAV_CONFIG"] = str(TMP / "config.json")
 os.environ.setdefault("NEURONAV_EMBED_FAKE", "1")
 
 import graph  # noqa: E402  (binds the fixture config via NEURONAV_CONFIG)
-import nav  # noqa: E402
+import navindex, navstore
 from extractors import java as J  # noqa: E402
 from extractors.java import JAVA_EXTS  # noqa: E402
 
@@ -63,14 +63,14 @@ DEAD = "src/main/java/demo/Dead.java"
 TEST = "src/test/java/demo/AppTest.java"
 
 # ---- f8: walk -> parse -> index -------------------------------------------
-walked = sorted(nav.file_id(p) for p in nav.iter_files())
+walked = sorted(navindex.file_id(p) for p in navindex.iter_files())
 check("f8: walk finds the 7 fixture files under standard layouts",
       walked == [APP, DEAD, GREETER, CIRCLE, FLYER, SHAPE, TEST],
       str(walked))
-stats = nav.rescan()
+stats = navindex.rescan()
 graph.sync_functions(stats["changed"], stats["deleted_paths"])
-check("f8: FAKE index stores every walked file", nav.count() == 7,
-      f"count={nav.count()}")
+check("f8: FAKE index stores every walked file", navstore.count() == 7,
+      f"count={navstore.count()}")
 
 # ---- f1: parse surface + package resolution --------------------------------
 import extractors  # noqa: E402

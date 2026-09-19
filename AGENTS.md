@@ -55,7 +55,10 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 
 | module | role |
 |---|---|
-| `nav.py` | config resolution, chroma collection, embed client (provider-pluggable: ollama/openai wires, issue #17), rescan/import/export-base, CLI — the CLI never imports `viz` (bake-free by design, issue #86 R8) |
+| `navconfig.py` | config leaf (issue #344): resolution (env > project-local > checkout-local > pure defaults), BOM-tolerant reads, `.neuroignore`/`.gitignore` prune unions, the #91 state_dir contract, `use_config`/`config_scope` — owns every rebindable config global (sibling modules read them as `navconfig.X` attributes, never from-imports) |
+| `navstore.py` | store/embed leaf (issue #344): chroma collections (stamps/heals #103, bounded reads #327), the provider-pluggable embed client (ollama/openai wires, issue #17), hybrid recall + clusters queries — owns the process-global store singletons (per-store FileLock/PersistentClient/cluster memo) |
+| `navindex.py` | index leaf (issue #344): the walk (walkguard #117, gitignore #296), the stat gate (#19), incremental rescan, tracked base import/export (#102), build-observability hooks (#315) |
+| `nav.py` | the CLI (issue #344 split): `nav.py <cmd>` orchestration + the #332 trailing-argv rejection — never imports `viz` (bake-free by design, issue #86 R8); every programmatic consumer lives on the leaves above |
 | `graph.py` | file/fn symbol graph, per-fn IO extraction, dead-code tiers |
 | `extractors/` | per-language parsers behind a registry (`gdscript.py`, `python.py`, `cpp.py` — tree-sitter-cpp front-end, `ts.py` — tree-sitter-typescript front-end, issue #245, `js.py` — tree-sitter-javascript front-end, issue #277, `model.py` dataclasses) |
 | `clusters.py` | Louvain + labeler + crosstalk (imported lazily) |

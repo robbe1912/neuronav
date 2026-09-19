@@ -27,8 +27,7 @@ import json
 import os
 import sys
 from pathlib import Path
-
-import nav
+import navconfig, navindex
 from extractors import registry_for
 
 SCHEMA = 1
@@ -92,7 +91,7 @@ def fingerprint(g) -> str:
             h.update(f"\t{name}\t{fn.line}\t{body}\n".encode())
         if gate:
             try:
-                raw = nav._read_text(nav.ROOT / rel)
+                raw = navindex._read_text(navconfig.ROOT / rel)
             except OSError:
                 raw = "<unreadable>"
             h.update(
@@ -140,7 +139,7 @@ def _seal(payload: dict) -> str:
 
 
 def _state_dir() -> Path:
-    return Path(nav.STATE_DIR)
+    return Path(navconfig.STATE_DIR)
 
 
 def _load(state_dir: Path, fp: str) -> dict | None:

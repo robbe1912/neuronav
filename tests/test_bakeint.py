@@ -53,7 +53,7 @@ os.environ.setdefault("NEURONAV_EMBED_FAKE", "1")
 sys.path.insert(0, str(HERE))
 
 import graph  # noqa: E402,F401  (binds the scratch config via NEURONAV_CONFIG)
-import nav  # noqa: E402
+import navconfig, navindex, navstore
 import viz  # noqa: E402
 
 
@@ -73,7 +73,7 @@ def run_child(fake: bool = False, cfg_path: Path | None = None) -> subprocess.Co
 
 def wipe(keep: int) -> None:
     """Simulate the #91/#159 store wipe: keep only `keep` vectors."""
-    col = nav._collection()
+    col = navstore._collection()
     ids = col.get(limit=100000)["ids"]
     assert len(ids) >= keep, f"wipe(keep={keep}) but store holds {len(ids)}"
     if keep < len(ids):
@@ -103,14 +103,14 @@ except AssertionError:
 
 
 # ---- 1. healthy store: bakes, strict JSON, importmap spliced ----------------
-nav.rescan()
-walk_n = sum(1 for _ in nav.iter_files())
-check("scratch corpus indexed", nav.count() == walk_n and walk_n == 7,
-      f"count={nav.count()} walk={walk_n}")
+navindex.rescan()
+walk_n = sum(1 for _ in navindex.iter_files())
+check("scratch corpus indexed", navstore.count() == walk_n and walk_n == 7,
+      f"count={navstore.count()} walk={walk_n}")
 
 p1 = viz.generate()
 html1 = p1.read_text(encoding="utf-8")
-check("healthy bake writes graph.html", p1.is_file() and p1 == nav.STATE_DIR / "graph.html", str(p1))
+check("healthy bake writes graph.html", p1.is_file() and p1 == navconfig.STATE_DIR / "graph.html", str(p1))
 m = re.search(r"const DATA = (.+);\n", html1)
 try:
     data1 = json.loads(m.group(1), parse_constant=no_constants) if m else None
@@ -126,7 +126,7 @@ p2 = viz.generate()
 html2 = p2.read_text(encoding="utf-8")
 norm = lambda h: re.sub(r'"generated_at":"[^"]*"', '"generated_at":""', h)  # noqa: E731
 check("two builds byte-equal modulo generated_at", norm(html1) == norm(html2), "")
-check("atomic write leaves no .tmp", not (nav.STATE_DIR / "graph.html.tmp").exists(), "")
+check("atomic write leaves no .tmp", not (navconfig.STATE_DIR / "graph.html.tmp").exists(), "")
 
 # ---- 3. atomicity: crash mid-write keeps the previous bake whole -----------
 target = SCRATCH / "atomic.html"
@@ -184,7 +184,7 @@ check("crafted graph.html never written", not crafted.exists(), "")
 
 # ---- 6. #64 zeroed store: refuses even under FAKE (wiped = never deliberate)
 wipe(keep=0)
-check("store zeroed for the refusal leg", nav.count() == 0, str(nav.count()))
+check("store zeroed for the refusal leg", navstore.count() == 0, str(navstore.count()))
 # #202: re-capture so html1 IS the pre-refusal file text — section 2's p2
 # rebuild re-stamped graph.html, and pinning the first build's bytes would
 # flake on a second-boundary crossing. The exact byte compare below
@@ -193,20 +193,20 @@ check("store zeroed for the refusal leg", nav.count() == 0, str(nav.count()))
 # mode. norm() stays on the two-builds check, where stamps may differ.
 html1 = p1.read_text(encoding="utf-8")
 refusal(lambda: viz.generate(), "zeroed store refused (even under FAKE)",
-        ["0 vectors", f"{walk_n} files", "rescan", "bakeint_fix", str(nav.DB_DIR)])
+        ["0 vectors", f"{walk_n} files", "rescan", "bakeint_fix", str(navconfig.DB_DIR)])
 check("refusal leaves the old bake untouched", p1.read_text(encoding="utf-8") == html1, "")
-nav.rescan()
+navindex.rescan()
 
 # ---- 7. #64 partial store: FAKE waiver bakes in-process ---------------------
 wipe(keep=2)
-check("store partially wiped", nav.count() == 2 and 2 * 2 < walk_n, str(nav.count()))
+check("store partially wiped", navstore.count() == 2 and 2 * 2 < walk_n, str(navstore.count()))
 try:
     viz.generate()
     waived = True
 except RuntimeError:
     waived = False
 check("FAKE hermetic rig still bakes a partial store", waived, "the #64 waiver")
-nav.rescan()
+navindex.rescan()
 
 # ---- 8. real-provider stance (child, FAKE scrubbed): always a refusal -------
 wipe(keep=0)
@@ -214,20 +214,20 @@ r = run_child()
 check("real provider + zeroed store: child refuses",
       r.returncode != 0 and "refusing to bake" in r.stderr and "0 vectors" in r.stderr
       and "rescan" in r.stderr, (r.stdout + r.stderr).strip()[:120].replace("\n", " "))
-nav.rescan()
+navindex.rescan()
 wipe(keep=2)
 r = run_child()
 check("real provider + partial store: child refuses",
       r.returncode != 0 and "near-empty" in r.stderr and "<50%" in r.stderr,
       (r.stdout + r.stderr).strip()[:120].replace("\n", " "))
-nav.rescan()
+navindex.rescan()
 
 # ---- 9. the waiver is FAKE-only: child WITH FAKE prints the waiver note -----
 wipe(keep=2)
 r = run_child(fake=True)
 check("FAKE child bakes partial store with waiver note",
       r.returncode == 0 and "waiver" in r.stderr, (r.stdout + r.stderr).strip()[:120].replace("\n", " "))
-nav.rescan()
+navindex.rescan()
 
 # ---- 10. zero-walk config: nothing to bake ----------------------------------
 empty_root = SCRATCH / "empty"

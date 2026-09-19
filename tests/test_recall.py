@@ -16,7 +16,7 @@ os.environ["NEURONAV_CONFIG"] = str(Path(__file__).resolve().parents[1] / "confi
 os.environ.setdefault("NEURONAV_EMBED_FAKE", "1")
 
 import graph  # noqa: E402  (binds the self-index config)
-import nav  # noqa: E402
+import navindex, navstore
 import recall  # noqa: E402
 
 
@@ -29,11 +29,11 @@ from harness import check, finish
 # the checkout) and, under FAKE embeds, writes deterministic hash
 # embeddings. Never a live store: the config root is the checkout
 # itself. Skipped when the store already has content.
-if nav.count() == 0:
-    nav.rescan()
+if navstore.count() == 0:
+    navindex.rescan()
 
 g = graph.get_graph(rebuild=True)
-check("self index populated", nav.count() > 0, f"{nav.count()} files embedded")
+check("self index populated", navstore.count() > 0, f"{navstore.count()} files embedded")
 # langsep restatement (8d class): _fold_continuations moved to
 # extractors/common.py as fold_continuations — the defining file moved
 # with the identifier; lexical pin tracks it, intent unchanged.
@@ -176,7 +176,7 @@ check("two-pass works in pure-vector mode",
 
 # embed budget: at most 2 embed calls per query even with two passes
 calls: list[int] = []
-_orig_embed = nav.embed
+_orig_embed = navstore.embed
 
 
 def _counting(texts):
@@ -184,7 +184,7 @@ def _counting(texts):
     return _orig_embed(texts)
 
 
-nav.embed = _counting
+navstore.embed = _counting
 try:
     recall.search("graph signal wiring edges", k=12, two_pass=True)
     two_calls = len(calls)
@@ -192,7 +192,7 @@ try:
     recall.search("graph signal wiring edges", k=12, two_pass=False)
     one_calls = len(calls)
 finally:
-    nav.embed = _orig_embed
+    navstore.embed = _orig_embed
 check("two-pass caps the embed budget at 2", two_calls == 2, f"{two_calls} embed calls")
 check("single-pass stays 1 embed call", one_calls == 1, f"{one_calls} embed calls")
 
@@ -227,13 +227,15 @@ _full = recall._augment("q", ["clusters.py"], g, budget=10 ** 9)
 _cut = recall._augment("q", ["clusters.py"], g, budget=13)
 check("budget truncates the identifier tail",
       _cut == "q\n" + _full.split("\n", 1)[1][:13])
-# nav.py keeps a from-import name its own surface lacks: most resolved
+# navconfig keeps a from-import name its own surface lacks: most resolved
 # imports fold into the importer's consts (graph's definer folding), so
-# the imports knob only adds the residual — nav.py/EXTENSIONS is one.
-_fi = sorted({n for _m, n in g.files["nav.py"].from_imports}
-             - set(recall._surface(g.files["nav.py"])))
-_a_plain = recall._augment("q", ["nav.py"], g, budget=10 ** 9)
-_a_imp = recall._augment("q", ["nav.py"], g, budget=10 ** 9, imports=True)
+# the imports knob only adds the residual — navconfig/EXTENSIONS is one
+# (issue #344: _apply_config's lazy extractors import moved to the
+# config leaf; nav.py itself now imports only the sibling leaves).
+_fi = sorted({n for _m, n in g.files["navconfig.py"].from_imports}
+             - set(recall._surface(g.files["navconfig.py"])))
+_a_plain = recall._augment("q", ["navconfig.py"], g, budget=10 ** 9)
+_a_imp = recall._augment("q", ["navconfig.py"], g, budget=10 ** 9, imports=True)
 check("imports=True harvests from_imports names beyond the base surface",
       bool(_fi) and all(n in _a_imp.split() for n in _fi)
       and not any(n in _a_plain.split() for n in _fi), str(_fi))
@@ -349,9 +351,9 @@ check("BM25F side keeps the raw query (both passes, no prefix)",
       and lex_seen[2].startswith("cluster labeling wires") and lex_seen[2] != lex_seen[1]
       and all(not q.startswith(Q) for q in lex_seen), repr(lex_seen))
 
-# 8. nav.search delegates to the same fused path (server consumes this)
-via_nav = nav.search("graph signal wiring edges", k=6)
-check("nav.search delegates to recall.search",
+# 8. navstore.search delegates to the same fused path (server consumes this)
+via_nav = navstore.search("graph signal wiring edges", k=6)
+check("navstore.search delegates to recall.search",
       json.dumps(via_nav) == json.dumps(
           recall.search("graph signal wiring edges", k=6, two_pass=False)),
       str([h["file"] for h in via_nav]))
