@@ -27,6 +27,7 @@ import graph  # noqa: E402  (binds config via NEURONAV_CONFIG)
 import navconfig, navstore
 import recall  # noqa: E402
 import server  # noqa: E402
+import server_clusters  # noqa: E402  # context renderers' home since #345
 
 
 
@@ -289,10 +290,10 @@ def main() -> int:
         try:
             sem = None
             try:
-                sem = server._ctx_semantic("recall.py")
+                sem = server_clusters._ctx_semantic("recall.py")
             except Exception as exc:
                 sem = f"{type(exc).__name__}: {exc}"
-            lines = server._render_semantic("recall.py")
+            lines = server_clusters._render_semantic("recall.py")
         finally:
             navstore._collection = orig_col
         check("_ctx_semantic separates empty-miss from backend failure (#116)",

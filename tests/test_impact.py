@@ -20,7 +20,8 @@
 # - scene pseudo-keys (*::tscn) are neither counted nor traversed
 # - determinism: same graph + reversed build order -> byte-identical
 #   rendering (sorted frontier, no dict-order leakage)
-# The rendering (server._impact_view) pins the #125 line law: full
+# The rendering (server_structure._impact_view — moved from server
+# in the #345 family split) pins the #125 line law: full
 # totals, per-hop histogram rows, "+N more" past 8 names, the depth-cap
 # marker, seed capping for class symbols, and miss -> closest matches.
 import sys
@@ -29,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import graph  # noqa: E402
+import server_structure  # noqa: E402  # _impact_view's home since #345
 import server  # noqa: E402
 from extractors.model import FileSym, Func  # noqa: E402
 
@@ -209,7 +211,7 @@ def main() -> int:
           str(rw))
 
     # -- rendering (#125 line law) ----------------------------------------------
-    v = server._impact_view(g, "hub", "callers", 4)
+    v = server_structure._impact_view(g, "hub", "callers", 4)
     check("render: header names symbol, seeds and direction",
           v.splitlines()[0] == "impact of hub (hub.py#hub): callers — what breaks",
           v.splitlines()[0])
@@ -220,11 +222,11 @@ def main() -> int:
           and "    depth 2: 4 (" in v and "    depth 3: 3 (" in v)
     check("render: entries row is a count row",
           "    entries reached: 2 (entry_reg.py#rg, entry_test.py#te)" in v)
-    v2 = server._impact_view(g, "hub", "callers", 2)
+    v2 = server_structure._impact_view(g, "hub", "callers", 2)
     check("render: depth cut announces +N past the cap",
           "… +3 more past the depth cap — pass max_depth=3 to expand" in v2,
           ", ".join(ln.strip() for ln in v2.splitlines() if "cap" in ln))
-    vw = server._impact_view(g, "Widget", "callers", 4)
+    vw = server_structure._impact_view(g, "Widget", "callers", 4)
     check("render: class seeds cap at 3 with '+N more'",
           vw.splitlines()[0] == "impact of Widget (widget.py#w1, widget.py#w2, "
           "widget.py#w3 +1 more): callers — what breaks",
@@ -233,14 +235,14 @@ def main() -> int:
           "entries reached: 0 — no known entry" in vw,
           ", ".join(ln.strip() for ln in vw.splitlines() if "entries" in ln))
     check("render: empty closure stays honest, no fabricated rows",
-          server._impact_view(g, "hub", "callees", 4)
+          server_structure._impact_view(g, "hub", "callees", 4)
           == "impact of hub (hub.py#hub): callees — what it depends on\n"
              "total: 0 within 4 hops")
     check("render: no entries row when the closure is empty",
-          "entries" not in server._impact_view(g, "d", "callers", 4))
+          "entries" not in server_structure._impact_view(g, "d", "callers", 4))
 
     hc = build_hubfarm()
-    vh = server._impact_view(hc, "hubc", "callers", 4)
+    vh = server_structure._impact_view(hc, "hubc", "callers", 4)
     check("render: 12-caller row caps at 8 names with '+4 more'",
           "    depth 1: 12 (c00.py#caller, c01.py#caller, c02.py#caller, "
           "c03.py#caller, c04.py#caller, c05.py#caller, c06.py#caller, "
@@ -249,7 +251,7 @@ def main() -> int:
           vh.splitlines()[1:3])
 
     # -- miss -> closest matches -------------------------------------------------
-    mv = server._impact_view(g, "hubbbb", "callers", 4)
+    mv = server_structure._impact_view(g, "hubbbb", "callers", 4)
     check("miss: suggestions, not a dead end",
           mv.startswith("no function matching 'hubbbb'")
           and "Closest matches: hub" in mv, mv)
@@ -258,9 +260,9 @@ def main() -> int:
 
     # -- determinism ---------------------------------------------------------------
     check("determinism: repeat call byte-identical",
-          server._impact_view(g, "hub", "callers", 4) == v)
+          server_structure._impact_view(g, "hub", "callers", 4) == v)
     check("determinism: reversed build order byte-identical",
-          server._impact_view(build_ring(rev=True), "hub", "callers", 4) == v)
+          server_structure._impact_view(build_ring(rev=True), "hub", "callers", 4) == v)
     check("determinism: payload repeats byte-identical",
           g.impact("hub") == res)
 
