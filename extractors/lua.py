@@ -106,10 +106,10 @@ _IDENT_RE = re.compile(r"\A[A-Za-z_]\w*\Z")
 # ---- module-scope regex facts (byte-deterministic, module-walk laws) -------------
 
 _LUA_REQUIRE_RE = re.compile(
-    r"""(?<![\w.])require\s*\(\s*(["'])([^"'`\n]+)\1\s*\)""")
+    r"""(?<![\w.])require\s*\(?\s*(["'])([^"'`\n]+)\1\s*\)?""")
 _LUA_REQ_BIND_RE = re.compile(
     r"""(?m)^[^\S\n]*local\s+([A-Za-z_]\w*)\s*=\s*"""
-    r"""require\s*\(\s*(["'])([^"'`\n]+)\2\s*\)""")
+    r"""require\s*\(?\s*(["'])([^"'`\n]+)\2\s*\)?""")
 _LUA_TABLE_RE = re.compile(
     r"""(?m)^[^\S\n]*local\s+([A-Za-z_]\w*)\s*=\s*(?:setmetatable\s*\(\s*)?\{""")
 _LUA_INDEX_RE = re.compile(r"""__index\s*=\s*([A-Za-z_]\w*)\b""")

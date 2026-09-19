@@ -143,6 +143,15 @@ check("parse: unresolved require degrades loudly (never silent)",
 check("parse: dynamic require records no binding",
       "name" not in _dyn_fs.module_vars, str(_dyn_fs.module_vars))
 
+# paren-less require "spec" (the dominant real-world Neovim idiom, GK PR #353)
+_pl_fs = lx.parse(FIX / "lua/myplug/parenless.lua",
+                  "lua/myplug/parenless.lua")
+check("parse: paren-less require resolves (plenary idiom)",
+      _pl_fs.module_vars.get("util") == "module:lua/myplug/util.lua"
+      and {"lua/myplug/circ_a.lua", "lua/myplug/util.lua"}
+      <= set(_pl_fs.imported_modules),
+      str(_pl_fs.module_vars) + " | " + str(sorted(_pl_fs.imported_modules)))
+
 # ---- graph-level pins ------------------------------------------------------------
 
 g = graph.get_graph(rebuild=True)
@@ -161,6 +170,8 @@ check("entry: main.lua convention roots love.load/update",
 check("entry: never-required init.lua roots (Neovim convention)",
       "lua/other_plug/init.lua::activate" in g.roots,
       str(sorted(r for r in g.roots if "other_plug" in r)))
+check("entry: paren-less required module is not a convention root",
+      "lua/myplug/parenless.lua::run" not in g.roots)
 check("entry: REQUIRED init.lua is not a convention root",
       "lua/myplug/init.lua::setup" not in g.roots)
 check("entry: _spec.lua + test-dir funcs root (gohard _test.go law)",
@@ -179,6 +190,8 @@ check("alive: own-file table static + colon calls (T.inner)",
       alive("lua/myplug/init.lua", "inner"))
 check("alive: __index base methods (go iface floor)",
       alive("lua/myplug/base.lua", "b_meth"))
+check("alive: paren-less require chain keeps run alive (false-dead guard)",
+      alive("lua/myplug/parenless.lua", "run"), str(DEAD))
 check("alive: circular requires keep both modules' funcs",
       alive("lua/myplug/circ_a.lua", "a_fn")
       and alive("lua/myplug/circ_b.lua", "b_fn"))
@@ -198,6 +211,8 @@ check("dead: dynamic require rides the mention floor (never likely)",
 _out_load = g.edges.get("main.lua::load", set())
 check("edge: LÖVE root -> plugin setup",
       "lua/myplug/init.lua::setup" in _out_load, str(sorted(_out_load)))
+check("edge: paren-less consumer -> module fn (main.load -> P.run)",
+      "lua/myplug/parenless.lua::run" in _out_load, str(sorted(_out_load)))
 _out_upd = g.edges.get("main.lua::update", set())
 check("edge: global-table call -> defining file",
       "lua/myplug/global_api.lua::ping" in _out_upd, str(sorted(_out_upd)))

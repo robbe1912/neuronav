@@ -3,6 +3,8 @@ local plug = require("myplug.init")
 
 function love.load()
     plug.setup({})
+    local pl = require "myplug.parenless"
+    pl.run(1)
 end
 
 function love.update(dt)
