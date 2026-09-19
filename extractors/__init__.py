@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from extractors import cpp
 from extractors import gdscript
+from extractors import go
 from extractors import java
 from extractors import js
 from extractors import python
@@ -68,6 +69,7 @@ EXTENSIONS: dict[str, object] = {
     ".mjs": js,
     ".cjs": js,
     ".rs": rust,
+    ".go": go,
     ".java": java,
 }
 
@@ -89,6 +91,7 @@ PRESETS: dict[str, tuple[str, ...]] = {
     # default and this preset must never drift apart)
     "gdscript": gdscript.WALK_EXTS,
     "rust": (".rs", ".json", ".md"),
+    "go": (".go", ".json", ".md"),
     "java": (".java", ".json", ".md"),
 }
 
@@ -130,6 +133,8 @@ BUILD_SEQUENCE = (
     rust.rebind_reexports_sweep,
     rust.import_liveness_sweep,
     java.import_liveness_sweep,
+    go.interface_satisfaction_sweep,
+    go.import_liveness_sweep,
 )
 
 WIRE_SEQUENCE = (
