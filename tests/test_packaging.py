@@ -51,9 +51,11 @@ VENDOR_FILES = (
     "vendor/three-0.160.0/lines/LineMaterial.js",
 )
 PY_MODULES = (
-    "nav.py", "navconfig.py", "navstore.py", "navindex.py", "graph.py", "server.py", "viz.py", "layout.py",
+    "nav.py", "navconfig.py", "navstore.py", "navindex.py", "graph.py", "server.py", "servercore.py",
+    "server_search.py", "server_structure.py", "server_clusters.py", "viz.py", "layout.py",
     "clusters.py", "explore.py", "recall.py", "onboard.py", "memories.py", "predicates.py",
 )
+
 # the repo's dev-only and machine-local trees must NOT ride the wheel
 ABSENT_PREFIXES = ("tests/", "tools/", "config/", "bench/", "docs/", "templates/")
 TOOL_NAMES = (
@@ -62,9 +64,9 @@ TOOL_NAMES = (
     "context", "visualize", "rescan", "memory",
 )
 
-
 def _clean_env() -> dict:
     return {k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"}
+
 
 
 def _build_wheel(out: Path) -> bool:
