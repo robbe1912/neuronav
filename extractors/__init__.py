@@ -14,6 +14,7 @@ Contract for an extractor module (full details: extractors/README.md):
 from __future__ import annotations
 
 from extractors import cpp
+from extractors import csharp
 from extractors import gdscript
 from extractors import go
 from extractors import java
@@ -71,6 +72,7 @@ EXTENSIONS: dict[str, object] = {
     ".rs": rust,
     ".go": go,
     ".java": java,
+    ".cs": csharp,
 }
 
 # issue #240: language presets + the raw-text walk suffixes — language
@@ -93,6 +95,7 @@ PRESETS: dict[str, tuple[str, ...]] = {
     "rust": (".rs", ".json", ".md"),
     "go": (".go", ".json", ".md"),
     "java": (".java", ".json", ".md"),
+    "csharp": (".cs", ".json", ".md"),
 }
 
 def sync_parseable(suffix: str) -> bool:
