@@ -16,9 +16,9 @@ named reason in the suite; new suites use the canonical style only
 (issue #301). The browser suites ride `tests/_page_harness.py`'s
 `CheckLog` instead — a different finish contract (the #123 executed
 check floor), not drift.
-CI (`.github/workflows/ci.yml`) runs thirty-six hermetic suites on ubuntu
+CI (`.github/workflows/ci.yml`) runs thirty-seven hermetic suites on ubuntu
 with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
-`test_pyhard`, `test_cpphard`, `test_jshard`, `test_gohard`, `test_javahard`, `test_autorescan`, `test_server_stdio`,
+`test_pyhard`, `test_cpphard`, `test_jshard`, `test_gohard`, `test_javahard`, `test_chard`, `test_autorescan`, `test_server_stdio`,
 `test_searchtext`, `test_project_mode`, `test_baseindex`, `test_mwires`,
 `test_clusterinv`, `test_archrules`, `test_recall`, `test_embedprov`,
 `test_repomap`, `test_selfindex`, `test_explore`, `test_verifier`,
@@ -56,6 +56,7 @@ owner-side `test_chunking` and `test_truthful`.
 | `test_gohard` | Go extractor edge cases (go.mod module-prefix imports + loud no-go.mod degrade, method receivers, interface-satisfaction mirroring, `_test.go` entry rules, main/init entries, String/Error std-interface shields, dead tiers, sabotage leg, determinism; issue #334) | tree-sitter + tree-sitter-go wheels (hermetic fixtures) |
 | `test_javahard` | Java extractor edge cases (issue #335: package-path import resolution incl. static-member/wildcard + external loud-degrade, main(String[]) + JUnit entry rules, interface default-method dispatch + @Override review shielding, qualified `new` ctor edges + default-ctor name-level alive, dead tiers, double-build determinism, FAKE end-to-end) | tree-sitter + tree-sitter-java wheels (hermetic fixtures under `fixtures/java`, Maven-style layouts) |
 | `test_csharphard` | C# extractor edge cases (issue #336): grammar wheel smoke (records/patterns/#if), partial-class declaration merge, Unity MonoBehaviour lifecycle entry roots (Awake/Start/Update/… mirroring the Godot `_ready` rooting), `[Test]`/`[TestMethod]`/`[Fact]` entry hints, static-Main rule, namespace-qualified call resolution (type index + namespace-prefix walk), this-writes, field/property members with types, expression-bodied + ctor bodies, #if-preproc member descent, enum-only wiring-only file, exact dead-tier surface, determinism double-run; pre-fix guard FAILs cleanly when the extractor is absent | tree-sitter + tree-sitter-c-sharp wheels (hermetic fixtures) |
+| `test_chard` | C extractor edge cases (issue #346): parse surface (free fns/static/fn-ptr params, struct members, enumerators, typedefs, TU array-table globals), quoted-includes-only law (angle-bracket system headers invisible), `main()` root + referenced-name liveness root, call edges across definition-headers and pure-declaration-headers -> paired impl (stem pairing), TU-scope callback-table liveness (bare fn names in brace initializers), exact dead-tier surface (all-likely, no bogus attribution to the fn preceding a table), double-build determinism, walk/parse/FAKE end-to-end + registry ownership (.c -> c, .h stays cpp) | tree-sitter + tree-sitter-cpp wheels (hermetic fixtures under `fixtures/c`) |
 | `test_selfindex` | self-index structural invariants: likely-dead zero, handlers stay review, deterministic rebuild | chromadb import (structural only) |
 | `test_target_regression` | byte-stability over the target repo: floor pins + liveness canaries | chromadb import + the target repo configured in `config.json` |
 | `test_tsregression` | TS target byte-stability + liveness canaries + parse-coverage floors (per-command untracked profile); hermetic section pins the judge-C1 dead-file registry resolution (`.ts` flags like the `.gd` control) + the `# imports:` doc header | chromadb import + the TS target via `NEURONAV_CONFIG` |
