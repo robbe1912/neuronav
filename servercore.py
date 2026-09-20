@@ -93,6 +93,26 @@ MUTATING_BAKE = ToolAnnotations(destructiveHint=False,
                                 idempotentHint=True)
 
 
+class _Rail:
+    """Late-binding gate-rail handle (issue #359). server.py owns the
+    rails (_route/_serve/_stale_prelude/_auto_rescan) and cannot export
+    them to the family modules (server imports those — a cycle), so each
+    family's register() binds one handle per rail into its globals: the
+    verbatim handler bodies keep calling the historical names, and every
+    call resolves the CURRENT attribute from the owning module. A copied
+    function object would freeze the seam shut — rebinding
+    server._auto_rescan after registration (the test seam) would never
+    reach the family tools."""
+
+    __slots__ = ("_owner", "_name")
+
+    def __init__(self, owner, name):
+        self._owner, self._name = owner, name
+
+    def __call__(self, *args, **kwargs):
+        return getattr(self._owner, self._name)(*args, **kwargs)
+
+
 def _capped(names: list[str], cap: int) -> str:
     """First `cap` names, sorted by the caller, then an explicit +N more —
     the counts-everywhere discipline of explore's flow line (issue #125)."""

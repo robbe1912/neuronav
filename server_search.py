@@ -2,10 +2,15 @@
 
 Tool-handler family split out of server.py — handlers are verbatim
 moves. server.py owns the gate rails (boot handshake, _route scoping,
-_serve shell, the _auto_rescan freshness gate, _stale_prelude) and
-passes them in via register(): the pinning suites (test_server_stdio,
-test_onboardprogress, test_autorescan) reach those names through
-server's own namespace, so their definitions cannot leave it.
+_serve shell, the _auto_rescan freshness gate, _stale_prelude); the
+families cannot import them (server imports THESE modules — a cycle),
+so register() receives the server module itself and binds each rail as
+a late-binding _Rail handle: handlers resolve the historical names
+through server's namespace at CALL time (issue #359), so a post-
+registration rebind there — the pinning suites' seam — reaches these
+tools. The pinning suites (test_server_stdio, test_onboardprogress,
+test_autorescan) reach those names through server's own namespace, so
+their definitions cannot leave it.
 FastMCP registration happens in register(): every tool here is
 read-only, one uniform annotation, applied in the historical def order
 so tools/list order is unchanged. register returns the handlers so
@@ -19,7 +24,7 @@ import fnmatch
 import re
 
 from mcp.server.fastmcp import Context
-from servercore import READONLY, mcp
+from servercore import READONLY, _Rail, mcp
 
 import explore as _explore
 import graph
@@ -389,15 +394,18 @@ def search_text(pattern: str, glob: str = "", files_only: bool = False, dir: str
         return "\n".join(lines)
 
 
-def register(_route, _serve, _stale_prelude, _auto_rescan):
+def register(server_mod):
     """Compose this family onto the FastMCP instance (issue #345): the
-    gate rails arrive as parameters — importing them from server would
-    cycle (server imports this module first) — and bind into this
-    module's globals so the verbatim handler bodies resolve them by
-    their historical names. Registration order is the historical def
-    order, so tools/list is unchanged; the uniform read-only annotation
-    is the one fact registration adds."""
+    gate rails cannot be imported from server (this module is imported
+    BY server — a cycle), so registration receives the server module
+    itself and binds each rail as a late-binding _Rail handle
+    (issue #359): the handler bodies resolve `_route` & co through that
+    module at CALL time, so rebinding server._auto_rescan & co after
+    registration — the pinning suites' seam — reaches these tools; a
+    copied function object would freeze the seam shut. Registration
+    order is the historical def order, so tools/list is unchanged; the
+    uniform read-only annotation is the one fact registration adds."""
     g = globals()
     for _rail in ("_route", "_serve", "_stale_prelude", "_auto_rescan"):
-        g[_rail] = locals()[_rail]
+        g[_rail] = _Rail(server_mod, _rail)
     return explore, repo_map, semantic_search, find_functions, search_text

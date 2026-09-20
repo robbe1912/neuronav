@@ -546,10 +546,24 @@ def main() -> None:
 
         import server  # noqa: E402
 
-        server._auto_rescan = lambda: None  # gate off; we test the degrade path
+        rail_hits = {"n": 0}
+
+        def _gated_ar() -> None:  # gate off; we test the degrade path —
+            rail_hits["n"] += 1  # counted, so the #359 seam has teeth
+
+        server._auto_rescan = _gated_ar
         sys.modules["viz"] = None  # import viz now raises ImportError
         msg = asyncio.run(server.visualize())
         check("visualize degrades loudly without the add-on", "viz add-on not installed" in msg, msg[:60])
+        # #359: the rebind must reach the FAMILY handlers too — they used
+        # to hold rail copies. search_text lives in server_search; its
+        # empty-pattern arm sits after the rails, so the shim firing
+        # proves the patch crossed the seam (store-free: no boot, no
+        # index — only the rail and the guard answer).
+        no_pat = server.search_text("")
+        check("server._auto_rescan rebind reaches the family handlers (#359)",
+              rail_hits["n"] >= 1 and no_pat.startswith("no pattern given"),
+              f"hits={rail_hits['n']} out={str(no_pat)[:60]}")
 
         # 6b. issues #133 + #315: the bake no longer blocks the call — the
         # ack is immediate, the bake runs on the background baker and its

@@ -1007,24 +1007,34 @@ def _start_watcher(interval: float) -> threading.Thread:
 # The three read-only query families live in their own modules (verbatim
 # moves: server_search / server_structure / server_clusters). They cannot
 # import the gate rails from here (this module imports THEM — a cycle),
-# so register() receives the rails as parameters: the pinning suites
-# (test_server_stdio, test_onboardprogress, test_autorescan) reach
-# _serve/_stale_prelude/_auto_rescan/_BOOT_* through server's own
-# namespace, so those definitions cannot leave this module. Registration
-# order preserves the historical def order, keeping tools/list
-# byte-identical; register() returns the handlers so this module keeps
-# binding them at module scope — the suites also call server.repo_map &
-# co directly, and the wire names must stay reachable where they were.
+# so register() receives THIS module and binds each rail as a
+# late-binding _Rail handle (issue #359): the family handlers resolve
+# _route/_serve/_stale_prelude/_auto_rescan through this namespace at
+# call time — the pinning suites (test_server_stdio,
+# test_onboardprogress, test_autorescan) reach those names through
+# server's own namespace, so the definitions cannot leave this module
+# AND a post-registration rebind here (the test seam) reaches the
+# family tools. Registration order preserves the historical def order,
+# keeping tools/list byte-identical; register() returns the handlers so
+# this module keeps binding them at module scope — the suites also call
+# server.repo_map & co directly, and the wire names must stay reachable
+# where they were.
 import server_clusters as _srv_clusters
 import server_search as _srv_search
 import server_structure as _srv_structure
 
+# sys.modules[__name__] names the true rail owner in both launch shapes
+# (python server.py runs it as __main__, the neuronav-mcp console
+# script imports it as server); register() runs mid-import, but the
+# handles resolve at call time, long after this module is complete.
+_RAILS_MOD = sys.modules[__name__]
+
 explore, repo_map, semantic_search, find_functions, search_text = (
-    _srv_search.register(_route, _serve, _stale_prelude, _auto_rescan))
+    _srv_search.register(_RAILS_MOD))
 symbol_graph, impact, dead_code, duplicates = (
-    _srv_structure.register(_route, _auto_rescan))
+    _srv_structure.register(_RAILS_MOD))
 clusters, crosstalk, arch_check, context = (
-    _srv_clusters.register(_route, _serve, _auto_rescan))
+    _srv_clusters.register(_RAILS_MOD))
 
 
 def _sync_chain(stats: dict) -> tuple[object, object, str]:
