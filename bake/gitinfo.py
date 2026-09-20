@@ -14,6 +14,7 @@ def head(repo_dir) -> str:
             cwd=str(repo_dir),
             capture_output=True, text=True, timeout=5,
             encoding="utf-8", errors="replace",  # issue #118: git speaks UTF-8 — never the locale
+            stdin=subprocess.DEVNULL,  # issue #354: see the churn note
         )
         return got.stdout.strip()
     except Exception:
@@ -43,6 +44,14 @@ def churn(paths: list[str], root) -> list[float] | None:
             cwd=root,
             capture_output=True, text=True, timeout=15,
             encoding="utf-8", errors="replace",  # issue #118
+            # issue #354: DEVNULL, never the inherited stdin. Under the
+            # stdio MCP server the inherited stdin is the JSON-RPC pipe —
+            # never EOF, concurrently drained by the anyio loop — and an
+            # MSYS git spawned on it blocks past timeout; run() then kills
+            # it but the post-kill re-communicate() joins the pipe readers
+            # forever, wedging the whole background baker. Rig-proven with
+            # the DEVNULL control at 0.06s vs an indefinite hang beside it.
+            stdin=subprocess.DEVNULL,
         )
         if got.returncode != 0:
             return None
@@ -51,6 +60,7 @@ def churn(paths: list[str], root) -> list[float] | None:
             ["git", "rev-parse", "--show-toplevel"], cwd=root,
             capture_output=True, text=True, timeout=5,
             encoding="utf-8", errors="replace",  # issue #118
+            stdin=subprocess.DEVNULL,  # issue #354: see the git log note
         ).stdout.strip().replace("\\", "/")
         if top:
             try:
