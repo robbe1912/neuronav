@@ -224,7 +224,7 @@ function updateBallPin() {
               if (k2.startsWith(pref)) { hit = true; break; }
           if (!hit) continue;
           // pick/render parity: a culled instance parked at scale ~0 stays out
-          if (Math.hypot(mx[i*16], mx[i*16+1], mx[i*16+2]) <= 0.001) continue;
+          if (!isServed(mx, i)) continue;
           chainTintIdx.push(i);
           const s2 = busPts[i];
           if (!refA) refA = s2.a;
@@ -437,10 +437,7 @@ function pickWireMeta(e) {
         // scale parked at 0.0001) must not answer the picker — hovering
         // invisible ink is the tooltip-over-nothing class. Tapered EXPLAINED
         // EXIT stubs keep scale > 0 and stay pickable.
-        const _sc = Math.hypot(fnBus.instanceMatrix.array[i*16],
-                               fnBus.instanceMatrix.array[i*16+1],
-                               fnBus.instanceMatrix.array[i*16+2]);
-        if (_sc <= 0.001) continue;
+        if (!isServed(fnBus.instanceMatrix.array, i)) continue;
         if (dd < bestD) { bestD = dd; best = m; pickWireZ = v.z + segT * (w.z - v.z); }
       }
     }

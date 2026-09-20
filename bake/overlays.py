@@ -2,9 +2,7 @@
 # phase-2 V8). Moved verbatim from viz.py; every nav/graph/chroma edge
 # stays in the viz.py orchestrator — data arrives as arguments.
 
-import json
-
-from bake.budget import _cap_rows
+from bake.budget import _cap_rows, _json_len
 
 def _highways(pos_baked, nodes, links):
     """J13: long inter-cluster links as bundled bezier arc polylines."""
@@ -81,11 +79,11 @@ def _cap_highways(hw, links):
     # path.
     hw_dropped = 0
     _HW_BYTE_CAP = 1_500_000
-    if len(json.dumps(hw, separators=(",", ":"))) > _HW_BYTE_CAP:
+    if _json_len(hw) > _HW_BYTE_CAP:
         kept_hw, _ = _cap_rows(
             range(len(hw)),
             prio_key=lambda i: (-links[hw[i][0]]["w"], hw[i][0]),
-            cost_of=lambda i: len(json.dumps(hw[i], separators=(",", ":"))) + 1,
+            cost_of=lambda i: _json_len(hw[i]) + 1,
             cap=_HW_BYTE_CAP,
         )
         hw_dropped = len(hw) - len(kept_hw)

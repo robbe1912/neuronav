@@ -2,9 +2,7 @@
 # phase-2 V8). Moved verbatim from viz.py; every nav/graph/chroma edge
 # stays in the viz.py orchestrator — data arrives as arguments.
 
-import json
-
-from bake.budget import _cap_rows
+from bake.budget import _cap_rows, _json_len
 from extractors import (  # noqa: E402
     FN_KEY_SEP,
     SIGNAL_PREFIX,
@@ -116,8 +114,7 @@ def _wire_budget(fedges, mwires, paths, rank_of):
     # keys, whole-pair keeps, original emission order preserved.
     wire_dropped = 0
     _WIRE_BYTE_CAP = 2_600_000
-    if (len(json.dumps(fedges, separators=(",", ":")))
-            + len(json.dumps(mwires, separators=(",", ":"))) > _WIRE_BYTE_CAP):
+    if _json_len(fedges) + _json_len(mwires) > _WIRE_BYTE_CAP:
         groups: dict[tuple, list] = {}
         for i, r in enumerate(fedges):
             groups.setdefault((r[0], r[2]), [[], []])[0].append(i)
@@ -128,8 +125,8 @@ def _wire_budget(fedges, mwires, paths, rank_of):
             fe, mw = groups[pair]
             # +1 per row: the joining comma each kept row adds to the
             # serialized list (caps are enforced on the real bake bytes)
-            return (sum(len(json.dumps(fedges[i], separators=(",", ":"))) + 1 for i in fe)
-                    + sum(len(json.dumps(mwires[i], separators=(",", ":"))) + 1 for i in mw))
+            return (sum(_json_len(fedges[i]) + 1 for i in fe)
+                    + sum(_json_len(mwires[i]) + 1 for i in mw))
 
         kept_pairs, _pairs_dropped = _cap_rows(
             list(groups),
