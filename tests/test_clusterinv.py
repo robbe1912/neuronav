@@ -12,6 +12,11 @@
 #   - crosstalk counts only edges the clusterer's structural graph could
 #     see: tests/ endpoints (which communities_graph never wires) are
 #     tallied separately and feed no cluster number (#114)
+#   - topk_desc (#393) stays byte-identical to the argsort reference
+#     ``np.argsort(-sim, axis=1)[:, :k]`` on tie-heavy corpora while its
+#     transient memory is chunk-bounded — the monolithic rows·n arrays
+#     (negation, argpartition index slab, tie scan, tied-row fallback
+#     argsort) peaked ~21GB at 33k tie-heavy docs
 #   - the repair is a no-op on healthy partitions and deterministic
 import json
 import os
@@ -542,6 +547,61 @@ with tempfile.TemporaryDirectory(prefix="neuronav_hashseed_") as td:
         len(_digests[0]) == 2 and _digests[0][0] == _digests[0][1],
         str(_digests[0]),
     )
+
+# ------------------ 10. topk_desc chunked exactness + memory (#393)
+# The selection engine feeds louvain's edge insertion order, so its law is
+# byte identity with the argsort reference ``np.argsort(-sim, axis=1)[:, :k]``
+# on EVERY row — ties included (the fallback carries them: quicksort's tie
+# order is part of the pinned bytes). #393 chunks the pass; chunks may not
+# shift one byte (every op is row-independent), and the chunking must
+# actually bound the rows·n transients the monolithic form allocated —
+# negation, argpartition's int64 index slab, the tie scan, the tied-row
+# fallback argsort — which peaked ~21GB at 33k tie-heavy docs on the rig.
+import hashlib
+import tracemalloc
+
+_t_rng = np.random.default_rng(393)
+# tie forge A: 7-value alphabet -> duplicates straddle every k-cut (the
+# degenerate/fake-embed shape: EVERY row falls to the argsort fallback);
+# 1500 rows > the 512-row chunk cap, so the last block is ragged
+_TIE = _t_rng.integers(0, 7, size=(1500, 1500)).astype(np.float32)
+np.fill_diagonal(_TIE, -1.0)
+# tie forge B: banded floats (values in {0, .25, .5, .75, 1}) — near-real
+# distributions with wide flat plateaus; C: sub-chunk corpus stays on the
+# single-block path
+_BAND = np.round(_t_rng.random((600, 600), dtype=np.float32) * 4) / 4
+np.fill_diagonal(_BAND, -1.0)
+_SMALL = _TIE[:300, :300].copy()
+for _s, _label in ((_TIE, "alphabet"), (_BAND, "banded"), (_SMALL, "sub-chunk")):
+    for _k in (1, 6, _s.shape[1] - 1):
+        _got = C.topk_desc(_s, _k)
+        _ref = np.argsort(-_s, axis=1)[:, :_k]
+        check(
+            f"topk_desc byte-identical to argsort ({_label}, k={_k})",
+            _got.dtype == _ref.dtype and np.array_equal(_got, _ref),
+        )
+
+# identity law, digest form: same data -> same neighbor bytes, run to run
+_d1 = hashlib.sha256(C.topk_desc(_TIE, 6).tobytes()).hexdigest()
+_d2 = hashlib.sha256(C.topk_desc(_TIE, 6).tobytes()).hexdigest()
+check("topk_desc double-run digest stable (#393)", _d1 == _d2, f"{_d1} != {_d2}")
+
+# memory ceiling: only the pass's transients are traced (the corpus is
+# built first). Monolithic at 3000^2 holds ~108MB live at once (36MB
+# negation + 72MB index slab; the fallback repeats the pair); the chunked
+# pass holds <=512*3000*(4+8+1 + fallback 4+8)B ~ 37MB. The 64MB bar
+# fails the monolithic form with wide margin, passes the chunked one.
+_MEM = _t_rng.integers(0, 7, size=(3000, 3000)).astype(np.float32)
+np.fill_diagonal(_MEM, -1.0)
+tracemalloc.start()
+C.topk_desc(_MEM, 6)
+_pk = tracemalloc.get_traced_memory()[1]
+tracemalloc.stop()
+check(
+    "topk_desc transient peak chunk-bounded (#393)",
+    _pk < 64 << 20,
+    f"traced peak {_pk >> 20}MB >= 64MB (rows*n monolithic form)",
+)
 
 # summary tail is a pre-#301 byte pin (names failures)
 print()
