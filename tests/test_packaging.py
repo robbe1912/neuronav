@@ -53,7 +53,7 @@ VENDOR_FILES = (
 PY_MODULES = (
     "nav.py", "navconfig.py", "navstore.py", "navindex.py", "graph.py", "server.py", "servercore.py",
     "server_search.py", "server_structure.py", "server_clusters.py", "serverbake.py", "viz.py", "layout.py",
-    "clusters.py", "clusterpasses.py", "explore.py", "recall.py", "onboard.py", "memories.py", "predicates.py",
+    "clusters.py", "clusterpasses.py", "docshape.py", "explore.py", "recall.py", "onboard.py", "memories.py", "predicates.py",
 )
 
 # the repo's dev-only and machine-local trees must NOT ride the wheel

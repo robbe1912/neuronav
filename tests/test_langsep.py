@@ -10,7 +10,7 @@
 # new extractor module + registry entry and NO diff in shared files.
 #
 # Scan set: graph.py nav.py server.py serverbake.py viz.py layout.py clusters.py
-# clusterpasses.py explore.py recall.py onboard.py bake/*.py tools/*.py. tools/ joined with
+# clusterpasses.py docshape.py explore.py recall.py onboard.py bake/*.py tools/*.py. tools/ joined with
 # ServeGuard's #120 landing (LJ-4, repaid via #199: the one live site —
 # qa_readability's affordance subject filter — routes through the registry
 # predicate is_scene_path; tools/ carries no allowlist entries).
@@ -44,7 +44,7 @@ from harness import FAILURES as FAILS, check
 
 SHARED = sorted(
     [HERE / n for n in ("graph.py", "nav.py", "navconfig.py", "navstore.py", "navindex.py", "server.py", "viz.py", "layout.py",
-                        "clusters.py", "clusterpasses.py", "explore.py", "recall.py", "onboard.py", "serverbake.py")]
+                        "clusters.py", "clusterpasses.py", "docshape.py", "explore.py", "recall.py", "onboard.py", "serverbake.py")]
     + list((HERE / "bake").glob("*.py"))
     + list((HERE / "vizjs").glob("*.py"))   # #299 A: the template lives here now
     + list((HERE / "tools").glob("*.py"))
