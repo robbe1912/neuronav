@@ -1,9 +1,10 @@
 """Query family: subsystem + single-file orientation tools (issue #345).
 
 clusters / crosstalk / arch_check / context and their view renderers —
-verbatim moves out of server.py; server.py owns the gate rails and
-passes them via register() (the pinning suites reach them through
-server's namespace — see server_search.register). _capped/_capped_row
+verbatim moves out of server.py; server.py owns the gate rails, so
+register() receives the server module and binds late-binding _Rail
+handles (the pinning suites patch rails on server's namespace and the
+handlers observe it — see server_search.register). _capped/_capped_row
 live here (this family is their heaviest user); server_structure and
 server.py import them from this module.
 """
@@ -11,7 +12,7 @@ server.py import them from this module.
 from __future__ import annotations
 
 from mcp.server.fastmcp import Context
-from servercore import READONLY, mcp, _capped, _capped_row
+from servercore import READONLY, _Rail, _capped, _capped_row, mcp
 
 import graph
 import navconfig, navstore
@@ -394,12 +395,13 @@ def context(path: str = "", depth: int = 1, dir: str = "") -> str:
         return "\n".join(lines)
 
 
-def register(_route, _serve, _auto_rescan):
+def register(server_mod):
     """Compose this family onto the FastMCP instance (issue #345) —
-    same contract as server_search.register: rails as parameters bound
-    into module globals, historical def order, uniform read-only
+    same contract as server_search.register: the rails bind as
+    late-binding _Rail handles resolved through server's module at
+    call time (issue #359), historical def order, uniform read-only
     annotation."""
     g = globals()
     for _rail in ("_route", "_serve", "_auto_rescan"):
-        g[_rail] = locals()[_rail]
+        g[_rail] = _Rail(server_mod, _rail)
     return clusters, crosstalk, arch_check, context

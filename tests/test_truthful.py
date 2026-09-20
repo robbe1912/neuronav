@@ -247,7 +247,13 @@ def main() -> int:
     # ---- #116 case 1 + case 3: server surfaces ---------------------------
 
     orig_ar = server._auto_rescan
-    server._auto_rescan = lambda: None  # unit-focus: the failure shapes
+    rail_hits = {"n": 0}
+
+    def _gated_ar() -> None:  # unit-focus: the failure shapes — and a
+        rail_hits["n"] += 1  # #359 seam probe: the family handler must
+
+    # observe this rebind (rails must not bind as copies)
+    server._auto_rescan = _gated_ar
     try:
         orig_ff = graph.find_functions
 
@@ -266,6 +272,10 @@ def main() -> int:
               and "lexical fallback" in out
               and any(".py#" in ln or ".gd#" in ln for ln in out.splitlines()),
               str(out)[:200])
+
+        check("server._auto_rescan rebind reaches the family handler (#359)",
+              rail_hits["n"] >= 1,
+              f"{rail_hits['n']} rail hits — seam frozen by a rail copy?")
         def _mm(*a, **k):
             raise RuntimeError(MISMATCH_MSG)
 

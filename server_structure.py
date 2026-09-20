@@ -1,17 +1,19 @@
 """Query family: structural walk tools (issue #345).
 
 symbol_graph / impact / dead_code / duplicates — verbatim moves out of
-server.py; server.py owns the gate rails and passes them via register()
-(the pinning suites reach them through server's namespace — see
-server_search.register). _capped lives in server_clusters (its heaviest
-user); this module imports it from there — sibling leaf import, no
-cycle (clusters never imports this module).
+server.py; server.py owns the gate rails, so register() receives the
+server module and binds late-binding _Rail handles (the pinning suites
+patch rails on server's namespace and the handlers observe it — see
+server_search.register).
+_capped lives in server_clusters (its heaviest user); this module
+imports it from there — sibling leaf import, no cycle (clusters never
+imports this module).
 """
 
 from __future__ import annotations
 
 import graph
-from servercore import READONLY, mcp, _capped
+from servercore import READONLY, _Rail, _capped, mcp
 
 
 # symbol_graph output shaping (issue #125): the walk stays in graph.py
@@ -305,12 +307,13 @@ def duplicates(n: int = 20, dir: str = "") -> str:
         return "\n".join(lines)
 
 
-def register(_route, _auto_rescan):
+def register(server_mod):
     """Compose this family onto the FastMCP instance (issue #345) —
-    same contract as server_search.register: rails as parameters bound
-    into module globals, historical def order, uniform read-only
+    same contract as server_search.register: the rails bind as
+    late-binding _Rail handles resolved through server's module at
+    call time (issue #359), historical def order, uniform read-only
     annotation."""
     g = globals()
     for _rail in ("_route", "_auto_rescan"):
-        g[_rail] = locals()[_rail]
+        g[_rail] = _Rail(server_mod, _rail)
     return symbol_graph, impact, dead_code, duplicates
