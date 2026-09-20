@@ -563,21 +563,15 @@ def clusters(
     col = _collection()
     if col.count() == 0:
         return []
-    got = chroma_read("clusters", lambda: col.get(include=["metadatas", "embeddings"]))
-    # issue #118: chroma returns ids in insertion order — a function of
-    # store HISTORY, not data (a fresh store and a grown one over the
-    # same files disagree). Sort every column by id so union-find roots,
-    rows = sorted(
-        zip(
-            got["ids"],
-            got.get("embeddings") if got.get("embeddings") is not None else [],
-            got.get("metadatas") or [],
-        ),
-        key=lambda r: r[0],
-    )
-    ids = [r[0] for r in rows]
-    embs = [r[1] for r in rows]
-    metas = [r[2] for r in rows]
+    got = col_get_all(col, ["metadatas", "embeddings"], "clusters")
+    # issue #327: the fifth converted site rides the bounded pager
+    # (512-row pages, each under the store lock with the hnsw retry);
+    # issue #118: chroma's raw return order tracks store HISTORY, not
+    # data — the pager's id-sorted merge keeps union-find roots,
+    # louvain's seed walk, and finalize's splits reproducible
+    ids = got["ids"]
+    embs = got["embeddings"]
+    metas = got["metadatas"]
     mat = np.array([e.tolist() if hasattr(e, "tolist") else e for e in embs], dtype=np.float32)
     norms = np.linalg.norm(mat, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
