@@ -364,6 +364,22 @@ check("suite no wiring-only file in dead-file tier",
 g2 = graph.get_graph(rebuild=True)
 check("suite determinism double-run", digest(g) == digest(g2))
 
+# suite pin (#361): the hoisted table is LIVE data — flip one knob in
+# place (every partial bind shares the table object) and the byte-stable
+# digest MUST move; restored, it MUST return to baseline. The CJS
+# declarator hook is the one the f2 CJS-barrel and require-binding
+# legs feed on.
+_base = digest(g2)
+_saved_hook = js_x._JS_CFG.declarator_hook
+js_x._JS_CFG.declarator_hook = None
+g3 = graph.get_graph(rebuild=True)
+_moved = digest(g3) != _base
+js_x._JS_CFG.declarator_hook = _saved_hook
+g4 = graph.get_graph(rebuild=True)
+check("#361 knob sabotage: CJS declarator hook off diverges the digest",
+      _moved and digest(g4) == _base,
+      f"moved={_moved} restored={digest(g4) == _base}")
+
 # byte pin: summary without leading blank line — kept local
 print(f"{len(FAILS)} failure(s)")
 sys.exit(1 if FAILS else 0)
