@@ -101,22 +101,20 @@ def main():
 
     # 6. real layout build: deterministic, finite, no-overlap, stratified Y
     clusters = [i % 3 for i in range(N)]
-    p1 = layout_fn(N, links, [], clusters)
-    p2 = layout_fn(N, links, [], clusters)
-    h1, h2 = json.dumps(p1), json.dumps(p2)
+    p1, r1 = layout_fn(N, links, [], clusters)
+    p2, r2 = layout_fn(N, links, [], clusters)
+    h1, h2 = json.dumps([p1, r1]), json.dumps([p2, r2])
     check("two builds byte-identical", h1 == h2,
           f"sha256 {hashlib.sha256(h1.encode()).hexdigest()[:12]}"
           f" == {hashlib.sha256(h2.encode()).hexdigest()[:12]}")
     flat = [x for p in p1 for x in p]
     check("no NaN/inf", all(math.isfinite(x) for x in flat))
 
-    # same size chain as viz.py: rad = min(10, 3.5+sqrt(deg)) * 1.1, floors
-    # at (rad_i + rad_j) * 1.7 — final positions must clear it in 3D
-    deg = [0.0] * N
-    for l in links:
-        deg[l["s"]] += l["w"]
-        deg[l["t"]] += l["w"]
-    rad = [min(10.0, 3.5 + math.sqrt(x)) * 1.1 for x in deg]
+    # radii come from the layout itself (#368 single source: the law the
+    # relax enforced IS the law the browser draws — no re-derived fourth
+    # copy, which had already drifted to stale constants), floors at
+    # (rad_i + rad_j) * 1.7 — final positions must clear it in 3D
+    rad = r1
     worst = math.inf
     for i in range(N):
         for j in range(i + 1, N):

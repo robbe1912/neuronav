@@ -246,7 +246,9 @@ _HTML_HEAD = r"""<!DOCTYPE html>
   <div id="toggles">
   <button id="bCalls" class="on">calls</button>
   <button id="bSignals" class="on">signals</button>
-  <button id="bSemAff" class="on" title="semantic-affinity wires — file twins with near-duplicate embeddings (mutual top-6, cosine ≥ 0.45); a hint layer, NOT a dependency; serves only at close zoom">affinity</button>
+  <button id="bSemAff" class="on">affinity</button>
+   <!-- bSemAff tooltip is set from DATA.meta at boot (#368): top-k + floor
+       are bake law, never restated in static HTML -->
 <button id="bMut" title="fn layer: only functions that write member state (✎ badge)">mutators</button>
     <button id="bInst">contains</button>
   <button id="bVar" title="member-var references — dense, off by default">var</button>
