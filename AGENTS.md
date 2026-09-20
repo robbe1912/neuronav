@@ -148,10 +148,13 @@ rigs serve it via `python tools/serve.py` (no-cache, 127.0.0.1:8791).
 `vendor/three-0.160.0/` pins the exact bytes (five files: `three.module.js`,
 `controls/OrbitControls.js`, `lines/LineSegments2.js`,
 `lines/LineSegmentsGeometry.js`, `lines/LineMaterial.js`) — content-addressed
-by git, no runtime fetch. `_importmap()` embeds them as base64 `data:`
 URIs at build time (CRLF->LF normalized for byte stability); addon relative
 imports are rewritten to importmap keys because `data:` modules cannot
-resolve relative specifiers. `graph.html` therefore boots offline with zero
+resolve relative specifiers. The addon key set itself is DERIVED from the
+joined template's `three/addons/...` import specifiers at import time
+(#370 — the template is the single truth, so the keys cannot drift from
+its import lines; a specifier with no vendored file aborts loudly, never
+a silent skip to a blank page). `graph.html` therefore boots offline with zero
 network dependencies — keep it that way; never add a CDN reference.
 
 ## Test suites (all must stay green)

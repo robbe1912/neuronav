@@ -205,12 +205,40 @@ def _build_data() -> dict:
 
 
 _VENDOR = Path(__file__).resolve().parent / "vendor" / "three-0.160.0"
-_ADDONS = {   # keys the template imports; keep in sync with its import lines
-    "three/addons/controls/OrbitControls.js": "controls/OrbitControls.js",
-    "three/addons/lines/LineSegments2.js": "lines/LineSegments2.js",
-    "three/addons/lines/LineSegmentsGeometry.js": "lines/LineSegmentsGeometry.js",
-    "three/addons/lines/LineMaterial.js": "lines/LineMaterial.js",
-}
+_ADDON_SPEC = re.compile(r"['\"](three/addons/[A-Za-z0-9_./-]+\.js)['\"]")
+
+
+def _addon_keys(template: str) -> list[str]:
+    """Every three/addons/... import specifier in the joined template,
+    first-occurrence order (issue #370: the template is the single truth
+    for the key set — a hand-synced list could drift from its import
+    lines, and a missed key means no data:-URI entry, so the module
+    cannot resolve the bare specifier and graph.html boots blank). The
+    order is load-bearing: _importmap() splices the keys in this order,
+    so it must stay the template's own order to keep graph.html bytes
+    stable (#279/#124)."""
+    seen: dict[str, None] = {}
+    for m in _ADDON_SPEC.finditer(template):
+        seen.setdefault(m.group(1))
+    return list(seen)
+
+
+def _vend_addons(keys: list[str]) -> dict[str, str]:
+    """Importmap key -> vendored path under _VENDOR, refusing loudly when
+    the template imports an addon with no vendored bytes — a silent skip
+    here is a blank graph.html at boot, far from CI."""
+    out: dict[str, str] = {}
+    for key in keys:
+        rel = key.removeprefix("three/addons/")
+        if not (_VENDOR / rel).is_file():
+            raise RuntimeError(
+                f"template imports {key!r} but {rel} is not vendored "
+                f"under {_VENDOR} — vendor the file or drop the import")
+        out[key] = rel
+    return out
+
+
+_ADDONS = _vend_addons(_addon_keys(vizjs.template()))
 
 
 def _data_uri(js: str) -> str:

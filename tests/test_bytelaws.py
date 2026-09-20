@@ -131,6 +131,50 @@ check("importmap: no relative specifier survives in any addon",
       str([k for k, js in decoded.items() if k != "three" and "from '../" in js]))
 check("importmap: deterministic across calls", viz._importmap() == map_str, "")
 
+# ---- 1b. _ADDONS derives from the joined template (issue #370) ----------------
+# The key set is no longer hand-synced against the template's import
+# lines: viz derives it from the template's own three/addons/...
+# specifiers, so it cannot drift (a missed key = no data:-URI entry =
+# blank graph.html — the boot failure mode documented above). These
+# legs prove the derivation is live on tampered template copies.
+import vizjs  # noqa: E402  (joined template — the single truth for keys)
+
+tpl = vizjs.template()
+keys = viz._addon_keys(tpl)
+check("derive: template keys == the pinned import surface",
+      set(keys) == set(PINNED) - {"three"}, f"got={keys}")
+check("derive: first-occurrence order pinned (importmap bytes ride it)",
+      keys == ["three/addons/controls/OrbitControls.js",
+               "three/addons/lines/LineSegments2.js",
+               "three/addons/lines/LineSegmentsGeometry.js",
+               "three/addons/lines/LineMaterial.js"], str(keys))
+check("derive: module _ADDONS is the derived set, order live",
+      list(viz._ADDONS) == keys, str(list(viz._ADDONS)))
+
+# leg: a template import the old hand list never saw — the derived set
+# must pick it up (the #370 drift trap, now closed)...
+bogus = tpl.replace(
+    'import { OrbitControls } from "three/addons/controls/OrbitControls.js";',
+    'import { OrbitControls } from "three/addons/controls/OrbitControls.js";\n'
+    'import { Foo } from "three/addons/foo.js";', 1)
+check("derive: new template import joins the key set",
+      "three/addons/foo.js" in viz._addon_keys(bogus), "")
+# ...and because nothing is vendored under that specifier, the vendoring
+# step refuses LOUDLY, naming it — never a silent skip to a blank page.
+try:
+    viz._vend_addons(viz._addon_keys(bogus))
+    check("derive: unvendored specifier refused loudly", False, "no raise")
+except RuntimeError as e:
+    check("derive: unvendored specifier refused loudly",
+          "three/addons/foo.js" in str(e), str(e)[:120])
+
+# leg: dropping a template import shrinks the derived set — the map
+# follows the template, not a hand-kept list.
+dropped = tpl.replace(
+    'import { LineMaterial } from "three/addons/lines/LineMaterial.js";\n', "", 1)
+check("derive: dropped template import leaves the key set",
+      "three/addons/lines/LineMaterial.js" not in viz._addon_keys(dropped), "")
+
 # ---- 2. UTF-8-no-BOM law on generated JSON artifacts --------------------------
 # (a) this suite's own config — the law applies to every JSON artifact a
 #     suite writes, this one included (not vacuously excluded)
