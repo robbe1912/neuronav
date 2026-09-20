@@ -122,25 +122,35 @@ def topk_desc(sim, k: int):
     kept set; degenerate/fake embeddings do this, real ones don't — the
     row falls back to the full argsort, so every consumer sees lists
     identical to the old implementation (downstream iteration order
-    feeds louvain edge insertion)."""
+    feeds louvain edge insertion). #393: every array below is rows x n —
+    the negation, argpartition's int64 index slab, the tie scan, the
+    tied-row fallback argsort — so the pass runs in row chunks (<=512
+    rows, <=~256MB of temps at once): the monolithic form's rows·n
+    transients peaked ~21GB of working set at 33k tie-heavy docs.
+    Chunking cannot shift a byte — every op here is row-independent."""
     import numpy as np
 
-    n = sim.shape[1]
+    m, n = sim.shape
     if k >= n:
         return np.argsort(-sim, axis=1)[:, :k]
     kk = k + 1
-    part = np.argpartition(-sim, kk - 1, axis=1)[:, :kk]
-    sv = np.take_along_axis(sim, part, axis=1)
-    order = np.argsort(-sv, axis=1, kind="stable")
-    part = np.take_along_axis(part, order, axis=1)
-    sv = np.take_along_axis(sv, order, axis=1)
-    thr = sv[:, -1]
-    tied = (sv[:, :-1] == sv[:, 1:]).any(axis=1) | (
-        (sim == thr[:, None]).sum(axis=1) > 1
-    )
-    out = part[:, :k].copy()
-    if tied.any():
-        out[tied] = np.argsort(-sim[tied], axis=1)[:, :k]
+    out = np.empty((m, k), dtype=np.intp)
+    step = max(1, min(512, (1 << 28) // (n * 12)))
+    for i in range(0, m, step):
+        blk = sim[i : i + step]
+        part = np.argpartition(-blk, kk - 1, axis=1)[:, :kk]
+        sv = np.take_along_axis(blk, part, axis=1)
+        order = np.argsort(-sv, axis=1, kind="stable")
+        part = np.take_along_axis(part, order, axis=1)
+        sv = np.take_along_axis(sv, order, axis=1)
+        thr = sv[:, -1]
+        tied = (sv[:, :-1] == sv[:, 1:]).any(axis=1) | (
+            (blk == thr[:, None]).sum(axis=1) > 1
+        )
+        rows = part[:, :k]
+        if tied.any():
+            rows[tied] = np.argsort(-blk[tied], axis=1)[:, :k]
+        out[i : i + step] = rows
     return out
 
 
