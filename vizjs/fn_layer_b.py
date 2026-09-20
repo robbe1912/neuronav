@@ -70,7 +70,8 @@ _JS_FN_LAYER_B = r"""function rebuildFnLayer(focusing) {
   // outgoing wires face their callers instead. Ownership then reads at a
   // glance: box color, a short stalk to the sphere surface, and the arc's
   // facing all point at the owner, where wire midpoints blurred it.
-  const AGG_MAX = 6;
+  // AGG_MAX rides core's #299-D shared leaf (#368): baked in DATA.meta,
+  // the same threshold satBoost grows spheres at.
   const byFile = new Map();
   for (let i = 0; i < fnMeta.length; i++) {
     const fi = fnMeta[i].file;

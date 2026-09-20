@@ -251,6 +251,15 @@ let spinEnabled = false;
 // Sections used to restate these five+ inline (the #58/#5 bug families);
 // module scope shares them — every use site now names WHICH law it rides.
 
+// baked law constants (#368): the renderer consumes these from DATA.meta
+// instead of restating the bake's truth as JS literals — a missing one
+// means a stale bake against a newer template, which refuses loudly
+// (same failure class as the DATA.pos guard below).
+const AGG_MAX = DATA.meta.aggMax;
+const SEM_FLOOR = DATA.meta.semFloor;
+if (typeof AGG_MAX !== "number" || typeof SEM_FLOOR !== "number")
+  throw new Error("DATA.meta law constants missing — stale bake; regenerate graph.html");
+
 // quad-bezier conduit arcs: the +Y-lift law (lift is ALWAYS +Y, absolute
 // world units). Five sites restated the polynomial/tangent math; drift
 // bends chevrons off wire ends. qPt/qTan write SHARED scratches (_qP/_qT):
@@ -374,16 +383,27 @@ let groupsMode = false;
 // rather than silently fall back to a live sim.
 const frozenPos = DATA.pos;
 if (!Array.isArray(frozenPos)) throw new Error("DATA.pos missing — offline layout failed");
+// rest radii (#368): layout._layout's rad — the rendered-radius law
+// (connectivity base * churn boost * render scale) baked per node. The
+// browser draws exactly these; the churn note below is the legend, not a
+// re-derivation. Only dynamic multipliers (spread, satellites) stay JS.
+const restR = DATA.restR;
+if (!Array.isArray(restR) || restR.length !== N)
+  throw new Error("DATA.restR missing — offline layout failed");
 links.forEach(l => { degree[l.s] += l.w; degree[l.t] += l.w; });
 nodes.forEach((n, i) => {
   pos[i*3] = frozenPos[i][0]; pos[i*3+1] = frozenPos[i][1]; pos[i*3+2] = frozenPos[i][2];
   const c = colorOf(n);
   colArr[i*3] = c.r; colArr[i*3+1] = c.g; colArr[i*3+2] = c.b;
-  // churn boost rides on top of the connectivity size (up to +35% radius
-  // for the most-touched file) — subtle, never shrinks
-  sizes[i] = Math.min(12, 4.5 + Math.sqrt(degree[i]) * 1.0) * (hot ? 1 + 0.35 * hot[i] : 1);
+  sizes[i] = restR[i];
 });
 if (hot) document.getElementById("caption").textContent += " · size also encodes 90-day churn";
+// affinity tooltip reads the baked top-k/floor (#368): head.py ships no
+// static copy, so retuning the bake can't leave the tooltip lying.
+document.getElementById("bSemAff").title =
+  "semantic-affinity wires — file twins with near-duplicate embeddings (mutual top-" +
+  DATA.meta.semTopK + ", cosine ≥ " + DATA.meta.semFloor +
+  "); a hint layer, NOT a dependency; serves only at close zoom";
 
 // spread control: uniformly re-scale the baked layout around its centroid.
 // basePos holds the baked coordinates; pos is the live (scaled) copy that
@@ -397,11 +417,14 @@ let _oHull = 0;         // effective hull rim opacity (lod fade, via __dbg)
 let __routeFns = null;  // [#10] page probe surface: {turnsOf, mergeBends}
 // satellite allowance: files with many fn boxes grow the sphere so the box
 // ring keeps readable spacing (user call: bigger sphere, not smaller boxes).
-// Threshold mirrors AGG_MAX (fn-layer local). Deterministic: pure fn of DATA.
+// Threshold IS the shared AGG_MAX leaf (the fn-layer aggregation cap).
+// Deterministic: pure fn of DATA.
 const fnCount = nodes.map(n => (DATA.fns && DATA.fns[n.path] || []).length);
 const satBoost = i =>
-  fnCount[i] > 6 ? 1 + Math.min(0.8, 0.25 * Math.log2(fnCount[i] / 6)) : 1;
-const sphR = i => sizes[i] * 1.1 * Math.sqrt(spread) *
+  fnCount[i] > AGG_MAX ? 1 + Math.min(0.8, 0.25 * Math.log2(fnCount[i] / AGG_MAX)) : 1;
+// sizes already carries the baked render scale (restR); only the dynamic
+// spread + satellite multipliers are applied here.
+const sphR = i => sizes[i] * Math.sqrt(spread) *
   (fnMode && !supMem[i] ? satBoost(i) : 1);
 // centroid of the baked layout — the affine center for spread transforms
 let baseCx = 0, baseCy = 0, baseCz = 0;
@@ -472,7 +495,8 @@ const supCollapsed = new Map();
 const ANCHOR_PX = 8;   // endpoint anchor bar, DIAMETER ref-px
 const anchorBoost = new Float32Array(N);
 // zoomed-out size encoding: at engine scale the camera sits so far back
-// that world-unit size differences (4.5 + sqrt(deg), capped 12) collapse
+// that world-unit size differences (the baked restR law: 4.5 + sqrt(deg),
+// capped 12) collapse
 // to sub-pixel — every file renders the same ~1px speck and the
 // size-by-connectivity signal is gone (corr(px, deg) 0.744 on the engine
 // bake, p50 diameter 1.2px). degFloor[i] = minimum projected DIAMETER in

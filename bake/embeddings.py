@@ -16,6 +16,12 @@ def _store_paths(paths, emb_idx):
     test_bakeint's #299 leg counts occurrences in the bake tree."""
     return [p for p in paths if p in emb_idx]
 
+# J9 kNN law constants (#368, the SEM_AFF_CAP pattern): baked into
+# DATA.meta (semTopK/semFloor) so the renderer + tooltip consume the
+# bake's truth instead of restating it across the JS boundary.
+SEM_TOP_K = 6
+SEM_FLOOR = 0.45
+
 
 def _fetch_embeddings(paths):
     """The ONE chroma embedding fetch per bake (D4/V7): the two original
@@ -61,9 +67,10 @@ def _knn_sims(emb):
     supergroups. A kNN-stage failure raises job-named (#367): a
     swallowed one silently thinned the layout's semantic springs."""
     # semantic kNN pairs from nav's embedding store — layout-only forces,
-    # never rendered as edges: mutual top-6 neighbours with cosine >= 0.45
-    # (mutual links resist transitive chaining, mirroring navstore.clusters()).
-    # Degrades to [] only if the chroma store is missing/empty.
+    # never rendered as edges: mutual top-SEM_TOP_K neighbours with
+    # cosine >= SEM_FLOOR (mutual links resist transitive chaining,
+    # mirroring navstore.clusters()). Degrades to [] only if the chroma
+    # store is missing/empty.
     sims: list[list] = []
     if emb is None:
         return sims, None
@@ -75,11 +82,11 @@ def _knn_sims(emb):
         np.fill_diagonal(sim, -1.0)
         from clusters import topk_desc
 
-        knn = topk_desc(sim, 6)
+        knn = topk_desc(sim, SEM_TOP_K)
         for a in range(len(emb_paths)):
             for b in knn[a]:
                 b = int(b)
-                if a < b and a in knn[b] and sim[a, b] >= 0.45:
+                if a < b and a in knn[b] and sim[a, b] >= SEM_FLOOR:
                     sims.append([a, b, round(float(sim[a, b]), 4)])
     except Exception as e:
         raise RuntimeError(

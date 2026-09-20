@@ -1704,13 +1704,14 @@ def run_tests(port: int):
                  let cold = -1;
                  for (let j = 0; j < h.length; j++)
                    if (h[j] === 0 && d.alphaTgt[j] > 0.5) { cold = j; break; }
-                 // degree = sum of link weights (same recurrence as sizes)
-                 const deg = new Float32Array(d.nodes.length);
-                 d.links.forEach(l => { deg[l.s] += l.w; deg[l.t] += l.w; });
-                  const base = i => Math.min(12, 4.5 + Math.sqrt(deg[i]));
+                 // #368: the expected radius DERIVES FROM DATA — no third
+                 // formula copy. d.sizes is the baked law verbatim
+                 // (DATA.restR: connectivity base * churn boost * render
+                 // scale) and the satellite threshold is DATA.meta.aggMax;
+                 // only the renderer's dynamic multipliers are applied.
                   const mat = new d.THREE.Matrix4();
                   const mx = i => { d.fileMesh.getMatrixAt(i, mat); return mat.elements[0]; };
-                  // instance scale = sizes*1.1 × dim-shrink (0.45+0.55a) at
+                  // instance scale = sizes × dim-shrink (0.45+0.55a) at
                   // overview (no dead boost/hover); alpha eases, read it live.
                   // Sub-floor nodes are lifted by the zoomed-out degree floor
                   // (min screen DIAMETER, __dbg.degFloorArr) — expected scale
@@ -1718,17 +1719,19 @@ def run_tests(port: int):
                   // rpx is the projected RADIUS px of the natural size.
                   const dim = i => 0.45 + 0.55 * d.alpha[i];
                   // satellite allowance (sphR): in fn mode, files owning
-                  // >6 fns grow so the box ring keeps spacing — the same
-                  // factor the template multiplies into every radius
+                  // more than the baked AGG_MAX fns grow so the box ring
+                  // keeps spacing — the same factor the template
+                  // multiplies into every radius
                   const fnsOf = i => (d.fns[d.nodes[i].path] || []).length;
                   const fnOn = document.getElementById('cbFn').checked;
-                  const sat = i => fnOn && fnsOf(i) > 6
-                    ? 1 + Math.min(0.8, 0.25 * Math.log2(fnsOf(i) / 6)) : 1;
+                  const AM = d.meta.aggMax;
+                  const sat = i => fnOn && fnsOf(i) > AM
+                    ? 1 + Math.min(0.8, 0.25 * Math.log2(fnsOf(i) / AM)) : 1;
                   const cam = d.camera;
                   const halfH = d.renderer.domElement.clientHeight / 2;
                   const tHalf = Math.tan(cam.fov * Math.PI / 360);
                   const p3 = new d.THREE.Vector3();
-                  const nat = i => base(i) * 1.1 * sat(i) * (1 + 0.35 * h[i]) * dim(i);
+                  const nat = i => d.sizes[i] * sat(i) * dim(i);
                   const lift = i => {
                       p3.set(d.pos[i * 3], d.pos[i * 3 + 1], d.pos[i * 3 + 2]);
                       const rpx = nat(i) * halfH / (tHalf * cam.position.distanceTo(p3));
@@ -1756,6 +1759,29 @@ def run_tests(port: int):
               and 0 <= churn.get("min", -1) and 0 < churn.get("max", 0) <= 1
               and churn.get("hotOk") and churn.get("coldOk") and churn.get("noted"),
               str(churn))
+
+        # [#368] bake-law constants ride DATA.meta and the page consumes
+        # them: what the JS reads must equal the pinned Python constants
+        # (a restated JS literal or a stale bake breaks the equality) and
+        # the affinity tooltip must quote the baked top-k/floor verbatim.
+        laws368 = page.evaluate(
+            """() => ({ aggMax: window.__dbg.meta.aggMax,
+                        semFloor: window.__dbg.meta.semFloor,
+                        semTopK: window.__dbg.meta.semTopK,
+                        restN: window.__dbg.sizes.length,
+                        title: document.getElementById('bSemAff').title })"""
+        )
+        check("[#368] law constants ride DATA.meta (aggMax/semFloor/semTopK)",
+              laws368["aggMax"] == viz.AGG_MAX
+              and laws368["semFloor"] == viz.SEM_FLOOR
+              and laws368["semTopK"] == viz.SEM_TOP_K
+              and laws368["restN"]
+              == page.evaluate("() => window.__dbg.nodes.length"),
+              str(laws368))
+        check("[#368] affinity tooltip quotes the baked top-k/floor",
+              f"top-{laws368['semTopK']}" in laws368["title"]
+              and str(laws368["semFloor"]) in laws368["title"],
+              laws368["title"])
 
         # 7. groups toggle: supergroup recoloring + legend swap + reset
         grp = page.evaluate(
@@ -6167,6 +6193,11 @@ def run_tests(port: int):
               f"{outs[0].stat().st_size} vs {outs[1].stat().st_size} bytes")
         da = json.loads(re.search(rb"const DATA = (.+);\n", ha).group(1))
         db = json.loads(re.search(rb"const DATA = (.+);\n", hb).group(1))
+        check("[#368] restR channel rides DATA, identical across bakes",
+              isinstance(da.get("restR"), list)
+              and len(da["restR"]) == len(da["nodes"])
+              and da["restR"] == db["restR"],
+              f"n={len(da.get('restR') or [])}")
         if not da.get("semAff"):
             print("SKIP #279 affinity-row determinism detail - "
                   "bake carries no affinity pairs")
@@ -6176,6 +6207,39 @@ def run_tests(port: int):
     finally:
         for p in outs:   # no .tmp residue (byte-law hygiene)
             p.unlink(missing_ok=True)
+
+    # -- [#368] bake-law single-source teeth (template + bake side) -------
+    # The template must CONSUME the baked constants (DATA.restR, meta.
+    # aggMax/semFloor) and never restate the radius/affinity laws as JS
+    # literals — the banned strings are the exact forms the fix removed.
+    # The sabotage leg proves the stamped meta flows from the Python
+    # constants (patch -> bake -> DATA), so retuning the bake actually
+    # changes what the page reads instead of drifting from a JS copy.
+    import vizjs
+    tpl = vizjs.template()
+    restated = [s for s in ("4.5 + Math.sqrt", "cosine ≥ 0.45",
+                            "mutual top-6", "const AGG_MAX = 6")
+                if s in tpl]
+    consumed = all(s in tpl for s in
+                   ("DATA.restR", "DATA.meta.aggMax", "DATA.meta.semFloor"))
+    check("[#368] template consumes DATA laws, no restated literals",
+          not restated and consumed,
+          f"restated={restated} consumed={consumed}")
+    sab, sab_p = None, None
+    old_agg, old_floor = viz.AGG_MAX, viz.SEM_FLOOR
+    try:
+        viz.AGG_MAX, viz.SEM_FLOOR = 3, 0.30
+        sab_p = Path(viz.generate(out=ROOT / ".tmp" / "viz_sab368.html"))
+        sab = json.loads(re.search(
+            rb"const DATA = (.+);\n", sab_p.read_bytes()).group(1))["meta"]
+    finally:
+        viz.AGG_MAX, viz.SEM_FLOOR = old_agg, old_floor
+        if sab_p is not None:
+            sab_p.unlink(missing_ok=True)   # no .tmp residue
+    check("[#368] sabotage: patched constants flow into the bake",
+          sab is not None and sab["aggMax"] == 3 and sab["semFloor"] == 0.30
+          and sab["semTopK"] == viz.SEM_TOP_K,
+          str(sab and {k: sab[k] for k in ("aggMax", "semFloor", "semTopK")}))
 
     LOG.finish(f"{n_files} files indexed")
 

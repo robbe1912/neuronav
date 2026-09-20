@@ -276,9 +276,10 @@ function syncSemAff() {
     ex /= el; ey /= el; ez /= el;
     pa[o]   = ax + ex * trA; pa[o+1] = ay + ey * trA; pa[o+2] = az + ez * trA;
     pa[o+3] = bx - ex * trB; pa[o+4] = by - ey * trB; pa[o+5] = bz - ez * trB;
-    // brightness carries the score: cosine 0.45 (the J9 floor) -> 0.55,
-    // cosine 1.0 (byte-identical twins) -> 1.0
-    const kb = 0.55 + 0.45 * Math.min(1, (s - 0.45) / 0.55);
+    // brightness carries the score: cosine at SEM_FLOOR (the baked J9
+    // floor (#368, core's shared leaf) -> 0.55, cosine 1.0
+    // (byte-identical twins) -> 1.0
+    const kb = 0.55 + 0.45 * Math.min(1, (s - SEM_FLOOR) / (1 - SEM_FLOOR));
     ca[o] = ca[o+3] = SEM_AFF_COLOR.r * kb;
     ca[o+1] = ca[o+4] = SEM_AFF_COLOR.g * kb;
     ca[o+2] = ca[o+5] = SEM_AFF_COLOR.b * kb;

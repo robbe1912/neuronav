@@ -25,13 +25,20 @@ import graph
 from layout import _strata_analysis, _layout
 from bake.files_model import _attach, _dead_flags, _build_nodes, _build_links
 from bake.wires import _emit_wire_rows, _signal_wires, _wire_budget, _fn_roster
-from bake.embeddings import _fetch_embeddings, _knn_sims
+from bake.embeddings import (_fetch_embeddings, _knn_sims, SEM_FLOOR,
+                            SEM_TOP_K)  # SEM_FLOOR/SEM_TOP_K re-export: test_viz pins them (#368)
 from bake.semantics import (SEM_AFF_CAP, _cluster_matrix, _sem_aff,
                             _supergroups)  # SEM_AFF_CAP re-export: test_viz pins it
 from bake.overlays import _highways, _cap_highways, _crosstalk_top
 from bake.fnio import _fn_io, _cap_fnio
 from bake.gitinfo import head, churn
 import vizjs  # the 17-section graph.html template package (#299 A)
+
+# fn-box aggregation cap (#368, the SEM_AFF_CAP pattern): no Python
+# consumer — it is renderer law (core's satBoost allowance + the fn-layer
+# 'n×' aggregation) stamped into DATA.meta.aggMax so the JS reads the
+# bake's truth instead of restating a bare 6; test_viz pins it here.
+AGG_MAX = 6
 
 
 
@@ -52,16 +59,16 @@ def _layout_stage(nodes, links, sims, ckeys, cmat):
     # neighbors; None when git/history is unavailable.
     hot = churn([nd["path"] for nd in nodes], str(navconfig.ROOT))
     try:
-        pos_baked = _layout(
+        pos_baked, rest_rad = _layout(
             len(nodes), links, sims, [nd["cluster"] for nd in nodes],
             ckeys=ckeys, cmat=cmat, depths=depths, hot=hot,
         )
     except Exception as e:
         raise RuntimeError(f"offline layout failed: {e}") from e
-    return pos_baked, depths, cyc_ids, hot
+    return pos_baked, rest_rad, depths, cyc_ids, hot
 
 
-def _assemble(nodes, links, fedges, mwires, fns, hw, fio, pos, hot,
+def _assemble(nodes, links, fedges, mwires, fns, hw, fio, pos, rest, hot,
               groups2, n_clusters, dead_flag, dead, cluster_names,
               depths, cyc_ids, crosstalk, sig_resolved, sig_unresolved,
               wire_dropped, hw_dropped, fio_dropped, sem_aff, sem_dropped):
@@ -78,6 +85,11 @@ def _assemble(nodes, links, fedges, mwires, fns, hw, fio, pos, hot,
         # ink (already ranked + capped); [] when the store is unusable
         "semAff": sem_aff,
         "pos": pos,
+        # #368: the rendered-radius law per node (layout._layout's rad —
+        # base * churn boost * render scale). The browser copies it into
+        # `sizes` verbatim; only dynamic multipliers (spread, satellites)
+        # are computed JS-side.
+        "restR": rest,
         "meta": {
             "files": len(nodes),
             "edges": len(links),
@@ -103,6 +115,13 @@ def _assemble(nodes, links, fedges, mwires, fns, hw, fio, pos, hot,
             # connections traced to a handler fn vs left anonymous
             "sig_resolved": sig_resolved,
             "sig_unresolved": sig_unresolved,
+            # #368 bake-law constants (the SEM_AFF_CAP pattern): the JS
+            # reads these from DATA.meta — satBoost/aggregation (aggMax),
+            # affinity brightness floor + the tooltip's top-k (semFloor/
+            # semTopK) — so retuning the bake cannot drift from the page.
+            "aggMax": AGG_MAX,
+            "semFloor": SEM_FLOOR,
+            "semTopK": SEM_TOP_K,
         },
     }
     if hot is not None:
@@ -163,7 +182,7 @@ def _build_data() -> dict:
         nd["gid"] = cid_gid.get(nd["cluster"], -1)
 
     ckeys, cmat = _cluster_matrix(nodes, emb)
-    pos_baked, depths, cyc_ids, hot = _layout_stage(
+    pos_baked, rest_rad, depths, cyc_ids, hot = _layout_stage(
         nodes, links, sims, ckeys, cmat
     )
 
@@ -176,7 +195,7 @@ def _build_data() -> dict:
     crosstalk = _crosstalk_top(links, nodes)
 
     return _assemble(
-        nodes, links, fedges, mwires, fns, hw, fio, pos_baked, hot,
+        nodes, links, fedges, mwires, fns, hw, fio, pos_baked, rest_rad, hot,
         groups2, n_clusters, dead_flag, dead, cluster_names,
         depths, cyc_ids, crosstalk, sig_resolved, sig_unresolved,
         wire_dropped, hw_dropped, fio_dropped, sem_aff, sem_dropped,

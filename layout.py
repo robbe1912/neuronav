@@ -130,7 +130,10 @@ def _strata_analysis(n: int, links: list) -> tuple:
 
 def _layout(n: int, links: list, sims: list, cluster_ids: list,
               ckeys=None, cmat=None, depths=None, hot=None):
-    """Deterministic offline force layout; positions are frozen into DATA.
+    """Deterministic offline force layout. Returns (positions, rest
+    radii): both freeze into DATA (pos / restR, #368) — the radii are
+    the rendered-radius law the relax enforced, served so the browser
+    draws them verbatim instead of restating the constants.
 
     Mirrors the constants the in-browser sim was QA'd against, plus the
     redesign rules: hub-weighted repulsion (hubs earn breathing room),
@@ -381,9 +384,12 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
         w_ = (l.get("w", 1) if isinstance(l, dict) else (l[2] if len(l) > 2 else 1))
         deg[s_] += w_
         deg[t_] += w_
-    # radius parity with the renderer: min(12, 4.5+sqrt(deg)) * churn boost
-    # * 1.1 — the browser draws exactly this; the relax must too or hot
-    # files (up to +35% radius) end up overlapping their neighbors
+    # THE rendered-radius law (#368): min(12, 4.5+sqrt(deg)) * churn boost
+    # * 1.1 — the ONE definition. The relax must use it or hot files (up
+    # to +35% radius) overlap neighbors, and the browser draws it as
+    # served: rad rides DATA.restR and vizjs/core.py copies it into
+    # `sizes` verbatim (dynamic multipliers — spread, satellites — stay
+    # renderer-side). Parity no longer rests on a mirrored constant.
     churn = (np.asarray(hot, dtype=np.float32) if hot is not None
              else np.zeros(n, dtype=np.float32))
     rad = (np.minimum(12.0, 4.5 + np.sqrt(deg) * 1.0)
@@ -533,4 +539,8 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
             pos *= 1.01
     pos *= 1.45   # extra global breathing room — the frame adapts
     pos -= pos.mean(0)
-    return [[round(float(x), 1) for x in p] for p in pos]
+    # rest radii ride DATA.restR (#368): rounded to 4 decimals — the same
+    # float32 values the relax used (sub-1e-4wu noise, far below any
+    # visual or harness tolerance), kept compact + byte-stable in JSON.
+    return ([[round(float(x), 1) for x in p] for p in pos],
+            [round(float(x), 4) for x in rad])
