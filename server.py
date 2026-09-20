@@ -672,199 +672,6 @@ def _route(dir: str):
             yield _first_contact()
 
 
-# ---- background bake (issue #315) ------------------------------------------
-# viz.ensure_bake() on a large store outlives any client timeout; run it on
-# a dedicated baker thread fed by a FIFO of store configs (None = the boot
-# store). The boot-store bake waits for _BOOT_READY first (baking a
-# half-built index wastes minutes); a foreign dir bakes under the scope
-# lock + config_scope because nav's globals are shared routing state.
-_BAKE_LOCK = threading.Lock()
-_BAKE_STATE: dict = {"running": False, "started": 0.0, "error": "", "done_at": 0.0, "out": ""}
-_BAKE_QUEUE: list[Path | None] = []
-_BAKE_WAKE = threading.Event()
-_BAKE_START_LOCK = threading.Lock()
-_BAKE_THREAD: threading.Thread | None = None
-
-
-def _bake_loop() -> None:
-    while True:
-        _BAKE_WAKE.wait()
-        _BAKE_WAKE.clear()
-        while _BAKE_QUEUE:
-            with _BAKE_LOCK:
-                target = _BAKE_QUEUE.pop(0)
-                _BAKE_STATE.update(running=True, started=time.monotonic(), error="")
-            t0 = time.monotonic()
-            note = target.as_posix() if target else "the boot store"
-            _progress_set("bake", note=f"graph.html bake — {note}")
-            try:
-                import viz
-
-                # Both arms hold _SCOPE_LOCK (PR #318 gate, GK P1 race): a
-                # bake reads nav globals (STATE_DIR, its one chroma fetch)
-                # minutes deep in _build_data — a concurrent dir-routed call
-                # would swap them mid-bake and mix stores. RLock, no
-                # deadlock: the boot gate opened before the lock was
-                # released (READY is set after the boot sequence drops it)
-                # and routed bodies release on exit — the bake just
-                # serializes like any other scoped op.
-                if target is None:
-                    # boot store — issue #354: the arm is picked by TARGET,
-                    # never by _BOOT_THREAD (that handle is never cleared
-                    # after boot, so the old gate routed every live-server
-                    # foreign bake here, baking the BOOT store while the ack
-                    # named the foreign dir). Bake only once the boot gate
-                    # opened (a half-built index wastes minutes);
-                    # in-process imports have no boot thread (pre-#273
-                    # semantics) — the gate is already open for them, and
-                    # the bounded wait fails loud instead of stalling the
-                    # queue behind a wedged boot.
-                    if _BOOT_THREAD is not None:
-                        wait_s = _BOOT_WAIT_S + LOCK_WAIT_S + 60.0
-                        if not _BOOT_READY.wait(wait_s):
-                            raise TimeoutError(
-                                f"neuronav: boot still incomplete after "
-                                f"{wait_s:g}s — bake aborted; see the "
-                                "neuronav: stderr lines"
-                            )
-                    with _SCOPE_LOCK:
-                        out = viz.ensure_bake()
-                else:
-                    # foreign store: swap nav's globals for the bake only
-                    with _SCOPE_LOCK:
-                        with navconfig.config_scope(target):
-                            out = viz.ensure_bake()
-                with _BAKE_LOCK:
-                    _BAKE_STATE.update(
-                        running=False, done_at=time.monotonic(), out=str(out), error=""
-                    )
-                print(
-                    f"neuronav: bake complete: {out} ({time.monotonic() - t0:.1f}s)",
-                    file=sys.stderr,
-                )
-            except Exception as e:  # loud-failures law: a dead bake says so
-                with _BAKE_LOCK:
-                    _BAKE_STATE.update(
-                        running=False, done_at=time.monotonic(),
-                        error=f"{type(e).__name__}: {e}",
-                    )
-                print(f"neuronav: bake FAILED: {e!r}", file=sys.stderr)
-            finally:
-                _progress_set("done", note=f"bake finished — {note}")
-
-
-def _start_baker() -> None:
-    global _BAKE_THREAD
-    with _BAKE_START_LOCK:
-        if _BAKE_THREAD is None or not _BAKE_THREAD.is_alive():
-            _BAKE_THREAD = threading.Thread(
-                target=_bake_loop, name="neuronav-bake", daemon=True
-            )
-            _BAKE_THREAD.start()
-
-
-async def visualize(dir: str = "", ctx: Context = None) -> str:
-    """Generate the interactive 3D code-graph (rotatable neuron map).
-
-    Nodes = files (colored by subsystem cluster, red-tinted when they contain
-    dead-code candidates), edges = calls/instancing/signals. Search box,
-    cluster filter chips, dead-code toggle, click for connections.
-    Returns the bake path + its openable file:// URI — the file is fully
-    self-contained and boots directly in a browser (issue #133). Regenerate
-    after rescan if the graph changed materially.
-
-    Issue #315: a bake on a large store outlives the client's timeout, so
-    the tool no longer blocks on it. It validates, queues the bake on the
-    background baker, and answers immediately with current build/bake
-    progress; the bake result (path) and any failure surface on stderr and
-    the neuronav://onboarding/status resource.
-
-    dir="" serves the boot config's repo; any other path routes the call
-    to that checkout (issue #131) through the same gate as the read tools:
-    a fresh dir onboards in-call (scaffold + first-contact index build,
-    progress on the usual channels) and the build summary rides above the
-    ack; a warm dir heals drift and acks immediately. The queued bake then
-    lands in THAT checkout's store, never the boot one (issue #354).
-    """
-    def _body() -> str:
-        try:
-            import viz  # noqa: F401 — delete-able-surface guard (unchanged)
-        except ImportError:
-            return ("viz add-on not installed — delete-able surface is viz.py + vendor/ + "
-                    "tools/serve.py; core tools (search/repo_map/context/...) work without it. "
-                    "Restore viz.py to re-enable the bake.")
-        if dir:
-            # issue #354: the routed arm rides the SAME _route gate as the
-            # read tools (boot gate, scaffold/validate, config_scope, first
-            # contact) — a fresh dir builds its index inside this call, so
-            # the queued bake finds a served store instead of the #64
-            # guard's empty-store refusal; the build summary rides above
-            # the ack like memory's does.
-            with _route(dir) as prelude:
-                resolved = Path(dir).expanduser().resolve()
-                target = resolved / ".neuronav" / "config.json"
-        else:
-            prelude = None
-            target = None  # the boot config's store
-        with _BAKE_LOCK:
-            _BAKE_QUEUE.append(target)
-            in_flight = _BAKE_STATE["running"]
-            ahead = len(_BAKE_QUEUE) - 1
-        _BAKE_WAKE.set()
-        _start_baker()
-        line = _progress_line() or "no build in flight"
-        where = "bake running" if in_flight and ahead == 0 else (
-            f"queued behind {ahead} bake(s)" if ahead or in_flight else "starting now"
-        )
-        ack = (
-            f"bake accepted — {where}; build state: {line}. The bake runs in "
-            "the background (minutes on a large store): watch stderr or poll "
-            "the neuronav://onboarding/status resource — graph.html lands at "
-            "the store's .neuronav when done, and a failure there is loud."
-        )
-        return f"{prelude}\n{ack}" if prelude else ack
-
-    return await _serve(_body, ctx)
-
-
-@mcp.resource("neuronav://onboarding/status")
-def _onboarding_status() -> str:
-    """Pollable build/bake state (issue #315) — the liveness channel that
-    answers while tools are gated on a first index build or a bake. Reads
-    two dicts under their locks; never touches nav, so it cannot block on
-    the store or the scope lock."""
-    lines = []
-    if _BOOT_FATAL is not None:
-        lines.append(f"boot: FATAL — {_BOOT_FATAL}")
-    elif _BOOT_THREAD is not None and not _BOOT_READY.is_set():
-        lines.append(f"boot: building — {_progress_line() or 'starting'}")
-    else:
-        lines.append("boot: ready")
-    line = _progress_line()
-    if line:
-        lines.append(f"build: {line}")
-    with _BAKE_LOCK:
-        running = _BAKE_STATE["running"]
-        started = _BAKE_STATE["started"]
-        error = _BAKE_STATE["error"]
-        done_at = _BAKE_STATE["done_at"]
-        out = _BAKE_STATE["out"]
-        queued = list(_BAKE_QUEUE)
-    if running:
-        lines.append(f"bake: running ({time.monotonic() - started:.0f}s in)")
-    elif error:
-        lines.append(f"bake: FAILED — {error}")
-    elif out:
-        lines.append(f"bake: done {time.monotonic() - done_at:.0f}s ago — {out}")
-    else:
-        lines.append("bake: not run this session")
-    if queued:
-        lines.append(
-            "bake queue: " + ", ".join(q.as_posix() if q else "boot store" for q in queued)
-        )
-    return "\n".join(lines)
-
-
 # ---- auto-rescan freshness gate (issue #19) --------------------------------
 # Every read tool calls _auto_rescan() on entry: nav's stat fingerprint
 # (mtime/size walk, TTL-cached) is compared against the last synced
@@ -1035,6 +842,24 @@ symbol_graph, impact, dead_code, duplicates = (
     _srv_structure.register(_RAILS_MOD))
 clusters, crosstalk, arch_check, context = (
     _srv_clusters.register(_RAILS_MOD))
+
+# the bake queue (issue #360): verbatim carve of the _BAKE_* state,
+# _bake_loop/_start_baker, visualize and the onboarding-status resource
+# into serverbake — same register() composition as the families above,
+# but serverbake binds its rails per shape: call rails ride late
+# proxies (the servercore._Rail law), while the object/value rails
+# (_SCOPE_LOCK, _BOOT_READY, LOCK_WAIT_S, the boot gate) need live
+# OBJECTS a call-only proxy cannot carry and values a frozen copy
+# would stale against the suites' rebinds (issue #359) — serverbake
+# re-reads those from this namespace on every rail call and status
+# read. visualize's mcp.tool registration stays below (composition
+# order = tools/list byte-identity); serverbake owns _BAKE_THREAD
+# internally (_start_baker's global rebind), so it does not bind here.
+import serverbake as _srv_bake
+
+(visualize, _bake_loop, _start_baker, _onboarding_status,
+ _BAKE_LOCK, _BAKE_STATE, _BAKE_QUEUE, _BAKE_WAKE, _BAKE_START_LOCK) = (
+    _srv_bake.register(_RAILS_MOD))
 
 
 def _sync_chain(stats: dict) -> tuple[object, object, str]:
@@ -1282,7 +1107,8 @@ def _start_boot(t0: float) -> threading.Thread:
 # registration completes here in one ordered sequence — the historical
 # def order — so tools/list is byte-identical to the pre-split single
 # module (visualize/memory/rescan register after the query families;
-# their defs sit above but registration is composition, issue #345).
+# visualize's def lives in serverbake since issue #360, memory/rescan
+# above — registration is composition, issue #345).
 mcp.tool(annotations=MUTATING_BAKE)(visualize)
 mcp.tool(annotations=MUTATING_MEMORY)(memory)
 mcp.tool(annotations=MUTATING_RESCAN)(rescan)
