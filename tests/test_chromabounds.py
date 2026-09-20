@@ -1,5 +1,5 @@
 # test_chromabounds — issue #327: the full-collection chroma reads (rescan
-# existing-rows, re-stamp, base export, bake embeddings) must be BOUNDED —
+# existing-rows, re-stamp, base export, bake embeddings, clusters) must be BOUNDED —
 # one unfiltered col.get() binds every row at once and sqlite dies with
 # InternalError "too many SQL variables" past the build's ceiling
 # (~32766 on this venv's chromadb 1.5.9 / sqlite 3.49.1) — and
@@ -61,10 +61,14 @@ def _rescan(cfg: Path) -> subprocess.CompletedProcess:
     )
 
 
-def _mkstore(name: str, rows: int, tree_files: int = 1) -> Path:
+def _mkstore(name: str, rows: int, tree_files: int = 1,
+             vary_embs: bool = False, reverse: bool = False) -> Path:
     """A per-leg scratch: tree with tree_files real .py files (the #41
     zero-files abort needs >= 1) plus `rows` direct chroma adds of tiny
-    docs under their own config/state_dir."""
+    docs under their own config/state_dir. vary_embs stamps every row
+    with a deterministic per-id embedding (identical rows tie everywhere
+    and pin nothing); reverse inserts the same ids in reverse order —
+    the #118 store-HISTORY axis."""
     d = TMP / name
     (d / "src").mkdir(parents=True)
     for i in range(tree_files):
@@ -86,14 +90,23 @@ def _mkstore(name: str, rows: int, tree_files: int = 1) -> Path:
     os.environ["NEURONAV_CONFIG"] = str(cfg)
     navconfig.use_config(cfg)
     col = navstore._collection()
-    vec = [0.01 * (i + 1) for i in range(navconfig.EMBED_DIM)]
+
+    def _emb(i: int) -> list[float]:
+        if not vary_embs:
+            return [0.01 * (j + 1) for j in range(navconfig.EMBED_DIM)]
+        return [(((i + 1) * (j + 3)) % 97) / 97.0
+                for j in range(navconfig.EMBED_DIM)]
+
+    order = list(range(rows))
+    if reverse:
+        order.reverse()
     BATCH = 2000
     for start in range(0, rows, BATCH):
-        n = min(BATCH, rows - start)
+        chunk = order[start:start + BATCH]
         col.add(
-            ids=[f"dead{i:06d}" for i in range(start, start + n)],
-            embeddings=[vec] * n,
-            documents=["x"] * n,
+            ids=[f"dead{i:06d}" for i in chunk],
+            embeddings=[_emb(i) for i in chunk],
+            documents=["x"] * len(chunk),
         )
     return cfg
 
@@ -184,6 +197,78 @@ def main() -> None:
             f"count={fresh.count()} "
             f"hnsw={(fresh.metadata or {}).get('hnsw:space')!r}",
         )
+
+    # ---- leg F: the fifth converted site (#355) — navstore.clusters()
+    # reads the whole store; pre-fix its raw col.get died at 33k rows
+    # with the sqlite InternalError before any cluster math ran. The
+    # sentinel stands in for clusters.topk_desc — the first consumer
+    # AFTER the read — so the leg drives the production read path
+    # without paying the n^2 top-k peak (~17 GB at 33k; CI runners
+    # have 16). Pre-fix the InternalError fires first and the sentinel
+    # never trips. ----------------------------------------------------
+    if have:
+        import clusters as _clusters_mod
+
+        class _Past(Exception):
+            pass
+
+        def _sentinel(sim, _k):
+            raise _Past(sim.shape[0])
+
+        _orig_topk = _clusters_mod.topk_desc
+        _clusters_mod.topk_desc = _sentinel
+        try:
+            for label, nrows in (
+                ("past the ceiling", 33_000),
+                ("just-under control", 32_700),
+            ):
+                _mkstore(f"clu{nrows}", nrows, vary_embs=True)
+                try:
+                    navstore.clusters()
+                    seen = None   # sentinel never tripped — read dodged?
+                except _Past as p:
+                    seen = p.args[0]
+                except Exception as e:   # pre-fix: the InternalError lands here
+                    seen = f"{type(e).__name__}: {e}"
+                check(
+                    f"clusters() bounded read {label}: all {nrows:,} rows "
+                    "reach the cluster math, no SQL-vars death",
+                    seen == nrows,
+                    f"topk_desc saw: {seen}",
+                )
+        finally:
+            _clusters_mod.topk_desc = _orig_topk
+
+    # ---- leg G: the full pipeline through the chunked read — two
+    # 1300-row stores (3 pages), identical per-id data, reversed
+    # insertion order in the second (#118: chroma's raw order tracks
+    # store history, not data) must yield an identical cluster
+    # structure over the same rows ------------------------------------
+    if have:
+        def _clu_digest(cfg: Path):
+            navconfig.use_config(cfg)
+            res = navstore.clusters()
+            h = hashlib.sha256()
+            for c in res:
+                h.update(
+                    f"{c['id']}|{c['size']}|{c.get('label')}|"
+                    f"{c.get('method')}|".encode()
+                )
+                for p, cn in c["paths"]:
+                    h.update(f"{p}:{cn};".encode())
+            return f"{len(res)}:{h.hexdigest()}", sum(c["size"] for c in res)
+
+        g1, s1 = _clu_digest(_mkstore("cluhist1", 1300, vary_embs=True))
+        g2, s2 = _clu_digest(
+            _mkstore("cluhist2", 1300, vary_embs=True, reverse=True)
+        )
+        check(
+            "clusters() chunked read is history-blind: fwd vs reversed "
+            "insertion give identical digests over the same 1300 rows",
+            g1 == g2 and s1 == 1300 and s2 == 1300,
+            f"{g1} (sum {s1}) vs {g2} (sum {s2})",
+        )
+
 
     finish()
 
