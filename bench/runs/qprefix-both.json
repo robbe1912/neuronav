@@ -1,78 +1,79 @@
 {
  "set": "qprefix",
  "config": "both",
- "commit": "a97592a",
- "dirty": true,
+ "commit": "c12eaa6",
+ "dirty": false,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
  "query_prefix": "Find the most relevant code snippet given the following query:\n",
- "files": 58,
+ "doc_shape": "cast3@1",
+ "files": 119,
  "k": 12,
- "golden": "4daef95861450cd9",
- "hit@1": 0.52,
- "hit@5": 0.88,
+ "golden": "00a061bb945168e5",
+ "hit@1": 0.6,
+ "hit@5": 0.92,
  "hit@10": 0.96,
- "mrr": 0.672,
- "reach@5": 0.96,
+ "mrr": 0.734,
+ "reach@5": 0.92,
  "reach@10": 0.96,
  "by_kind": {
   "exact": {
    "n": 10,
-   "hit@1": 0.5,
-   "hit@5": 0.9,
+   "hit@1": 0.8,
+   "hit@5": 1.0,
    "hit@10": 1.0,
-   "mrr": 0.653
+   "mrr": 0.87
   },
   "symbol": {
    "n": 4,
-   "hit@1": 0.75,
+   "hit@1": 0.5,
    "hit@5": 0.75,
    "hit@10": 0.75,
-   "mrr": 0.75
+   "mrr": 0.583
   },
   "prose": {
    "n": 9,
-   "hit@1": 0.556,
+   "hit@1": 0.333,
    "hit@5": 0.889,
    "hit@10": 1.0,
-   "mrr": 0.698
+   "mrr": 0.59
   },
   "cross": {
    "n": 2,
-   "hit@1": 0.0,
+   "hit@1": 1.0,
    "hit@5": 1.0,
    "hit@10": 1.0,
-   "mrr": 0.5
+   "mrr": 1.0
   }
  },
  "per_query": [
   {
    "q": "parse_tscn",
-   "rank": 1,
-   "ctx5": true,
-   "ctx10": true
+   "rank": 2,
+   "ctx5": false,
+   "ctx10": false
   },
   {
    "q": "sha256_of",
-   "rank": 3,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "titleize",
    "rank": 1,
-   "ctx5": true,
-   "ctx10": true
+   "ctx5": false,
+   "ctx10": false
   },
   {
    "q": "registry_for",
    "rank": 1,
-   "ctx5": false,
+   "ctx5": true,
    "ctx10": true
   },
   {
    "q": "sync_functions",
-   "rank": 3,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
@@ -90,13 +91,13 @@
   },
   {
    "q": "_lexical_fallback",
-   "rank": 2,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "import_base",
-   "rank": 6,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
@@ -115,8 +116,8 @@
   {
    "q": "LabelContext",
    "rank": 1,
-   "ctx5": true,
-   "ctx10": true
+   "ctx5": false,
+   "ctx10": false
   },
   {
    "q": "FileSym",
@@ -126,56 +127,56 @@
   },
   {
    "q": "Func",
-   "rank": 1,
+   "rank": 3,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "where do godot scene resources get read",
    "rank": 1,
-   "ctx5": true,
-   "ctx10": true
+   "ctx5": false,
+   "ctx10": false
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": 2,
+   "rank": 9,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "what stops two simultaneous rescans from corrupting the store",
-   "rank": 1,
+   "rank": 2,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "how do hermetic suites embed without a live model backend",
-   "rank": 3,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "how are subsystem names chosen from member vocabulary",
-   "rank": 3,
-   "ctx5": true,
+   "rank": 2,
+   "ctx5": false,
    "ctx10": true
   },
   {
    "q": "which module hosts the agent protocol on stdin and stdout",
-   "rank": 9,
+   "rank": 2,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "single call that shows a newcomer how the codebase is organized",
-   "rank": 1,
-   "ctx5": false,
+   "rank": 5,
+   "ctx5": true,
    "ctx10": true
   },
   {
    "q": "how is the embedding index archived inside the repository",
-   "rank": 1,
-   "ctx5": true,
+   "rank": 2,
+   "ctx5": false,
    "ctx10": true
   },
   {
@@ -186,13 +187,13 @@
   },
   {
    "q": "unreachable deletion candidates and their confidence tiers",
-   "rank": 2,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "how are node positions computed reproducibly before baking",
-   "rank": 2,
+   "rank": 1,
    "ctx5": false,
    "ctx10": false
   }

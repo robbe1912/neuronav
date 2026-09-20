@@ -1,49 +1,51 @@
 {
- "set": "rawq",
- "config": "bm25",
+ "set": "gbw",
+ "config": "gb0.75-k120-w0.7-1",
  "commit": "c12eaa6",
  "dirty": false,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
- "query_prefix": "Find the most relevant code snippet given the following query:\n",
- "doc_shape": "raw",
  "files": 119,
  "k": 12,
  "golden": "00a061bb945168e5",
- "hit@1": 0.64,
- "hit@5": 0.84,
+ "gb_lambda": 0.75,
+ "gb_rrf_k": 120.0,
+ "gb_wv": 0.7,
+ "gb_wl": 1.0,
+ "hit@1": 0.36,
+ "hit@5": 0.8,
  "hit@10": 0.96,
- "mrr": 0.742,
- "reach@5": 0.84,
+ "mrr": 0.552,
+ "reach@5": 0.8,
  "reach@10": 0.96,
  "by_kind": {
   "exact": {
    "n": 10,
-   "hit@1": 0.8,
+   "hit@1": 0.5,
    "hit@5": 0.9,
    "hit@10": 1.0,
-   "mrr": 0.864
+   "mrr": 0.689
   },
   "symbol": {
    "n": 4,
-   "hit@1": 0.5,
+   "hit@1": 0.0,
    "hit@5": 0.75,
    "hit@10": 0.75,
-   "mrr": 0.583
+   "mrr": 0.229
   },
   "prose": {
    "n": 9,
-   "hit@1": 0.444,
-   "hit@5": 0.778,
+   "hit@1": 0.333,
+   "hit@5": 0.667,
    "hit@10": 1.0,
-   "mrr": 0.62
+   "mrr": 0.5
   },
   "cross": {
    "n": 2,
-   "hit@1": 1.0,
+   "hit@1": 0.5,
    "hit@5": 1.0,
    "hit@10": 1.0,
-   "mrr": 1.0
+   "mrr": 0.75
   }
  },
  "per_query": [
@@ -55,69 +57,69 @@
   },
   {
    "q": "sha256_of",
-   "rank": 1,
+   "rank": 7,
    "ctx5": false,
-   "ctx10": false
+   "ctx10": true
   },
   {
    "q": "titleize",
-   "rank": 1,
-   "ctx5": false,
-   "ctx10": false
+   "rank": 2,
+   "ctx5": true,
+   "ctx10": true
   },
   {
    "q": "registry_for",
    "rank": 1,
-   "ctx5": false,
-   "ctx10": false
+   "ctx5": true,
+   "ctx10": true
   },
   {
    "q": "sync_functions",
    "rank": 1,
-   "ctx5": false,
-   "ctx10": false
+   "ctx5": true,
+   "ctx10": true
   },
   {
    "q": "fold_continuations",
    "rank": 1,
-   "ctx5": false,
-   "ctx10": false
+   "ctx5": true,
+   "ctx10": true
   },
   {
    "q": "_has_exact",
-   "rank": 7,
+   "rank": 4,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "_lexical_fallback",
-   "rank": 1,
+   "rank": 2,
    "ctx5": false,
-   "ctx10": false
+   "ctx10": true
   },
   {
    "q": "import_base",
    "rank": 1,
    "ctx5": false,
-   "ctx10": false
+   "ctx10": true
   },
   {
    "q": "find_functions",
    "rank": 1,
-   "ctx5": false,
-   "ctx10": false
+   "ctx5": true,
+   "ctx10": true
   },
   {
    "q": "NoCacheHandler",
-   "rank": 1,
+   "rank": 4,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "LabelContext",
-   "rank": 1,
-   "ctx5": false,
-   "ctx10": false
+   "rank": 3,
+   "ctx5": true,
+   "ctx10": true
   },
   {
    "q": "FileSym",
@@ -133,7 +135,7 @@
   },
   {
    "q": "where do godot scene resources get read",
-   "rank": 1,
+   "rank": 2,
    "ctx5": false,
    "ctx10": false
   },
@@ -145,55 +147,55 @@
   },
   {
    "q": "what stops two simultaneous rescans from corrupting the store",
-   "rank": 2,
-   "ctx5": false,
-   "ctx10": false
+   "rank": 1,
+   "ctx5": true,
+   "ctx10": true
   },
   {
    "q": "how do hermetic suites embed without a live model backend",
    "rank": 1,
-   "ctx5": false,
-   "ctx10": false
+   "ctx5": true,
+   "ctx10": true
   },
   {
    "q": "how are subsystem names chosen from member vocabulary",
-   "rank": 1,
-   "ctx5": false,
-   "ctx10": false
+   "rank": 4,
+   "ctx5": true,
+   "ctx10": true
   },
   {
    "q": "which module hosts the agent protocol on stdin and stdout",
-   "rank": 6,
+   "rank": 1,
    "ctx5": false,
-   "ctx10": false
+   "ctx10": true
   },
   {
    "q": "single call that shows a newcomer how the codebase is organized",
-   "rank": 4,
+   "rank": 8,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "how is the embedding index archived inside the repository",
-   "rank": 2,
+   "rank": 3,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "how is visual clutter of the rendered page measured",
-   "rank": 1,
+   "rank": 8,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "unreachable deletion candidates and their confidence tiers",
    "rank": 1,
-   "ctx5": false,
-   "ctx10": false
+   "ctx5": true,
+   "ctx10": true
   },
   {
    "q": "how are node positions computed reproducibly before baking",
-   "rank": 1,
+   "rank": 2,
    "ctx5": false,
    "ctx10": false
   }

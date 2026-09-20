@@ -1,40 +1,41 @@
 {
  "set": "fake",
  "config": "vec",
- "commit": "2a1f231",
+ "commit": "c12eaa6",
  "dirty": false,
  "mode": "fake",
  "model": "hash-embed",
- "files": 58,
+ "query_prefix": "Find the most relevant code snippet given the following query:\n",
+ "files": 119,
  "k": 12,
- "golden": "4daef95861450cd9",
- "hit@1": 0.04,
- "hit@5": 0.2,
- "hit@10": 0.24,
- "mrr": 0.097,
- "reach@5": 0.2,
- "reach@10": 0.24,
+ "golden": "00a061bb945168e5",
+ "hit@1": 0.0,
+ "hit@5": 0.08,
+ "hit@10": 0.12,
+ "mrr": 0.034,
+ "reach@5": 0.08,
+ "reach@10": 0.12,
  "by_kind": {
   "exact": {
    "n": 10,
-   "hit@1": 0.1,
-   "hit@5": 0.2,
-   "hit@10": 0.2,
-   "mrr": 0.129
+   "hit@1": 0.0,
+   "hit@5": 0.0,
+   "hit@10": 0.1,
+   "mrr": 0.011
   },
   "symbol": {
    "n": 4,
    "hit@1": 0.0,
    "hit@5": 0.25,
    "hit@10": 0.25,
-   "mrr": 0.05
+   "mrr": 0.125
   },
   "prose": {
    "n": 9,
    "hit@1": 0.0,
-   "hit@5": 0.222,
-   "hit@10": 0.333,
-   "mrr": 0.105
+   "hit@5": 0.111,
+   "hit@10": 0.111,
+   "mrr": 0.028
   },
   "cross": {
    "n": 2,
@@ -47,7 +48,7 @@
  "per_query": [
   {
    "q": "parse_tscn",
-   "rank": null,
+   "rank": 9,
    "ctx5": false,
    "ctx10": false
   },
@@ -65,7 +66,7 @@
   },
   {
    "q": "registry_for",
-   "rank": 1,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
@@ -77,13 +78,13 @@
   },
   {
    "q": "fold_continuations",
-   "rank": 5,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "_has_exact",
-   "rank": 11,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
@@ -119,13 +120,13 @@
   },
   {
    "q": "FileSym",
-   "rank": null,
+   "rank": 2,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "Func",
-   "rank": 5,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
@@ -137,13 +138,13 @@
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": null,
+   "rank": 4,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "what stops two simultaneous rescans from corrupting the store",
-   "rank": 2,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
@@ -155,13 +156,13 @@
   },
   {
    "q": "how are subsystem names chosen from member vocabulary",
-   "rank": 9,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "which module hosts the agent protocol on stdin and stdout",
-   "rank": 3,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },

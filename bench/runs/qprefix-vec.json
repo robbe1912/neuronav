@@ -1,41 +1,42 @@
 {
  "set": "qprefix",
  "config": "vec",
- "commit": "a97592a",
- "dirty": true,
+ "commit": "c12eaa6",
+ "dirty": false,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
  "query_prefix": "Find the most relevant code snippet given the following query:\n",
- "files": 58,
+ "doc_shape": "cast3@1",
+ "files": 119,
  "k": 12,
- "golden": "4daef95861450cd9",
- "hit@1": 0.44,
- "hit@5": 0.6,
- "hit@10": 0.8,
- "mrr": 0.534,
- "reach@5": 0.6,
- "reach@10": 0.8,
+ "golden": "00a061bb945168e5",
+ "hit@1": 0.24,
+ "hit@5": 0.68,
+ "hit@10": 0.76,
+ "mrr": 0.412,
+ "reach@5": 0.68,
+ "reach@10": 0.76,
  "by_kind": {
   "exact": {
    "n": 10,
-   "hit@1": 0.3,
-   "hit@5": 0.6,
-   "hit@10": 0.7,
-   "mrr": 0.413
+   "hit@1": 0.1,
+   "hit@5": 0.7,
+   "hit@10": 0.9,
+   "mrr": 0.317
   },
   "symbol": {
    "n": 4,
-   "hit@1": 0.5,
-   "hit@5": 0.5,
-   "hit@10": 1.0,
-   "mrr": 0.567
+   "hit@1": 0.25,
+   "hit@5": 0.25,
+   "hit@10": 0.25,
+   "mrr": 0.273
   },
   "prose": {
    "n": 9,
-   "hit@1": 0.556,
-   "hit@5": 0.556,
+   "hit@1": 0.333,
+   "hit@5": 0.778,
    "hit@10": 0.778,
-   "mrr": 0.605
+   "mrr": 0.505
   },
   "cross": {
    "n": 2,
@@ -48,19 +49,19 @@
  "per_query": [
   {
    "q": "parse_tscn",
-   "rank": 1,
+   "rank": 2,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "sha256_of",
-   "rank": 11,
+   "rank": 5,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "titleize",
-   "rank": 8,
+   "rank": 9,
    "ctx5": false,
    "ctx10": false
   },
@@ -72,7 +73,7 @@
   },
   {
    "q": "sync_functions",
-   "rank": 3,
+   "rank": 9,
    "ctx5": false,
    "ctx10": false
   },
@@ -96,13 +97,13 @@
   },
   {
    "q": "import_base",
-   "rank": null,
+   "rank": 3,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "find_functions",
-   "rank": 1,
+   "rank": 3,
    "ctx5": false,
    "ctx10": false
   },
@@ -114,19 +115,19 @@
   },
   {
    "q": "LabelContext",
-   "rank": 1,
+   "rank": 11,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "FileSym",
-   "rank": 6,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "Func",
-   "rank": 10,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
@@ -138,7 +139,7 @@
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": 7,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
@@ -150,19 +151,19 @@
   },
   {
    "q": "how do hermetic suites embed without a live model backend",
-   "rank": 8,
+   "rank": 4,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "how are subsystem names chosen from member vocabulary",
-   "rank": 1,
+   "rank": 2,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "which module hosts the agent protocol on stdin and stdout",
-   "rank": 12,
+   "rank": 5,
    "ctx5": false,
    "ctx10": false
   },
@@ -174,7 +175,7 @@
   },
   {
    "q": "how is the embedding index archived inside the repository",
-   "rank": 1,
+   "rank": 2,
    "ctx5": false,
    "ctx10": false
   },

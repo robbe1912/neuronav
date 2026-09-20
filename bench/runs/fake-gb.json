@@ -1,67 +1,68 @@
 {
  "set": "fake",
  "config": "gb",
- "commit": "2a1f231",
+ "commit": "c12eaa6",
  "dirty": false,
  "mode": "fake",
  "model": "hash-embed",
- "files": 58,
+ "query_prefix": "Find the most relevant code snippet given the following query:\n",
+ "files": 119,
  "k": 12,
- "golden": "4daef95861450cd9",
- "hit@1": 0.24,
- "hit@5": 0.68,
- "hit@10": 0.92,
- "mrr": 0.45,
+ "golden": "00a061bb945168e5",
+ "hit@1": 0.28,
+ "hit@5": 0.56,
+ "hit@10": 0.64,
+ "mrr": 0.388,
  "reach@5": 0.68,
- "reach@10": 0.96,
+ "reach@10": 0.76,
  "by_kind": {
   "exact": {
    "n": 10,
-   "hit@1": 0.4,
-   "hit@5": 0.9,
-   "hit@10": 0.9,
-   "mrr": 0.584
+   "hit@1": 0.5,
+   "hit@5": 0.8,
+   "hit@10": 0.8,
+   "mrr": 0.573
   },
   "symbol": {
    "n": 4,
-   "hit@1": 0.0,
+   "hit@1": 0.5,
    "hit@5": 0.5,
-   "hit@10": 0.75,
-   "mrr": 0.233
+   "hit@10": 0.5,
+   "mrr": 0.5
   },
   "prose": {
    "n": 9,
-   "hit@1": 0.111,
-   "hit@5": 0.556,
-   "hit@10": 1.0,
-   "mrr": 0.367
+   "hit@1": 0.0,
+   "hit@5": 0.333,
+   "hit@10": 0.444,
+   "mrr": 0.152
   },
   "cross": {
    "n": 2,
-   "hit@1": 0.5,
+   "hit@1": 0.0,
    "hit@5": 0.5,
    "hit@10": 1.0,
-   "mrr": 0.583
+   "mrr": 0.3
   }
  },
  "per_query": [
   {
    "q": "parse_tscn",
-   "rank": 2,
+   "rank": 3,
    "ctx5": false,
-   "ctx10": true
+   "ctx10": false
   },
   {
    "q": "sha256_of",
-   "rank": 4,
+   "rank": 5,
    "ctx5": false,
-   "ctx10": true
+   "ctx10": false
   },
   {
    "q": "titleize",
    "rank": 1,
    "ctx5": false,
-   "ctx10": false
+   "ctx10": true
   },
   {
    "q": "registry_for",
@@ -71,8 +72,8 @@
   },
   {
    "q": "sync_functions",
-   "rank": 3,
-   "ctx5": true,
+   "rank": 5,
+   "ctx5": false,
    "ctx10": true
   },
   {
@@ -83,37 +84,37 @@
   },
   {
    "q": "_has_exact",
-   "rank": 1,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "_lexical_fallback",
-   "rank": 11,
-   "ctx5": false,
-   "ctx10": true
-  },
-  {
-   "q": "import_base",
-   "rank": 3,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
   {
+   "q": "import_base",
+   "rank": null,
+   "ctx5": false,
+   "ctx10": true
+  },
+  {
    "q": "find_functions",
-   "rank": 3,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "NoCacheHandler",
-   "rank": 10,
+   "rank": null,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "LabelContext",
-   "rank": 3,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
@@ -125,25 +126,25 @@
   },
   {
    "q": "Func",
-   "rank": 2,
+   "rank": 1,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "where do godot scene resources get read",
-   "rank": 2,
-   "ctx5": true,
-   "ctx10": true
+   "rank": null,
+   "ctx5": false,
+   "ctx10": false
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": 8,
+   "rank": 3,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "what stops two simultaneous rescans from corrupting the store",
-   "rank": 1,
+   "rank": 11,
    "ctx5": true,
    "ctx10": true
   },
@@ -155,43 +156,43 @@
   },
   {
    "q": "how are subsystem names chosen from member vocabulary",
-   "rank": 9,
+   "rank": null,
    "ctx5": false,
    "ctx10": true
   },
   {
    "q": "which module hosts the agent protocol on stdin and stdout",
-   "rank": 2,
-   "ctx5": true,
-   "ctx10": true
+   "rank": null,
+   "ctx5": false,
+   "ctx10": false
   },
   {
    "q": "single call that shows a newcomer how the codebase is organized",
-   "rank": 8,
+   "rank": 11,
    "ctx5": false,
-   "ctx10": true
+   "ctx10": false
   },
   {
    "q": "how is the embedding index archived inside the repository",
-   "rank": 3,
+   "rank": 10,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "how is visual clutter of the rendered page measured",
-   "rank": 9,
+   "rank": 4,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "unreachable deletion candidates and their confidence tiers",
-   "rank": 1,
+   "rank": 10,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "how are node positions computed reproducibly before baking",
-   "rank": 6,
+   "rank": 2,
    "ctx5": false,
    "ctx10": false
   }
