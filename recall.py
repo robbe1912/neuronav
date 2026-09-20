@@ -245,7 +245,7 @@ def _vector_ranks(
     import navstore
 
     col = navstore._collection()
-    count = col.count()
+    count = navstore.col_count(col, "vector-rank gate")
     if count == 0:
         return [], {}, {}
     vector = navstore.embed([query])[0]

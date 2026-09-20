@@ -38,7 +38,7 @@ def _fetch_embeddings(paths):
     import numpy as np
 
     col = navstore._collection()
-    if not col.count():
+    if not navstore.col_count(col, "bake embeddings gate"):
         return None
     try:
         got = navstore.col_get_all(col, ["embeddings"], "bake embeddings")
