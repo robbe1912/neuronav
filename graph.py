@@ -64,6 +64,8 @@ from docshape import (  # noqa: E402  (#366 carve: the doc-shaping
     # sync_functions' shaper calls, the tests' helper pins —
     # resolving unchanged)
     FILE_DOC_REV,
+    FILE_IMPORTS_CAP,
+    FILE_SYMBOLS_CAP,
     MONSTER_FN_CHARS,
     _cast_scale,
     _chunk_docs,
@@ -72,6 +74,7 @@ from docshape import (  # noqa: E402  (#366 carve: the doc-shaping
     _chunked_docs,
     _chunks,
     _fn_doc,
+    _fn_sections,
     _is_micro,
     file_doc,
 )
