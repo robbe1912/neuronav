@@ -355,6 +355,18 @@ try:
           f"r={degraded} stderr={buf.getvalue()[:80]!r}")
 finally:
     _cl.coarse_groups = real_cg
+# f) end-to-end teeth (#367 GK gate): a REAL in-flight failure inside
+# _knn_sims must abort the whole generate() loudly — never a silently
+# thinner graph. topk_desc is imported lazily inside _knn_sims, so the
+# module-attribute patch lands at call time.
+real_topk = _cl.topk_desc
+_cl.topk_desc = lambda sim, k: (_ for _ in ()).throw(
+    ValueError("synthetic argpartition failure"))
+try:
+    refusal(lambda: viz.generate(), "in-flight kNN failure aborts the bake",
+            ["semantic kNN", "synthetic argpartition failure"])
+finally:
+    _cl.topk_desc = real_topk
 
 # ---- cleanup -----------------------------------------------------------------
 shutil.rmtree(SCRATCH, ignore_errors=True)
