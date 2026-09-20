@@ -343,8 +343,39 @@ def _verify_store_vectors(navstore, navconfig, sample: int = 5) -> bool:
     return True
 
 
-def run(repo: Path, set_name: str, configs: list[str], fake: bool,
-        query_prefix: str | None = None, embed: dict | None = None) -> int:
+# Leaf singletons bound by _boot() (issue #379): the measured repo only
+# lands on sys.path after the config pin, so the nav*/recall imports
+# must stay lazy — entry-point bodies read them as module globals.
+navconfig = navindex = navstore = recall = None
+HAVE_RECALL = False
+
+
+def _probe_url(embed_url: str) -> str:
+    """Health-probe URL for an embed endpoint (issue #379): the openai
+    wire (.../embeddings — navconfig's provider rule) answers GET
+    itself; the ollama wire rides the sibling /api/tags listing.
+    Derived from navconfig.EMBED_URL, the SAME endpoint config the
+    store's embeds ride, so every entry point honors an embed_url
+    sidecar or config override — no bench-side host can drift."""
+    if embed_url.rstrip("/").endswith("/embeddings"):
+        return embed_url
+    return embed_url.rstrip("/").rsplit("/api/", 1)[0] + "/api/tags"
+
+
+def _boot(repo: Path, embed: dict | None = None, fake: bool = False) -> int:
+    """The one boot preamble every entry point rides (issue #379: was
+    triplicated across run/sweep/ceiling_sweep with probe drift — run
+    honored embed_url sidecars while the sweeps hardcoded 11434). Pins
+    NEURONAV_CONFIG (an A/B leg gets its scratch profile), puts the
+    measured repo first on sys.path, lazily imports the leaves above
+    (recall presence -> HAVE_RECALL), probes the endpoint derived from
+    the loaded config, verifies the golden set, wipes a scratch
+    checkout's stale store in fake mode, rescans, and coherence-checks
+    the store (#220). Returns 0 booted, 3 golden drift, 4 poisoned
+    store. run()-only gates (configs needing recall, query_prefix)
+    stay in run() and fire after boot."""
+    global navconfig, navindex, navstore, recall, HAVE_RECALL
+
     if fake:
         os.environ["NEURONAV_EMBED_FAKE"] = "1"
     if embed:
@@ -353,35 +384,19 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool,
         os.environ["NEURONAV_CONFIG"] = str(repo / "config" / "neuronav.json")
     sys.path.insert(0, str(repo))
 
-    import navconfig, navindex, navstore, nav
+    import navconfig, navindex, navstore  # noqa: E402
 
     try:
         import recall  # noqa: E402
 
-        have_recall = True
+        HAVE_RECALL = True
     except ImportError:
-        have_recall = False
-
-    missing = [c for c in configs if NEEDS[c] and not have_recall]
-    if missing:
-        print(f"ERROR: config(s) {missing} need recall.py, which this checkout lacks")
-        return 2
-    if query_prefix and not have_recall:
-        print("ERROR: query_prefix needs recall.py (vector-side prefixing)")
-        return 2
-
-    # effective embedded-query prefix for the record stamp (issue #217):
-    # None = recall's shipped default (QUERY_PREFIX); "" = the explicit
-    # raw leg (ab/jina); a literal = a forced leg.
-    effective_prefix = (
-        recall.QUERY_PREFIX if query_prefix is None else query_prefix
-    ) if have_recall else ""
+        HAVE_RECALL = False
 
     if not fake:
         import httpx
 
-        probe = (embed or {}).get("embed_url",
-                                  "http://127.0.0.1:11434/api/tags")
+        probe = _probe_url(navconfig.EMBED_URL)
         try:
             httpx.get(probe, timeout=10)
         except Exception as e:
@@ -399,10 +414,35 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool,
             # keep the sha-incremental store: docs embed once, reruns only re-embed
             # queries, so Ollama fp jitter cannot shift document-side near-ties.
 
-    stats = navindex.rescan()  # coherent index for this mode in this checkout's .neuronav
+    # coherent index for this mode in this checkout's .neuronav; sha-incremental,
+    # so real reruns and sweep/ceiling cells only re-embed queries
+    stats = navindex.rescan()
     print(f"index: {navstore.count()} files (rescan {stats['added']}+/{stats['updated']}~/{stats['deleted']}-)")
     if not _verify_store_vectors(navstore, navconfig):
         return 4
+    return 0
+
+
+def run(repo: Path, set_name: str, configs: list[str], fake: bool,
+        query_prefix: str | None = None, embed: dict | None = None) -> int:
+    code = _boot(repo, embed, fake)
+    if code:
+        return code
+
+    missing = [c for c in configs if NEEDS[c] and not HAVE_RECALL]
+    if missing:
+        print(f"ERROR: config(s) {missing} need recall.py, which this checkout lacks")
+        return 2
+    if query_prefix and not HAVE_RECALL:
+        print("ERROR: query_prefix needs recall.py (vector-side prefixing)")
+        return 2
+
+    # effective embedded-query prefix for the record stamp (issue #217):
+    # None = recall's shipped default (QUERY_PREFIX); "" = the explicit
+    # raw leg (ab/jina); a literal = a forced leg.
+    effective_prefix = (
+        recall.QUERY_PREFIX if query_prefix is None else query_prefix
+    ) if HAVE_RECALL else ""
 
     # vec/bm25/expand are BASELINE legs: since #228 the shipped default
     # carries λ 0.25, so they pin graph_boost=0.0 to keep measuring the
@@ -410,7 +450,7 @@ def run(repo: Path, set_name: str, configs: list[str], fake: bool,
     # wire (gb still pins (λ, k) explicitly for record readability).
     def make(flags):
         def search(query: str):
-            if have_recall:
+            if HAVE_RECALL:
                 kw = {"k": K, "bm25": "bm25" in flags, "expand": "expand" in flags}
                 if not set(flags) & {"bm25", "expand", "gboost", "two_pass"}:
                     kw["graph_boost"] = 0.0
@@ -472,26 +512,11 @@ def sweep(repo: Path) -> int:
     deterministic grid order (λ outer, k inner). Real embeds only —
     the sweep arbitrates quality; fake mode is a plumbing battery, not
     a signal. Records land in bench/runs/sweep-*.json."""
-    os.environ["NEURONAV_CONFIG"] = str(repo / "config" / "neuronav.json")
-    sys.path.insert(0, str(repo))
-
-    import navconfig, navindex, navstore, nav
-    import recall  # noqa: E402
-
-    import httpx
-
-    try:
-        httpx.get("http://127.0.0.1:11434/api/tags", timeout=10)
-    except Exception as e:
-        raise RuntimeError(f"sweep needs Ollama on 11434: {e}") from e
-
-    if verify_golden(repo):
-        return 3
-
-    stats = navindex.rescan()  # sha-incremental: docs embed once, cells only re-embed queries
-    print(f"index: {navstore.count()} files (rescan {stats['added']}+/{stats['updated']}~/{stats['deleted']}-)")
-    if not _verify_store_vectors(navstore, navconfig):
-        return 4
+    code = _boot(repo)
+    if code:
+        return code
+    if not HAVE_RECALL:
+        raise RuntimeError("sweep needs recall.py (the grid knobs live there)")
 
     queries = _load_golden()
     commit = _git(repo, "rev-parse", "--short", "HEAD") or "unknown"
@@ -543,26 +568,11 @@ def ceiling_sweep(repo: Path) -> int:
     budget, imports, weight inner). Records land in
     bench/runs/gbw-*.json and tps-*.json, rendered into the issue-#228
     RESULTS.md section with the easy/hard split."""
-    os.environ["NEURONAV_CONFIG"] = str(repo / "config" / "neuronav.json")
-    sys.path.insert(0, str(repo))
-
-    import navconfig, navindex, navstore, nav
-    import recall  # noqa: E402
-
-    import httpx
-
-    try:
-        httpx.get("http://127.0.0.1:11434/api/tags", timeout=10)
-    except Exception as e:
-        raise RuntimeError(f"ceiling sweep needs Ollama on 11434: {e}") from e
-
-    if verify_golden(repo):
-        return 3
-
-    stats = navindex.rescan()  # sha-incremental: docs embed once, cells only re-embed queries
-    print(f"index: {navstore.count()} files (rescan {stats['added']}+/{stats['updated']}~/{stats['deleted']}-)")
-    if not _verify_store_vectors(navstore, navconfig):
-        return 4
+    code = _boot(repo)
+    if code:
+        return code
+    if not HAVE_RECALL:
+        raise RuntimeError("ceiling sweep needs recall.py (the fusion/two-pass knobs live there)")
 
     queries = _load_golden()
     commit = _git(repo, "rev-parse", "--short", "HEAD") or "unknown"
