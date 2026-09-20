@@ -84,6 +84,9 @@ from extractors.model import FileSym, Func
 # back (js -> ts is the dependency direction).
 from extractors.ts import JS_EXTS, TS_BASE_VIRTUALS as _BASE_VIRTUALS
 from extractors.ts import _PKG_SEEN, _alias_expand, _load_tsconfig
+from extractors.ts import pure_delegate  # thin-forwarder classifier for
+# graph's dup filter (issue #364): js stores bodies in ts's bare-brace
+# form (_body_block), so the shared hook owns both ES dialects
 
 JS_LANG = Language(_jst.language())
 TSX_LANG = Language(_tst.language_tsx())

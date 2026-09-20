@@ -260,6 +260,31 @@ check("f10 package.json main roots the entry file",
 check("f10 framework config file roots its funcs",
       alive("next.config.js", "cfg"))
 
+# fixture 11: pure-delegate filter (issue #364) — js thin forwarders
+# classify through the shared ts hook (graph's getattr dispatch), so the
+# byte-identical twins drop from the dup report counted, while the
+# richer control group stays reported
+_dl = g.files["delegates.js"]
+check("f11 js thin forwarders' stored bodies classify (#364)",
+      set(_dl.funcs) == {"fwdAlpha", "fwdBeta", "richA", "richB"}
+      and all(graph._pure_delegate(graph._normalize_body(_dl.funcs[n].body, js_x),
+                                   js_x)
+              for n in ("fwdAlpha", "fwdBeta"))
+      and not any(graph._pure_delegate(graph._normalize_body(_dl.funcs[n].body, js_x),
+                                       js_x)
+                  for n in ("richA", "richB")),
+      str(sorted(_dl.funcs)))
+_rep = g.duplicates_report()
+check("f11 delegate twin group drops from the dup report (counted)",
+      not any("delegates.js::fwd" in m for grp in _rep["groups"]
+              for m in grp["members"])
+      and _rep["delegate_skipped"] >= 1,
+      str(_rep["delegate_skipped"]))
+check("f11 non-delegate twin group stays reported (control)",
+      any(set(grp["members"]) == {"delegates.js::richA", "delegates.js::richB"}
+          for grp in _rep["groups"]),
+      str(_rep["groups"]))
+
 
 def _pin_dead_share_hook() -> None:
     """Plan C1 mirror (consumed by bake/files_model via the registry):
