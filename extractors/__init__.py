@@ -88,24 +88,60 @@ EXTENSIONS: dict[str, object] = {
 # rest ride graph.file_doc's raw fallback (embedded + searchable, fns 0)
 # until an extractor lands for them.
 RAW_TEXT_EXTS = (".json", ".md")
-PRESETS: dict[str, tuple[str, ...]] = {
-    "ts": (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
-           ".json", ".md"),
-    "js": (".js", ".jsx", ".mjs", ".cjs", ".json", ".md"),
-    "python": (".py", ".pyi", ".json", ".md"),
-    "cpp": (".h", ".hpp", ".cpp", ".cc", ".cxx"),
-    # gdscript's walk suffixes ARE gdscript.WALK_EXTS (issue #295: single
-    # truth — the module constant is the one spelling; nav's Godot-profile
-    # default and this preset must never drift apart)
-    "gdscript": gdscript.WALK_EXTS,
-    "rust": (".rs", ".json", ".md"),
-    "go": (".go", ".json", ".md"),
-    "java": (".java", ".json", ".md"),
-    "c": (".c", ".h", ".json", ".md"),
-    "csharp": (".cs", ".json", ".md"),
-    "php": (".php", ".json", ".md"),
-    "lua": (".lua", ".json", ".md"),
-}
+def _derive_presets() -> dict[str, tuple[str, ...]]:
+    """The preset table derives from the registry — one spelling of the
+    suffix truth (issue #362, reviewer finding 12). Each language's
+    structural suffixes ARE its EXTENSIONS rows read in insertion order,
+    so a new registry suffix flows into every preset walking that
+    language; the hand-spelled tuples this replaces were a third
+    spelling that could drift. Registry insertion order is load-bearing:
+    presets keep the historical suffix order byte-equal (equivalence leg
+    in tests/test_project_mode.py)."""
+    def lang_exts(module) -> tuple[str, ...]:
+        return tuple(s for s, m in EXTENSIONS.items() if m is module)
+
+    presets: dict[str, tuple[str, ...]] = {
+        # ts trees ship js sources (the .cjs asymmetry fix): the ts
+        # preset walks both families' registry suffixes.
+        "ts": lang_exts(ts) + lang_exts(js) + RAW_TEXT_EXTS,
+        "js": lang_exts(js) + RAW_TEXT_EXTS,
+        "python": lang_exts(python) + RAW_TEXT_EXTS,
+        # cpp deliberately walks NO raw text — the only structural
+        # preset without .json/.md (finding 12, decided + kept): a
+        # C/C++ tree's docs ride the headers, not the raw fallback.
+        # Revisit only with a consumer need.
+        "cpp": lang_exts(cpp),
+        # gdscript's walk suffixes ARE gdscript.WALK_EXTS (issue #295:
+        # single truth — the module constant is the one spelling; nav's
+        # Godot-profile default and this preset must never drift apart)
+        "gdscript": gdscript.WALK_EXTS,
+        "rust": lang_exts(rust) + RAW_TEXT_EXTS,
+        "go": lang_exts(go) + RAW_TEXT_EXTS,
+        "java": lang_exts(java) + RAW_TEXT_EXTS,
+        # c stays curated (finding 12): a C tree's .h headers walk WITH
+        # .c even though the registry routes .h/.hpp to cpp's parser
+        # (c.py's C_HEADER_EXTS) — and .hpp stays out (C++ headers are
+        # the cpp preset's). The one hand-written row left, by design:
+        # pairing facts the registry cannot spell.
+        "c": (".c", ".h") + RAW_TEXT_EXTS,
+        "csharp": lang_exts(csharp) + RAW_TEXT_EXTS,
+        "php": lang_exts(php) + RAW_TEXT_EXTS,
+        "lua": lang_exts(lua) + RAW_TEXT_EXTS,
+    }
+    # loud parity: preset keys are registry module names — a new
+    # extractor without its preset row (or a preset key with no
+    # extractor behind it) aborts naming the orphan, instead of leaving
+    # the language half-supported: parseable via the registry yet
+    # unreachable by onboard --preset / the boot guidance string.
+    langs = {m.__name__.rsplit(".", 1)[-1] for m in EXTENSIONS.values()}
+    assert langs == set(presets), (
+        "registry/PRESETS drift: registry-only=%s presets-only=%s — "
+        "every registry module needs exactly one preset key of its own "
+        "name" % (sorted(langs - set(presets)), sorted(set(presets) - langs)))
+    return presets
+
+
+PRESETS: dict[str, tuple[str, ...]] = _derive_presets()
 
 def sync_parseable(suffix: str) -> bool:
     """True when sync_functions may parse the suffix into funcs: an

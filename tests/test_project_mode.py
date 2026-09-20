@@ -70,7 +70,8 @@ def _wait_listening(proc: subprocess.Popen, port: int, timeout_s: float = 25.0) 
 
 
 def main() -> None:
-    from extractors import EXTENSIONS, PRESETS, RAW_TEXT_EXTS
+    from extractors import EXTENSIONS, PRESETS, RAW_TEXT_EXTS, _derive_presets
+    import extractors as _registry
 
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
@@ -166,6 +167,58 @@ def main() -> None:
         check("preset: unknown name fails loud, names the valid set",
               r.returncode != 0 and "cobol" in (r.stderr + r.stdout)
               and "gdscript" in (r.stderr + r.stdout), (r.stderr + r.stdout)[-160:])
+
+        # 2c-bis. PRESETS derive from the registry (issue #362, finding
+        # 12) — byte-equal to the hand-spelled tuples the derivation
+        # replaced: the change is representation, not content.
+        check("presets: derived table byte-equal to the hand-spelled "
+              "tuples it replaced (issue #362)",
+              PRESETS == {
+                  "ts": (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx",
+                         ".mjs", ".cjs", ".json", ".md"),
+                  "js": (".js", ".jsx", ".mjs", ".cjs", ".json", ".md"),
+                  "python": (".py", ".pyi", ".json", ".md"),
+                  "cpp": (".h", ".hpp", ".cpp", ".cc", ".cxx"),
+                  "gdscript": (".gd", ".tscn"),
+                  "rust": (".rs", ".json", ".md"),
+                  "go": (".go", ".json", ".md"),
+                  "java": (".java", ".json", ".md"),
+                  "c": (".c", ".h", ".json", ".md"),
+                  "csharp": (".cs", ".json", ".md"),
+                  "php": (".php", ".json", ".md"),
+                  "lua": (".lua", ".json", ".md"),
+              }, str(PRESETS))
+        check("presets: key order pins server.py's suggestion preference "
+              "(ts before js) + servercore's guidance string",
+              list(PRESETS) == ["ts", "js", "python", "cpp", "gdscript",
+                                "rust", "go", "java", "c", "csharp",
+                                "php", "lua"], str(list(PRESETS)))
+        # drift teeth: a registry row added for an existing language
+        # flows into its preset on re-derivation — no third spelling
+        # left to update; and a registry module with no preset key
+        # aborts loud (no silent half-support).
+        saved_reg = _registry.EXTENSIONS
+        try:
+            _registry.EXTENSIONS = {**saved_reg, ".rs2": _registry.rust}
+            derived = _derive_presets()
+            check("presets: a new registry suffix flows into the preset "
+                  "(issue #362 — the registry is the one spelling)",
+                  ".rs2" in derived["rust"]
+                  and ".rs2" not in PRESETS["rust"],
+                  str(derived["rust"]))
+            import types  # local: main() re-imports it later (viz leg)
+            kotlin = types.ModuleType("extractors.kotlin")
+            _registry.EXTENSIONS = {**saved_reg, ".kt": kotlin}
+            try:
+                _derive_presets()
+                check("presets: registry module without a preset key "
+                      "aborts loud", False, "no error raised")
+            except AssertionError as exc:
+                check("presets: registry module without a preset key "
+                      "aborts loud, naming it",
+                      "kotlin" in str(exc), str(exc))
+        finally:
+            _registry.EXTENSIONS = saved_reg
 
         # 2d. project-local root '.' trap (issue #240): root resolves
         # against the config's own dir — so a .neuronav config's '.'
