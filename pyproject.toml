@@ -44,7 +44,7 @@ dependencies = [
 neuronav-mcp = "server:main"
 
 [tool.setuptools]
-py-modules = ["nav", "navconfig", "navstore", "navindex", "graph", "server", "servercore", "server_search", "server_structure", "server_clusters", "serverbake", "viz", "layout", "clusters", "clusterpasses", "explore", "recall", "onboard", "predicates", "memories"]
+py-modules = ["nav", "navconfig", "navstore", "navindex", "graph", "server", "servercore", "server_search", "server_structure", "server_clusters", "serverbake", "viz", "layout", "clusters", "clusterpasses", "docshape", "explore", "recall", "onboard", "predicates", "memories"]
 packages = ["extractors", "bake", "vendor"]
 
 # the byte-critical vendored three.js (test_bytelaws pins these exact bytes;
