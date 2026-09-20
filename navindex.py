@@ -24,7 +24,7 @@ import shutil
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Set
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -151,6 +151,25 @@ def _count_pruned_files(base: Path, cap: int = 100_000) -> int:
             continue
     return n
 
+# ---- shared walk filter leaf (issue #375) ------------------------------------
+# The three walk engines below (iter_files, iter_root_files, stat_fingerprint)
+# were kept equivalent only by comments — the #296-C drift class, which
+# already bit once (a fix applied to one engine missed the others). The
+# per-directory prune and the suffix predicate live HERE, once; each
+# traversal keeps its own shape and yield contract (include-walk /
+# root-wide / scandir stack).
+
+
+def _kept_dirs(names: Iterable[str], prune: Set[str]) -> list[str]:
+    """Sorted dirnames surviving the prune set — the per-directory filter
+    every walk engine routes through (sorted keeps each walk deterministic)."""
+    return sorted(dn for dn in names if dn not in prune)
+
+
+def _suffix_in(name: str, suffixes: Set[str]) -> bool:
+    """The suffix predicate every walk engine's file filter routes through."""
+    return Path(name).suffix in suffixes
+
 
 def iter_files(all_suffixes: bool = False) -> Iterator[Path]:
     # os.walk (not rglob) so exclude_dirs are pruned from the traversal —
@@ -170,11 +189,11 @@ def iter_files(all_suffixes: bool = False) -> Iterator[Path]:
                 _gitignore_prune_tick(
                     [dn for dn in dirnames if dn in navconfig.GITIGNORE_PRUNE_DIRS]
                 )
-            dirnames[:] = sorted(dn for dn in dirnames if dn not in navconfig.EXCLUDE_DIRS)
+            dirnames[:] = _kept_dirs(dirnames, navconfig.EXCLUDE_DIRS)
             for name in sorted(filenames):
                 # all_suffixes (issue #240): same walk rules with the
                 # extension filter off — the degraded-boot suffix census
-                if all_suffixes or Path(name).suffix in navconfig.EXTS:
+                if all_suffixes or _suffix_in(name, navconfig.EXTS):
                     p = Path(dirpath) / name
                     fid = file_id(p)
                     if fid in seen:
@@ -226,9 +245,9 @@ def iter_root_files(suffixes: set[str] | frozenset[str]) -> Iterator[Path]:
     afterwards."""
     prune = navconfig.EXCLUDE_DIRS | _PRUNE_FLOOR
     for dirpath, dirnames, filenames in os.walk(navconfig.ROOT):
-        dirnames[:] = sorted(dn for dn in dirnames if dn not in prune)
+        dirnames[:] = _kept_dirs(dirnames, prune)
         for name in sorted(filenames):
-            if Path(name).suffix in suffixes:
+            if _suffix_in(name, suffixes):
                 yield Path(dirpath) / name
 
 
@@ -253,13 +272,13 @@ def stat_fingerprint() -> dict[str, tuple[int, int]]:
         d = stack.pop()
         try:
             with os.scandir(d) as it:
+                subdirs: list[str] = []
                 for e in it:
                     try:
                         if e.is_dir(follow_symlinks=False):
-                            if e.name not in navconfig.EXCLUDE_DIRS:
-                                stack.append(e.path)
+                            subdirs.append(e.name)
                             continue
-                        if Path(e.name).suffix not in navconfig.EXTS:
+                        if not _suffix_in(e.name, navconfig.EXTS):
                             continue
                         st = e.stat(follow_symlinks=False)
                     except OSError:
@@ -271,6 +290,13 @@ def stat_fingerprint() -> dict[str, tuple[int, int]]:
                     n += 1
                     if n == WALK_SCOPE_WARN_N:
                         _walk_scope_tick(n)
+                # issue #375: the same per-directory filter as the other two
+                # engines (one truth); collecting first keeps the #374
+                # per-entry OSError legs intact
+                stack.extend(
+                    os.path.join(d, dn)
+                    for dn in _kept_dirs(subdirs, navconfig.EXCLUDE_DIRS)
+                )
         except OSError:
             continue  # include_dir vanished; empty is a valid fingerprint
     return fp

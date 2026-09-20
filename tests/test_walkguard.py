@@ -510,6 +510,78 @@ check(
     f"floor={sorted(navindex._PRUNE_FLOOR)}",
 )
 
+# ---- issue #375: one filter leaf, three walk engines -------------------------
+# iter_files / iter_root_files / stat_fingerprint were kept equivalent only
+# by comments (#296-C bit once). The per-directory prune (_kept_dirs) and the
+# suffix predicate (_suffix_in) are the single truth now; these legs pin the
+# identity on this ignore/prune-heavy tree AND the single truth itself — a
+# deliberate filter change must propagate to all three engines at once.
+(SRC / "keep" / "kept.py").write_text("def kept_py():\n    pass\n", encoding="utf-8")
+(SRC / "vendored" / "dep.py").write_text("vendored_py = 1\n", encoding="utf-8")
+
+EXPECT_375 = {"app.py", "keep/kept.py"}  # vendored/dep.py: config-pruned everywhere
+ids_iter = {navindex.file_id(p) for p in navindex.iter_files()}
+ids_root = {navindex.file_id(p) for p in navindex.iter_root_files(navconfig.EXTS)}
+ids_fp = set(navindex.stat_fingerprint())
+check(
+    "375: same file set from all three engines (config prune honored)",
+    ids_iter == ids_root == ids_fp == EXPECT_375,
+    f"iter={sorted(ids_iter)} root={sorted(ids_root)} fp={sorted(ids_fp)}",
+)
+
+# the two os.walk engines share the suffix leaf; their only contract delta
+# is iter_root_files' extra cache floor (cfg_a excludes just "vendored", so
+# floor-dir content — the suite's own FAKE store under .neuronav, the junk
+# .tres files — rides the all-suffixes walk and nothing else does)
+ids_all = {navindex.file_id(p) for p in navindex.iter_files(all_suffixes=True)}
+ids_root_all = {navindex.file_id(p) for p in navindex.iter_root_files({".py", ".tres"})}
+_leak = {
+    i for i in ids_all - ids_root_all
+    if i.split("/", 1)[0] not in navindex._PRUNE_FLOOR
+}
+check(
+    "375: root walk == all-suffixes walk minus exactly the cache floor",
+    ids_root_all == {"app.py", "keep/kept.py", "keep/wiring.tres"}
+    and not _leak and ids_all - ids_root_all,
+    f"all={sorted(ids_all)} root={sorted(ids_root_all)} leak={sorted(_leak)}",
+)
+
+# single-truth sabotage: break the suffix leaf, every engine changes
+_real_suffix_in = navindex._suffix_in
+navindex._suffix_in = (
+    lambda name, suffixes: _real_suffix_in(name, suffixes) and Path(name).suffix != ".py"
+)
+try:
+    sab_iter = {navindex.file_id(p) for p in navindex.iter_files()}
+    sab_root = {navindex.file_id(p) for p in navindex.iter_root_files({".py"})}
+    sab_fp = set(navindex.stat_fingerprint())
+finally:
+    navindex._suffix_in = _real_suffix_in
+check(
+    "375: suffix-leaf sabotage propagates to all three engines",
+    sab_iter == sab_root == sab_fp == set(),
+    f"iter={sorted(sab_iter)} root={sorted(sab_root)} fp={sorted(sab_fp)}",
+)
+
+# single-truth sabotage: break the dir filter, every engine changes
+_real_kept_dirs = navindex._kept_dirs
+navindex._kept_dirs = (
+    lambda names, prune: [dn for dn in _real_kept_dirs(names, prune) if dn != "keep"]
+)
+try:
+    pr_iter = {navindex.file_id(p) for p in navindex.iter_files()}
+    pr_root = {navindex.file_id(p) for p in navindex.iter_root_files(navconfig.EXTS)}
+    pr_fp = set(navindex.stat_fingerprint())
+    pr_tres = {navindex.file_id(p) for p in navindex.iter_root_files({".tres"})}
+finally:
+    navindex._kept_dirs = _real_kept_dirs
+check(
+    "375: dir-filter sabotage propagates to all three engines",
+    pr_iter == pr_root == pr_fp == {"app.py"} and pr_tres == set(),
+    f"iter={sorted(pr_iter)} root={sorted(pr_root)} fp={sorted(pr_fp)} "
+    f"tres={sorted(pr_tres)}",
+)
+
 shutil.rmtree(SCRATCH3, ignore_errors=True)
 shutil.rmtree(SCRATCH2, ignore_errors=True)
 
