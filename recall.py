@@ -172,12 +172,7 @@ class BM25F:
     def _field_texts(fs) -> list[str]:
         """Per-field text, order aligned with FIELDS."""
         base = fs.path.rsplit("/", 1)[-1]  # filename with extension
-        symbols = (
-            sorted(fs.funcs)
-            + sorted(fs.signals)
-            + sorted(fs.members)
-            + sorted(fs.consts)
-        )
+        symbols = fs.surface
         body = "\n".join(fs.funcs[n].body for n in sorted(fs.funcs))
         return [base, fs.class_name, " ".join(symbols), fs.path, body]
 
@@ -306,10 +301,12 @@ def _graph_boost(
     lam/(rrf_k+1)/(source rank) to every distinct 1-hop file neighbor —
     a file wired to several top hits accumulates their consensus.
     Neighbors absent from the fused lists enter with src "graph".
+    Adjacency is g.file_wires() — the pagerank fold, one truth
+    (issue #365: recall used to re-inline its own wire fold here).
     Iteration is fused order, then (-wires, path) per source, so float
     accumulation order is fixed; the re-sort by (-score, path) makes
     the output byte-stable run-to-run."""
-    adj = _file_adjacency(g)
+    adj = g.file_wires()
     scores = {doc: s for doc, s, _src in fused}
     srcs = {doc: src for doc, _s, src in fused}
     for pos, (doc, _s, _src) in enumerate(fused[:k]):
@@ -340,29 +337,11 @@ def _fuse(
     return _rrf([("vec", vec, w_vec), ("bm25", lex, w_lex)], rrf_k)
 
 
-def _file_adjacency(g) -> dict[str, dict[str, int]]:
-    """File-level wire counts derived from the fn-level edge sets: edge
-    a::f -> b::g is one wire between a and b. Bidirectional by
-    construction (an edge makes each file a neighbor of the other)."""
-    import graph  # lazy: binding only, attrs read at call time
-
-    adj: dict[str, dict[str, int]] = {}
-    for src_key, dsts in g.edges.items():
-        src = graph.split_key(src_key)
-        row = adj.setdefault(src, {})
-        for dst_key in dsts:
-            dst = graph.split_key(dst_key)
-            if dst == src:
-                continue
-            row[dst] = row.get(dst, 0) + 1
-    return adj
-
-
 def hop_context(files: list[str], g, cap: int = CTX_CAP) -> dict[str, list[str]]:
     """Up to ``cap`` bidirectional 1-hop context labels per file:
     strongest-wired neighbors first (ties by path), the file itself
     excluded."""
-    adj = _file_adjacency(g)
+    adj = g.file_wires()
     out: dict[str, list[str]] = {}
     for f in files:
         row = adj.get(f, {})
@@ -373,21 +352,17 @@ def hop_context(files: list[str], g, cap: int = CTX_CAP) -> dict[str, list[str]]
 
 def _surface(fs, imports: bool = False) -> list[str]:
     """Ordered identifier surface of a FileSym: class name first, then
-    fn / signal / member / const names, each group sorted — the same
-    surface the BM25F symbols field indexes, so a harvested name is
-    guaranteed lexically retrievable. ``imports=True`` (issue #228,
-    RepoCoder identifier harvest) appends the file's imported symbol
-    names (from_imports — the y in `from x import y`): those are NOT
-    part of the symbols field, but they reappear as tokens in
-    consuming files' body text, so the pass-2 lexical re-score still
-    matches them and the vec side sees them verbatim."""
-    out: list[str] = []
-    if fs.class_name:
-        out.append(fs.class_name)
-    out += sorted(fs.funcs)
-    out += sorted(fs.signals)
-    out += sorted(fs.members)
-    out += sorted(fs.consts)
+    FileSym.surface — fn/signal/member/const, each group sorted, the
+    same surface the BM25F symbols field indexes (one spelling since
+    issue #365), so a harvested name is guaranteed lexically
+    retrievable. ``imports=True`` (issue #228, RepoCoder identifier
+    harvest) appends the file's imported symbol names (from_imports —
+    the y in `from x import y`): those are NOT part of the symbols
+    field, but they reappear as tokens in consuming files' body text,
+    so the pass-2 lexical re-score still matches them and the vec side
+    sees them verbatim."""
+    out = [fs.class_name] if fs.class_name else []
+    out += fs.surface
     if imports:
         out += sorted({name for _mod, name in fs.from_imports})
     return out

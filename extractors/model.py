@@ -100,6 +100,24 @@ class FileSym:
     # graph attributes same-file defs alive from these.
     arg_refs: set[str] = field(default_factory=set)
 
+    @property
+    def surface(self) -> list[str]:
+        """Ordered symbol surface — the ONE spelling of the law: fn /
+        signal / member / const names, each group sorted, groups
+        concatenated in that order (issue #365). graph's file_doc
+        `# symbols:` head, recall's BM25F symbols field and its
+        RepoCoder harvest all index exactly this list; class name and
+        imports stay caller-side facts (doc head line / BM25F class
+        field / harvest augmentation).
+
+        CONVENTION (GK-ruled on #365's selfindex red): shared FileSym
+        methods exposed to liveness MUST be @property accessors (Func.key
+        precedent — PROP_DECOR_RE's attribute-dispatch class); a plain
+        method is unbindable cross-file by the python extractor and
+        lands likely-dead (test_selfindex pins likely==0)."""
+        return (sorted(self.funcs) + sorted(self.signals)
+                + sorted(self.members) + sorted(self.consts))
+
 
 # -- cAST-style doc chunking helpers (issue #76) -----------------------------
 

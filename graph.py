@@ -1330,8 +1330,7 @@ def file_doc(path: Path, rel: str, text: str, scale: float = 1.0) -> str:
     if fs.class_name:
         head.append(f"# class {fs.class_name}"
                     + (f" extends {fs.extends}" if fs.extends else ""))
-    syms = (sorted(fs.funcs) + sorted(fs.signals)
-            + sorted(fs.members) + sorted(fs.consts))
+    syms = fs.surface
     line = "# symbols: " + " ".join(syms)
     if len(line) > FILE_SYMBOLS_CAP:
         keep: list[str] = []
