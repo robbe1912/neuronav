@@ -88,6 +88,7 @@ _PY = registry_for(".py")
 _GD = registry_for(".gd")
 _CPP = registry_for(".cpp")
 _TS = registry_for(".ts")
+_JS = registry_for(".js")
 _RS = registry_for(".rs")
 
 
@@ -170,6 +171,31 @@ def main() -> int:
               "    return shared(x);\n"
               "}\n"
           , _TS))
+    check("js exported forwarder classifies via the shared ts hook (#364)",
+          is_delegate(
+              "export function fwd(x) {\n"
+              "    return shared(x);\n"
+              "}\n"
+          , _JS))
+    check("js real-body shape classifies exactly like its ts twin "
+          "(bare brace — the extractor's stored body form, #364)",
+          is_delegate(
+              "{\n"
+              "    return shared(x);\n"
+              "}\n"
+          , _JS)
+          and is_delegate(
+              "{\n"
+              "    return shared(x);\n"
+              "}\n"
+          , _TS))
+    check("js wrapper with real logic stays (non-delegate twin)",
+          not is_delegate(
+              "export function compute(x) {\n"
+              "    const t = x * 2;\n"
+              "    return shared(t);\n"
+              "}\n"
+          , _JS))
     check("ts real-body shape classifies (bare brace, no signature — "
           "the extractor's stored body form, #312 review)",
           is_delegate(
