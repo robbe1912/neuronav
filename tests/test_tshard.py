@@ -182,6 +182,34 @@ check("f6 warn is one-shot", len(_lines2) == 0, str(_lines2))
 check("f6 malformed sibling still parses (pass-through)",
       set(g.files["aliasing/bad/user_bad.ts"].funcs) == {"auBad"})
 
+# fixture 6b: tsconfig `extends` deep-merge (#378) — a child
+# compilerOptions without its own `paths` used to replace the base
+# alias map wholesale -> every alias-shaped specifier resolved '' ->
+# false-dead helpers; the base keys must survive the merge
+_du = g.files["aliasing/derived/user_derived.ts"]
+check("f6b base @/* alias survives child compilerOptions (no own paths)",
+      ("aliasing/derived/src/dwidget.ts", "dfunc") in _du.from_imports,
+      str(sorted(_du.from_imports)))
+check("f6b base @base/* alias survives too (second base key)",
+      ("aliasing/derived/src/dhelp.ts", "hfunc") in _du.from_imports,
+      str(sorted(_du.from_imports)))
+check("f6b inherited-alias helpers alive (pre-fix false-dead)",
+      alive("aliasing/derived/src/dwidget.ts", "dfunc")
+      and alive("aliasing/derived/src/dhelp.ts", "hfunc"))
+
+# fixture 6c: child `paths` still override base `paths` on the same key,
+# while the other base key survives the union (#378 child-wins ruling)
+_ou = g.files["aliasing/override/user_override.ts"]
+check("f6c child @/* override wins over the base mapping",
+      ("aliasing/override/over/owidget.ts", "ofunc") in _ou.from_imports,
+      str(sorted(_ou.from_imports)))
+check("f6c non-conflicting base @base/* key survives the paths union",
+      ("aliasing/override/src/bhelp.ts", "bfunc") in _ou.from_imports,
+      str(sorted(_ou.from_imports)))
+check("f6c override-leg helpers alive",
+      alive("aliasing/override/over/owidget.ts", "ofunc")
+      and alive("aliasing/override/src/bhelp.ts", "bfunc"))
+
 # fixture 7: generic call sites
 check("f7 maxf<T>( edges land",
       "generics_calls.ts::maxf" in g.edges.get("generics_calls.ts::usegen", set()),

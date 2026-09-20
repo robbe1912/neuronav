@@ -207,11 +207,27 @@ def _find_tsconfig(start: Path) -> Path | None:
     return found
 
 
+def _merge_extends(parent: dict, child: dict) -> dict:
+    """Extends-chain deep-merge (#378): dict-valued keys (compilerOptions,
+    and paths within it) union instead of wholesale replace, child leaf
+    winning on conflict; every other value stays child-wins. The old
+    shallow dict(parent)+update dropped the base alias map the moment a
+    child carried its own compilerOptions without paths -> false-dead."""
+    merged = dict(parent)
+    for k, v in child.items():
+        if isinstance(v, dict) and isinstance(merged.get(k), dict):
+            merged[k] = _merge_extends(merged[k], v)
+        else:
+            merged[k] = v
+    return merged
+
+
 def _load_tsconfig(cfg: Path) -> tuple[dict[str, list[str]], Path] | None:
     """(alias map find->replacements, base dir) or None when unreadable.
 
-    One `extends` level, child wins; baseUrl/paths resolve against the
-    tsconfig's own directory. An unreadable extends target (package
+    One `extends` level; dict-valued keys deep-merge with the child leaf
+    winning (#378), scalars child-wins; baseUrl/paths resolve against
+    the tsconfig's own directory. An unreadable extends target (package
     specifier like "expo/tsconfig.base", or a missing relative path)
     keeps the config's OWN compilerOptions — only the own file being
     unparseable degrades the whole tsconfig. Either way: exactly one
@@ -230,9 +246,7 @@ def _load_tsconfig(cfg: Path) -> tuple[dict[str, list[str]], Path] | None:
                 ext_path = Path(os.path.normpath(str(cfg.parent / ext)))
                 parent = json.loads(_strip_jsonc(
                     ext_path.read_text(encoding="utf-8", errors="replace")))
-                merged = dict(parent)
-                merged.update(data)
-                base = merged
+                base = _merge_extends(parent, data)
             except (OSError, ValueError):
                 if not _WARNED_TSCONFIG:
                     _WARNED_TSCONFIG = True
