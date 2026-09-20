@@ -14,7 +14,6 @@ import io
 import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -22,6 +21,8 @@ os.environ.setdefault(
     "NEURONAV_CONFIG", str(Path(__file__).resolve().parents[1] / "config" / "neuronav.json")
 )
 os.environ.setdefault("NEURONAV_EMBED_FAKE", "1")
+
+from extractors.model import FileSym, Func  # noqa: E402
 
 import graph  # noqa: E402  (binds config via NEURONAV_CONFIG)
 import navconfig, navstore
@@ -57,17 +58,14 @@ def _http_exc(code: int, body: str) -> Exception:
     return httpx.HTTPStatusError(f"{code}", request=req, response=resp)
 
 
-class _StubFS:
-    """Minimal FileSym stand-in: exactly the fields BM25F reads."""
-
-    def __init__(self, path: str, body: str, cls: str = "", ext: str = ".gd"):
-        self.path = path
-        self.class_name = cls
-        self.ext = ext
-        self.funcs = {"run": SimpleNamespace(body=body, key=f"{path}::run")}
-        self.signals: list[str] = []
-        self.members: list[str] = []
-        self.consts: list[str] = []
+def _StubFS(path: str, body: str, cls: str = "", ext: str = ".gd") -> FileSym:
+    """Hermetic corpus file on the real parse contract: BM25F reads
+    fs.surface since #365, so a hand-rolled field stand-in would
+    re-spell the symbol-surface law (and drift from production
+    shapes)."""
+    fs = FileSym(path=path, ext=ext, class_name=cls)
+    fs.funcs["run"] = Func(path=path, name="run", line=1, body=body)
+    return fs
 
 
 def _files(call: str) -> dict:

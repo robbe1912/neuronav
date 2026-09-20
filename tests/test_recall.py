@@ -40,14 +40,15 @@ check("self index populated", navstore.count() > 0, f"{navstore.count()} files e
 lex = recall.BM25F(g.files).scores("fold_continuations")
 check("bm25 exact identifier -> defining file",
       bool(lex) and lex[0][0] == "extractors/common.py", str(lex[:3]))
-lex = recall.BM25F(g.files).scores("_file_adjacency")
-# issue #345 named cause: the server split added four corpus files, which
-# re-weights BM25F IDF globally — a partial-token neighbor (the context
-# family's _ctx_adjacency) can now edge out the defining file on rank 1.
-# Intent unchanged from the fold_continuations precedent above: the
-# exact identifier's DEFINING file stays in its top hits.
+lex = recall.BM25F(g.files).scores("_graph_boost")
+# issue #365 retired _file_adjacency — recall's 1-hop expansion now
+# rides graph.file_wires — so the pin tracks the surviving consumer of
+# that law in recall.py (the boost itself). fold_continuations
+# precedent above: the exact identifier's DEFINING file stays in its
+# top hits (top-3, not rank-1 — the #345 IDF re-weighting can let a
+# partial-token neighbor edge out the definer on rank 1).
 check("bm25 exact identifier -> recall.py",
-      bool(lex) and any(f == "recall.py" for f, _ in lex[:3]), str(lex[:3]))
+      bool(lex) and any(f == "recall.py" for f, _s in lex[:3]), str(lex[:3]))
 top = recall.search("sync_functions", k=6 if not os.environ.get("NEURONAV_EMBED_FAKE") else 12)
 # FAKE embeds are hash-random: cosine distances collapse into near-ties and
 # HNSW traversal order (hence vec ranks, hence RRF order) depends on the
@@ -365,7 +366,7 @@ check("navstore.search delegates to recall.search",
 
 # 8. graph-neighbor rank boost (issue #73): deterministic post-fusion
 # promotion of 1-hop neighbors. The adjacency here is recomputed
-# straight from g.edges, independent of recall._file_adjacency.
+# straight from g.edges, independent of graph.file_wires.
 adj2: dict[str, set[str]] = {}
 for _sk, _dsts in g.edges.items():
     _sf = _sk.split("::", 1)[0]
@@ -469,6 +470,22 @@ check("degraded + boost keeps the BM25F-only contract",
                         and "two_pass" not in h for h in dgb)
       and "BM25F-only" in err.getvalue())
 check("degraded + boost deterministic", json.dumps(dgb) == json.dumps(dgb2))
+
+# 8h. single truth (issue #365): recall's 1-hop expansion rides
+# graph.file_wires — gutting the fold must empty every ctx label and
+# strip every graph-src hit. A re-inlined adjacency in recall would
+# keep serving g.edges and sail through: exactly the silent divergence
+# #365 closed.
+_orig_fw = graph.Graph.file_wires
+try:
+    graph.Graph.file_wires = lambda self: {rel: {} for rel in self.files}
+    gut_ctx = recall.hop_context(sorted(g.files), g)
+    gut = recall.search("graph signal wiring edges", k=12, graph_boost=1.0)
+finally:
+    graph.Graph.file_wires = _orig_fw
+check("gutted file_wires empties ctx labels and graph srcs (#365)",
+      all(not v for v in gut_ctx.values())
+      and all(h["src"] != "graph" for h in gut))
 
 # 11. absolute relevance floor (issue #297): pure-noise queries used to
 # fuse into confident unmarked rows (the PR-254 standing red). The floor
