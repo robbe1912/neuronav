@@ -428,7 +428,7 @@ def main() -> None:
                 json.dumps(schema)[:200],
             )
         for t in tools:
-            if t["name"] in ("memory", "rescan"):
+            if t["name"] in ("memory", "rescan", "visualize"):
                 continue
             ann = t.get("annotations") or {}
             check(
@@ -452,6 +452,15 @@ def main() -> None:
             and res_ann.get("idempotentHint") is True
             and not res_ann.get("readOnlyHint"),
             json.dumps(res_ann),
+        )
+        viz_ann = next(t.get("annotations") or {}
+                       for t in tools if t["name"] == "visualize")
+        check(
+            "visualize: additive+idempotent, not read-only (issue #354)",
+            viz_ann.get("destructiveHint") is False
+            and viz_ann.get("idempotentHint") is True
+            and not viz_ann.get("readOnlyHint"),
+            json.dumps(viz_ann),
         )
 
         def _bad_value(prop: dict):
@@ -919,6 +928,10 @@ def _universal_scenario() -> None:
         "beta_gadget.py": "class BetaGadget:\n    def beta_gadget(self):\n        return 1\n",
         "beta_store.py": "def beta_store():\n        return 2\n",
     })
+    pv = mkproj("paviz", {
+        "pv_widget.py": "class PvWidget:\n    def pv_widget(self):\n        return 1\n",
+        "pv_service.py": "def pv_service():\n    return 2\n",
+    })
     boot_cfg = scratch / "boot.neuronav.json"
     boot_cfg.write_text(json.dumps({
         "root": str(boot.resolve()),
@@ -1049,6 +1062,46 @@ def _universal_scenario() -> None:
               and len([ln for ln in srv.stderr_lines
                        if "auto-rescan: files" in ln]) == n_boot,
               out[:100])
+        # issue #354: foreign-dir visualize end-to-end on a LIVE server.
+        # Fresh dir rides the same first-contact gate as the read tools
+        # (build summary above the ack — the pre-fix flow died here on a
+        # NameError); the warm dir acks without a prelude; every queued
+        # bake lands in ITS OWN store (pre-fix the arm gate keyed on
+        # _BOOT_THREAD and baked the boot store while naming the foreign
+        # dir). Bake completion also proves bake/gitinfo's git-churn runs
+        # server-side (the inherited-stdin wedge class, #354).
+        r = call(32, "visualize", {"dir": str(pv)})
+        viz_a = text_of(r)
+        check("universal: visualize fresh dir onboards then acks (#354)",
+              viz_a.startswith(f"onboarded {pv.resolve().as_posix()} — index built:")
+              and "(a/u/u/d)" in viz_a and "\nbake accepted — " in viz_a,
+              viz_a[:200])
+        r = call(33, "visualize", {"dir": str(pa)})
+        viz_w = text_of(r)
+        check("universal: visualize warm foreign dir acks, no prelude (#354)",
+              viz_w.startswith("bake accepted — "), viz_w[:160])
+        boot_graph = boot / ".neuronav" / "graph.html"
+        deadline = time.monotonic() + 90.0
+        while time.monotonic() < deadline and not (
+            (pv / ".neuronav" / "graph.html").is_file()
+            and (pa / ".neuronav" / "graph.html").is_file()
+        ):
+            time.sleep(0.5)
+        check("universal: foreign bakes land in the foreign stores (#354)",
+              (pv / ".neuronav" / "graph.html").is_file()
+              and (pa / ".neuronav" / "graph.html").is_file()
+              and not boot_graph.exists(),
+              f"pv={(pv / '.neuronav' / 'graph.html').is_file()} "
+              f"pa={(pa / '.neuronav' / 'graph.html').is_file()} "
+              f"boot={boot_graph.exists()}")
+        r = call(34, "visualize", {})
+        viz_b = text_of(r)
+        deadline = time.monotonic() + 90.0
+        while time.monotonic() < deadline and not boot_graph.is_file():
+            time.sleep(0.5)
+        check("universal: boot-dir visualize bakes the boot store (#354)",
+              viz_b.startswith("bake accepted — ") and boot_graph.is_file(),
+              viz_b[:120])
     finally:
         srv.kill()
         if FAILS:

@@ -75,17 +75,22 @@ mcp = FastMCP("neuronav", instructions=_INSTRUCTIONS)
 # loudly at import rather than silently misreporting.
 mcp._mcp_server.version = _version()
 
-# below except rescan and memory is pure read over the local index
+# below except rescan, memory and visualize is pure read over the local index
 READONLY = ToolAnnotations(readOnlyHint=True)
-# The two mutators carry the rest of the annotation vocabulary
+# The mutators carry the rest of the annotation vocabulary
 # (spec: the hints below are meaningful only when readOnlyHint is
 # false, which is exactly the mutators). memory set overwrites and
 # delete removes durable notes -> destructiveHint; rescan only
 # rebuilds derived caches and converges -> additive-only +
-# idempotent (issue #253).
+# idempotent (issue #253). visualize writes the same class as rescan
+# (a routed fresh dir scaffolds its config + builds the index, and
+# the bake writes graph.html) — it must not carry readOnlyHint,
+# which clients gate on to run a tool side-effect-free (issue #354).
 MUTATING_MEMORY = ToolAnnotations(destructiveHint=True)
 MUTATING_RESCAN = ToolAnnotations(destructiveHint=False,
                                   idempotentHint=True)
+MUTATING_BAKE = ToolAnnotations(destructiveHint=False,
+                                idempotentHint=True)
 
 
 def _capped(names: list[str], cap: int) -> str:

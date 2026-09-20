@@ -358,12 +358,16 @@ def generate(out: str | Path | None = None) -> Path:
     return out
 
 def ensure_bake() -> Path:
-    """The one rescan→bake entry point (D14, issue #86 R8).
+    """Bake graph.html for the currently-bound store (D14, issue #86 R8).
 
-    server.visualize and onboard._index delegate here so the bake
-    choreography has a single owner; their own add-on-absence messages
-    stay at the import guard (viz.py itself is delete-able). nav's CLI
-    stays bake-free by design — it must not import viz.
+    Bake-only by contract: generate() refuses an empty or zeroed store
+    (issue #64 guard), so callers own the index choreography —
+    server.visualize routes + first-contacts the target store before
+    queueing this, onboard._index rescans first. server.visualize and
+    onboard._index delegate here so the bake has a single owner; their
+    add-on-absence messages stay at the import guard (viz.py itself is
+    delete-able). nav's CLI stays bake-free by design — it must not
+    import viz.
     """
     return generate()
 

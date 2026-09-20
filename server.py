@@ -68,7 +68,7 @@ import recall
 # the FastMCP instance, the #207 version pin, the #237 instructions and
 # the tool annotations live in servercore (issue #345): every family
 # module decorates against the same mcp object from there.
-from servercore import MUTATING_MEMORY, MUTATING_RESCAN, READONLY, mcp, _capped
+from servercore import MUTATING_BAKE, MUTATING_MEMORY, MUTATING_RESCAN, READONLY, mcp, _capped
 
 # query families register their handlers at import (literal @mcp.tool
 # decorators, issue #345): import order == the historical def order, so
@@ -708,10 +708,25 @@ def _bake_loop() -> None:
                 # released (READY is set after the boot sequence drops it)
                 # and routed bodies release on exit — the bake just
                 # serializes like any other scoped op.
-                if _BOOT_THREAD is not None:
+                if target is None:
+                    # boot store — issue #354: the arm is picked by TARGET,
+                    # never by _BOOT_THREAD (that handle is never cleared
+                    # after boot, so the old gate routed every live-server
+                    # foreign bake here, baking the BOOT store while the ack
+                    # named the foreign dir). Bake only once the boot gate
+                    # opened (a half-built index wastes minutes);
                     # in-process imports have no boot thread (pre-#273
-                    # semantics) — the gate is already open for them
-                    _BOOT_READY.wait(_BOOT_WAIT_S + LOCK_WAIT_S + 60.0)
+                    # semantics) — the gate is already open for them, and
+                    # the bounded wait fails loud instead of stalling the
+                    # queue behind a wedged boot.
+                    if _BOOT_THREAD is not None:
+                        wait_s = _BOOT_WAIT_S + LOCK_WAIT_S + 60.0
+                        if not _BOOT_READY.wait(wait_s):
+                            raise TimeoutError(
+                                f"neuronav: boot still incomplete after "
+                                f"{wait_s:g}s — bake aborted; see the "
+                                "neuronav: stderr lines"
+                            )
                     with _SCOPE_LOCK:
                         out = viz.ensure_bake()
                 else:
@@ -764,8 +779,12 @@ async def visualize(dir: str = "", ctx: Context = None) -> str:
     progress; the bake result (path) and any failure surface on stderr and
     the neuronav://onboarding/status resource.
 
-    dir="" serves the boot config's repo; any other path routes this bake
-    to that checkout (issue #131 — a fresh dir indexes on first bake).
+    dir="" serves the boot config's repo; any other path routes the call
+    to that checkout (issue #131) through the same gate as the read tools:
+    a fresh dir onboards in-call (scaffold + first-contact index build,
+    progress on the usual channels) and the build summary rides above the
+    ack; a warm dir heals drift and acks immediately. The queued bake then
+    lands in THAT checkout's store, never the boot one (issue #354).
     """
     def _body() -> str:
         try:
@@ -775,16 +794,17 @@ async def visualize(dir: str = "", ctx: Context = None) -> str:
                     "tools/serve.py; core tools (search/repo_map/context/...) work without it. "
                     "Restore viz.py to re-enable the bake.")
         if dir:
-            resolved = Path(dir).expanduser().resolve()
-            if not resolved.is_dir():
-                raise ValueError(f"not a directory: {dir}")
-            cfg_path = resolved / ".neuronav" / "config.json"
-            if not cfg_path.is_file():
-                onboard.scaffold(resolved)
-            else:
-                _validate_foreign_config(cfg_path, resolved)
-            target: Path | None = cfg_path
+            # issue #354: the routed arm rides the SAME _route gate as the
+            # read tools (boot gate, scaffold/validate, config_scope, first
+            # contact) — a fresh dir builds its index inside this call, so
+            # the queued bake finds a served store instead of the #64
+            # guard's empty-store refusal; the build summary rides above
+            # the ack like memory's does.
+            with _route(dir) as prelude:
+                resolved = Path(dir).expanduser().resolve()
+                target = resolved / ".neuronav" / "config.json"
         else:
+            prelude = None
             target = None  # the boot config's store
         with _BAKE_LOCK:
             _BAKE_QUEUE.append(target)
@@ -796,12 +816,13 @@ async def visualize(dir: str = "", ctx: Context = None) -> str:
         where = "bake running" if in_flight and ahead == 0 else (
             f"queued behind {ahead} bake(s)" if ahead or in_flight else "starting now"
         )
-        return (
+        ack = (
             f"bake accepted — {where}; build state: {line}. The bake runs in "
             "the background (minutes on a large store): watch stderr or poll "
             "the neuronav://onboarding/status resource — graph.html lands at "
             "the store's .neuronav when done, and a failure there is loud."
         )
+        return f"{prelude}\n{ack}" if prelude else ack
 
     return await _serve(_body, ctx)
 
@@ -1252,7 +1273,7 @@ def _start_boot(t0: float) -> threading.Thread:
 # def order — so tools/list is byte-identical to the pre-split single
 # module (visualize/memory/rescan register after the query families;
 # their defs sit above but registration is composition, issue #345).
-mcp.tool(annotations=READONLY)(visualize)
+mcp.tool(annotations=MUTATING_BAKE)(visualize)
 mcp.tool(annotations=MUTATING_MEMORY)(memory)
 mcp.tool(annotations=MUTATING_RESCAN)(rescan)
 

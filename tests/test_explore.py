@@ -305,7 +305,8 @@ def main() -> int:
     tools = asyncio.run(_tools())
     ann = {t.name: t.annotations for t in tools}
     ro_bad = {k: v for k, v in ann.items()
-              if k not in ("rescan", "memory") and not (v and v.readOnlyHint)}
+              if k not in ("rescan", "memory", "visualize")  # visualize writes (scaffold+bake, #354)
+              and not (v and v.readOnlyHint)}
     check("all read-only tools carry readOnlyHint", not ro_bad, str(ro_bad))
     check("rescan and memory are the write tools (mutating hints)",
           ann.get("rescan") is not None and ann.get("memory") is not None
