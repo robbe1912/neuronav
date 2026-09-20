@@ -112,21 +112,27 @@ def _cli(argv: list[str] | None = None) -> None:
         rep = _clusters.crosstalk(navstore.clusters(), _graph.get_graph())
         print(_clusters.fmt_crosstalk(rep, align=True))
     elif cmd == "drop":
-        navstore._memo_drop_current()  # the store is going away
-        cl = navstore.client()
-        for name in (navconfig.COLLECTION, navstore.fns_name()):
-            try:
-                cl.delete_collection(name)
-                print(f"dropped {name}")
-            except chromadb.errors.NotFoundError:
-                print(f"{name}: not present")
-            except Exception as e:
-                # #298: a Windows file lock / IO error is NOT "not present" —
-                # swallowing it here reads as a successful drop and the user
-                # debugs a store that was never dropped
-                raise RuntimeError(
-                    f"drop: deleting collection {name!r} failed: {e}"
-                ) from e
+        # #357: both deletes ride the store's cross-process write lock —
+        # a concurrent _restamp/_adopt_orphan holds this same lock through
+        # its delete_collection -> tmp.modify(name) cutover, and an
+        # unlocked drop racing that window prints "dropped" and exits 0
+        # while the rename resurrects the store the user dropped
+        with navstore._db_lock():
+            navstore._memo_drop_current()  # the store is going away
+            cl = navstore.client()
+            for name in (navconfig.COLLECTION, navstore.fns_name()):
+                try:
+                    cl.delete_collection(name)
+                    print(f"dropped {name}")
+                except chromadb.errors.NotFoundError:
+                    print(f"{name}: not present")
+                except Exception as e:
+                    # #298: a Windows file lock / IO error is NOT "not present" —
+                    # swallowing it here reads as a successful drop and the user
+                    # debugs a store that was never dropped
+                    raise RuntimeError(
+                        f"drop: deleting collection {name!r} failed: {e}"
+                    ) from e
     else:
         print(f"unknown command: {cmd}", file=sys.stderr)
         sys.exit(2)
