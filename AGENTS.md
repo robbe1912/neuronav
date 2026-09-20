@@ -6,10 +6,14 @@ issue #17), call/signal graph, clusters, dead-code tiers, 3D visualizer, stdio
 MCP server. Python 3.12,
 stdlib-first; heavy deps: chromadb/httpx (vector store + embed transport), mcp
 (stdio server), numpy/networkx/scipy/scikit-learn (the cluster/graph math the
-read tools ride), plus the pinned tree-sitter front-ends tree-sitter==0.26.0 /
-tree-sitter-cpp==0.23.4 (issue #13) and tree-sitter-typescript==0.23.2
-(issue #245), tree-sitter-rust==0.24.2 (issue #244) and
-tree-sitter-javascript==0.25.0 (issue #277). Standalone repo —
+read tools ride), plus the pinned tree-sitter front-ends tree-sitter==0.26.0,
+tree-sitter-cpp==0.23.4 (issue #13; also the C front-end, issue #346),
+tree-sitter-typescript==0.23.2 (issue #245),
+tree-sitter-javascript==0.25.0 (issue #277), tree-sitter-rust==0.24.2
+(issue #244), tree-sitter-go==0.25.0 (issue #334), tree-sitter-java==0.23.5
+(issue #335), tree-sitter-c-sharp==0.23.5 (issue #336),
+tree-sitter-php==0.24.1 (issue #343), and tree-sitter-lua==0.5.0
+(issue #342). Standalone repo —
 point it
 at any project via config; nothing is vendored into target projects.
 
@@ -60,7 +64,10 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `navindex.py` | index leaf (issue #344): the walk (walkguard #117, gitignore #296), the stat gate (#19), incremental rescan (vanish-tolerant read leg — a file gone between listing and sha/read skips loudly and the purge leg reconciles it same-pass, #374), tracked base import/export (#102), build-observability hooks (#315) |
 | `nav.py` | the CLI (issue #344 split): `nav.py <cmd>` orchestration + the #332 trailing-argv rejection — never imports `viz` (bake-free by design, issue #86 R8); every programmatic consumer lives on the leaves above |
 | `graph.py` | file/fn symbol graph, per-fn IO extraction, dead-code tiers |
-| `extractors/` | per-language parsers behind a registry (`gdscript.py`, `python.py`, `cpp.py` — tree-sitter-cpp front-end, `ts.py` — tree-sitter-typescript front-end, issue #245, `js.py` — tree-sitter-javascript front-end, issue #277, `model.py` dataclasses) |
+| `recall.py` | hybrid recall leaf: BM25F lexical ranks RRF-fused with vector ranks, post-fusion graph-neighbor boost (issues #73/#228), task-instruction query prefix (#217), two-pass retrieve (#74) — pure-stdlib lexical side, no embed backend import |
+| `predicates.py` | derived-predicate cache (issue #71): dead-code tiers, duplicate groups, PageRank, symbol degrees, corpus mentions derived once at build/rescan and persisted under the state dir — query time becomes dict reads; byte-identical cache bytes for the same index data |
+| `memories.py` | Serena-style project memories (issue #67): plain markdown files under `<state_dir>/memories/`, atomic same-dir-temp + `os.replace` writes, rides state_dir routing (#131) |
+| `extractors/` | 12 per-language parsers behind the suffix registry — gdscript (`.gd`/`.tscn`), python, cpp, ts, js, rust, go, java, c, csharp, php, lua (+ `model.py` dataclasses, `common.py` shared front-end leaf; see extractors/AGENTS.md) |
 | `clusters.py` | Louvain + labeler + crosstalk (imported lazily) |
 | `archrules.py` | architecture-violation rules over crosstalk (issue #70): reads `<state_dir>/arch-rules.json` at call time (routed per project, the memories.py law); forbid/budget kinds with optional edge-type filter; loud config errors (unknown kind/cluster/type/key, malformed file — never silently skipped); rides `clusters.cross_tallies` so rules see exactly what crosstalk counts (#114 parity) |
 | `explore.py` | one-call orientation tool (codegraph-discipline: windowed 100-line slices + continuation anchors, issue #69; one `clusters()` pass feeds both stages, issue #44) |
@@ -78,7 +85,7 @@ Per-directory docs: `extractors/AGENTS.md`, `tests/AGENTS.md`, `tools/AGENTS.md`
 | `config/` | named config profiles, machine-portable only (relative `root`s); the root `config.json` is deliberately ABSENT (issue #204 — the repo carries no machine values; consumers pass `NEURONAV_CONFIG` per-command or boot pure-defaults on cwd) |
 | `vendor/three-0.160.0/` | vendored three.js core + 4 addons, embedded at build (see below) |
 | `bench/` | recall benchmark: golden set, `run_bench.py`, committed results (`RESULTS.md`) — the numbers `docs/comparison.md` cites |
-| `tests/` | 40 self-contained suites + committed fixtures (see tests/AGENTS.md) |
+| `tests/` | 50 self-contained suites + committed fixtures (see tests/AGENTS.md) |
 | `docs/map-spec-v2.md` | spec the named-wire map layer implements |
 
 ## vizjs template laws
@@ -173,7 +180,7 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_rusthard` | Rust extractor edge cases (pub-mod API closure, `pub use` re-export rebinding, trait default-method dispatch, test-attribute entry rules, macro call-site recording, wiring-only barrels, dead tiers, determinism) | tree-sitter + tree-sitter-rust wheels (hermetic fixtures) |
 | `test_embedprov` | embed provider contract (issue #17) + collection stamp (issue #103): provider select/auto-detect, ollama+openai wire adapters, env-vs-config key precedence, 429 backoff, stamp keeps/heals hnsw:space | stdlib http.server stub + chromadb import |
 | `test_project_mode` | onboarding + config discovery precedence + viz-as-add-on (issue #27) | stdlib + chromadb import (hermetic temp trees) |
-| `test_viz` | 103-check Playwright harness (real Chrome) — CI runs it on the frozen corpus from `tests/vizcorpus_build.py` (issue #100) | playwright + chrome + a fresh bake |
+| `test_viz` | Playwright harness (real Chrome) — 238 `check(...)` sites, executed count corpus-dependent; CI runs it on the frozen corpus from `tests/vizcorpus_build.py` (issue #100) | playwright + chrome + a fresh bake |
 | `test_verifier` | Kythe-style verifier fixtures (issue #66): `//-`-shaped goal comments in fixture sources, asserted against extractor output | stdlib + tree-sitter/tree-sitter-cpp (extractor-level only: no config, no index, no chroma) |
 | `test_bench` | bench record/golden coherence (issue #104): golden fingerprint determinism, render fails loud naming stale records, coherent sandbox render e2e | stdlib (bench/run_bench.py render path only; no config, no index, no embeds) |
 | `test_bakeint` | bake integrity (issues #64/#108): empty/zeroed-store bake refusal, strict-JSON splice, breakout-token refusal, atomic write | chromadb import (hermetic scratch corpus, `NEURONAV_EMBED_FAKE=1`) |
@@ -182,6 +189,25 @@ network dependencies — keep it that way; never add a CDN reference.
 | `test_delegates` | pure-delegate duplicate filter (issue #268): thin wrappers drop from exact_duplicates with a counted skip, genuine groups stay, predicate cache stores the filtered list (#71/#116 laws) | chromadb import (hermetic temp fixture, build-only) |
 | `test_bootgate` | fast-handshake boot gate (issue #273): with the store's cross-process write lock held by the parent, `initialize` + `tools/list` must still answer; after release the boot thread completes (startup banner) and `repo_map` serves; argv-selectable server-under-test for pre-fix FAIL evidence | mcp + chromadb (hermetic temp fixture + config, `NEURONAV_EMBED_FAKE=1`) |
 | `test_impact` | transitive blast-radius tool (issue #280): cycle-safe deterministic BFS closure over fn-level edges — diamond dedupe, honest depth caps with a counted past-the-cap frontier, direction asymmetry, entry-anchored chains, byte-stable rendering, miss suggestions | mcp import (synthetic graphs; no index, no embeddings) |
+| `test_gohard` | Go extractor edge cases (issue #334): go.mod module-prefix imports + loud no-go.mod degrade, method receivers, interface-satisfaction mirroring, `_test.go` entry rules, main/init entries, String/Error std-interface shields, dead tiers, sabotage leg, determinism | tree-sitter + tree-sitter-go wheels (hermetic fixtures) |
+| `test_javahard` | Java extractor edge cases (issue #335): package-path import resolution (static-member/wildcard + external loud-degrade), main(String[]) + JUnit entry rules, interface default-method dispatch + @Override review shielding, qualified `new` ctor edges + default-ctor name-level alive, dead tiers, determinism | tree-sitter + tree-sitter-java wheels (hermetic fixtures) |
+| `test_csharphard` | C# extractor edge cases (issue #336): partial-class merge, Unity MonoBehaviour lifecycle entry roots, `[Test]`/`[TestMethod]`/`[Fact]` hints + static-Main rule, namespace-qualified call resolution, #if-preproc descent, dead tiers, determinism | tree-sitter + tree-sitter-c-sharp wheels (hermetic fixtures) |
+| `test_chard` | C extractor edge cases (issue #346): quoted-includes-only law, `main()` root, stem `.c`<->`.h` pairing, TU callback-table liveness, exact dead-tier surface, determinism, registry ownership (.c -> c, .h stays cpp) | tree-sitter + tree-sitter-cpp wheels (hermetic fixtures) |
+| `test_phphard` | PHP extractor edge cases (issue #343): PSR-4 `use` resolution + `use function` binding, convention/PHPUnit entries, ctor/static/trait dispatch, magic-method exemption, dead tiers, determinism | tree-sitter + tree-sitter-php wheels (hermetic fixtures) |
+| `test_luahard` | Lua extractor edge cases (issue #342): `require()` dotted-path resolution (incl. the paren-less idiom + `init.lua` modules), `T.m`/`t:m` dispatch, metatable `__index` liveness, convention/test entries, dead tiers, determinism | tree-sitter + tree-sitter-lua wheels (hermetic fixtures) |
+| `test_explore` | explore() happy/degraded/no-hit paths, windowed slices + anchor paging (issue #69), #297 relevance floor, empty-fn-store wording (#116 law); CI leg self-bootstraps the self-index under FAKE (issue #180) | mcp + chroma (CI: self-populated via FAKE rescan) |
+| `test_langsep` | language-separation law: shared modules contain zero language-conditioned behavior — every language fact lives in extractors/ behind the registry (AST scan + registry behavior legs) | tree-sitter wheels (hermetic fixture config) |
+| `test_agent_ab` | agent-level A/B coherence harness (issue #72): both scripted arms answer real questions on the synthetic corpus, the ground-truth check has teeth (fabricated answers cannot pass), determinism, records never leak into run_bench | hermetic temp target + config, `NEURONAV_EMBED_FAKE=1` |
+| `test_chunking` | cAST-style size-aware doc chunking (issue #76): pure chunking/merging helpers + model-level merge/split primitives over synthetic fns | stdlib (no config, no index) |
+| `test_packaging` | uvx contract end-to-end minus the network (issue #204): build the wheel, install into a scratch venv, spawn the installed `neuronav-mcp` console script with zero config, drive JSON-RPC (initialize, tools/list, repo_map) | wheel build + scratch venv (hermetic temp fixture repo) |
+| `test_predicates` | derived-predicate cache laws (issue #71): parity (every cached predicate byte-identical to the on-the-fly walk), determinism (same data -> identical cache bytes), loud failures (corrupt/stale cache rederives or errors) | hermetic fixture + self-index parity, build-only (no embeddings) |
+| `test_truthful` | truthful failures (issues #115/#116): model/config errors never masquerade as backend-unreachable, BM25F cache never aliases two corpora, non-ASCII identifiers tokenize, misleading server failure shapes answer truthfully | self-index config (self-selected; in-process + subprocess legs) |
+| `test_bootrecovery` | boot recovery retry + bounded rescan (issue #292): failed in-session recovery rolls the config re-bind back (nav globals + env + graph singleton + boot identity), lock-timeout SystemExit lands in the degraded prelude, explicit rescan aborts loudly under a held store lock | mcp + chromadb (hermetic temp root, `NEURONAV_EMBED_FAKE=1`; argv-selectable server-under-test) |
+| `test_onboardprogress` | onboarding observability (issue #315): `neuronav://onboarding/status` readable mid-build, progressToken'd rescan streams progress, visualize acks immediately with the bake landing via the background baker, stale reads engage only past the grace window | mcp + chromadb (hermetic temp fixture + config, `NEURONAV_EMBED_FAKE=1`) |
+| `test_navsplit` | nav split smokes (issue #344): config precedence + rebind-propagation law across leaves, `config_scope` exact-restore, store-lock/clusters memo identity, CLI trailing-argv rejection (#332), atomic-migration law (zero `nav.X` attribute refs in production modules) | hermetic scratch corpus + FAKE embeds |
+| `test_chromabounds` | bounded whole-store chroma reads (issue #327): the four whole-store gets page through `navstore.col_get_all`, teeth sized to the real sqlite ceiling (33k-row store rescans green) | chromadb import (hermetic temp fixture, `NEURONAV_EMBED_FAKE=1`) |
+| `test_bytelaws` | byte-level output laws (issue #124): `_importmap` pinned against the five vendored files (CRLF->LF embed law), UTF-8-no-BOM asserted on every generated JSON artifact | chromadb + numpy import (hermetic temp config + FAKE store) |
+| `test_qa_smoke` | hermetic smoke for the QA gate + bake-only serve.py (issues #120, #124-3): serve surface pins (routes/404s/loopback-Host), `--declutter`/`--after` exit-0 legs + refusal exits (tampered baselines, probe exhaustion, held port) | stdlib leg A; playwright + chrome leg B (machine temp; CI runs the browser leg in the viz job) |
 
 Playwright harness gotchas: launch `channel="chrome"`; it serves `graph.html`
 on an ephemeral loopback port (issue #132) — viz gates may run concurrently,

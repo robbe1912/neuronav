@@ -11,7 +11,7 @@ welcome — this is a comparison, not an attack.
 
 | tool | approach | retrieval | languages | human surface |
 |---|---|---|---|---|
-| **neuronav** | per-project local index: symbol graph + BM25F + vector embeddings, fused | hybrid (exact ∪ semantic ∪ graph) | GDScript, Python, C++, TypeScript, Rust (JS in flight, #277) | full 3D map |
+| **neuronav** | per-project local index: symbol graph + BM25F + vector embeddings, fused | hybrid (exact ∪ semantic ∪ graph) | GDScript, Python, C++, TypeScript, JavaScript, Rust, Go, Java, C, C#, PHP, Lua | full 3D map |
 | [CodeGraph](https://github.com/colbymchenry/codegraph) | Rust kernel, structural graph only (no vectors — SQLite FTS5 + graph resolution) | symbol/graph traversal | ~20 native core (+WASM fallbacks) | `codegraph ui` (callers/src/callees) |
 | [aider repo map](https://aider.chat/docs/repomap.html) | tree-sitter defs/refs + PageRank ranking | token-budgeted map for the LLM | 20+ (tree-sitter) | none (agent-facing text) |
 | [Sourcegraph SCIP](https://github.com/sourcegraph/scip) | clangd/LSP-accurate indexers | precise xrefs (hosted or local CLI) | many, per-indexer | web UI |
@@ -59,9 +59,9 @@ welcome — this is a comparison, not an attack.
    same DATA → same layout byte-for-byte.
 
 ## Where neuronav is not ahead (yet)
-- **Language breadth** — 5 extractors (GDScript, Python, C++, TypeScript,
-  Rust; JS in flight as #277) vs CodeGraph's ~20-native / aider's tree-sitter
-  set. The extractor registry keeps adding a language cheap (one parser +
+- **Language breadth** — 12 extractors (GDScript, Python, C++, TypeScript,
+  JavaScript, Rust, Go, Java, C, C#, PHP, Lua) vs CodeGraph's ~20-native /
+  aider's tree-sitter set. The extractor registry keeps adding a language cheap (one parser +
   dead-tier hints), but each is hand-verified — the 2026 field surveys
   (wal.sh) show the failure mode of breadth without semantics: a grammar
   gap reads as confidently-ranked wrong answers, not low confidence.
