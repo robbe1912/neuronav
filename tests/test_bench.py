@@ -2,10 +2,16 @@
 # without re-running, so committed records carried retired queries — render
 # KeyErrored, then silently drew '?' cells. These checks pin the loud guard:
 # records stamp a golden fingerprint at write time and render refuses stale
-# ones by name. Hermetic: imports run_bench only (its import surface is
-# stdlib; nav/recall load lazily inside run()/sweep()) — no index, no
-# embeds, no config. Run in its own process:
+# ones by name. Issue #391 teeth: the #344/#345/#352 splits moved 7 golden
+# anchors into the nav*/server* leaves, --verify-only aborted every full
+# bench run, and no CI leg pinned verify_golden — so these also check the
+# golden set against the tree at HEAD and a re-rotted target's loud refusal.
+# Hermetic: imports run_bench only (its import surface is stdlib; nav/recall
+# load lazily inside run()/sweep()) — no index, no embeds, no config.
+# Run in its own process:
 #   .venv/Scripts/python.exe -X utf8 tests/test_bench.py
+import contextlib
+import io
 import json
 import shutil
 import sys
@@ -23,6 +29,25 @@ import run_bench  # noqa: E402
 from harness import finish, styled
 
 check = styled("wide")  # byte pin: two-space tag, fail-only detail
+
+def verify_in_sandbox(rows: list[dict]) -> tuple[int, str]:
+    """verify_golden() against a scratch bench dir (patched module path);
+    returns (returncode, captured stdout)."""
+    tmp = Path(tempfile.mkdtemp(prefix="neuronav_bench_verify_"))
+    (tmp / "bench").mkdir()
+    (tmp / "bench" / "golden.json").write_text(
+        json.dumps({"queries": rows}), encoding="utf-8")
+    old_bench = run_bench.BENCH_DIR
+    run_bench.BENCH_DIR = tmp / "bench"
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            rc = run_bench.verify_golden(REPO)
+    finally:
+        run_bench.BENCH_DIR = old_bench
+        shutil.rmtree(tmp, ignore_errors=True)
+    return rc, buf.getvalue()
+
 
 def synth_record(golden: list[dict], fp: str, stamp: bool = True) -> dict:
     """A minimal but honest after/both record: every golden query ranked 1."""
@@ -76,6 +101,19 @@ def main() -> int:
     check("fingerprint tracks target moves", run_bench._golden_fp(moved) != fp)
     dropped = [dict(r) for r in golden[:-1]]
     check("fingerprint tracks query count", run_bench._golden_fp(dropped) != fp)
+
+    # issue #391: golden coherence vs the tree itself — the splits moved
+    # anchors and nothing failed until a full bench run aborted at boot
+    rc, out = verify_in_sandbox(golden)
+    check("verify_golden justifies all 25 rows against the tree at HEAD",
+          rc == 0 and "25/25" in out, out)
+
+    rotted = [dict(r) for r in golden]
+    rotted[1]["targets"] = ["nav.py"]  # sha256_of's pre-split home, deliberately
+    rc, out = verify_in_sandbox(rotted)
+    check("a re-rotted target fails verify loudly, naming anchor+file+query",
+          rc == 1 and "anchor 'def sha256_of' not in nav.py" in out
+          and "(sha256_of)" in out and "DRIFT" in out, out)
 
     text, err = render_in_sandbox({"after-both": synth_record(golden, fp)})
     check("render succeeds on fingerprinted records", err is None and text is not None,
