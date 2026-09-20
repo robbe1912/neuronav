@@ -16,21 +16,28 @@ named reason in the suite; new suites use the canonical style only
 (issue #301). The browser suites ride `tests/_page_harness.py`'s
 `CheckLog` instead — a different finish contract (the #123 executed
 check floor), not drift.
-CI (`.github/workflows/ci.yml`) runs forty-two hermetic suites on ubuntu
+CI (`.github/workflows/ci.yml`) runs forty-four hermetic suites on ubuntu
 with `NEURONAV_EMBED_FAKE=1` (`test_strata`, `test_crosslang`,
-`test_pyhard`, `test_cpphard`, `test_jshard`, `test_gohard`, `test_javahard`, `test_chard`, `test_phphard`, `test_luahard`, `test_autorescan`, `test_server_stdio`,
+`test_pyhard`, `test_cpphard`, `test_tshard`, `test_jshard`,
+`test_rusthard`, `test_gohard`, `test_javahard`, `test_chard`,
+`test_phphard`, `test_luahard`, `test_autorescan`, `test_server_stdio`,
 `test_searchtext`, `test_project_mode`, `test_baseindex`, `test_mwires`,
 `test_clusterinv`, `test_archrules`, `test_recall`, `test_embedprov`,
 `test_repomap`, `test_selfindex`, `test_explore`, `test_verifier`,
-`test_bench`, `test_bakeint`, `test_portability`, `test_bytelaws`,
-`test_walkguard`, `test_langsep`, `test_delegates`, `test_qa_smoke`,
-`test_bootgate`, `test_bootrecovery`, `test_onboardprogress`,
-`test_chromabounds`, `test_csharphard`, `test_navsplit`, `test_impact`, `test_packaging`) plus a `viz` job that builds
+`test_bench`, `test_agent_ab`, `test_bakeint`, `test_portability`,
+`test_bytelaws`, `test_walkguard`, `test_langsep`, `test_delegates`,
+`test_predicates`, `test_qa_smoke`, `test_bootgate`, `test_bootrecovery`,
+`test_onboardprogress`, `test_chromabounds`, `test_csharphard`,
+`test_navsplit`, `test_impact`, `test_packaging`) plus a `viz` job that builds
 frozen synthetic corpus (`tests/vizcorpus_build.py`) and runs `test_viz`
 against its hermetic store in a real browser (issue #100), then re-runs
 `test_qa_smoke` there so its playwright battery leg executes (the suites
 job runs the same suite with that leg skipped via
-`NEURONAV_QA_SMOKE_NO_BROWSER=1`). The two e2e
+`NEURONAV_QA_SMOKE_NO_BROWSER=1`). (Count arithmetic, stated so the next
+suite addition updates all three, not just the number: forty-four =
+suites-job run steps; forty-five = unique CI suites (the suites job plus
+`test_viz`); forty-six = total runs — the viz job re-runs `test_qa_smoke`,
+counting once per leg.) The two e2e
 suites need NO committed store in CI (issue #180): on a fresh checkout
 (no `.neuronav/`, no checkout-local `config.json`) each self-bootstraps
 the self-index via one FAKE-embed rescan when `navstore.count() == 0` — the
@@ -39,8 +46,11 @@ routed-freshness/recall-knob/degraded scenarios on hermetic scratch
 trees. On an owner checkout (config present) both run their owner legs
 unchanged: the stores are never written by the CI bootstrap. The rest
 are local gates outside the matrix: `test_target_regression` (a
-populated target repo in the default config), plus the hermetic
-owner-side `test_chunking` and `test_truthful`.
+populated target repo in the default config), `test_tsregression` and
+`test_rustregression` (profile legs bind a machine-local target via
+`NEURONAV_CONFIG` and skip loudly without one — issue #97), plus the
+hermetic owner-side `test_chunking` and `test_truthful` (self-selects the
+self-index config + FAKE embeds).
 
 ## Suites
 
@@ -63,10 +73,13 @@ owner-side `test_chunking` and `test_truthful`.
 | `test_target_regression` | byte-stability over the target repo: floor pins + liveness canaries | chromadb import + the target repo configured in `config.json` |
 | `test_tsregression` | TS target byte-stability + liveness canaries + parse-coverage floors (per-command untracked profile); hermetic section pins the judge-C1 dead-file registry resolution (`.ts` flags like the `.gd` control) + the `# imports:` doc header | chromadb import + the TS target via `NEURONAV_CONFIG` |
 | `test_rustregression` | Rust target byte-stability + fn-level liveness canaries + parse-coverage floors (per-command untracked profile, issue #284); hermetic section pins the crate shape — lib.rs pub-mod closure, wiring-only barrel, bin target as its OWN crate root, integration-test name-level wiring (no cross-crate static edges, pinned as a non-goal) — plus dead-file flags and the `# imports:` doc header | chromadb import + the Rust target via `NEURONAV_CONFIG` |
+| `test_chunking` | cAST-style size-aware doc chunking (issue #76): the pure chunking/merging helpers in `graph.py` + model-level merge/split primitives over synthetic fns | chromadb import (imports `extractors.model` + `graph`; no config, no index, no embeds) |
+| `test_truthful` | truthful failure shapes (issues #115/#116): model/config errors never masquerade as "backend unreachable", the BM25F cache never aliases two corpora through a recycled dict address, non-ASCII identifiers tokenize, the four misleading server failure shapes (raw `find_functions` error, GDScript-only duplicates, masked `_ctx_semantic` errors, the dead explore budget cliff) answer truthfully | mcp + chromadb (self-selects the self-index config + `NEURONAV_EMBED_FAKE=1`; hermetic owner-side local gate) |
 | `test_explore` | explore() happy/degraded/no-hit paths, windowed slices + anchor paging (issue #69) + MCP tool annotations; no-hit legs ride the #297 relevance floor (all-weak fn seeds drop to lexical fallback with a floor-naming reason) + empty-fn-store child probe pins the empty-index wording over backend blame (#116 law); CI leg self-bootstraps the self-index under FAKE (issue #180) | mcp + chroma + populated self-index (CI: self-populated via FAKE rescan) |
 | `test_server_stdio` | MCP stdio end-to-end: spawns server.py, drives JSON-RPC, asserts the context tool answers; drift/stat-gate, routed-freshness, recall-knobs (graph_boost/two_pass), degraded-shape scenarios (issue #180); dead_code truncation footer + duplicates pure-delegate skip footer on hermetic corpora (issues #266/#268); foreign-dir visualize legs — fresh-dir first-contact summary above the ack, foreign stores get their own graph.html, boot untouched (issue #354) | mcp + default-config target repo (CI: self-index FAKE bootstrap) |
 | `test_autorescan` | auto-rescan stat gate (issue #19): read-tool freshness, TTL burst guard, embed-failure cooldown, `watch_interval_s` watcher — in-process pins + two stdio e2e servers + the #239 chroma hnsw-settle retry pin (constructed interleaving, no real race needed) | mcp + chromadb + numpy/networkx/scipy/scikit-learn (hermetic temp target + `NEURONAV_EMBED_FAKE=1`) |
 | `test_delegates` | pure-delegate duplicate filter (issue #268): thin wrappers drop from exact_duplicates with a counted skip, genuine groups stay, predicate cache stores the filtered list (#71/#116 laws) | chromadb import (hermetic temp fixture, build-only) |
+| `test_predicates` | derived-predicate cache gates (issue #71): parity (every cached predicate and every tool reading one is byte-identical to the on-the-fly walk on the same graph), determinism (same data -> identical cache bytes across rescans), loud failures (corrupt/stale/missing cache rederives or errors, never serves wrong answers; persist failure degrades, marked); final leg re-checks parity on the self-index profile (build-only, committed `config/neuronav.json`) | chromadb import (hermetic generated temp fixture + self-set config; self-index leg build-only, no embeds) |
 | `test_bootgate` | fast-handshake boot gate (issue #273): while the parent holds the store's cross-process write lock, `initialize` + `tools/list` must still answer; after release the boot thread completes (startup banner) and serves `repo_map`; server-under-test selectable via argv for pre-fix FAIL evidence | mcp + chromadb (hermetic temp fixture + config, `NEURONAV_EMBED_FAKE=1`) |
 | `test_bootrecovery` | boot recovery retry + bounded rescan (issue #292): a failed in-session recovery rolls the config re-bind back (nav globals + `NEURONAV_CONFIG` env + graph singleton + boot identity) so the `CONFIG_PATH` guard stays a retry latch, not a one-way brick; nav's lock-timeout `SystemExit` lands in the degraded prelude instead of escaping to the caller's thread; the explicit rescan tool aborts loudly within `LOCK_WAIT_S` under a held store lock | mcp + chromadb (hermetic temp root bound as the pure-defaults boot, `NEURONAV_EMBED_FAKE=1`; server-under-test selectable via argv for pre-fix FAIL evidence) |
 | `test_onboardprogress` | onboarding observability (issue #315): the first index build and the viz bake never read as a dead server — `neuronav://onboarding/status` resource advertised + readable mid-build, a progressToken'd rescan streams `notifications/progress`, visualize acks "bake accepted" immediately with the bake landing via the background baker, stale reads engage only past the grace window (`stale: true` banner), and a body SystemExit surfaces unwrapped from the async shell | mcp + chromadb (hermetic temp fixture + config, `NEURONAV_EMBED_FAKE=1`; server-under-test selectable via argv for pre-fix FAIL evidence) |
@@ -85,11 +98,14 @@ owner-side `test_chunking` and `test_truthful`.
 | `test_viz` | Playwright harness over the real baked page (238 `check(...)` sites, executed count corpus-dependent); CI mode = frozen corpus (issue #100), local mode = the active config's store (default `config.json` or the self-index); [#89] refuses a bake older than `viz.py`/`vizjs/` (#299 A; no auto-bake — regenerate first); [#123] executed-check floor pinned to the CI corpus (`FLOOR_BASE`/`FLOOR_MAP`, data-gated on `DATA.mwires`) + quiescence waits (`__dbg.settled`) instead of blanket sleeps; [#279] affinity legs (species cap/LOD/toggle/card + two-bake byte identity) data-gated on `DATA.semAff` | playwright + chrome + a fresh `graph.html` bake |
 | `test_verifier` | Kythe-style verifier fixtures (issue #66): `//-`-shaped goal comments inlined in fixture sources, asserted against extractor output (FileSym + cpp scan_calls); `@fn dead` is corpus-local liveness | stdlib + tree-sitter/tree-sitter-cpp for the C++ goals — extractor-level only: no config, no index, no chroma |
 | `test_bench` | bench record/golden coherence (issue #104): fingerprint determinism + order-insensitivity, render() refuses mismatched/missing fingerprints naming every stale record, coherent sandbox render e2e | stdlib only — imports bench/run_bench.py's render path against a temp bench dir; no config, no index, no embeds |
+| `test_agent_ab` | agent-level A/B coherence battery (issue #72): task derivation gates every class and skips loudly (never silently), both scripted arms answer real questions on the synthetic corpus, the ground-truth check HAS TEETH (a fabricated answer — wrong file, partial/padded set, wrong dead tier, no answer — cannot pass), double-run determinism on stable fields (wall_ms advisory), agent_ab records never leak into run_bench's record set (#104 gate) | mcp + chromadb (hermetic generated temp target + config, self-sets `NEURONAV_EMBED_FAKE=1`) |
 | `test_bakeint` | bake integrity (issues #64/#108): empty/zeroed-store bake refusal naming the store + vector counts + the rescan fix, FAKE-only tiny-store waiver, strict-JSON splice (NaN/Infinity refused with paths), `</script`/`__DATA__`/`__IMPORTMAP__` breakout-token refusal, atomic `os.replace` bake write; #299 C legs (store-index space derived exactly once: source-scan + behavioral pins) | chromadb import (self-sets `NEURONAV_EMBED_FAKE=1`; the real-provider refusal legs run in FAKE-scrubbed child processes) |
 | `test_portability` | BOM-tolerant config reads (issue #119): BOM'd config.json / .neuroignore / base manifest / server `_validate_foreign_config` all read via `utf-8-sig`; git subprocess decode (`bake.gitinfo` head/churn) stays UTF-8 under an ASCII locale; nav CLI reconfigures stdout under an ascii console | stdlib + chromadb import (hermetic temp config, fake embeds, own scratch git repo) |
 | `test_bytelaws` | byte-level output laws (issue #124): `_importmap` pinned against the five vendored files (CRLF→LF embed law, relative-specifier rewrite, determinism), UTF-8-no-BOM law asserted on every generated JSON artifact (onboard config scaffold, export_base manifest, baked graph.html DATA/importmap splices) | chromadb + numpy import (hermetic temp config + FAKE store, self-sets `NEURONAV_EMBED_FAKE=1`) |
 | `test_walkguard` | rescan walk + write robustness (issues #117, #296): vanishing-file parse isolation (stderr note, never a crash) + the rescan sha/read leg of the same race (#374: skip noted on stderr, id dropped from `seen` so the purge leg reconciles it in the same pass — pre-fix the FileNotFoundError aborted the whole rescan), pruned root-wide .tres wiring walk honoring exclude_dirs + the cache floor (now derived from `navconfig.WALK_DEFAULTS` — one canonical set, divergence-pinned), include-overlap dedupe on index key, fn-store purge/upsert inside the write lock, #296 legs: include_dirs opt-in walk-everything fallback (no more Godot-layout default), root `.gitignore` dir-entry pruning with `.neuroignore` precedence over `!negations`, one-shot gitignore-prune stderr note (FAKE-silent), canonical-set equality — #375 filter-leaf teeth: three-engine file-set identity (iter_files/iter_root_files/stat_fingerprint), root walk == all-suffixes walk minus exactly the cache floor, single-truth sabotage (a patched _suffix_in/_kept_dirs must propagate to all three engines) | chromadb import (hermetic scratch corpus + FAKE embeds) |
+| `test_langsep` | language-separation law (owner mandate): shared, language-agnostic modules contain ZERO language-conditioned behavior — every language-specific fact (file suffixes, name patterns, entry rules, parse quirks, `res://` handling) lives in `extractors/` behind the package registry and is consumed blind via uniform hooks; a new language plugs in with a new extractor module + registry entry and NO diff in shared files | stdlib + extractors registry import (AST-scans the shared modules; no config, no index) |
 | `test_qa_smoke` | hermetic smoke for the QA gate + bake-only serve.py (issues #120, #124-3): leg A pins serve.py's surface over a dummy bake (sole route `/graph.html`, `/chroma`+`/base`+traversal 404s, loopback-Host allow/403, no-store, bytes-fresh); leg B (playwright) builds a tiny 5-file corpus + FAKE store + bake, runs `--declutter` (exit 0 + baseline shape pinned: identity block + every subject x angle x GATE_KEYS cell), `--after` (exit 0), and the refusals — tampered/schema/identity-less baselines exit 2 naming both identities, probe exhaustion exits 2, orphan-held port bind fails loudly with the owner hint | stdlib for leg A; playwright + chrome for leg B (everything under machine temp; `NEURONAV_QA_DIR` reroutes battery outputs) |
+| `test_packaging` | the uvx contract end-to-end minus the network (issue #204): build the wheel, install it into a scratch venv (deps inherited from the running interpreter via system-site-packages — only the wheel itself is installed), spawn the INSTALLED `neuronav-mcp` console script in a config-less fixture repo (no `NEURONAV_CONFIG`, no `.neuronav/`, cwd not the checkout) and drive real JSON-RPC over stdio — initialize handshake, tools/list, repo_map serves the fixture's own files, the #203 pre-rescan banner names `pure defaults, root=<cwd>` BEFORE any rescan output; wheel-content contracts: flat py-modules, the extractors/bake packages, vendored three.js bytes byte-identical (bake law) | `build` wheel builder + a scratch venv (CI appends `build` to the install line; everything under machine temp) |
 
 `_page_harness.py` (issue #86 strand R9) is the shared Playwright harness
 the two browser suites ride: `serve()` (no-cache loopback server, ephemeral
