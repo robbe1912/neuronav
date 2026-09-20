@@ -363,7 +363,7 @@ def communities_graph(
         sf = src_key.split("::")[0]
         if sf not in idset or id_of[sf] in tests:
             continue
-        for dk in dsts:
+        for dk in sorted(dsts):
             df = dk.split("::")[0]
             if df == sf or df not in idset or id_of[df] in tests:
                 continue
@@ -558,7 +558,7 @@ def communities_graph(
             if tot < 2:
                 continue
             (t, tv) = sorted(votes.items(), key=lambda kv: (-kv[1], kv[0]))[0]
-            if tv != tot or comm_size2[t] > 66:
+            if tv != tot or comm_size2[t] > PART_SOFT_CAP:
                 continue
             usage_moves.append((r, ci, t))
     for r, ci, t in usage_moves:
@@ -1617,7 +1617,7 @@ def cross_tallies(cs: list[dict], g=None) -> dict:
     scene_scene = 0  # scene->scene resource refs (#267)
     for src, dsts in g.edges.items():
         sf = src.split("::")[0]
-        for dst in dsts:
+        for dst in sorted(dsts):
             df = dst.split("::")[0]
             if sf == df:
                 continue  # same-file pairs carry no cluster signal
