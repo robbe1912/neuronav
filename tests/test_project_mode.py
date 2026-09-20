@@ -416,6 +416,46 @@ def main() -> None:
         check("global-wire: install stays read-only (no home config writes)",
               (home_mcp.read_bytes() if home_mcp.exists() else None) == home_before)
 
+        # 4g-c. issue #376: a malformed omp user config fails loud via
+        # the shared _read_merge_json — friendly remedy message, never a
+        # raw traceback — and the file is left byte-untouched
+        gw_omp_path = tmp / "omp-mcp.json"
+        gw_omp_path.write_text("not json {", encoding="utf-8")
+        r = subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "global-wire"], cwd=proj,
+                           env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"},
+                                "NEURONAV_EMBED_FAKE": "1", **gw_env},
+                           capture_output=True, text=True)
+        err = (r.stderr or "") + (r.stdout or "")
+        check("global-wire: malformed omp mcp.json fails loud, no traceback (#376)",
+              r.returncode != 0 and "fix it or delete it" in err
+              and "Traceback" not in err, err[:90])
+        check("global-wire: loud failure leaves omp mcp.json unwritten",
+              gw_omp_path.read_text(encoding="utf-8") == "not json {")
+        gw_omp_path.write_text('["nope"]', encoding="utf-8")
+        r = subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "global-wire"], cwd=proj,
+                           env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"},
+                                "NEURONAV_EMBED_FAKE": "1", **gw_env},
+                           capture_output=True, text=True)
+        err = (r.stderr or "") + (r.stdout or "")
+        check("global-wire: non-object omp root loud with the merge key (#376)",
+              r.returncode != 0 and "must be a JSON object" in err and "list" in err
+              and "Traceback" not in err, err[:90])
+        check("global-wire: non-object root leaves omp mcp.json unwritten",
+              gw_omp_path.read_text(encoding="utf-8") == '["nope"]')
+        gw_omp_path.write_text('{"mcpServers": []}', encoding="utf-8")
+        r = subprocess.run([PY, "-X", "utf8", str(ROOT / "onboard.py"), "global-wire"], cwd=proj,
+                           env={**{k: v for k, v in os.environ.items() if k != "NEURONAV_CONFIG"},
+                                "NEURONAV_EMBED_FAKE": "1", **gw_env},
+                           capture_output=True, text=True)
+        err = (r.stderr or "") + (r.stdout or "")
+        check("global-wire: non-object mcpServers container loud with the key (#376)",
+              r.returncode != 0 and "mcpServers" in err and "must be a JSON object" in err
+              and "Traceback" not in err, err[:90])
+        check("global-wire: non-object container leaves omp mcp.json unwritten",
+              gw_omp_path.read_text(encoding="utf-8") == '{"mcpServers": []}')
+        check("global-wire: loud omp failures leave no temp-file debris",
+              not list(tmp.glob("omp-mcp.json.*.tmp")), "")
+
         # 4g-a. issue #252: a checkout's pyproject outranks the venv's
         # installed dist-info (baked at install time, lags a pull — the
         # 0.1.7 cut re-pinned v0.1.6); installs without an adjacent

@@ -261,9 +261,10 @@ def _emit_omp(name: str, entry: dict, path: Path) -> None:
     """Write/merge the omp mcpServers fragment. User config merges by server
     name, so multiple projects coexist; other servers are preserved."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    # #298 D2: the SAME law global_wire uses on this file — _read_merge_json
-    # (utf-8-sig, loud #121 errors) + _write_json_atomic (crash never
-    # truncates a shared config carrying other projects' servers)
+    # #298 D2: _read_merge_json (utf-8-sig, loud #121 errors) +
+    # _write_json_atomic (crash never truncates a shared config carrying
+    # other projects' servers) — the SAME law global_wire's omp leg
+    # follows on this file (parity delivered in #376)
     doc: dict = _read_merge_json(path, "mcpServers") if path.is_file() else {}
     doc.setdefault("mcpServers", {})[name] = _omp_shape(entry)
     _write_json_atomic(path, doc)
@@ -352,7 +353,7 @@ def global_wire(name: str = "neuronav") -> dict[str, Path]:
     # omp: mcpServers.neuronav (merge with existing neuronav-<x> entries)
     omp = _omp_mcp_path()
     omp.parent.mkdir(parents=True, exist_ok=True)
-    doc = json.loads(omp.read_text(encoding="utf-8-sig")) if omp.is_file() else {}
+    doc = _read_merge_json(omp, "mcpServers") if omp.is_file() else {}
     doc.setdefault("mcpServers", {})[name] = _omp_shape(u)
     _write_json_atomic(omp, doc)
     written["omp"] = omp
