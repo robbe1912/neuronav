@@ -236,11 +236,11 @@ check("front-end leaf helpers are common.py's (identity, ts/js/rust)",
       and _ts._rel_of_target is getattr(_common, "rel_of_target", None)
       and _js._text is getattr(_common, "node_text", None)
       and _js._line is getattr(_common, "node_line", None)
-      and _js._rel_of_target is getattr(_common, "rel_of_target", None)
       and _rust._text is getattr(_common, "node_text", None)
       and _rust._line is getattr(_common, "node_line", None)
       and _rust._rel_of_target is getattr(_common, "rel_of_target", None),
-      "extractors must alias common's node_text/node_line/rel_of_target")
+      "extractors must alias common's node_text/node_line/rel_of_target "
+      "(js: _rel_of_target rides ts's #361 engine)")
 check("front-end leaf helpers are common.py's (identity, lua #342)",
       _lua._text is getattr(_common, "node_text", None)
       and _lua._line is getattr(_common, "node_line", None),
@@ -258,10 +258,51 @@ _hoist_src = {m: (HERE / "extractors" / f"{m}.py").read_text(encoding="utf-8")
               for m in ("ts", "js", "rust", "python", "lua")}
 _unhoisted = sorted(
     m + ".py" for m, s in _hoist_src.items()
-    if "make_import_liveness_sweep" not in s or "receiver_env" not in s
+    if "make_import_liveness_sweep" not in s
+    or ("receiver_env" not in s and "_scan_file_es" not in s)  # js: #361 engine
 )
 check("sweep shell + receiver prologue hoisted (ts/js/rust/python/lua)",
       not _unhoisted, ", ".join(_unhoisted) or "all five import the shells")
+
+# ---- pin 5b (#361): the ts-js walker/sweeper mirror is ONE engine ---------------
+# Divergence record: the two grammars differ ONLY in table data now —
+# ts: overload pre-pass keys, typed signature/field annotations,
+# namespace-module walk arms, member dispatch; js: CJS declarator/
+# assignment/barrel hooks, jsconfig-first finder, js-first candidate
+# orders. js.py binds ts's engine on its ESFamily table; a verbatim
+# re-spelling of any family member in js.py is drift by definition.
+_ENGINE_BINDS = (
+    ("scan_file", "_scan_file_es"),
+    ("harvest_facts", "_harvest_facts_es"),
+    ("rebind_reexports_sweep", "_rebind_reexports_sweep_es"),
+)
+_bad_binds = sorted(
+    f"{pub}!={eng}" for pub, eng in _ENGINE_BINDS
+    if getattr(getattr(_js, pub, None), "func", None)
+    is not getattr(_ts, eng, None)
+)
+check("js registry surfaces bind ts's ES-family engine (#361)",
+      not _bad_binds, ", ".join(_bad_binds) or "scan/facts/sweep ride ts.py's engine")
+_MIRROR_DEFS = (
+    "def _walk_modules(", "def _take_import(", "def _take_export(",
+    "def _take_default_export(", "def _take_module_init(", "def _take_field(",
+    "def _scan_body_", "def scan_file(", "def _jsx_sites(",
+    "def _entry_tests(", "def _entry_candidates(", "def _entry_package(",
+    "def _entry_components(", "def _entry_file_routes(", "def _export_leaves(",
+    "def _import_target(", "def _module_dsts(", "def _names_in(",
+    "def _first_cap_in(", "def _string_of(", "def _is_specifier_relative(",
+    "def _abs_candidates(", "def _resolve_spec(", "def _sweep_resolve(",
+    "def _fill_inheritance(", "def rebind_reexports_sweep(",
+    "def harvest_facts(",
+)
+_mirror = sorted(pat for pat in _MIRROR_DEFS if pat in _leaf_src["js"])
+check("no verbatim walker/sweeper spelling remains in js.py (#361)",
+      not _mirror, ", ".join(_mirror) or "clean")
+check("both dialects declare exactly one ESFamily table (#361)",
+      isinstance(_js._JS_CFG, _ts.ESFamily)
+      and isinstance(_ts._TS_CFG, _ts.ESFamily)
+      and _js._JS_CFG is not _ts._TS_CFG,
+      "js binds its own table over ts's engine")
 
 # ---- summary -------------------------------------------------------------------
 # summary tail is a pre-#301 byte pin (names failures)
