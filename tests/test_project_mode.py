@@ -891,6 +891,34 @@ finally:
 import shutil as _sh298
 _sh298.rmtree(_omp298.parent, ignore_errors=True)
 
+# ---- #381: the state-dir name is single-sourced (teeth) ----------------------
+# navconfig.STATE_DIR_NAME is the one spelling of the on-disk name; every
+# shipped module reads it (leaf law: attribute reads, no re-export shell).
+# A bare literal anywhere else is the rename-miss drift door — state
+# silently forks into a stale directory. The constant's own definition
+# line is the one legal home (grammar-def pattern, langsep law). tests/
+# and bench/ stay literal BY DESIGN: they pin the observable layout and
+# must go red if the public name ever changes.
+import re as _re381
+
+_lit381 = _re381.compile(r"""["']\.neuronav["'/]""")
+_def381 = _re381.compile(r"^\s*STATE_DIR_NAME\s*=")
+_mods381 = (sorted(ROOT.glob("*.py")) + sorted(ROOT.glob("extractors/*.py"))
+            + sorted(ROOT.glob("bake/*.py")) + sorted(ROOT.glob("tools/*.py")))
+_stray381 = [
+    f"{m.relative_to(ROOT).as_posix()}:{i}: {ln.strip()[:70]}"
+    for m in _mods381
+    for i, ln in enumerate(m.read_text(encoding="utf-8").splitlines(), 1)
+    if _lit381.search(ln) and not _def381.match(ln)
+]
+check("#381: zero bare state-dir literals outside navconfig.STATE_DIR_NAME "
+      f"({len(_mods381)} shipped modules)",
+      not _stray381,
+      f"{len(_stray381)} stray; first: {_stray381[0]}" if _stray381 else "clean")
+import navconfig as _nc381
+check("#381: STATE_DIR_NAME pins the public on-disk layout name",
+      _nc381.STATE_DIR_NAME == ".neuronav", repr(_nc381.STATE_DIR_NAME))
+
 if __name__ == "__main__":
     main()
     sys.exit(1 if FAILURES else 0)   # a failing run must fail the gate

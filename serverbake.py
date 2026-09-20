@@ -170,7 +170,7 @@ async def visualize(dir: str = "", ctx: Context = None) -> str:
             # the ack like memory's does.
             with _route(dir) as prelude:
                 resolved = Path(dir).expanduser().resolve()
-                target = resolved / ".neuronav" / "config.json"
+                target = resolved / navconfig.STATE_DIR_NAME / "config.json"
         else:
             prelude = None
             target = None  # the boot config's store

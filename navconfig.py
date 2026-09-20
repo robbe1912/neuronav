@@ -36,6 +36,13 @@ from extractors import WALK_EXTS
 
 TOOL_DIR = Path(__file__).resolve().parent
 
+# issue #381: THE one spelling of the on-disk state-dir name. Sibling
+# modules read it as navconfig.STATE_DIR_NAME (leaf law: attribute
+# reads, no re-export shell). Before this it was a bare literal at 12+
+# strict sites across navconfig/onboard/server, and a rename that
+# missed one site silently forked state into a stale directory.
+STATE_DIR_NAME = ".neuronav"
+
 
 def _discover_config() -> Path | None:
     """Issue #27 discovery: env beats project-local beats checkout-local.
@@ -51,7 +58,7 @@ def _discover_config() -> Path | None:
                 "a real config json (onboard.py init writes one)"
             )
         return Path(env)
-    local = Path.cwd() / ".neuronav" / "config.json"
+    local = Path.cwd() / STATE_DIR_NAME / "config.json"
     if local.is_file():
         return local
     checkout = TOOL_DIR / "config.json"
@@ -117,7 +124,7 @@ def _gitignore_dirs(root: Path) -> frozenset[str]:
 # to mistarget a foreign repo.
 WALK_DEFAULTS = {
     "include_dirs": (".",),
-    "exclude_dirs": (".git", ".godot", "__pycache__", ".venv", ".neuronav",
+    "exclude_dirs": (".git", ".godot", "__pycache__", ".venv", STATE_DIR_NAME,
                      "node_modules", ".tmp", ".team_scratch"),
 }
 
@@ -169,7 +176,7 @@ def _apply_config(path: Path | None) -> None:
     # project is the PARENT dir; a missing root and "." both mean it.
     # Any other explicit root wins verbatim, config-dir-relative as
     # before (documented beside the config schema: config/AGENTS.md).
-    _project_local = path is not None and path.parent.name == ".neuronav"
+    _project_local = path is not None and path.parent.name == STATE_DIR_NAME
     _root_raw = cfg.get("root")
     if _project_local and (not _root_raw or Path(_root_raw) == Path(".")):
         ROOT = path.parent.parent.resolve()
@@ -267,14 +274,14 @@ def _apply_config(path: Path | None) -> None:
     if path is not None and not _sd:
         raise SystemExit(
             f"config '{path}' sets no \"state_dir\" — its default "
-            f"{ROOT / '.neuronav'} sits inside the scanned root, so any "
+            f"{ROOT / STATE_DIR_NAME} sits inside the scanned root, so any "
             "rescan would read and write that store directly (issue #91: "
             "this silent default is how a live store got wiped). Fix the "
             "config json: \"state_dir\": \"<scratch path>\" for a store "
             "of your own, or \"state_dir\": \"default\" to opt into "
             "<root>/.neuronav (onboard.py init writes the opt-in)"
         )
-    STATE_DIR = ROOT / ".neuronav" if _sd is None or _sd == "default" else Path(_sd)
+    STATE_DIR = ROOT / STATE_DIR_NAME if _sd is None or _sd == "default" else Path(_sd)
     if not STATE_DIR.is_absolute() and path is not None:
         STATE_DIR = (path.parent / STATE_DIR).resolve()
     else:
