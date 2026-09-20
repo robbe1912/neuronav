@@ -83,15 +83,11 @@ ALLOWED = {
     ("vizjs/focus_vis.py", "const tscn = fi >= 0 && /\\.tscn$/i.test"):
         "V-1: queued behind #123/#89 (data-flag contract; moved verbatim"
         " from viz.py:3086 by #299 A)",
-    # config/parametric walk filters — EXTS is the user's config include-set
-    # and `suffixes` arrives as a caller argument (registry datum at the
-    # call site); neither is a language truth hard-coded in nav
-    ("navindex.py", "if all_suffixes or Path(name).suffix in navconfig.EXTS:"):
-        "config walk filter (EXTS = user config; all_suffixes=#240 census)",
-    ("navindex.py", "if Path(name).suffix in suffixes:"):
-        "parametric walk filter (caller-supplied suffixes)",
-    ("navindex.py", "if Path(e.name).suffix not in navconfig.EXTS:"):
-        "config walk filter (EXTS = user config)",
+    # #375 — the ONE shared walk-filter leaf; ext/suffix logic otherwise
+    # lives in extractors per langsep law (the three inline spellings it
+    # replaced were allowlisted separately until the leaf landed)
+    ("navindex.py", "return Path(name).suffix in suffixes"):
+        "config walk filter leaf (EXTS/suffixes = config or caller datum)",
 }
 
 
