@@ -1782,7 +1782,7 @@ def _recall_knobs_scenario(srv) -> None:
         tp_rows = [ln for ln in tp.splitlines() if "src=" in ln]
         check(
             "wire: two_pass marks every row",
-            len(tp_rows) == 12 and all(ln.rstrip().endswith("2pass") for ln in tp_rows),
+            len(tp_rows) == 12 and all("  2pass" in ln for ln in tp_rows),
             "\n".join(tp_rows[:2]),
         )
     check("wire: two_pass response byte-stable (double-run)",
