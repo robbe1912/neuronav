@@ -8,7 +8,7 @@ the primary form. Tracked profiles here are machine-PORTABLE only
 profiles (absolute roots into local checkouts) live OUTSIDE the repo,
 untracked, and are selected via ``$NEURONAV_CONFIG``.
 
-## Selection (``nav._discover_config``)
+## Selection (``navconfig._discover_config``)
 
 1. ``$NEURONAV_CONFIG`` — explicit, always wins (absolute path). A set-but-
    missing path aborts at load (issue #41): an explicit config is a
@@ -44,7 +44,7 @@ The fix is one key: an explicit ``state_dir`` path, or the exact string
 the shipped profiles carry it). Only the no-config pure-defaults leg
 (step 4 above) keeps the implicit default — no config, nothing to fix.
 
-``nav._apply_config`` runs once at import (and again on
+``navconfig._apply_config`` runs once at import (and again on
 ``nav.py --config <path>``, which also exports the var so sibling
 modules and subprocesses agree). A relative ``"root"`` resolves against
 the config file's own directory — shipped profiles stay machine-portable
@@ -91,7 +91,7 @@ a name in ``exclude_dirs`` simply credits it to you instead of the
 gitignore. A one-shot stderr note names gitignore-sourced dirs that hide
 large subtrees (>= 10k files) so a vanished index is never silent.
 
-## Fields (consumed by `nav._apply_config`)
+## Fields (consumed by `navconfig._apply_config`)
 
 | field | default | meaning |
 |---|---|---|
@@ -99,7 +99,7 @@ large subtrees (>= 10k files) so a vanished index is never silent.
 | `state_dir` | required — aborts without it (issue #91) | ALL generated state for the profile: `chroma/` vectordb, `base/` shards, `graph.html` bake (relative -> resolve against the profile's dir); `"default"` = explicit opt-in to `<root>/.neuronav` (`onboard.py init` writes it) — the silent in-root default once wiped a live store |
 | `collection` | `"main"` | chroma collection name; fn-level index lives at `<collection>-fns` |
 | `include_dirs` | `.` (walk everything) | walked under root; strictly opt-in — a config without this key walks the whole root under the excludes (issue #296; the old `scripts, scenes, VFX, ai, tests, tools` fallback was one target repo's layout and walked 0 files everywhere else) |
-| `extensions` | `.gd, .tscn` | suffixes kept (registered ones parse structurally; the rest — the #240 raw-text web set `.ts .tsx .js .jsx .mjs .mts .cts .json .md`, scaffolded by `onboard.py init [--preset ts\|js\|python\|cpp\|gdscript\|rust]` — index as raw `file_doc`: searchable, but find_functions/symbol_graph/dead_code return nothing for them until extractors land) |
+| `extensions` | `.gd, .tscn` | suffixes kept (registered ones parse structurally; the rest — the raw-text set `extractors.RAW_TEXT_EXTS` (`.json .md`) — index as raw `file_doc`: searchable, but find_functions/symbol_graph/dead_code return nothing for them until an extractor lands; `onboard.py init --preset <key>` scaffolds one of the 12 `extractors.PRESETS` keys: ts, js, python, cpp, gdscript, rust, go, java, c, csharp, php, lua) |
 | `exclude_dirs` | `.git, __pycache__` | pruned from the directory walk |
 | `.neuroignore` | (file beside config) | extra exclude dir names, one per line, merged into `exclude_dirs` at load |
 | `recall_two_pass` | `false` | >false: `recall.search` runs the deterministic two-pass retrieve (issue #74) — the pass-1 lexical top hits donate their identifier surface (320-char budget) to a re-embedded augmented query RRF-fused with pass 1; embed budget 2/query, hits marked `two_pass`; skipped entirely in degraded BM25F-only mode. Bench A/B: hit@1 0.40→0.56, hit@5 0.84→0.88, hit@10 0.92→0.96, MRR 0.587→0.706 — default stays OFF because it doubles query-side embeds on the shared `semantic_search` path |
@@ -111,7 +111,7 @@ large subtrees (>= 10k files) so a vanished index is never silent.
 
 ## Embedding providers (issue #17)
 
-`nav.embed` speaks two wire protocols behind the same config keys:
+`navstore.embed` speaks two wire protocols behind the same config keys:
 
 | provider | request | response rows | auth |
 |---|---|---|---|
@@ -122,7 +122,7 @@ The `openai` side covers OpenAI itself and every compatible endpoint —
 vLLM, LM Studio, llama.cpp server, and Ollama's own `/v1` layer — so
 switching is a config edit, not a code change. Details:
 
-- Provider resolution happens in `nav._apply_config`: explicit
+- Provider resolution happens in `navconfig._apply_config`: explicit
   `embed_provider` wins (case-insensitive, anything but the two names
   exits loud with a fix hint); unset auto-detects from the `embed_url`
   path. Default configs keep the exact Ollama behavior.
@@ -152,7 +152,7 @@ compares two different vector spaces, not two code states.
 
 ## exclude_dirs semantics — read before adding a profile
 
-`exclude_dirs` prunes the traversal itself (`os.walk` in `nav.iter_files`),
+`exclude_dirs` prunes the traversal itself (`os.walk` in `navindex.iter_files`),
 so excluded directories cost nothing and — critically — their files never
 enter the index. Any directory that holds scratch output, fixtures, or
 tooling state MUST be excluded, or it pollutes the index: the dead-code tier
@@ -173,10 +173,10 @@ namespacing means two profiles never share vectors.
 ## Auto-rescan stat gate (issue #19)
 
 Read tools never answer from a stale index silently: each call first runs
-`nav.stat_fingerprint()` — a stat-only (mtime_ns, size) walk mirroring
-`iter_files`' include/exclude rules, TTL-cached for `nav.STAT_TTL_S` (3s)
+`navindex.stat_fingerprint()` — a stat-only (mtime_ns, size) walk mirroring
+`iter_files`' include/exclude rules, TTL-cached for `navindex.STAT_TTL_S` (3s)
 so bursts of tool calls do not re-stat the tree — and a drifted worktree
-triggers the incremental `nav.rescan()` (warm passes skip read+hash via
+triggers the incremental `navindex.rescan()` (warm passes skip read+hash via
 the stat fingerprint persisted at hash time, issue #42 — the sha stays
 the content identity, so unchanged files embed nothing) plus the
 graph/fns sync before the tool answers. Embedding failures never crash
