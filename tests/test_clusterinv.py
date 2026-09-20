@@ -15,6 +15,7 @@
 #   - the repair is a no-op on healthy partitions and deterministic
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from collections import Counter
@@ -411,6 +412,137 @@ check(
     == {"ui/s.gd", "ui/s.tscn", "tgt/a.gd", "tgt/b.gd", "tgt/c.gd"},
     str(_out_maj),
 )
+# ------------------ 9. hash-seed byte stability of the partition (#373)
+# g.edges values are SETS: sweeping them unsorted let PYTHONHASHSEED
+# order flow into the pair-Counter key order -> networkx edge-insertion
+# order -> louvain's float-sum gain comparisons, so near-tie communities
+# could flip across processes — a hash-seed channel into partition
+# identity (byte-stability law; the module docstring promises
+# determinism). Both sweep sites sort now (:366 region, :1620 twin);
+# this leg pins the CLASS, not the site: two subprocesses under
+# different hash seeds must agree byte-for-byte on a graph whose
+# src->dsts sets permute per seed, and each run must equal its own
+# immediate repeat.
+_HS_CHILD = """
+import hashlib
+import json
+import sys
+from types import SimpleNamespace
+
+sys.path.insert(0, sys.argv[1])
+import numpy as np
+
+import graph
+import clusters as C
+
+# corpus 1 — realistic mix: each source fn wires a SET of 8 cross-dir
+# destinations (set order permutes per hash seed); weights mix capped
+# call counts with semantic s*0.7 floats
+ids = sorted(f"{d}/{n}.gd" for d in ("core", "net", "ui") for n in "abcdefgh")
+edges, etypes = {}, {}
+for si, s in enumerate(ids):
+    dsts = {f"{ids[(si + k * 3 + 3) % len(ids)]}::fn" for k in range(8)}
+    dsts.discard(f"{s}::fn")
+    edges[f"{s}::fn"] = dsts
+    for d in dsts:
+        etypes[(f"{s}::fn", d)] = {"call"} if (si + len(d)) % 2 else {"signal"}
+
+# corpus 2 — tie forge: graduated cliques (a_i<->a_j weight i+j+1,
+# tie-free intra-clique merges) plus border node 0x.gd wired into a0
+# and b0 with exactly equal weight. Pre-fix, the border node's home
+# flipped with PYTHONHASHSEED (seeds 1-4/6/10/11 -> A clique, seeds
+# 5/7-9/12 -> B): louvain's strictly-greater gain loop breaks exact
+# ties on the first-encountered community, which rode adjacency
+# insertion order, which rode the unsorted dst-set sweep
+ids2 = ["0x.gd"] + sorted(f"{c}{i}.gd" for c in "ab" for i in range(5))
+edges2, etypes2 = {}, {}
+
+
+def _wiren(s, d, n):
+    k = f"{s}::fn"
+    edges2.setdefault(k, set()).update(f"{d}::g{j}" for j in range(n))
+    for j in range(n):
+        etypes2[(k, f"{d}::g{j}")] = {"call"}
+
+
+for c in "ab":
+    for i in range(5):
+        for j in range(5):
+            if i != j:
+                _wiren(f"{c}{i}.gd", f"{c}{j}.gd", min(i + j + 1, 5))
+_wiren("0x.gd", "a0.gd", 5)
+_wiren("0x.gd", "b0.gd", 5)
+
+def _corpus(ids, edges, etypes, mat):
+    graph.get_graph = lambda: SimpleNamespace(
+        edges=edges, edge_types=etypes, files={}
+    )
+    sim = (mat @ mat.T).astype(np.float32)
+    np.fill_diagonal(sim, -1.0)
+    return ids, mat, sim, C.topk_desc(sim, 6)
+
+
+mat1 = np.random.default_rng(7).random((len(ids), 16), dtype=np.float32)
+mat1 /= np.linalg.norm(mat1, axis=1, keepdims=True)
+corpus1 = _corpus(ids, edges, etypes, mat1)
+# centered vectors keep corpus 2 free of incidental semantic structure;
+# min_sim above 1 leaves the forged integer-weight ties as the only
+# forces on x
+mat2 = np.random.default_rng(11).standard_normal((len(ids2), 16)).astype(
+    np.float32
+)
+def run(c_ids, c_mat, c_sim, c_knn, c_min_sim):
+    out, adj, units = C.communities_graph(
+        c_ids, [{} for _ in c_ids], c_mat, c_sim, c_knn, min_sim=c_min_sim
+    )
+    out.sort(key=lambda c: -int(c["size"]))
+    for i, c in enumerate(out):
+        c["id"] = i
+    raw = sorted((p, c["id"]) for c in out for p, _ in c["paths"])
+    cs = C.finalize(out, c_ids, c_mat, adj=adj, units=units)
+    fin = sorted((p, c["id"], c.get("label")) for c in cs for p, _ in c["paths"])
+    return [raw, fin]
+
+
+mat2 /= np.linalg.norm(mat2, axis=1, keepdims=True)
+corpus2 = _corpus(ids2, edges2, etypes2, mat2)
+
+
+canon1 = run(*corpus1, 0.6)
+canon2 = run(*corpus2, 1.1)
+digest = hashlib.sha256(json.dumps([canon1, canon2]).encode("utf-8")).hexdigest()
+print(digest, digest)
+"""
+
+with tempfile.TemporaryDirectory(prefix="neuronav_hashseed_") as td:
+    _child = Path(td) / "seed_child.py"
+    _child.write_text(_HS_CHILD, encoding="utf-8")
+    _digests = []
+    for _seed in ("1", "5"):
+        _r = subprocess.run(
+            [sys.executable, "-X", "utf8", str(_child), str(HERE)],
+            capture_output=True,
+            text=True,
+            env=dict(os.environ, PYTHONHASHSEED=_seed),
+            cwd=str(HERE),
+        )
+        check(
+            f"hashseed child ran clean (PYTHONHASHSEED={_seed})",
+            _r.returncode == 0 and len(_r.stdout.split()) == 2,
+            (_r.stderr or _r.stdout)[-400:],
+        )
+        _digests.append(_r.stdout.split())
+    check(
+        "partition byte-identical across hash seeds (#373)",
+        bool(_digests[0]) and _digests[0] == _digests[1],
+        f"seed1={_digests[0]} seed2={_digests[1]}",
+    )
+    check(
+        "partition byte-identical on consecutive runs",
+        len(_digests[0]) == 2 and _digests[0][0] == _digests[0][1],
+        str(_digests[0]),
+    )
+
 # summary tail is a pre-#301 byte pin (names failures)
 print()
 if FAILS:
