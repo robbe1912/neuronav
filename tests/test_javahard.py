@@ -45,13 +45,7 @@ import navindex, navstore
 from extractors import java as J  # noqa: E402
 from extractors.java import JAVA_EXTS  # noqa: E402
 
-FAILS = []
-
-
-def check(name, cond, detail=""):
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail and not cond else ""))
-    if not cond:
-        FAILS.append(name)
+from harness import check, finish
 
 
 APP = "src/main/java/demo/App.java"
@@ -167,5 +161,4 @@ check("f7: double build byte-identical (edges + dead candidates)",
 
 import shutil
 shutil.rmtree(TMP, ignore_errors=True)
-print(("JAVAHARD OK" if not FAILS else f"JAVAHARDFAILS: {FAILS}"))
-sys.exit(1 if FAILS else 0)
+finish()

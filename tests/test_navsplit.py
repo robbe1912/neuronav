@@ -16,12 +16,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 
-RESULTS: list[tuple[str, bool]] = []
-
-
-def check(name: str, cond: bool, detail: str = "") -> None:
-    RESULTS.append((name, bool(cond)))
-    print(f"{'PASS' if cond else 'FAIL'}: {name}" + (f" — {detail}" if detail else ""))
+from harness import check, finish
 
 
 def main() -> None:
@@ -179,12 +174,7 @@ def main() -> None:
         check("extractors stay nav-leaf-import-light (registry acyclic)",
               not top_imports, f"{len(top_imports)} module-level import(s)")
 
-    failed = [n for n, ok in RESULTS if not ok]
-    print(f"\n{len(RESULTS) - len(failed)}/{len(RESULTS)} checks passed")
-    if failed:
-        print("FAILED:", ", ".join(failed))
-        sys.exit(1)
-    print("ALL TESTS PASS")
+    finish()
 
 
 if __name__ == "__main__":
