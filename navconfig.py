@@ -122,15 +122,31 @@ WALK_DEFAULTS = {
 }
 
 
+# issue #358: THE single truth of every config-derived global — the
+# apply below computes locals and exports exactly this list, and
+# config_scope / server._boot_recovery save and restore exactly this
+# list, so the rebound set and the restored set cannot drift apart.
+# The former hand-synced spellings (a `global` statement here, the
+# annotation block below) could each miss a key and make config_scope
+# silently skip restoring it: the #131 cross-project leak, reborn.
+_CONFIG_FIELDS = (
+    "CONFIG_PATH",
+    "ROOT", "COLLECTION", "INCLUDE_DIRS", "EXTS", "EXCLUDE_DIRS", "GITIGNORE_PRUNE_DIRS",
+    "EMBED_URL", "EMBED_MODEL", "EMBED_DIM", "EMBED_DOC_PREFIX", "EMBED_PROVIDER",
+    "EMBED_API_KEY", "WATCH_INTERVAL_S", "RECALL_TWO_PASS", "CHUNK_CAST",
+    "FILE_DOC_CAST",
+    "STATE_DIR", "DB_DIR", "BASE_DIR",
+)
+
+
 def _apply_config(path: Path | None) -> None:
     """(Re)bind the config-derived module globals. Called once at import
     and again by ``nav.py --config <path>`` (which also sets
     NEURONAV_CONFIG so subprocesses and sibling modules agree).
-    ``path=None`` means no config anywhere: pure cwd defaults (#27)."""
-    global CONFIG_PATH, COLLECTION, ROOT, INCLUDE_DIRS, EXTS, EXCLUDE_DIRS, \
-        EMBED_URL, EMBED_MODEL, EMBED_DIM, EMBED_DOC_PREFIX, EMBED_PROVIDER, \
-        EMBED_API_KEY, WATCH_INTERVAL_S, RECALL_TWO_PASS, CHUNK_CAST, \
-        FILE_DOC_CAST, STATE_DIR, DB_DIR, BASE_DIR, GITIGNORE_PRUNE_DIRS
+    ``path=None`` means no config anywhere: pure cwd defaults (#27).
+    The fields are plain locals exported once through _CONFIG_FIELDS —
+    the #358 single truth: apply set == restore set, and a listed name
+    with no binding above dies KeyError here."""
     if path is not None and not path.is_file():
         # issue #41: an explicit config path is a contract, not a hint —
         # silently degrading to walk-all defaults flips the walk identity
@@ -268,6 +284,14 @@ def _apply_config(path: Path | None) -> None:
     # cluster memo entries carry their store key (navstore.clusters), so
     # a config switch self-segregates the cache — nothing to clear here
 
+    # issue #358: export through the single truth — a name listed in
+    # _CONFIG_FIELDS without a binding above dies KeyError right here
+    # (import-time loud), and a field computed but missed in the tuple
+    # can never be silently skipped by a scope round-trip: it never
+    # becomes a module global at all.
+    _snapshot = locals()
+    globals().update({f: _snapshot[f] for f in _CONFIG_FIELDS})
+
 
 def use_config(path: Path) -> None:
     """Point this process and its subprocesses at a config profile:
@@ -277,6 +301,7 @@ def use_config(path: Path) -> None:
 
 
 CONFIG_PATH: Path | None
+ROOT: Path
 COLLECTION: str
 INCLUDE_DIRS: tuple[str, ...]
 EXTS: set[str]
@@ -297,6 +322,19 @@ DB_DIR: Path
 BASE_DIR: Path
 _apply_config(_discover_config())
 
+# issue #358 teeth: the annotation block above is the one remaining
+# hand-synced spelling — pin its membership to _CONFIG_FIELDS so the
+# next config key added in one and missed in the other aborts the
+# import naming the divergence (loud-failures law) instead of letting
+# config_scope silently skip restoring the difference. Leading-underscore
+# annotations are module privates, never config fields.
+_annotated = {n for n in __annotations__ if not n.startswith("_")}
+assert _annotated == set(_CONFIG_FIELDS), (
+    "navconfig: annotation block and _CONFIG_FIELDS disagree — "
+    f"annotations-only: {sorted(_annotated - set(_CONFIG_FIELDS))}, "
+    f"tuple-only: {sorted(set(_CONFIG_FIELDS) - _annotated)} (issue #358: "
+    "both spellings must list every config field)")
+
 
 # ---- universal mount (issue #131): per-call config scoping -----------------
 #
@@ -310,15 +348,8 @@ _apply_config(_discover_config())
 # NEURONAV_CONFIG env is deliberately NOT touched: config-file-driven
 # runs keep their #91 loud aborts, and subprocesses keep resolving the
 # boot config.
+# _CONFIG_FIELDS (top of module) is the single truth of that set (#358).
 
-_CONFIG_FIELDS = (
-    "CONFIG_PATH",
-    "ROOT", "COLLECTION", "INCLUDE_DIRS", "EXTS", "EXCLUDE_DIRS", "GITIGNORE_PRUNE_DIRS",
-    "EMBED_URL", "EMBED_MODEL", "EMBED_DIM", "EMBED_DOC_PREFIX", "EMBED_PROVIDER",
-    "EMBED_API_KEY", "WATCH_INTERVAL_S", "RECALL_TWO_PASS", "CHUNK_CAST",
-    "FILE_DOC_CAST",
-    "STATE_DIR", "DB_DIR", "BASE_DIR",
-)
 _GRAPH_CACHE: dict[tuple, object] = {}  # store key -> graph.py singleton
 _FP_CACHE: dict[tuple, tuple] = {}  # store key -> fp slots (drift baseline)
 
