@@ -214,6 +214,54 @@ def _spawn(env: dict[str, str], cwd: Path | None = None) -> SimpleNamespace:
     )
 
 
+def _await_build_settled(srv, deadline_s: float = 60.0) -> None:
+    """issue #401 mode (b): readiness-poll in place of the implicit
+    wall-clock wait before exact row-count pins. Under CI-runner load
+    the boot build can outlive the legs preceding them, and
+    semantic_search serves the partially-built store instead of parking
+    (its stale path is checked BEFORE the boot gate, so past the 15s
+    grace window it answers at once) — the pin then reads a short row
+    set (the cross-branch first-attempt CI reds: 1 of 12 rows, rerun
+    lottery, gate signal degraded wave-wide). Poll the channel that
+    exists for exactly this — neuronav://onboarding/status (issue
+    #315) — until boot is ready and no build/bake phase is in flight.
+    Bounded and loud, never vacuous: a timeout FAILs a named check
+    carrying the awaited condition, the last status text and the
+    server's stderr tail instead of racing the build blind."""
+    t0 = time.monotonic()
+    last = ""
+    while True:
+        try:
+            srv.send({"jsonrpc": "2.0", "id": 9800,
+                      "method": "resources/read",
+                      "params": {"uri": "neuronav://onboarding/status"}})
+            r = srv.recv(9800, timeout=5.0)
+            last = "".join(
+                c.get("text", "")
+                for c in r.get("result", {}).get("contents", [])
+            )
+        except TimeoutError:
+            pass  # resource wedged — fall through to the deadline verdict
+        settled = (
+            "boot: ready" in last
+            and not any(ln.startswith("build:")
+                        for ln in last.splitlines())
+        )
+        if settled:
+            return
+        if time.monotonic() - t0 >= deadline_s:
+            check(
+                "wire: build settled before row-count pins (issue #401)",
+                False,
+                f"awaited {time.monotonic() - t0:.0f}s for 'boot: ready' "
+                f"with no 'build:' line — last status:\n{last}\n"
+                "server stderr tail:\n"
+                + "\n".join(srv.stderr_lines[-12:]),
+            )
+            return
+        time.sleep(0.25)
+
+
 TOOL_NAMES = (
     "explore", "repo_map", "semantic_search", "find_functions", "search_text",
     "symbol_graph", "impact", "dead_code", "duplicates", "clusters",
@@ -1720,6 +1768,11 @@ def _recall_knobs_scenario(srv) -> None:
     )
 
     row_re = re.compile(r"^(\d+\.\d+)  (\S+)  src=(\S+)  ctx=\[([^\]]*)\]", re.M)
+    # issue #401 mode (b): the exact-count pins below are build-settle
+    # contracts — gate them on the status channel (readiness evidence)
+    # instead of the implicit wall-clock of the legs above them
+    _await_build_settled(srv)
+
     base = call(92, {"n": 12})
     base2 = call(93, {"n": 12})
     if EMBED_FAKE:
