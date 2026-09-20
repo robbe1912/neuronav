@@ -285,6 +285,89 @@ try:
 except ImportError as e:
     check("#299 bake.embeddings/bake.semantics split exists", False, str(e))
 
+# ---- 12. #367 loud-failures: in-flight stage errors abort the bake --------
+# The pre-#367 broad excepts in bake/embeddings + bake/semantics swallowed
+# real failures (chroma internal error, numpy/scipy, schema drift) into
+# silent Nones/empties — a thinner graph with no marker. The #64 guard only
+# covers the empty-STORE shape at entry; exceptions raised inside the
+# fetch/kNN/matrix/supergroups stages must fail loud, naming their job. The
+# only sanctioned degrades left: missing store (count()==0 -> None) and
+# scipy unavailability in _supergroups (ImportError, marked on stderr).
+import io
+
+import numpy as np
+from bake.embeddings import _knn_sims
+from bake.semantics import _cluster_matrix, _supergroups
+
+# a) fetch: a chroma read that raises mid-bake must abort generate(), not
+#    ship a silently semantic-less graph (what-tagged so only the bake's
+#    own fetch leg booms; recall/clusters reads stay real)
+real_all = navstore.col_get_all
+
+
+def boom(col, include, what="chunked read"):
+    if what == "bake embeddings":
+        raise RuntimeError("synthetic chroma failure")
+    return real_all(col, include, what)
+
+
+navstore.col_get_all = boom
+try:
+    refusal(lambda: viz.generate(), "chroma fetch error aborts the bake",
+            ["embeddings fetch", "synthetic chroma failure"])
+finally:
+    navstore.col_get_all = real_all
+
+# b/c) kNN + cluster matrix: poisoned emb (paths outnumber embedding rows)
+# -> IndexError wrapped, job named — never silent empties
+bad = ({"a.py": 0}, np.array([[1.0, 0.0]], dtype=np.float32),
+       ["a.py", "b.py"])
+refusal(lambda: _knn_sims(bad), "kNN stage error is loud and job-named",
+        ["semantic kNN"])
+refusal(lambda: _cluster_matrix(
+            [{"path": "a.py", "cluster": 0}, {"path": "b.py", "cluster": 1}],
+            bad),
+        "cluster-matrix stage error is loud and job-named", ["cluster matrix"])
+
+# d/e) supergroups: real failure loud; ImportError = the sanctioned scipy
+# degrade — empties AND an explicit stderr marker, never silent. Two fine
+# clusters: under 2 the coarse level is vacuous and legitimately returns
+# empties without ever reaching coarse_groups.
+import clusters as _cl
+
+two = [{"id": 0, "paths": [("a.py", 0)]}, {"id": 1, "paths": [("b.py", 0)]}]
+real_cg = _cl.coarse_groups
+_cl.coarse_groups = lambda *a, **k: (_ for _ in ()).throw(
+    ValueError("synthetic linkage failure"))
+try:
+    refusal(lambda: _supergroups(two, bad),
+            "supergroups stage error is loud and job-named", ["supergroups"])
+    _cl.coarse_groups = lambda *a, **k: (_ for _ in ()).throw(
+        ImportError("No module named 'scipy'"))
+    buf, real_err = io.StringIO(), sys.stderr
+    sys.stderr = buf
+    try:
+        degraded = _supergroups(two, bad)
+    finally:
+        sys.stderr = real_err
+    check("scipy unavailability degrades to marked empties",
+          degraded == ({}, []) and "supergroups degraded" in buf.getvalue(),
+          f"r={degraded} stderr={buf.getvalue()[:80]!r}")
+finally:
+    _cl.coarse_groups = real_cg
+# f) end-to-end teeth (#367 GK gate): a REAL in-flight failure inside
+# _knn_sims must abort the whole generate() loudly — never a silently
+# thinner graph. topk_desc is imported lazily inside _knn_sims, so the
+# module-attribute patch lands at call time.
+real_topk = _cl.topk_desc
+_cl.topk_desc = lambda sim, k: (_ for _ in ()).throw(
+    ValueError("synthetic argpartition failure"))
+try:
+    refusal(lambda: viz.generate(), "in-flight kNN failure aborts the bake",
+            ["semantic kNN", "synthetic argpartition failure"])
+finally:
+    _cl.topk_desc = real_topk
+
 # ---- cleanup -----------------------------------------------------------------
 shutil.rmtree(SCRATCH, ignore_errors=True)
 finish()

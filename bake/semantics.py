@@ -4,6 +4,8 @@
 # from bake.embeddings._fetch_embeddings, and emb_paths is the ONE
 # derivation of the store-index space (#299 C): sims' a/b indices are
 # emb_paths-LOCAL and every node mapping goes through it.
+import sys
+
 
 # #279: rendered-affinity ink budget. The layout keeps riding ALL J9 pairs
 # (the springs want the full field); only the INK channel is capped, like
@@ -13,12 +15,14 @@ SEM_AFF_CAP = 220
 
 def _cluster_matrix(nodes, emb):
     """J11: cluster-centroid cosine matrix from the bake's one embedding
-    fetch — independent try, so a kNN-stage failure never degrades cmat
-    (the monolith's second fetch was equally independent)."""
+    fetch — independent of the kNN stage's failures (the monolith's
+    second fetch was equally independent). Degrades to ([], None) only
+    when the fetch did (missing store); a matrix-stage failure raises
+    job-named (#367 loud-failures)."""
     # cluster-level semantic sims for the layout: cosine between cluster
     # embedding centroids (mean of member embeddings). Drives cluster
     # springs + repulsion caps so semantically related clusters (VFX
-    # family) sit as neighbors in the galaxy. Degrades to None.
+    # family) sit as neighbors in the galaxy.
     ckeys: list = []
     cmat = None
     if emb is None:
@@ -43,9 +47,11 @@ def _cluster_matrix(nodes, emb):
         cmat = (cent @ cent.T).astype(cnp.float32)
         cnp.fill_diagonal(cmat, 0.0)
         cmat = cmat.tolist()
-    except Exception:
-        ckeys = []
-        cmat = None
+    except Exception as e:
+        raise RuntimeError(
+            f"cluster matrix failed mid-bake (issue #367 loud-failures): "
+            f"{len(nodes)} nodes: {e!r}"
+        ) from e
     return ckeys, cmat
 
 
@@ -70,11 +76,18 @@ def _sem_aff(emb, sims, idx):
 
 def _supergroups(clusters, emb):
     """J10: coarse supergroups over the fine clusters, from the kNN
-    stage's embeddings. Empty when emb is None (kNN stage failed) or
-    scipy/coarse_groups is unavailable."""
+    stage's embeddings. Degrades to ([], []) when the fetch did (missing
+    store) or scipy/coarse_groups is unavailable — the one sanctioned
+    optional-dep degrade, marked on stderr (#367); vacuous — no
+    degrade, nothing to link — under 2 fine clusters (scipy linkage
+    cannot run on a single observation; the monolith's broad except
+    silently covered this shape too). Every other failure raises
+    job-named."""
     cid_gid: dict[int, int] = {}   # fine cluster id -> supergroup id
     groups2: list[dict] = []
     if emb is None:
+        return cid_gid, groups2
+    if len(clusters) < 2:
         return cid_gid, groups2
     _, embs, emb_paths = emb
     # two-level navigation: coarse supergroups over the fine
@@ -95,7 +108,20 @@ def _supergroups(clusters, emb):
             groups2.append(
                 {"id": grp["id"], "label": grp["label"], "cids": cids}
             )
-    except Exception:
-        cid_gid = {}
-        groups2 = []
+    except ImportError as e:
+        # the sanctioned optional-dep degrade: scipy missing inside
+        # coarse_groups (clusters itself is long imported by this point
+        # — viz._build_data ran navstore.clusters() and _knn_sims'
+        # topk_desc import first). Marked on stderr, never silent (#367).
+        print(
+            "neuronav: bake supergroups degraded — scipy/coarse_groups "
+            f"unavailable ({e}); baking without the coarse level",
+            file=sys.stderr,
+        )
+        return {}, []
+    except Exception as e:
+        raise RuntimeError(
+            f"supergroups failed mid-bake (issue #367 loud-failures): "
+            f"{len(clusters)} clusters: {e!r}"
+        ) from e
     return cid_gid, groups2
