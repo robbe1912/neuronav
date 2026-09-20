@@ -33,12 +33,7 @@ SERVER_DIR = (
 )
 sys.path.insert(0, str(SERVER_DIR))  # the checkout under test wins over editables
 
-RESULTS: list[tuple[str, bool, str]] = []
-
-
-def check(name: str, cond: bool, detail: str = "") -> None:
-    RESULTS.append((name, bool(cond), detail))
-    print(f"{'PASS' if cond else 'FAIL'}: {name}" + (f" — {detail}" if detail else ""))
+from harness import FAILURES, check, finish
 
 
 def main() -> None:
@@ -319,7 +314,7 @@ def main() -> None:
         finally:
             proc.kill()
             proc.wait(timeout=10)
-            if any(not ok for _, ok, _ in RESULTS):
+            if FAILURES:
                 print("--- server stderr tail ---")
                 for ln in err_lines[-15:]:
                     print(ln)
@@ -389,10 +384,7 @@ def main() -> None:
             f"{type(escaped).__name__}: {str(escaped)[:100]}",
         )
 
-    failed = [name for name, ok, _ in RESULTS if not ok]
-    print(f"\n{len(RESULTS) - len(failed)}/{len(RESULTS)} checks passed")
-    if failed:
-        sys.exit(1)
+    finish()
 
 
 if __name__ == "__main__":

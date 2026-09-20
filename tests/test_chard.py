@@ -45,13 +45,7 @@ from extractors import c as C  # noqa: E402
 from extractors import cpp as CPP  # noqa: E402
 from extractors import registry_for  # noqa: E402
 
-FAILS = []
-
-
-def check(name, cond, detail=""):
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail and not cond else ""))
-    if not cond:
-        FAILS.append(name)
+from harness import check, finish
 
 
 MAIN = "src/main.c"
@@ -171,5 +165,4 @@ check("f8: every .c file parsed structurally (fns > 0)",
 
 import shutil
 shutil.rmtree(TMP, ignore_errors=True)
-print(("CHARD OK" if not FAILS else f"CHARDFAILS: {FAILS}"))
-sys.exit(1 if FAILS else 0)
+finish()

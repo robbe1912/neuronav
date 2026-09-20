@@ -48,13 +48,7 @@ import navindex  # noqa: E402
 from extractors import php as P  # noqa: E402
 from extractors import registry_for  # noqa: E402
 
-FAILS = []
-
-
-def check(name, cond, detail=""):
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail and not cond else ""))
-    if not cond:
-        FAILS.append(name)
+from harness import check, finish
 
 
 GREETER = "src/App/Greeter.php"
@@ -187,5 +181,4 @@ check("f8: executable files parse (fns > 0; Greets.php is a pure-declaration int
 
 import shutil
 shutil.rmtree(TMP, ignore_errors=True)
-print(("PHPHARD OK" if not FAILS else f"PHPHARDFAILS: {FAILS}"))
-sys.exit(1 if FAILS else 0)
+finish()
