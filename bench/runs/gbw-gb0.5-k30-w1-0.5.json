@@ -1,44 +1,44 @@
 {
  "set": "gbw",
  "config": "gb0.5-k30-w1-0.5",
- "commit": "0acdd30",
- "dirty": true,
+ "commit": "c12eaa6",
+ "dirty": false,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
- "files": 58,
+ "files": 119,
  "k": 12,
- "golden": "4daef95861450cd9",
+ "golden": "00a061bb945168e5",
  "gb_lambda": 0.5,
  "gb_rrf_k": 30.0,
  "gb_wv": 1.0,
  "gb_wl": 0.5,
- "hit@1": 0.48,
- "hit@5": 0.88,
- "hit@10": 0.96,
- "mrr": 0.648,
- "reach@5": 0.88,
- "reach@10": 0.96,
+ "hit@1": 0.52,
+ "hit@5": 0.84,
+ "hit@10": 0.88,
+ "mrr": 0.676,
+ "reach@5": 0.84,
+ "reach@10": 0.88,
  "by_kind": {
   "exact": {
    "n": 10,
    "hit@1": 0.6,
    "hit@5": 0.9,
-   "hit@10": 1.0,
-   "mrr": 0.746
+   "hit@10": 0.9,
+   "mrr": 0.759
   },
   "symbol": {
    "n": 4,
-   "hit@1": 0.0,
-   "hit@5": 0.5,
+   "hit@1": 0.25,
+   "hit@5": 0.75,
    "hit@10": 0.75,
-   "mrr": 0.229
+   "mrr": 0.438
   },
   "prose": {
    "n": 9,
    "hit@1": 0.444,
-   "hit@5": 1.0,
-   "hit@10": 1.0,
-   "mrr": 0.648
+   "hit@5": 0.778,
+   "hit@10": 0.889,
+   "mrr": 0.619
   },
   "cross": {
    "n": 2,
@@ -52,8 +52,8 @@
   {
    "q": "parse_tscn",
    "rank": 2,
-   "ctx5": true,
-   "ctx10": true
+   "ctx5": false,
+   "ctx10": false
   },
   {
    "q": "sha256_of",
@@ -63,7 +63,7 @@
   },
   {
    "q": "titleize",
-   "rank": 3,
+   "rank": 2,
    "ctx5": true,
    "ctx10": true
   },
@@ -87,14 +87,14 @@
   },
   {
    "q": "_has_exact",
-   "rank": 8,
+   "rank": 11,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "_lexical_fallback",
    "rank": 1,
-   "ctx5": false,
+   "ctx5": true,
    "ctx10": true
   },
   {
@@ -111,13 +111,13 @@
   },
   {
    "q": "NoCacheHandler",
-   "rank": 2,
+   "rank": 1,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "LabelContext",
-   "rank": 4,
+   "rank": 2,
    "ctx5": true,
    "ctx10": true
   },
@@ -129,19 +129,19 @@
   },
   {
    "q": "Func",
-   "rank": 6,
+   "rank": 4,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "where do godot scene resources get read",
    "rank": 1,
-   "ctx5": true,
-   "ctx10": true
+   "ctx5": false,
+   "ctx10": false
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": 2,
+   "rank": 11,
    "ctx5": false,
    "ctx10": false
   },
@@ -159,27 +159,27 @@
   },
   {
    "q": "how are subsystem names chosen from member vocabulary",
-   "rank": 4,
+   "rank": 2,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "which module hosts the agent protocol on stdin and stdout",
-   "rank": 3,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "single call that shows a newcomer how the codebase is organized",
-   "rank": 4,
+   "rank": 7,
    "ctx5": false,
-   "ctx10": true
+   "ctx10": false
   },
   {
    "q": "how is the embedding index archived inside the repository",
-   "rank": 1,
-   "ctx5": true,
-   "ctx10": true
+   "rank": 3,
+   "ctx5": false,
+   "ctx10": false
   },
   {
    "q": "how is visual clutter of the rendered page measured",

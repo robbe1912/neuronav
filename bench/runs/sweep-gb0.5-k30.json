@@ -1,42 +1,42 @@
 {
  "set": "sweep",
  "config": "gb0.5-k30",
- "commit": "2a1f231",
+ "commit": "c12eaa6",
  "dirty": false,
  "mode": "real",
  "model": "qwen3-embedding:0.6b",
- "files": 58,
+ "files": 119,
  "k": 12,
- "golden": "4daef95861450cd9",
+ "golden": "00a061bb945168e5",
  "gb_lambda": 0.5,
  "gb_rrf_k": 30.0,
- "hit@1": 0.6,
- "hit@5": 0.88,
- "hit@10": 0.92,
- "mrr": 0.696,
- "reach@5": 0.92,
- "reach@10": 0.92,
+ "hit@1": 0.52,
+ "hit@5": 0.84,
+ "hit@10": 0.96,
+ "mrr": 0.683,
+ "reach@5": 0.84,
+ "reach@10": 0.96,
  "by_kind": {
   "exact": {
    "n": 10,
-   "hit@1": 0.8,
-   "hit@5": 0.8,
-   "hit@10": 0.9,
-   "mrr": 0.819
+   "hit@1": 0.7,
+   "hit@5": 0.9,
+   "hit@10": 1.0,
+   "mrr": 0.814
   },
   "symbol": {
    "n": 4,
-   "hit@1": 0.0,
+   "hit@1": 0.25,
    "hit@5": 0.75,
    "hit@10": 0.75,
-   "mrr": 0.292
+   "mrr": 0.458
   },
   "prose": {
    "n": 9,
-   "hit@1": 0.556,
-   "hit@5": 1.0,
+   "hit@1": 0.333,
+   "hit@5": 0.778,
    "hit@10": 1.0,
-   "mrr": 0.67
+   "mrr": 0.568
   },
   "cross": {
    "n": 2,
@@ -49,9 +49,9 @@
  "per_query": [
   {
    "q": "parse_tscn",
-   "rank": 1,
-   "ctx5": true,
-   "ctx10": true
+   "rank": 2,
+   "ctx5": false,
+   "ctx10": false
   },
   {
    "q": "sha256_of",
@@ -61,13 +61,13 @@
   },
   {
    "q": "titleize",
-   "rank": 1,
+   "rank": 2,
    "ctx5": true,
    "ctx10": true
   },
   {
    "q": "registry_for",
-   "rank": 10,
+   "rank": 1,
    "ctx5": true,
    "ctx10": true
   },
@@ -85,7 +85,7 @@
   },
   {
    "q": "_has_exact",
-   "rank": 11,
+   "rank": 7,
    "ctx5": false,
    "ctx10": false
   },
@@ -109,13 +109,13 @@
   },
   {
    "q": "NoCacheHandler",
-   "rank": 2,
+   "rank": 1,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "LabelContext",
-   "rank": 3,
+   "rank": 2,
    "ctx5": true,
    "ctx10": true
   },
@@ -134,18 +134,18 @@
   {
    "q": "where do godot scene resources get read",
    "rank": 1,
-   "ctx5": true,
-   "ctx10": true
+   "ctx5": false,
+   "ctx10": false
   },
   {
    "q": "how do cross-module references become caller edges",
-   "rank": 4,
+   "rank": 9,
    "ctx5": false,
    "ctx10": false
   },
   {
    "q": "what stops two simultaneous rescans from corrupting the store",
-   "rank": 1,
+   "rank": 2,
    "ctx5": true,
    "ctx10": true
   },
@@ -157,7 +157,7 @@
   },
   {
    "q": "how are subsystem names chosen from member vocabulary",
-   "rank": 4,
+   "rank": 2,
    "ctx5": true,
    "ctx10": true
   },
@@ -169,19 +169,19 @@
   },
   {
    "q": "single call that shows a newcomer how the codebase is organized",
-   "rank": 5,
+   "rank": 6,
+   "ctx5": false,
+   "ctx10": true
+  },
+  {
+   "q": "how is the embedding index archived inside the repository",
+   "rank": 3,
    "ctx5": false,
    "ctx10": false
   },
   {
-   "q": "how is the embedding index archived inside the repository",
-   "rank": 1,
-   "ctx5": true,
-   "ctx10": true
-  },
-  {
    "q": "how is visual clutter of the rendered page measured",
-   "rank": 3,
+   "rank": 2,
    "ctx5": false,
    "ctx10": false
   },
