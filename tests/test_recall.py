@@ -518,8 +518,20 @@ import server  # noqa: E402
 import server_search  # noqa: E402  # _fmt's home since #345  (_fmt is the MCP render surface for hits)
 
 fng = graph.find_functions("purple elephant dishwasher quadrant marmalade", 4)
+# fn-level floor twin of the leg above. [] for pure noise is fine
+# product behavior: find_functions applies NO score cutoff — it returns
+# rows iff the fn vector collection is populated (graph.py returns []
+# on col_count == 0), so row count tracks store population, not the
+# query string (recalibrating the noise string cannot conjure rows on
+# an unpopulated store — verified at #377: CI ubuntu returns all-weak
+# rows, pristine vs diff'd checkouts differ only in store history).
+# The pin is mark-only like its sibling: WHEN rows come back for
+# garbage, every one of them is weak-flagged. bool(fng) previously
+# pinned the authoring machine's store state (the same accident class
+# as the corpus-coupled pins at the head of this file) — relaxed at
+# #377 per the GK []-is-fine ruling; floors stay pinned below.
 check("garbage fn query: rows weak-flagged (mark-only)",
-      bool(fng) and all(r.get("weak") is True for r in fng),
+      (not fng) or all(r.get("weak") is True for r in fng),
       str([(r["func"], r["score"], r.get("weak")) for r in fng[:2]]))
 rendered = server_search._fmt(gq)
 check("weak rows reach the wire with a floor footer",
