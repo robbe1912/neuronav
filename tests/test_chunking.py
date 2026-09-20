@@ -354,6 +354,32 @@ check("intro skips shebang/coding, keeps docstring",
       "Module prose about widgets." in _doc.split("\ndef")[0]
       and "#!/usr/bin" not in _doc and "coding:" not in _doc)
 
+# #356: the imports-truncation loop once shadowed the extractor module
+# (`for mod in imps:`) — a wide-import file (joined imports line over
+# FILE_IMPORTS_CAP) handed _file_intro a plain string, whose absent
+# COMMENT_PREFIXES/TRIPLE_QUOTES collapsed the module intro to ''. C's
+# quoted includes ride imported_modules verbatim (no repo resolution):
+# the hermetic wide-barrel shape.
+_p, _src = _write("barrel_wide.c",
+                  "// MODULE INTRO MARKER — barrel.\n"
+                  + "".join(f'#include "pkg_{i:03d}_submodule.h"\n'
+                            for i in range(30))
+                  + "int f(void) { return 1; }\n")
+_doc = graph.file_doc(_p, "barrel_wide.c", _src)
+_imp = next(l for l in _doc.splitlines() if l.startswith("# imports:"))
+check("wide-import barrel truncates its imports line",
+      "(+" in _imp and len(_imp) <= graph.FILE_IMPORTS_CAP,
+      f"len={len(_imp)} tail={_imp[-12:]}")
+check("wide-import barrel keeps its module intro (#356)",
+      "MODULE INTRO MARKER" in _doc)
+_p, _src = _write("barrel_narrow.c",
+                  "// MODULE INTRO MARKER — narrow.\n"
+                  + '#include "a.h"\n#include "b.h"\n'
+                  + "int f(void) { return 1; }\n")
+_doc = graph.file_doc(_p, "barrel_narrow.c", _src)
+check("sub-cap imports control keeps its intro",
+      "MODULE INTRO MARKER" in _doc)
+
 # symbol-surface cap: huge name lists truncate with a visible (+N) tail
 _p, _src = _write("wide.py", "".join(
     f"def fn_with_a_rather_long_{i:03d}(a, b):\n"

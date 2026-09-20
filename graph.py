@@ -1355,11 +1355,12 @@ def file_doc(path: Path, rel: str, text: str, scale: float = 1.0) -> str:
             keep = []
             used = len("# imports: ")
             room = FILE_IMPORTS_CAP - 8  # headroom for the (+N) tail
-            for mod in imps:
-                if used + len(mod) + 1 > room:
+            for imp in imps:  # NOT `mod` — that name is the extractor
+                # module used by _file_intro below (issue #356)
+                if used + len(imp) + 1 > room:
                     break
-                keep.append(mod)
-                used += len(mod) + 1
+                keep.append(imp)
+                used += len(imp) + 1
             line = "# imports: " + " ".join(keep) + f" (+{len(imps) - len(keep)})"
         head.append(line)
     intro = _file_intro(text, mod)
