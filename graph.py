@@ -1431,12 +1431,12 @@ def sync_functions(changed: list[str], deleted: list[str]) -> dict[str, int]:
     dirty = navconfig.DB_DIR / "fns.dirty"
     if dirty.is_file() and not changed:
         changed = sorted(rel for rel, fs in _all_filesyms().items() if fs.funcs)
-    if col.count() == 0 and not changed:
+    if navstore.col_count(col, "fn first-build gate") == 0 and not changed:
         # first build: index every parsed function (any text language)
         changed = sorted(
             rel for rel, fs in _all_filesyms().items() if fs.funcs
         )
-    populated = col.count() > 0
+    populated = navstore.col_count(col, "fn store populated") > 0
     purged_paths = 0
     purged_fns = 0
 
@@ -1590,7 +1590,7 @@ def find_functions(query: str, n: int = 6) -> list[dict[str, object]]:
     noise band overlaps short-identifier golden tails, so flagging is
     honest where dropping would cost recall)."""
     col = _fn_collection()
-    count = col.count()
+    count = navstore.col_count(col, "fn vector-rank gate")
     if count == 0:
         return []
     vector = navstore.embed([query])[0]

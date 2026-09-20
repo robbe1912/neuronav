@@ -555,6 +555,8 @@ def chroma_retry_unit() -> None:
         raise RuntimeError("Error creating hnsw segment reader: Nothing found on disk")
     calls = {"flaky": 0, "other": 0, "vec": 0}
     class FlakyCol:
+        name = "flaky"  # real chromadb Collection carries .name (#402 log)
+
         def count(self):
             return 2
 

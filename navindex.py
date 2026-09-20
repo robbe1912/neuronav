@@ -424,7 +424,7 @@ def _rescan_locked() -> dict[str, int]:
             file=sys.stderr,
         )
     existing: dict[str, dict] = {}
-    if col.count():
+    if navstore.col_count(col, "rescan existing-rows gate"):
         got = navstore.col_get_all(col, ["metadatas"], "rescan existing-rows read")
         existing = {
             rid: (meta or {})
@@ -552,7 +552,7 @@ def export_base() -> dict[str, object]:
     shards."""
     with navstore._db_lock():
         col = navstore._collection()
-        if col.count() == 0:
+        if navstore.col_count(col, "base export gate") == 0:
             raise RuntimeError("nothing indexed — run rescan first")
         got = navstore.col_get_all(
             col, ["metadatas", "embeddings"], "base export"
@@ -659,8 +659,9 @@ def import_base() -> dict[str, int | str]:
     navstore._memo_drop_current()  # store repopulated — recompute on demand
     with navstore._db_lock():
         col = navstore._collection()
-        if col.count():
-            return {"skipped": col.count()}
+        have = navstore.col_count(col, "import-base gate")
+        if have:
+            return {"skipped": have}
         manifest_path = navconfig.BASE_DIR / MANIFEST_NAME
         if not manifest_path.is_file():
             return {"skipped": 0}

@@ -15,6 +15,10 @@ import threading
 from contextlib import redirect_stderr, redirect_stdout
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from unittest import mock
+
+import chromadb
+from chromadb.errors import InternalError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -382,6 +386,113 @@ try:
     check("no re-stamp temp left behind", False, "temp collection still present")
 except Exception:
     check("no re-stamp temp left behind", True)
+
+# --- #402: the stamp/heal windows ride the fresh-store settle retry -------
+# A seconds-old store's first read can hit chroma's hnsw segment before
+# its flush lands ("hnsw segment reader: Nothing found on disk" — five
+# rerun-green sightings). The collection open (create-and-read window),
+# the _adopt_orphan probe counts, and the _restamp copy-count all read
+# exactly that window; each now rides the bounded, logged, loud retry.
+_ERR = InternalError("Error executing plan: Internal error: Error creating "
+                     "hnsw segment reader: Nothing found on disk")
+_real_pauses = navstore._CHROMA_READ_PAUSES_S
+# #402 teeth: only the first pause is shortened (wall time); the later
+# settle margins stay real so a LIVE transient firing inside this window
+# still recovers (one did during gate runs).
+navstore._CHROMA_READ_PAUSES_S = (0.05,) + _real_pauses[1:]
+try:
+    write_cfg(embed_url=f"http://127.0.0.1:{PORT}/api/embed",
+              collection="settle402")
+    _real_open = type(navstore.client()).get_or_create_collection
+    _open_state = {"n": 0}
+
+    def _flaky_open(self, **kwargs):
+        _open_state["n"] += 1
+        if _open_state["n"] == 1:
+            raise _ERR
+        return _real_open(self, **kwargs)
+
+    err = io.StringIO()
+    with redirect_stderr(err), mock.patch.object(
+            type(navstore.client()), "get_or_create_collection", _flaky_open):
+        col = navstore._collection()
+    check("collection open retries the settle transient (#402)",
+          col is not None and _open_state["n"] == 2
+          and err.getvalue().count("chroma read retry") == 1
+          and "collection open" in err.getvalue()
+          and "settle402" in err.getvalue(),
+          f"calls={_open_state['n']} stderr={err.getvalue().strip()[-200:]!r}")
+    col.add(ids=["v1", "v2"], embeddings=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            documents=["doc one", "doc two"],
+            metadatas=[{"sha": "a"}, {"sha": "b"}])
+    snap = navstore.chroma_read(
+        "settle leg snapshot", lambda: col.get(
+            include=["embeddings", "documents", "metadatas"]))
+    records = {i: (list(map(float, e)), d, m) for i, e, d, m in
+               zip(snap["ids"], snap["embeddings"], snap["documents"],
+                   snap["metadatas"])}
+
+    # _restamp: head count (via col_get_all) and the copy-count check are
+    # both fresh-store windows; two transients, then records identical
+    _real_count = chromadb.Collection.count
+    _cnt_state = {"n": 0}
+
+    def _flaky_count(self):
+        _cnt_state["n"] += 1
+        if _cnt_state["n"] in (1, 3):  # call 1: rescan head, call 3: copy
+            raise _ERR
+        return _real_count(self)
+
+    err = io.StringIO()
+    with redirect_stderr(err), mock.patch.object(
+            chromadb.Collection, "count", _flaky_count):
+        fresh = navstore._restamp(col, embed_mode="real", doc_shape="raw")
+    got = navstore.chroma_read(
+        "settle leg result", lambda: fresh.get(
+            include=["embeddings", "documents", "metadatas"]))
+    check("re-stamp counts ride the settle retry, records identical (#402)",
+          rec_eq({i: (list(map(float, e)), d, m) for i, e, d, m in
+                  zip(got["ids"], got["embeddings"], got["documents"],
+                      got["metadatas"])}, records)
+          and _cnt_state["n"] == 4
+          and err.getvalue().count("chroma read retry") == 2
+          and "re-stamp read count" in err.getvalue()
+          and "re-stamp copy count" in err.getvalue(),
+          f"calls={_cnt_state['n']} stderr={err.getvalue().strip()[-240:]!r}")
+
+    # _adopt_orphan: the probe counts read a crashed-re-stamp temp —
+    # the same seconds-old window; the adoption still heals
+    write_cfg(embed_url=f"http://127.0.0.1:{PORT}/api/embed",
+              collection="adopt402")
+    main = navstore._collection()
+    main.add(ids=["v1"], embeddings=[[1.0, 0.0, 0.0]], documents=["doc one"],
+             metadatas=[{"sha": "a"}])
+    tmp = navstore.client().create_collection(name="adopt402-restamp")
+    tmp.add(ids=["v1", "v2"], embeddings=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            documents=["doc one", "doc two"],
+            metadatas=[{"sha": "a"}, {"sha": "b"}])
+    _adopt_state = {"n": 0}
+
+    def _flaky_count_adopt(self):
+        _adopt_state["n"] += 1
+        if _adopt_state["n"] == 1:
+            raise _ERR
+        return _real_count(self)
+
+    err = io.StringIO()
+    with redirect_stderr(err), mock.patch.object(
+            chromadb.Collection, "count", _flaky_count_adopt):
+        adopted = navstore._collection()
+    n_adopted = navstore.chroma_read(
+        "adopt leg count", lambda: adopted.count())
+    check("orphan adoption counts ride the settle retry (#402)",
+          n_adopted == 2 and _adopt_state["n"] == 3
+          and err.getvalue().count("chroma read retry") == 1
+          and "re-stamp temp count" in err.getvalue(),
+          f"adopted={n_adopted} calls={_adopt_state['n']} "
+          f"stderr={err.getvalue().strip()[-200:]!r}")
+finally:
+    navstore._CHROMA_READ_PAUSES_S = _real_pauses
 
 # --- #159: legacy pre-#17 stores heal instead of refusing ----------------
 MODE["protocol"] = "ollama"

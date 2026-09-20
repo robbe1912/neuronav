@@ -426,7 +426,7 @@ def _first_contact() -> str | None:
     heals to the worktree. Returns None when the store already serves;
     else a rescan()-format summary so a long build reports progress the
     same way an explicit rescan does."""
-    if navstore._collection().count():
+    if navstore.count():
         _heal_routed_drift()
         return None
     navindex.import_base()

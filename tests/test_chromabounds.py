@@ -8,13 +8,16 @@
 # ~1200-doc comfort fixture; a just-under control (32.7k) pins the
 # bounded path against the same store shape.
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 if "--nav-dir" in sys.argv:  # pre-fix evidence runs against a base checkout
@@ -42,6 +45,8 @@ CFG.write_text(
 os.environ["NEURONAV_CONFIG"] = str(CFG)
 os.environ["NEURONAV_EMBED_FAKE"] = "1"
 
+import chromadb
+from chromadb.errors import InternalError
 import navconfig, navindex, navstore
 
 from harness import check, finish  # noqa: E402
@@ -267,6 +272,149 @@ def main() -> None:
             "insertion give identical digests over the same 1300 rows",
             g1 == g2 and s1 == 1300 and s2 == 1300,
             f"{g1} (sum {s1}) vs {g2} (sum {s2})",
+        )
+
+    # ---- leg H: fresh-store settle law (#402) — every read primitive
+    # (counts, collection opens, paged gets) rides the bounded
+    # hnsw-settle retry. Five rerun-green sightings red on exactly the
+    # bare counts gating the gets (first bake, base export, rescan's
+    # existing-rows gate, a routed store's first contact). Teeth inject
+    # the real error type+signature at the chroma layer — fail N-1
+    # times, then the real read; beyond-bound must fail LOUD with the
+    # original error, never a silent swallow -------------------------
+    if have:
+        _mkstore("settle", 300)
+        real_count = chromadb.Collection.count
+        real_get = chromadb.Collection.get
+        settle_err = InternalError(
+            "Error executing plan: Internal error: Error creating hnsw "
+            "segment reader: Nothing found on disk"
+        )
+        real_pauses = navstore._CHROMA_READ_PAUSES_S
+        # #402 teeth: only the first pause is shortened (wall time); the
+        # later settle margins stay real so a LIVE transient firing inside
+        # this window still recovers — one did during gate runs, and a
+        # 0.0-pause ladder exhausted instantly against it.
+        navstore._CHROMA_READ_PAUSES_S = (0.05,) + real_pauses[1:]
+        try:
+            def _flaky_count(fails: int):
+                st = {"n": 0}
+
+                def count_(self):
+                    st["n"] += 1
+                    if st["n"] <= fails:
+                        raise settle_err
+                    return real_count(self)
+
+                return count_, st
+
+            # (a) the gated count recovers across two transients and
+            # logs each bounded attempt, naming the read and the error
+            flaky, st = _flaky_count(2)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), mock.patch.object(
+                    chromadb.Collection, "count", flaky):
+                n = navstore.count()
+            notes = err.getvalue()
+            check(
+                "#402 settle: count retries the transient, recovers, "
+                "logs each attempt",
+                n == 300 and st["n"] == 3
+                and notes.count("chroma read retry") == 2
+                and "1/4" in notes and "2/4" in notes
+                and "store count" in notes and "InternalError" in notes,
+                f"n={n} calls={st['n']} stderr={notes.strip()[-240:]!r}",
+            )
+
+            # (b) beyond-bound: the ORIGINAL error, loud, after the
+            # bounded attempt count
+            flaky, st = _flaky_count(99)
+            err = io.StringIO()
+            raised = None
+            with contextlib.redirect_stderr(err), mock.patch.object(
+                    chromadb.Collection, "count", flaky):
+                try:
+                    navstore.count()
+                except Exception as e:  # noqa: BLE001 — the loud original
+                    raised = e
+            notes = err.getvalue()
+            check(
+                "#402 settle: beyond-bound raises the original error loud",
+                isinstance(raised, InternalError)
+                and "hnsw segment reader" in str(raised)
+                and st["n"] == 1 + len(navstore._CHROMA_READ_PAUSES_S)
+                and notes.count("chroma read retry")
+                == len(navstore._CHROMA_READ_PAUSES_S),
+                f"raised={raised!r} calls={st['n']} "
+                f"stderr={notes.strip()[-240:]!r}",
+            )
+
+            # (c) determinism law: a paged read across one transient
+            # returns the SAME id-sorted rows as the clean read
+            clean = navstore.col_get_all(navstore._collection(),
+                                         ["documents"], "leg H control")
+            gst = {"n": 0}
+
+            def _flaky_get(self, **kwargs):
+                gst["n"] += 1
+                if gst["n"] == 1:
+                    raise settle_err
+                return real_get(self, **kwargs)
+
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), mock.patch.object(
+                    chromadb.Collection, "get", _flaky_get):
+                got = navstore.col_get_all(navstore._collection(),
+                                           ["documents"], "leg H settle")
+            check(
+                "#402 settle: paged read across a transient is "
+                "row-identical to the clean read",
+                got == clean and got["ids"] == sorted(got["ids"])
+                and gst["n"] == 2
+                and err.getvalue().count("chroma read retry") == 1,
+                f"calls={gst['n']} "
+                f"stderr={err.getvalue().strip()[-200:]!r}",
+            )
+
+            # (d) wrong-signature errors never retry — loud, immediate
+            def _hard(self):
+                raise InternalError(
+                    "Error executing plan: Internal error: sqlite disk full"
+                )
+
+            err = io.StringIO()
+            raised = None
+            with contextlib.redirect_stderr(err), mock.patch.object(
+                    chromadb.Collection, "count", _hard):
+                try:
+                    navstore.count()
+                except Exception as e:  # noqa: BLE001 — must stay loud
+                    raised = e
+            check(
+                "#402 settle: unrelated errors stay immediate",
+                isinstance(raised, InternalError)
+                and "disk full" in str(raised)
+                and "chroma read retry" not in err.getvalue(),
+                f"raised={raised!r} "
+                f"stderr={err.getvalue().strip()[-160:]!r}",
+            )
+        finally:
+            navstore._CHROMA_READ_PAUSES_S = real_pauses
+
+        # GK rider (#402, authorized single line): the routed-store
+        # first-contact gate — sighting 5's exact window — was the
+        # last bare count() left after the navstore sweep. It now
+        # rides navstore.count(), the identical read leg (a) proves
+        # race-survivable; pin the cutover so a revert fails here.
+        src = (NAV_DIR / "server.py").read_text(encoding="utf-8")
+        start = src.index("def _first_contact")
+        gate = src[start:src.index("\ndef ", start)]
+        check(
+            "#402 settle: the routed first-contact gate rides the "
+            "retry (no bare collection count left)",
+            "navstore.count()" in gate
+            and "._collection().count()" not in gate,
+            gate.strip().splitlines()[0],
         )
 
 

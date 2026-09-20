@@ -239,23 +239,30 @@ def _adopt_orphan(col: chromadb.Collection) -> chromadb.Collection:
     pass _check_model and silently serve a truncated index. A strictly
     richer temp wins the name back; a poorer one is stale garbage from
     a mid-build crash. Double-checked under the write lock so a
-    concurrent _restamp builder is never raced."""
+    concurrent _restamp builder is never raced. Every read here is a
+    fresh-store window and rides the hnsw-settle retry (#402)."""
     tmp_name = f"{col.name}-restamp"
     try:
-        client().get_collection(tmp_name)
+        chroma_read(f"re-stamp temp probe '{tmp_name}'",
+                    lambda: client().get_collection(tmp_name))
     except Exception:
         return col  # no temp: the common path, one cheap lookup
     with _db_lock():
         try:
-            tmp = client().get_collection(tmp_name)
-            if tmp.count() > col.count():
-                n = tmp.count()
+            tmp = chroma_read(f"re-stamp temp open '{tmp_name}'",
+                              lambda: client().get_collection(tmp_name))
+            n_tmp = col_count(tmp, "re-stamp temp count")
+            n_col = col_count(col, "re-stamp source count")
+            if n_tmp > n_col:
                 client().delete_collection(col.name)
                 tmp.modify(name=col.name)
                 print(f"neuronav: adopted orphaned re-stamp temp for "
-                      f"'{col.name}' ({n} vectors; a previous repair "
+                      f"'{col.name}' ({n_tmp} vectors; a previous repair "
                       "crashed mid-swap)", file=sys.stderr)
-                return client().get_collection(col.name)
+                return chroma_read(
+                    f"adopted collection open '{col.name}'",
+                    lambda: client().get_collection(col.name),
+                )
             client().delete_collection(tmp_name)
         except Exception as e:
             raise RuntimeError(
@@ -298,7 +305,10 @@ def _restamp(col: chromadb.Collection,
                   f"reading its vectors failed ({e}); metadata left as-is",
                   file=sys.stderr)
             try:  # a concurrent process may have finished the re-stamp
-                raced = client().get_collection(name)
+                raced = chroma_read(
+                    f"re-stamp race re-open '{name}'",
+                    lambda: client().get_collection(name),
+                )
             except Exception:
                 raise RuntimeError(
                     f"collection '{name}' vanished during metadata re-stamp"
@@ -336,9 +346,10 @@ def _restamp(col: chromadb.Collection,
                         embeddings=data["embeddings"][i : i + UPSERT_BATCH],
                         documents=data["documents"][i : i + UPSERT_BATCH],
                         metadatas=data["metadatas"][i : i + UPSERT_BATCH])
-            if tmp.count() != len(data["ids"]):
+            n_tmp = col_count(tmp, "re-stamp copy count")
+            if n_tmp != len(data["ids"]):
                 raise RuntimeError(
-                    f"re-stamp copy of '{name}' landed {tmp.count()} of "
+                    f"re-stamp copy of '{name}' landed {n_tmp} of "
                     f"{len(data['ids'])} vectors — source untouched, retry"
                 )
         except Exception:
@@ -352,7 +363,8 @@ def _restamp(col: chromadb.Collection,
     print(f"neuronav: re-stamped collection '{name}' with full metadata "
           f"(hnsw:space=cosine, #103): {len(data['ids'])} vectors copied",
           file=sys.stderr)
-    return client().get_collection(name)
+    return chroma_read(f"re-stamped collection open '{name}'",
+                       lambda: client().get_collection(name))
 
 
 def client() -> "chromadb.PersistentClient":
@@ -379,14 +391,19 @@ def _named_collection(name: str) -> chromadb.Collection:
     heals stale or wiped stamps (#103). The born stamp records the
     embed mode (#220) and the doc-construction shape (#229) so a later
     rescan in the other mode — or under a different doc shaper —
-    refuses to silently reuse the vectors."""
-    col = client().get_or_create_collection(
-        name=name,
-        metadata={"hnsw:space": "cosine",
-                  "embed_model": navconfig.EMBED_MODEL,
-                  "embed_provider": navconfig.EMBED_PROVIDER,
-                  "embed_mode": embed_mode(),
-                  "doc_shape": doc_shape()},
+    refuses to silently reuse the vectors. The open itself is a
+    fresh-store first read (create-and-read window, #402) and rides
+    the hnsw-settle retry like every other read primitive."""
+    col = chroma_read(
+        f"collection open '{name}'",
+        lambda: client().get_or_create_collection(
+            name=name,
+            metadata={"hnsw:space": "cosine",
+                      "embed_model": navconfig.EMBED_MODEL,
+                      "embed_provider": navconfig.EMBED_PROVIDER,
+                      "embed_mode": embed_mode(),
+                      "doc_shape": doc_shape()},
+        ),
     )
     return _check_model(col)
 
@@ -403,24 +420,31 @@ def fns_collection() -> chromadb.Collection:
 
 def chroma_read(what: str, read):
     """Run a chroma read, retrying only the hnsw-settling transient
-    (issue #239): right after embedding upserts — the boot rescan or a
-    watcher tick — chroma's on-disk hnsw segment can lag the sqlite
-    metadata for a moment under load, and a read then fails with
+    (issues #239, #402): right after a store's write burst — a fresh
+    collection's first bulk upsert (boot rescan, import, first bake)
+    or a watcher tick — chroma's on-disk hnsw segment can lag the
+    sqlite metadata for a moment, and the read then fails with
     "Error creating hnsw segment reader: Nothing found on disk" from
     the Rust executor. The segment settles by itself, so the read is
-    retried on exactly that signature: a loud stderr note per retry;
-    anything else — or exhaustion — raises unchanged. No silent
-    degradation, no changed auto-rescan semantics."""
-    for pause in _CHROMA_READ_PAUSES_S:
+    retried on exactly that signature — and since #402 on every
+    nav-store read primitive, not just the paged gets: the hnsw
+    segment serves count too, and five fresh-store sightings red on
+    exactly the bare counts that gated the gets (first bake, base
+    export, rescan's existing-rows gate). A loud stderr note per
+    retry names the read, the attempt, and the error; anything else —
+    or exhaustion — raises unchanged. No silent degradation, no
+    changed auto-rescan semantics."""
+    for attempt, pause in enumerate(_CHROMA_READ_PAUSES_S, start=1):
         try:
             return read()
         except Exception as exc:
             if _HNSW_SETTLING not in str(exc):
                 raise
             print(
-                f"neuronav: chroma read retry ({what}): hnsw segment still "
-                f"settling after upserts — next try in {pause:g}s "
-                f"({len(_CHROMA_READ_PAUSES_S)} retries max)",
+                f"neuronav: chroma read retry ({what}) "
+                f"{attempt}/{len(_CHROMA_READ_PAUSES_S)}: hnsw segment "
+                f"still settling — {type(exc).__name__}: {exc}; next try "
+                f"in {pause:g}s",
                 file=sys.stderr,
             )
             time.sleep(pause)
@@ -429,6 +453,15 @@ def chroma_read(what: str, read):
 
 _HNSW_SETTLING = "hnsw segment reader"
 _CHROMA_READ_PAUSES_S = (0.5, 1.0, 2.0, 4.0)
+
+
+def col_count(col, what="count") -> int:
+    """col.count() through the hnsw-settle retry (issue #402): chroma
+    asks the hnsw vector segment for its count too, so the transient
+    that kills a first get/query kills the count gating it just as
+    dead — every fresh-store count read rides the same bounded,
+    logged, loud-on-exhaustion retry as the other read primitives."""
+    return chroma_read(f"{what} '{col.name}'", lambda: col.count())
 
 GET_CHUNK = 512  # bounded reads (#327): safely under the ~999 SQL
 # variable ceiling of old bundled sqlite builds and far under the
@@ -446,7 +479,7 @@ def col_get_all(col, include, what="chunked read"):
     and every export or store-copy built from it, is a function of the
     data alone, not of chroma's internal row order. A row-count
     mismatch across pages is a loud error, never a silent short read."""
-    total = col.count()
+    total = col_count(col, f"{what} count")
     rows: list[tuple] = []
     for off in range(0, total, GET_CHUNK):
         got = chroma_read(
@@ -492,7 +525,7 @@ def doc_shape() -> str:
 
 
 def count() -> int:
-    return _collection().count()
+    return col_count(_collection(), "store count")
 
 
 def search(
@@ -561,7 +594,7 @@ def clusters(
     import numpy as np
 
     col = _collection()
-    if col.count() == 0:
+    if col_count(col, "clusters gate") == 0:
         return []
     got = col_get_all(col, ["metadatas", "embeddings"], "clusters")
     # issue #327: the fifth converted site rides the bounded pager
