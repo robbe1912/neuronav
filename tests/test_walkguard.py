@@ -183,6 +183,50 @@ check(
     str(fns),
 )
 
+# ---- issue #374: file vanishing between listing and read mid-rescan ---------
+# Case 1 guards the parse pass; the rescan's own sha/read leg must guard
+# the same race — skip with the stderr note and drop the id from `seen`
+# so the purge leg reconciles it in the SAME pass (pre-fix: the
+# FileNotFoundError aborted the whole rescan).
+(SRC / "vanish.py").write_text("def gone():\n    return 1\n", encoding="utf-8")
+grow = navindex.rescan()
+check(
+    "vanish-mid-rescan: setup leg indexes the file",
+    grow["added"] == 1 and navstore.count() == 2,
+    f"added={grow['added']} count={navstore.count()}",
+)
+# drift the stat fingerprint so the warm gate cannot skip the read leg
+(SRC / "vanish.py").write_text(
+    "def gone(x: int) -> int:\n    return x + 1\n", encoding="utf-8"
+)
+_real_sha = navindex.sha256_of
+_vanish_path = SRC / "vanish.py"
+
+
+def _sha_deletes(path):
+    if path == _vanish_path:
+        _vanish_path.unlink()  # the vanish: between listing and read
+    return _real_sha(path)
+
+
+navindex.sha256_of = _sha_deletes
+err374 = io.StringIO()
+try:
+    with contextlib.redirect_stderr(err374):
+        vanish_stats = navindex.rescan()
+finally:
+    navindex.sha256_of = _real_sha
+check(
+    "vanish-mid-rescan: rescan completes, file purged same pass (#374)",
+    vanish_stats["deleted_paths"] == ["vanish.py"] and navstore.count() == 1,
+    f"deleted={vanish_stats['deleted_paths']} count={navstore.count()}",
+)
+check(
+    "vanish-mid-rescan: skip noted on stderr (#19 convention)",
+    "rescan skipped" in err374.getvalue() and "vanish.py" in err374.getvalue(),
+    repr(err374.getvalue()),
+)
+
 # ---- fresh-store determinism: two stores, same corpus, same bytes -----------
 CHILD = SCRATCH / "child_probe.py"
 CHILD.write_text(

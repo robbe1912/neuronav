@@ -442,16 +442,27 @@ def _rescan_locked() -> dict[str, int]:
                 and _stored_fp(old) == st):
             stats["unchanged"] += 1
             continue
-        digest = sha256_of(path)
-        if not reembed_all and old is not None and old.get("sha") == digest:
-            # touched but byte-identical: sha-gated, embeds nothing —
-            # refresh the stored fingerprint so the next warm pass skips
-            stats["unchanged"] += 1
-            if st is not None:
-                refresh_ids.append(fid)
-                refresh_meta.append({**old, "mtime_ns": st[0], "size": st[1]})
+        try:
+            digest = sha256_of(path)
+            if not reembed_all and old is not None and old.get("sha") == digest:
+                # touched but byte-identical: sha-gated, embeds nothing —
+                # refresh the stored fingerprint so the next warm pass skips
+                stats["unchanged"] += 1
+                if st is not None:
+                    refresh_ids.append(fid)
+                    refresh_meta.append({**old, "mtime_ns": st[0], "size": st[1]})
+                continue
+            text = _read_text(path)
+        except OSError as e:
+            # issue #374: the file vanished between the listing and its
+            # read (editor atomic-save, checkout switch) — the same race
+            # the parse pass guards (#117). Skip with a note and drop the
+            # id from `seen` so the purge leg reconciles it this pass
+            # (deleted_paths carries it; the summary stays truthful)
+            # instead of one vanished temp file aborting the rescan.
+            print(f"neuronav: rescan skipped {fid}: {e}", file=sys.stderr)
+            seen.discard(fid)
             continue
-        text = _read_text(path)
         pending_ids.append(fid)
         # issue #229: the embed doc is the cAST-shaped file doc, not the
         # raw text (raw only under the shape fallbacks). The stored
