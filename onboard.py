@@ -71,7 +71,7 @@ def scaffold(project: Path | None = None, preset: str | None = None) -> Path:
             f"unknown preset '{preset}' — valid: {', '.join(sorted(PRESETS))}"
         )
     proj = (project or Path.cwd()).resolve()
-    state = proj / ".neuronav"
+    state = proj / navconfig.STATE_DIR_NAME
     state.mkdir(parents=True, exist_ok=True)
     cfg_path = state / "config.json"
     if not cfg_path.is_file():
@@ -113,9 +113,11 @@ def scaffold(project: Path | None = None, preset: str | None = None) -> Path:
     gi = proj / ".gitignore"
     if gi.is_file():
         lines = gi.read_text(encoding="utf-8").splitlines()
-        if ".neuronav/" not in lines:
+        if navconfig.STATE_DIR_NAME + "/" not in lines:
             with open(gi, "a", encoding="utf-8", newline="\n") as f:
-                f.write(".neuronav/\n" if lines and lines[-1] == "" else "\n.neuronav/\n")
+                f.write(f"{navconfig.STATE_DIR_NAME}/\n"
+                        if lines and lines[-1] == ""
+                        else f"\n{navconfig.STATE_DIR_NAME}/\n")
     return cfg_path
 
 
@@ -188,7 +190,7 @@ def wire(project: Path | None = None, index: bool = False,
     import navconfig, navindex
 
     proj = (project or Path.cwd()).resolve()
-    cfg_path = proj / ".neuronav" / "config.json"
+    cfg_path = proj / navconfig.STATE_DIR_NAME / "config.json"
     if not cfg_path.is_file():
         init(proj, index=index)
     else:
@@ -419,7 +421,9 @@ def open_viewer(project: Path | None = None) -> str:
     is headless-dev only. The command differs per OS; cross-platform pure
     stdlib, no launching — just the hint.
     """
-    bake = (project or Path.cwd()).resolve() / ".neuronav" / "graph.html"
+    import navconfig
+
+    bake = (project or Path.cwd()).resolve() / navconfig.STATE_DIR_NAME / "graph.html"
     if sys.platform == "win32":
         # cmd `start` treats the FIRST quoted argument as a window title:
         # a space-y path needs the `start "" "path"` form
@@ -451,6 +455,7 @@ if __name__ == "__main__":
         omp_name = argv[i + 1]
     target = (proj or Path.cwd()).resolve()
     if cmd == "init":
+        import navconfig
         try:
             p = init(proj, index=do_index, preset=preset)
         except ValueError as e:
@@ -459,12 +464,13 @@ if __name__ == "__main__":
         print(f"project config: {p}")
         if preset:
             print(f"extensions:     preset '{preset}'")
-        print(f"state dir:      {target / '.neuronav'}")
+        print(f"state dir:      {target / navconfig.STATE_DIR_NAME}")
         print(f"MCP wiring:     NEURONAV_CONFIG={p}")
         print("next:           onboard.py wire  (agents)  ·  nav.py rescan  ·  viz.py")
-        if do_index and (target / ".neuronav" / "graph.html").is_file():
+        if do_index and (target / navconfig.STATE_DIR_NAME / "graph.html").is_file():
             print(f"viewer:         {open_viewer(target)}")
     elif cmd == "wire":
+        import navconfig
         m = wire(proj, index=do_index, omp=do_omp, omp_name=omp_name)
         print(f"mcp entry: {m}")
         if do_omp:
@@ -473,7 +479,7 @@ if __name__ == "__main__":
         else:
             print("restart MCP client sessions in the project to pick it up")
             print("hint: add --omp to also emit an omp mcpServers fragment (issue #130)")
-        if do_index and (target / ".neuronav" / "graph.html").is_file():
+        if do_index and (target / navconfig.STATE_DIR_NAME / "graph.html").is_file():
             print(f"viewer:         {open_viewer(target)}")
     elif cmd == "global-wire":
         for harness, path in global_wire().items():

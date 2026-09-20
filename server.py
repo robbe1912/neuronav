@@ -304,7 +304,7 @@ def _boot_recovery() -> str | None:
     global _BOOT_DEGRADED, _BOOT_STORE
     if navconfig.CONFIG_PATH is not None:
         return None
-    cfg_path = Path.cwd() / ".neuronav" / "config.json"
+    cfg_path = Path.cwd() / navconfig.STATE_DIR_NAME / "config.json"
     if not cfg_path.is_file():
         return None
     _validate_foreign_config(cfg_path, Path.cwd())
@@ -661,7 +661,7 @@ def _route(dir: str):
                 f"(resolved: '{resolved.as_posix()}') — pass the target "
                 "checkout's path"
             )
-        cfg_path = resolved / ".neuronav" / "config.json"
+        cfg_path = resolved / navconfig.STATE_DIR_NAME / "config.json"
         if not cfg_path.is_file():
             import onboard  # lazy: off the hot path by design
 
