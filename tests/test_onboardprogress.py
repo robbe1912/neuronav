@@ -176,30 +176,108 @@ def main() -> None:
                 status_text[:120],
             )
 
-            # leg 2 — a progressToken'd FIRST-CONTACT rescan stays in flight
-            # through the big project's embed phase and streams
-            # notifications/progress while it builds
+            # leg 2 — a progressToken'd FIRST-CONTACT rescan stays in
+            # flight through the big project's embed phase and streams
+            # notifications/progress while it builds. Issue #401: while
+            # the call is in flight, the client itself polls the
+            # readiness channel (neuronav://onboarding/status — the
+            # resource that answers while the body blocks), so the pins
+            # below take sides on recorded evidence instead of a
+            # wall-clock floor: the old `first_elapsed > 2.0` conjunct
+            # false-failed a healthy build whenever a runner finished
+            # the fixture inside one PROGRESS_POLL_S tick (PR #388
+            # first attempt; the rerun lottery was the workaround).
             t_first = time.monotonic()
             send({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {
                 "name": "rescan", "arguments": {"dir": str(big)},
                 "_meta": {"progressToken": 9901}}})
-            ans = recv(3, deadline_s=180.0)
+            build_first = build_last = None  # poll stamps that saw a build line
+            build_lines: list[str] = []
+            rid = 9902  # client-side poll ids; the answer stays id 3
+            polls_sent = 0
+            next_poll = 0.0
+            ans = None
+            deadline = t_first + 180.0
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    break
+                now = time.monotonic()
+                if next_poll == 0.0 or now >= next_poll:
+                    send({"jsonrpc": "2.0", "id": rid,
+                          "method": "resources/read",
+                          "params": {"uri": "neuronav://onboarding/status"}})
+                    rid += 1
+                    polls_sent += 1
+                    next_poll = now + 0.5
+                try:
+                    ln = out_q.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                try:
+                    msg = json.loads(ln)
+                except ValueError:
+                    continue
+                if msg.get("id") == 3:
+                    ans = msg
+                    break
+                if msg.get("method") is not None:
+                    notes.append(msg)  # same tap the recv() helper keeps
+                elif isinstance(msg.get("id"), int) and msg["id"] >= 9902:
+                    txt = "".join(
+                        c.get("text", "")
+                        for c in msg.get("result", {}).get("contents", [])
+                    )
+                    bl = next((l for l in txt.splitlines()
+                               if l.startswith("build:")), None)
+                    if bl is not None:
+                        build_lines.append(bl)
+                        ts = time.monotonic()
+                        build_first = ts if build_first is None else build_first
+                        build_last = ts
             first_elapsed = time.monotonic() - t_first
             rescan_text = ""
             if ans is not None:
                 for c in ans.get("result", {}).get("content", []):
                     rescan_text += c.get("text", "")
-            check(
-                "onboardprog: progressToken'd first-contact rescan streams notifications/progress",
-                any(n.get("method") == "notifications/progress"
-                    and n.get("params", {}).get("progressToken") == 9901
-                    for n in notes),
-                f"{len(notes)} notification(s) tapped; answer: {rescan_text[:70]}",
+            window = (build_last - build_first) if build_first is not None else 0.0
+            streamed = any(
+                n.get("method") == "notifications/progress"
+                and n.get("params", {}).get("progressToken") == 9901
+                for n in notes
             )
+            if streamed:
+                check(
+                    "onboardprog: progressToken'd first-contact rescan streams notifications/progress",
+                    True,
+                    f"{len(notes)} notification(s) tapped; build window "
+                    f"{window:.1f}s; answer: {rescan_text[:70]}",
+                )
+            elif window >= 2.0:
+                # the status channel showed the build in flight for at
+                # least one server-side poll tick (PROGRESS_POLL_S = 2s):
+                # the notification was owed and never came — loud FAIL
+                check(
+                    "onboardprog: progressToken'd first-contact rescan streams notifications/progress",
+                    False,
+                    f"build in flight {window:.1f}s (>= one 2s poll tick) "
+                    f"across {len(build_lines)}/{polls_sent} status polls "
+ f"but 0 notifications tapped; last build line: "
+                    f"{build_lines[-1] if build_lines else 'none'}; "
+                    f"answer: {rescan_text[:70]}",
+                )
+            else:
+                print(
+                    f"SKIP notifications/progress pin — first-contact "
+                    f"build observed only {window:.1f}s in flight "
+                    f"({len(build_lines)}/{polls_sent} status polls saw a "
+                    "build line): under one PROGRESS_POLL_S tick, the "
+                    "channel cannot stream this run"
+                )
             check(
                 "onboardprog: the first-contact call still answers with the onboarded summary",
-                rescan_text.startswith("onboarded") and first_elapsed > 2.0,
-                f"{first_elapsed:.1f}s — {rescan_text[:80]}",
+                ans is not None and rescan_text.startswith("onboarded"),
+                f"{first_elapsed:.1f}s; build observed in flight: "
+                f"{build_first is not None}; answer: {rescan_text[:80]}",
             )
 
             # leg 3 — visualize acks immediately; the bake runs in background
