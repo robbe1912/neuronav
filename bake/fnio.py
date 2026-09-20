@@ -2,9 +2,7 @@
 # phase-2 V8). Moved verbatim from viz.py; every nav/graph/chroma edge
 # stays in the viz.py orchestrator — data arrives as arguments.
 
-import json
-
-from bake.budget import _cap_rows
+from bake.budget import _cap_rows, _json_len
 
 def _fn_io(g):
     """J15: per-function IO surface keyed "path::func"."""
@@ -35,13 +33,13 @@ def _cap_fnio(fio, rank_of):
     # key), so hover IO stays richest on the files that matter.
     fio_dropped = 0
     _FIO_BYTE_CAP = 3_000_000
-    if len(json.dumps(fio, separators=(",", ":"))) > _FIO_BYTE_CAP:
+    if _json_len(fio) > _FIO_BYTE_CAP:
         kept_units, _ = _cap_rows(
             list(fio.items()),
             prio_key=lambda kv: (
                 -rank_of(kv[0].split("::", 1)[0]), kv[0],
             ),
-            cost_of=lambda kv: len(json.dumps([kv[0], kv[1]], separators=(",", ":"))) + 1,
+            cost_of=lambda kv: _json_len([kv[0], kv[1]]) + 1,
             cap=_FIO_BYTE_CAP,
         )
         fio_dropped = len(fio) - len(kept_units)

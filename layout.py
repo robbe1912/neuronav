@@ -22,6 +22,17 @@ import sys
 # tests/test_strata.py §8 and the 6k corpus phase bisect).
 _RELAX_BLOCK = 512
 
+# Repulsion law constants (issue #369): one spelling for the coefficient
+# base, the per-pair force clamp, and the squared-distance cutoff — the
+# dense branch (n <= 2048) and the grid-binned sparse branch above the
+# #349 scale cut must agree term-for-term or layouts fork silently at
+# the boundary. Same values as the former per-branch literals:
+# representation only, not knobs (positions stay byte-identical, pinned
+# by tests/test_strata.py).
+_REPULSE_K = 110000.0    # repulsion coefficient base (normalised by dbar^2)
+_REPULSE_CAP = 400.0     # per-pair force clamp numerator (over d^2)
+_REPULSE_CUT = 2.5e6     # squared-distance cutoff: pairs beyond are force-zero
+
 
 def _links_adj(n: int, links: list) -> list:
     """Directed adjacency from links rows ({"s","t"} dicts or [s,t,...])."""
@@ -213,7 +224,7 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
     # (KC * ds[i] * ds[j] * hh[ci, cj]), so above the scale cut the matrix
     # is ~137 MB of dead weight at 6k nodes and is not built at all
     if n <= 2048:
-        kcoef = (110000.0 * np.outer(ds, ds) / (dbar * dbar)).astype(np.float32)
+        kcoef = (_REPULSE_K * np.outer(ds, ds) / (dbar * dbar)).astype(np.float32)
 
     carr = np.asarray(cluster_ids, dtype=np.int64)
     cids, cinv = np.unique(carr, return_inverse=True)
@@ -254,8 +265,8 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
             diff = pos[None, :, :] - pos[:, None, :]    # D[i,j] = pos[j]-pos[i]
             d2 = (diff * diff).sum(-1)
             d2 += 1.0
-            m = np.minimum(kcoef / (d2 * d2), 400.0 / d2, dtype=np.float32)
-            m[d2 > 2.5e6] = 0.0
+            m = np.minimum(kcoef / (d2 * d2), _REPULSE_CAP / d2, dtype=np.float32)
+            m[d2 > _REPULSE_CUT] = 0.0
             np.fill_diagonal(m, 0.0)
             vel -= np.einsum("ij,ijk->ik", m, diff, dtype=np.float32)
         else:
@@ -276,7 +287,7 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
             gkey = gi[:, 0] + gi[:, 1] * d0 + gi[:, 2] * (d0 * d1)
             order = np.argsort(gkey, kind="stable")
             skey = gkey[order]
-            KC = np.float32(110000.0 / (dbar * dbar))
+            KC = np.float32(_REPULSE_K / (dbar * dbar))
             for c0 in range(0, n, 512):
                 chunk = np.arange(c0, min(c0 + 512, n))
                 gx = gi[chunk, 0][:, None] + off[:, 0]
@@ -309,8 +320,8 @@ def _layout(n: int, links: list, sims: list, cluster_ids: list,
                 keep = (np.arange(tot) - gs) < 32
                 owner, cand, diff, pd2 = owner[keep], cand[keep], diff[keep], pd2[keep]
                 kc = KC * ds[owner] * ds[cand] * hh[cinv[owner], cinv[cand]]
-                m = np.minimum(kc / (pd2 * pd2), np.float32(400.0) / pd2)
-                m[pd2 > 2.5e6] = 0.0
+                m = np.minimum(kc / (pd2 * pd2), np.float32(_REPULSE_CAP) / pd2)
+                m[pd2 > _REPULSE_CUT] = 0.0
                 f = m[:, None] * diff
                 for ax in range(3):
                     vel[:, ax] -= np.bincount(owner, weights=f[:, ax], minlength=n)

@@ -376,7 +376,7 @@ function tick() {
     if (fnBus && busPts && discs.length) {
       const fa2 = fnBus.instanceMatrix.array;
       for (let si = 0; si < busPts.length && si*16+2 < fa2.length; si++) {
-        if (Math.hypot(fa2[si*16], fa2[si*16+1], fa2[si*16+2]) <= 0.001) continue;
+        if (!isServed(fa2, si)) continue;
         const s2 = busPts[si];
         dv.set(s2.a[0], s2.a[1], s2.a[2]).project(camera);
         toScreen(dv, dRect.width, dRect.height);   // #299 D

@@ -128,8 +128,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
       const k = busPts[i].k;
       if (typeof k !== "string" || k.charCodeAt(0) !== 76) continue;
       if (seen.has(k)) continue;
-      const r = Math.hypot(m[i * 16], m[i * 16 + 1], m[i * 16 + 2]);
-      seen.set(k, r > 0.001);
+      seen.set(k, isServed(m, i));
     }
     const mat = new THREE.Matrix4();
     const out = [];
@@ -168,7 +167,7 @@ window.__dbg = { pos, nodes, links, fedges, syncEdgePos, renderer, camera, THREE
               served: false, anchorA: null, anchorB: null };
         seen.set(s.k, e); chains.push(e);
       }
-      if (m) { const r = Math.hypot(m[i * 16], m[i * 16 + 1], m[i * 16 + 2]); if (r > 0.001) e.served = true; }
+      if (m && isServed(m, i)) e.served = true;
     }
     const stations = (fnStationsArr || []).map(S =>
       ({ fi: S.fi, id: S.id, p: [S.p[0], S.p[1], S.p[2]], trunks: 0, legs: 0 }));

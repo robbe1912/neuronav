@@ -29,6 +29,15 @@ function separate(a, b, gap) {
   return a.right < b.left - gap || b.right < a.left - gap ||
          a.bottom < b.top - gap || b.bottom < a.top - gap;
 }
+// Served-scale predicate (issue #369): an instanced row renders when its
+// matrix scale clears the cull threshold — culled chains park their
+// instance scale at 0.0001, so the hypot of the matrix diagonal's first
+// three elements above 0.001 means ink this frame. Every pick/render
+// parity site (chain tint, wire picker, tick anchor ink, dbg census)
+// asks through this one leaf.
+function isServed(m, i) {
+  return Math.hypot(m[i * 16], m[i * 16 + 1], m[i * 16 + 2]) > 0.001;
+}
 // D12: one candidate-ladder engine for the screen-space label placers.
 // Each site keeps its own candidate order (load-bearing: the nearest-first
 // reading differs per surface), obstacle families and gap; the engine owns
