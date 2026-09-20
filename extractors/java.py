@@ -62,6 +62,7 @@ import tree_sitter_java as _tsj
 
 from extractors.common import (  # leaf module: shared text mechanics (#302)
     body_block,
+    captures_bytewise,  # neutral capture walk (#377)
     ident_child,
     last_ident,
     line_starts_of,
@@ -210,11 +211,7 @@ def parse(path: Path, rel: str) -> FileSym:
     line_starts = line_starts_of(src)
     caps = QueryCursor(_QUERY).captures(root)
 
-    def bytewise(*keys: str) -> list:
-        nodes = []
-        for k in keys:
-            nodes.extend(caps.get(k, ()))
-        return sorted(nodes, key=lambda n: n.start_byte)
+    bytewise = partial(captures_bytewise, caps)
 
     pkg: list[str] = []
     for node in bytewise("pkg"):

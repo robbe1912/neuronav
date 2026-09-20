@@ -72,6 +72,7 @@ from tree_sitter import Language, Parser, Query, QueryCursor
 import tree_sitter_go as _tsg
 
 from extractors.common import (  # leaf module: shared text mechanics (#302)
+    captures_bytewise,  # neutral capture walk (#377)
     ident_child,
     last_ident,
     line_starts_of,
@@ -211,11 +212,7 @@ def parse(path: Path, rel: str) -> FileSym:
     line_starts = line_starts_of(src)
     caps = QueryCursor(_QUERY).captures(root)
 
-    def bytewise(*keys: str) -> list:
-        nodes = []
-        for k in keys:
-            nodes.extend(caps.get(k, ()))
-        return sorted(nodes, key=lambda n: n.start_byte)
+    bytewise = partial(captures_bytewise, caps)
 
     # -- package clause: main-package flag + _test.go detection ---------
     package = ""

@@ -25,9 +25,20 @@ macros. General call-graph edges and writes/mut_params are deferred (v1.1)
 
 import bisect
 import re
-from extractors.common import balanced_span, entry_keys, line_starts_of
+from functools import partial
 from pathlib import Path
 from typing import Iterable, NamedTuple
+
+from extractors.common import (  # neutral capture/site mechanics (#377)
+    balanced_span,
+    captures_bytewise,
+    entry_keys,
+    line_starts_of,
+    owner_at,
+    resolve_include as _resolve_include,
+    signature,
+    type_text as _type_text,
+)
 
 from tree_sitter import Language, Parser, Query, QueryCursor
 
@@ -305,51 +316,9 @@ def harvest_registration(text: str) -> dict[str, list]:
     return {"binds": binds, "props": props, "gdvirtuals": gdvirtuals, "signals": signals}
 
 
-def _find_ident(node):
-    """First identifier/field_identifier in subtree (params sit under
-    reference/pointer declarators: ``const String &p_x``)."""
-    if node.type in ("identifier", "field_identifier"):
-        return node
-    for child in node.children:
-        hit = _find_ident(child)
-        if hit is not None:
-            return hit
-    return None
-
-
-def _type_text(src: bytes, node) -> str:
-    if node is None:
-        return ""
-    return src[node.start_byte:node.end_byte].decode("utf8", "replace").strip()
-
-
-def _signature(src: bytes, fd) -> tuple[list[tuple[str, str]], str]:
-    """[(name, type)] params + declared return type of a function_definition."""
-    params: list[tuple[str, str]] = []
-    ret = ""
-    decl = None
-    for child in fd.children:
-        if child.type == "function_declarator":
-            decl = child
-        elif child.type in _TYPE_NODES and not ret:
-            ret = _type_text(src, child)
-    if decl is not None:
-        for part in decl.children:
-            if part.type != "parameter_list":
-                continue
-            for pd in part.children:
-                if pd.type != "parameter_declaration":
-                    continue
-                ident = _find_ident(pd)
-                ty = ""
-                for pc in pd.children:
-                    if pc.type in _TYPE_NODES:
-                        ty = _type_text(src, pc)
-                        break
-                params.append(
-                    (_type_text(src, ident) if ident is not None else "", ty)
-                )
-    return params, ret
+# the cpp grammar's ident spellings (the C extractor's set drops
+# field_identifier) — data for the hoisted find_ident/signature (#377)
+_IDENT_TYPES = ("identifier", "field_identifier")
 
 
 def parse(path: Path, rel: str) -> FileSym:
@@ -361,8 +330,7 @@ def parse(path: Path, rel: str) -> FileSym:
     caps = QueryCursor(_QUERY).captures(tree.root_node)
     line_starts = line_starts_of(src)
 
-    def bytewise(key: str) -> list:
-        return sorted(caps.get(key, ()), key=lambda n: n.start_byte)
+    bytewise = partial(captures_bytewise, caps)
 
     fn_defs = bytewise("fn.def") + bytewise("fnq.def")
     fn_names = bytewise("fn.name")
@@ -382,7 +350,7 @@ def parse(path: Path, rel: str) -> FileSym:
         name = name.rsplit("::", 1)[-1]  # qualified Class::method -> method
         if not name or name in fs.funcs:
             continue  # overloads collapse; first definition in file order wins
-        params, ret = _signature(src, fd)
+        params, ret = signature(src, fd, _TYPE_NODES, _IDENT_TYPES)
         fs.funcs[name] = Func(
             path=rel,
             name=name,
@@ -728,14 +696,10 @@ def _scan_body_cpp(fs: FileSym, rel: str, ctx) -> None:
     order = sorted(fs.funcs.values(), key=lambda f: f.line)
     hdr = ctx.class_map.get(fs.class_name, "") if fs.class_name else ""
 
-    def container(lineno: int) -> str:
-        owner = ""
-        for f in order:
-            if f.line <= lineno:
-                owner = f.key
-            else:
-                break
-        return owner
+    # span-aware owner (common.owner_at, #377): the last-def-line-<=
+    # closure this replaces mis-attributed TU-scope sites after the
+    # last fn's body to that fn — c.py's span fix, propagated here.
+    container = partial(owner_at, order)
 
     for site in sites:
         name = site["name"]
@@ -826,14 +790,8 @@ def _registration_edges(ctx) -> None:
             continue
         order = sorted(fs.funcs.values(), key=lambda f: f.line)
 
-        def container(lineno: int) -> str:
-            owner = ""
-            for f in order:
-                if f.line <= lineno:
-                    owner = f.key
-                else:
-                    break
-            return owner
+        # span-aware owner (common.owner_at, #377) — c.py's fix
+        container = partial(owner_at, order)
 
         def target(cls: str, name: str) -> str:
             if name in fs.funcs:
@@ -872,15 +830,6 @@ def _wire_aliases(ctx) -> None:
             cls_file = ctx.class_map.get(target, "")
             if cls_file and cls_file != rel:
                 ctx._edge(rel, cls_file, ty="alias")
-
-
-def _resolve_include(ctx, src_rel: str, inc: str) -> str:
-    """Repo-relative path for a quoted include of src_rel, or ''."""
-    if inc in ctx.files:
-        return inc
-    parent = src_rel.rsplit("/", 1)[0] if "/" in src_rel else ""
-    cand = f"{parent}/{inc}" if parent else inc
-    return cand if cand in ctx.files else ""
 
 
 def is_wiring_only(fs: FileSym) -> bool:

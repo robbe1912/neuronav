@@ -27,7 +27,16 @@ import ast
 import re
 from pathlib import Path
 
-from extractors.common import PY_CONTROL_KEYWORDS, entry_keys, merge_func
+from extractors.common import (  # + shared indent-family surface (#377):
+    ASSIGN_RE,
+    FORWARD_RE,
+    GUARD_RE,
+    GUARD_RET_RE,
+    PY_CONTROL_KEYWORDS,
+    entry_keys,
+    merge_func,
+    scan_io,
+)
 from extractors.model import FileSym
 
 CLASS_RE = re.compile(r"^(\s*)class\s+([A-Za-z_]\w*)\s*(?:\(([^)]*)\))?\s*:")
@@ -401,23 +410,6 @@ def _ast_funcs(tree: ast.AST | None) -> tuple[dict[str, ast.AST], set[int]]:
     return funcs, methods
 
 
-def _scan_io(body: str, params: list) -> tuple:
-    """-> (writes, mut_params) member/param mutation sets for a body
-    (gdscript._scan_io's python analog — no member_names param: python
-    member writes are always ``self.x =``, bare assigns are locals).
-    Purely syntactic: member writes = ``self.x =`` (augmented too); param
-    mutation = a param name followed by a known mutating method call.
-    """
-    writes = set(re.findall(r"\bself\.([A-Za-z_]\w*)\s*=(?!=)", body))
-    writes |= set(re.findall(r"\bself\.([A-Za-z_]\w*)\s*(?:\+|-|\*|/|%)=(?!=)", body))
-    pnames = {p for p, _t in params}
-    mut = set()
-    for pm in re.finditer(r"\b([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\(", body):
-        if pm.group(1) in pnames and pm.group(2) in _MUTATING_METHODS:
-            mut.add(pm.group(1))
-    return writes, mut
-
-
 def _bind_module_var(asg: ast.Assign, fs: FileSym, classes: dict[str, set[str]]) -> None:
     """Module-level assignment facts:
     - value ref: `navstore.embed = _counting` / `HOOK = helper` hands a file
@@ -666,7 +658,7 @@ def parse(path: Path, rel: str) -> FileSym:
 
     # IO scan runs after the whole file is parsed (gdscript parity).
     for fn in fs.funcs.values():
-        fn.writes, fn.mut_params = _scan_io(fn.body, fn.params)
+        fn.writes, fn.mut_params = scan_io(fn.body, fn.params, _MUTATING_METHODS)
 
     for nm in fixture_names:
         if nm in fs.funcs:
@@ -720,10 +712,10 @@ ENTRY_RULES = [_entry_virtuals, _entry_tests, _entry_module]
 # py code never writes).
 
 SIGNATURE_RE = re.compile(r"^(?:async\s+)?def\s+\w+")
-GUARD_RE = re.compile(r"^(?:el)?if\s+[^():]+:$")
-GUARD_RET_RE = re.compile(r"^return\s+[^()]*$")
-ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*(?:\.\w+)* = [^()=]+$")
-FORWARD_RE = re.compile(r"^return\s+(?:await\s+)?[A-Za-z_][\w.]*\([\w\s,]*\)$")
+# guard/assign/forward shapes are the shared indent-family constants
+# (extractors.common, #377) — imported at the top; py spelling of the
+# language-owned remainder stays here (def signature, # comments,
+# triple quotes, except/finally dedents).
 COMMENT_PREFIXES = ("#",)
 TRIPLE_QUOTES = ('"""', "'''")
 DEDENT_RE = re.compile(r"^(\s+)else:|^(\s+)elif\s|^(\s+)except|^(\s+)finally:|^(\s*)@(\w)")
