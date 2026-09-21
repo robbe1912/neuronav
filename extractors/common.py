@@ -268,3 +268,149 @@ def make_import_liveness_sweep(exts, doc: str, *, from_imports: bool = False):
 
     import_liveness_sweep.__doc__ = doc
     return import_liveness_sweep
+
+# ---- neutral capture walks + site attribution (issue #377) ----------------------
+# Mechanics the c-family and ES-family front-ends spelled per-module;
+# grammar vocab (node-type sets, mutating-method names) stays DATA at
+# the call site — hoisting the walk never merges the parsers.
+
+
+def captures_bytewise(caps, *keys):
+    """Query captures for ``keys``: concatenated in key order, sorted
+    bytewise (start_byte) — document order regardless of query match
+    order (the determinism law every capture walk spells)."""
+    nodes = []
+    for k in keys:
+        nodes.extend(caps.get(k, ()))
+    return sorted(nodes, key=lambda n: n.start_byte)
+
+
+def find_ident(node, ident_types):
+    """First identifier-typed node in a subtree (params sit under
+    pointer/reference declarators: ``const char **argv``). The
+    grammar's ident spellings arrive as data — cpp adds
+    field_identifier."""
+    if node.type in ident_types:
+        return node
+    for child in node.children:
+        hit = find_ident(child, ident_types)
+        if hit is not None:
+            return hit
+    return None
+
+
+def type_text(src: bytes, node) -> str:
+    """Byte-slice text of a node, stripped (None -> "")."""
+    if node is None:
+        return ""
+    return src[node.start_byte:node.end_byte].decode("utf8", "replace").strip()
+
+
+def signature(src: bytes, fd, type_nodes, ident_types) -> tuple[list[tuple[str, str]], str]:
+    """[(name, type)] params + declared return type of a
+    function_definition (c/cpp grammar shape; the node-type vocab
+    arrives as data — C's set is the cpp subset)."""
+    params: list[tuple[str, str]] = []
+    ret = ""
+    decl = None
+    for child in fd.children:
+        if child.type == "function_declarator":
+            decl = child
+        elif child.type in type_nodes and not ret:
+            ret = type_text(src, child)
+    if decl is not None:
+        for part in decl.children:
+            if part.type != "parameter_list":
+                continue
+            for pd in part.children:
+                if pd.type != "parameter_declaration":
+                    continue
+                ident = find_ident(pd, ident_types)
+                ty = ""
+                for pc in pd.children:
+                    if pc.type in type_nodes:
+                        ty = type_text(src, pc)
+                        break
+                params.append(
+                    (type_text(src, ident) if ident is not None else "", ty)
+                )
+    return params, ret
+
+
+def resolve_include(ctx, src_rel: str, inc: str) -> str:
+    """Repo-relative path for a quoted include of src_rel, or ''."""
+    if inc in ctx.files:
+        return inc
+    parent = src_rel.rsplit("/", 1)[0] if "/" in src_rel else ""
+    cand = f"{parent}/{inc}" if parent else inc
+    return cand if cand in ctx.files else ""
+
+
+def owner_at(order, lineno, spans=None):
+    """Owning fn key for a body-scan site at ``lineno`` ("" = module
+    scope) — SPAN-AWARE: a site attributes to a fn only inside
+    [def line, body last line].
+
+    ``order``: the file's funcs sorted by def line (Func objects, or
+    the ``(key, Func)`` pairs the ES-family scan keeps). ``spans``:
+    precomputed ``(start, end, key)`` triples; derived from ``order``
+    when omitted. Span-awareness is the c.py fix, propagated (#377):
+    plain last-def-line-<= mis-attributes TU-scope callback tables
+    sitting after the last fn's closing brace to that fn — here they
+    land at module scope and keep the name-alive path instead."""
+    if spans is None:
+        spans = [
+            (fn.line, fn.line + fn.body.count("\n"), fn.key)
+            for fn in (it[1] if isinstance(it, tuple) else it for it in order)
+        ]
+    for start, end, key in spans:
+        if start > lineno:
+            break
+        if start <= lineno <= end:
+            return key
+    return ""
+
+
+# ---- python/gdscript indent-family surface (issue #377) ------------------------
+# The two indent-language modules spell the same forwarder/guard
+# vocabulary for graph.py's dup filter (consumed there as module
+# attributes — importing the names here rebinds the same attributes)
+# and the same IO-scan core. Per-language data stays put:
+# SIGNATURE_RE keyword, DEDENT_RE shape, COMMENT_PREFIXES,
+# TRIPLE_QUOTES, the mutating-method set.
+
+GUARD_RE = re.compile(r"^(?:el)?if\s+[^():]+:$")
+GUARD_RET_RE = re.compile(r"^return\s+[^()]*$")
+ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*(?:\.\w+)* = [^()=]+$")
+FORWARD_RE = re.compile(r"^return\s+(?:await\s+)?[A-Za-z_][\w.]*\([\w\s,]*\)$")
+
+
+def scan_io(body: str, params: list, mutating, member_names=None) -> tuple:
+
+    """-> (writes, mut_params) member/param mutation sets for an
+    indent-language body. Member writes = ``self.x =`` (augmented
+    too); param mutation = a param name followed by a call to a
+    mutating method (the vocabulary arrives as data — python
+    list/dict vs gd Array/Dictionary idioms differ). The gd
+    bare-member arm activates on a ``member_names`` set: ``x =``
+    without ``self.`` counts only for declared members not shadowed
+    by a local var or a parameter (python passes None — its bare
+    assigns are always locals)."""
+    writes = set(re.findall(r"\bself\.([A-Za-z_]\w*)\s*=(?!=)", body))
+    # augmented member writes too: self.hp -= 1
+    writes |= set(re.findall(r"\bself\.([A-Za-z_]\w*)\s*(?:\+|-|\*|/|%)=(?!=)", body))
+    if member_names is not None:
+        # GDScript idiom: bare member assignment without self. — only
+        # counts when the name is a declared member of this file and not
+        # shadowed by a local (var declaration) or a parameter.
+        locals_ = set(re.findall(r"\bvar\s+([A-Za-z_]\w*)", body)) | {p for p, _t in params}
+        for m in re.finditer(r"^[ \t]*([A-Za-z_]\w*)\s*(?:\+|-|\*|/)?=(?!=)", body, re.M):
+            n = m.group(1)
+            if n in member_names and n not in locals_:
+                writes.add(n)
+    pnames = {p for p, _t in params}
+    mut = set()
+    for pm in re.finditer(r"\b([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\(", body):
+        if pm.group(1) in pnames and pm.group(2) in mutating:
+            mut.add(pm.group(1))
+    return writes, mut

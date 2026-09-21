@@ -71,6 +71,7 @@ import tree_sitter_rust as _tsr
 
 from extractors.common import (  # leaf module: shared text mechanics (#302)
     body_block,
+    captures_bytewise,  # neutral capture walk (#377)
     ident_child,
     last_ident,
     line_starts_of,
@@ -398,11 +399,7 @@ def parse(path: Path, rel: str) -> FileSym:
     line_starts = line_starts_of(src)
     caps = QueryCursor(_QUERY).captures(root)
 
-    def bytewise(*keys: str) -> list:
-        nodes = []
-        for k in keys:
-            nodes.extend(caps.get(k, ()))
-        return sorted(nodes, key=lambda n: n.start_byte)
+    bytewise = partial(captures_bytewise, caps)
 
     # -- fn collection: signature-only heads first (trait decls own the
     # -- line, impl bodies own the Func — the cpp overload law) ----------

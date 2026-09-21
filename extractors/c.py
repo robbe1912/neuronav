@@ -40,12 +40,22 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_right
+from functools import partial
 from pathlib import Path
 from typing import Iterable
 
 from tree_sitter import Language, Parser, Query, QueryCursor
 
-from extractors.common import entry_keys, fn_key, line_starts_of
+from extractors.common import (  # neutral capture/site mechanics (#377)
+    captures_bytewise,
+    entry_keys,
+    fn_key,
+    line_starts_of,
+    owner_at,
+    resolve_include as _resolve_include,
+    signature,
+    type_text as _type_text,
+)
 from extractors.model import FileSym, Func
 
 C_EXTS = frozenset({".c"})
@@ -97,51 +107,9 @@ _TYPE_NODES = frozenset(
 C_MENTION_FLOOR = 2
 
 
-def _find_ident(node):
-    """First identifier in subtree (params sit under pointer declarators:
-    ``const char **argv``)."""
-    if node.type == "identifier":
-        return node
-    for child in node.children:
-        hit = _find_ident(child)
-        if hit is not None:
-            return hit
-    return None
-
-
-def _type_text(src: bytes, node) -> str:
-    if node is None:
-        return ""
-    return src[node.start_byte:node.end_byte].decode("utf8", "replace").strip()
-
-
-def _signature(src: bytes, fd) -> tuple[list[tuple[str, str]], str]:
-    """[(name, type)] params + declared return type of a function_definition."""
-    params: list[tuple[str, str]] = []
-    ret = ""
-    decl = None
-    for child in fd.children:
-        if child.type == "function_declarator":
-            decl = child
-        elif child.type in _TYPE_NODES and not ret:
-            ret = _type_text(src, child)
-    if decl is not None:
-        for part in decl.children:
-            if part.type != "parameter_list":
-                continue
-            for pd in part.children:
-                if pd.type != "parameter_declaration":
-                    continue
-                ident = _find_ident(pd)
-                ty = ""
-                for pc in pd.children:
-                    if pc.type in _TYPE_NODES:
-                        ty = _type_text(src, pc)
-                        break
-                params.append(
-                    (_type_text(src, ident) if ident is not None else "", ty)
-                )
-    return params, ret
+# the C grammar's ident spellings (the cpp extractor's set adds
+# field_identifier) — data for the hoisted find_ident/signature (#377)
+_IDENT_TYPES = ("identifier",)
 
 
 def parse(path: Path, rel: str) -> FileSym:
@@ -152,8 +120,7 @@ def parse(path: Path, rel: str) -> FileSym:
     caps = QueryCursor(_QUERY).captures(tree.root_node)
     line_starts = line_starts_of(src)
 
-    def bytewise(key: str) -> list:
-        return sorted(caps.get(key, ()), key=lambda n: n.start_byte)
+    bytewise = partial(captures_bytewise, caps)
 
     fn_names = bytewise("fn.name")
     for fd in bytewise("fn.def"):
@@ -166,7 +133,7 @@ def parse(path: Path, rel: str) -> FileSym:
         name = src[nm.start_byte:nm.end_byte].decode("utf8", "replace")
         if not name or name in fs.funcs:
             continue  # first definition in file order wins
-        params, ret = _signature(src, fd)
+        params, ret = signature(src, fd, _TYPE_NODES, _IDENT_TYPES)
         fs.funcs[name] = Func(
             path=rel,
             name=name,
@@ -351,15 +318,6 @@ def harvest_facts(fs: FileSym, ctx) -> None:
         ctx.referenced_names.add(nm)
 
 
-def _resolve_include(ctx, src_rel: str, inc: str) -> str:
-    """Repo-relative path for a quoted include of src_rel, or ''."""
-    if inc in ctx.files:
-        return inc
-    parent = src_rel.rsplit("/", 1)[0] if "/" in src_rel else ""
-    cand = f"{parent}/{inc}" if parent else inc
-    return cand if cand in ctx.files else ""
-
-
 def pair_headers(ctx) -> None:
     """Bind .c impls to their headers (BUILD step — must run before the
     scan loop so call resolution sees the maps).
@@ -430,18 +388,14 @@ def scan_file(fs: FileSym, ctx) -> None:
     # body-span aware: a site belongs to a fn only between its def line
     # and its body's last line — TU-scope callback tables sitting after
     # the last fn's closing brace must NOT attribute to that fn (the
-    # smoke fixture's TABLE[] after orphan_b minted a bogus edge)
+    # smoke fixture's TABLE[] after orphan_b minted a bogus edge). The
+    # span-aware semantics are the hoisted common.owner_at (#377) — this
+    # site fixed them; every container() now spells the same closure.
     order = sorted(fs.funcs.values(), key=lambda f: f.line)
     spans = [(f.line, f.line + f.body.count("\n"), f.key) for f in order]
     hdrs = _include_headers(ctx, fs.path, fs)
 
-    def container(lineno: int) -> str:
-        for start, end, key in spans:
-            if start > lineno:
-                break
-            if start <= lineno <= end:
-                return key
-        return ""
+    container = partial(owner_at, order, spans=spans)
 
     for site in sites:
         name = site["name"]

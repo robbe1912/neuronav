@@ -16,7 +16,16 @@ from typing import Iterator
 # extractors are leaf parsers: they read their own file and never import
 # nav (nav -> extractors -> ... must never cycle back)
 from extractors.model import FileSym
-from extractors.common import entry_keys, merge_func, scan_indented_block
+from extractors.common import (  # + shared indent-family surface (#377):
+    ASSIGN_RE,
+    FORWARD_RE,
+    GUARD_RE,
+    GUARD_RET_RE,
+    entry_keys,
+    merge_func,
+    scan_indented_block,
+    scan_io,
+)
 
 TAB_WIDTH = 4
 
@@ -238,27 +247,6 @@ def _parse_signature(header: str, fname: str) -> tuple:
     return params, ret
 
 
-def _scan_io(body: str, params: list, member_names: set) -> tuple:
-    """-> (writes, mut_params) member/param mutation sets for a body."""
-    writes = set(re.findall(r"\bself\.([A-Za-z_]\w*)\s*=(?!=)", body))
-    # augmented member writes too: self.hp -= 1
-    writes |= set(re.findall(r"\bself\.([A-Za-z_]\w*)\s*(?:\+|-|\*|/|%)=(?!=)", body))
-    # GDScript idiom: bare member assignment without self. — only counts when
-    # the name is a declared member of this file and not shadowed by a local
-    # (var declaration) or a parameter.
-    locals_ = set(re.findall(r"\bvar\s+([A-Za-z_]\w*)", body)) | {p for p, _t in params}
-    for m in re.finditer(r"^[ \t]*([A-Za-z_]\w*)\s*(?:\+|-|\*|/)?=(?!=)", body, re.M):
-        n = m.group(1)
-        if n in member_names and n not in locals_:
-            writes.add(n)
-    pnames = {p for p, _t in params}
-    mut = set()
-    for pm in re.finditer(r"\b([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\(", body):
-        if pm.group(1) in pnames and pm.group(2) in _MUTATING_METHODS:
-            mut.add(pm.group(1))
-    return writes, mut
-
-
 def parse_gd(path: Path, rel: str) -> FileSym:
     text = path.read_text(encoding="utf-8", errors="replace")
     fs = FileSym(path=rel, ext=".gd")
@@ -408,7 +396,8 @@ def parse_gd(path: Path, rel: str) -> FileSym:
     # appear after a func still count (GDScript allows late member decls).
     member_names = set(fs.members)
     for fn in fs.funcs.values():
-        fn.writes, fn.mut_params = _scan_io(fn.body, fn.params, member_names)
+        fn.writes, fn.mut_params = scan_io(
+            fn.body, fn.params, _MUTATING_METHODS, member_names)
     return fs
 
 
@@ -492,10 +481,10 @@ FUNC_KEYWORD = "func "
 # replace byte-for-byte.
 
 SIGNATURE_RE = re.compile(r"^(?:async\s+)?func\s+\w+")
-GUARD_RE = re.compile(r"^(?:el)?if\s+[^():]+:$")
-GUARD_RET_RE = re.compile(r"^return\s+[^()]*$")
-ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*(?:\.\w+)* = [^()=]+$")
-FORWARD_RE = re.compile(r"^return\s+(?:await\s+)?[A-Za-z_][\w.]*\([\w\s,]*\)$")
+# guard/assign/forward shapes are the shared indent-family constants
+# (extractors.common, #377) — imported at the top; the gd spelling of
+# the language-owned remainder stays here (func signature, # comments,
+# triple quotes, else/elif/@ dedents — no except/finally arm).
 COMMENT_PREFIXES = ("#",)
 TRIPLE_QUOTES = ('"""', "'''")
 DEDENT_RE = re.compile(r"^(\s+)else:|^(\s+)elif\s|^(\s*)@(\w)")
@@ -607,7 +596,9 @@ CHAIN_VAR_RE = re.compile(
     r'(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*([a-z_]\w*)\s*\.\s*([a-z_]\w*)\b(?!\s*\()'
 )
 # StringName values inside .tres (BT task routing): start_method_name = &"x"
-TRES_STRINGNAME_RE = re.compile(r'&"([a-z_]\w{3,})"')
+# the .tres spelling is the STRINGNAME literal (byte-identical pattern,
+# distinct consumer) — one constant, two names (#377 finding 30).
+TRES_STRINGNAME_RE = STRINGNAME_LIT_RE
 # path-form extends (incl. inner classes): extends "res://....gd"
 PATH_EXTENDS_RE = re.compile(r'^\s*extends\s+"(res://[^"]+\.gd)"', re.M)
 

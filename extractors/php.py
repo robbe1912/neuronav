@@ -65,12 +65,13 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_right
+from functools import partial
 from pathlib import Path
-
 from tree_sitter import Language, Parser, Query, QueryCursor
 
 from extractors.common import (
     body_block,
+    captures_bytewise,  # neutral capture walk (#377)
     entry_keys,
     ident_child,
     last_ident,
@@ -197,11 +198,7 @@ def parse(path: Path, rel: str) -> FileSym:
     line_starts = line_starts_of(src)
     caps = QueryCursor(_QUERY).captures(root)
 
-    def bytewise(*keys: str) -> list:
-        nodes = []
-        for k in keys:
-            nodes.extend(caps.get(k, ()))
-        return sorted(nodes, key=lambda n: n.start_byte)
+    bytewise = partial(captures_bytewise, caps)
 
     # -- namespace -----------------------------------------------------
     ns: list[str] = []

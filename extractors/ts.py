@@ -52,12 +52,14 @@ import tree_sitter_typescript as _tst
 
 from extractors.common import (  # leaf module: shared text mechanics (#302)
     body_block,
+    captures_bytewise,  # neutral capture walk (#377)
     ident_child,
     last_ident,
     line_starts_of,
     make_import_liveness_sweep,
     node_line as _line,
     node_text as _text,
+    owner_at,  # span-aware site attribution (#377)
     receiver_env,
     rel_of_target as _rel_of_target,
 )
@@ -598,11 +600,7 @@ def _parse_es_family(cfg, root, src: bytes, path: Path, rel: str, fs: FileSym,
     the exported-PascalCase component hints, and the JSX prop donations.
     The dialect's grammar front-end (parsers + query tables) builds
     `caps` before the call; structural arms arrive via the table."""
-    def bytewise(*keys: str) -> list:
-        nodes = []
-        for k in keys:
-            nodes.extend(caps.get(k, ()))
-        return sorted(nodes, key=lambda n: n.start_byte)
+    bytewise = partial(captures_bytewise, caps)
 
     # -- def collection (first-in-file wins on same-name collisions) -------------
     heads: dict[str, int] = {}    # name -> first declaration line (any kind)
@@ -843,20 +841,17 @@ def _scan_file_es(cfg, fs: FileSym, ctx) -> None:
         return
     ordered = sorted(fs.funcs.items(), key=lambda kv: (kv[1].line, kv[0]))
 
-    def container(lineno: int) -> Func | None:
-        hit = None
-        for _, fn in ordered:
-            if fn.line <= lineno:
-                hit = fn
-            else:
-                break
-        return hit
+    # span-aware owner (common.owner_at, #377): the last-def-line-<=
+    # closure this replaces attributed a module-scope site below the
+    # last fn's body to that fn — c.py's span fix, propagated here, so
+    # trailing JSX render sites land at module scope (roots) instead.
+    container = partial(owner_at, ordered)
 
     if fs.ext == cfg.jsx_ext:
         for name, line in _jsx_sites_es(cfg, ctx.path_for(fs.path), fs):
-            fn = container(line)
+            owner = container(line)
             got = _import_target(fs, name, ctx)
-            if fn is None:
+            if not owner:
                 # module scope = a render site (createRoot(...).render(
                 # <App/>), ReactDOM.render): the target is an entry root
                 # so dead tiers never flag the mounted component
@@ -866,7 +861,7 @@ def _scan_file_es(cfg, fs: FileSym, ctx) -> None:
                     ctx.roots.add(f"{got[0]}::{got[1]}")
                 continue
             if got:
-                ctx._emit_call(fn.key, got[0], got[1])
+                ctx._emit_call(owner, got[0], got[1])
             else:
                 ctx.referenced_names.add(name)  # unresolved comp: name-level alive
     for _, fn in ordered:
