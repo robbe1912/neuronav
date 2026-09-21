@@ -497,21 +497,39 @@ check("garbage query: every fused row weak-flagged",
       len(gq) == 5 and all(h.get("weak") is True for h in gq),
       str([(h["file"], h["src"], h.get("weak")) for h in gq[:3]]))
 tq = recall.search("bm25 idf length normalization", k=12)
-# Query re-calibrated at #377 — the neutral-helper hoist moved ~230
-# lines between extractor files, shifting the self-index BM25F corpus
-# stats until the old query ("graph signal wiring edges") cleared the
-# mark-only floor for NO top-3 row. Floors are UNCHANGED (cos 0.48 /
-# bm25 6.0, issue #297 + bench/golden — the pinned quality contract);
-# what over-fit was the query choice. Intent preserved and tightened:
-# a real query about the ranking machinery must land non-weak rows on
-# its defining files (recall.py / server_search.py — untouched by
-# extractor refactors, so the pin rides stable content, not mutable
-# corpus stats). Systemic follow-up filed by GK: this leg should
-# eventually assert rank-shape on a stable fixture corpus instead.
-check("real query: top rows clear the floor (not all weak)",
-      any("weak" not in h for h in tq[:3])
-      and any(h["file"] == "recall.py" for h in tq[:3]),
-      str([(h["file"], h.get("weak")) for h in tq[:3]]))
+# Rank-shape decoupling (#420, GK-ruled). The old leg asserted
+# floor-clearing on whatever rows FAKE-fusion served in top-3, silently
+# coupling the pin to the self-index's BM25F corpus stats: two large
+# extractor refactors shifted IDF/length norms with ZERO engine change
+# and false-redded it (#416 merge-commit corpus delta; #419's
+# +146/−86/−97 neutral-hoist). The pin now rides the INTENDED TARGET's
+# own rank and evidence. Query calibrated at #377 onto engine-domain
+# vocabulary (bm25/idf/length/normalization) whose defining files —
+# recall.py, BM25F's home, and server_search.py its render sibling —
+# are untouched by extractor churn, and whose tokens extractor comment
+# moves cannot re-distribute across the corpus (document frequencies,
+# hence IDF, stay put; measured 15.77/8.53 vs floor 6.0 on main).
+# (a) lexical rank-shape: the defining file holds a BM25F top-5 slot
+#     with raw evidence over the mark-only floor. The lexical side is
+#     the deterministic FAKE invariant (head of this file: fused order
+#     is a hash lottery). A floor raised above real evidence reds here
+#     directly; so does ranker sabotage (membership).
+# (b) fused mark-OFF: the target's fused row carries no weak flag —
+#     real evidence is never marked (the #297 calibration contract's
+#     other half; garbage-all-weak is pinned above). Top-12 membership
+#     is structural under FAKE, not lottery: a lexical-rank-1 side
+#     alone contributes the RRF unit 1/(rrf_k+1), which no vec-only
+#     rival outranks.
+_FLOOR_TARGETS = ("recall.py", "server_search.py")
+tlex = recall.BM25F(g.files).scores("bm25 idf length normalization")
+_tgt = next(((f, s) for f, s in tlex[:5] if f in _FLOOR_TARGETS), None)
+check("real query: defining file top-5 with evidence over the floor",
+      _tgt is not None and _tgt[1] >= recall.RELEVANCE_FLOOR_BM25,
+      str(tlex[:5]))
+_trow = next((h for h in tq if h["file"] in _FLOOR_TARGETS), None)
+check("real query: defining file's fused row carries no weak flag",
+      _trow is not None and _trow.get("weak") is not True,
+      str([(h["file"], h.get("weak")) for h in tq[:5]]))
 
 import graph  # noqa: E402  (fn-level floor shares the same constant)
 import server  # noqa: E402
