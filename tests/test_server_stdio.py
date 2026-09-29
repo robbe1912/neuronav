@@ -1440,20 +1440,24 @@ def _fresh_folder_scenario() -> None:
               "repo_map" in names and "rescan" in names, "")
 
         g = text_of(call(3, "repo_map", {"budget_tokens": 256}))
-        check("fresh240: ts boot serves the structural map, not guidance",
-              g.startswith(f"you are here: {repo.resolve().as_posix()}")
-              and "main.ts" in g and "EMPTY INDEX" not in g, g[:160])
-        g2 = text_of(call(4, "semantic_search", {"query": "greet"}))
-        check("fresh240: ts boot semantic_search serves, not guidance",
-              "main.ts" in g2 and "EMPTY INDEX" not in g2, g2[:160])
-
-        # the structural boot indexes on its own: explicit rescan is a
-        # normal success, no degraded mode to protect (#41 applies to
-        # the js-only leg below)
-        r = call(5, "rescan", {})
-        check("fresh240: ts boot rescan succeeds (structural, #245)",
+        check("fresh240: ts boot serves the #422 opt-in guidance, not a build",
+              "issue #422" in g and "call rescan" in g, g[:160])
+        check("fresh240: ts boot wrote no state dir (issue #422)",
+              not (repo / ".neuronav").exists(),
+              str(sorted(p.name for p in repo.iterdir())))
+        r = call(4, "rescan", {})
+        check("fresh240: ts explicit rescan succeeds (structural, #245)",
               not bool(r.get("isError")) and "files" in text_of(r),
               text_of(r)[:200])
+        g = text_of(call(5, "repo_map", {"budget_tokens": 256}))
+        check("fresh240: ts serves the structural map after the explicit build",
+              g.startswith(f"you are here: {repo.resolve().as_posix()}")
+              and "main.ts" in g and "EMPTY INDEX" not in g, g[:160])
+        g2 = text_of(call(6, "semantic_search", {"query": "greet"}))
+        check("fresh240: ts semantic_search serves after the build",
+              "main.ts" in g2 and "EMPTY INDEX" not in g2, g2[:160])
+        check("fresh240: ts state exists only after the explicit rescan (issue #422)",
+              (repo / ".neuronav").is_dir(), "")
     finally:
         srv.kill()
         if FAILS:
@@ -1489,18 +1493,25 @@ def _fresh_folder_scenario() -> None:
               "repo_map" in names and "rescan" in names, "")
 
         g = text_of(call(3, "repo_map", {"budget_tokens": 256}))
-        check("fresh240: js boot serves the structural map, not guidance "
-              "(issue #277)",
-              g.startswith(f"you are here: {jsrepo.resolve().as_posix()}")
-              and "main.js" in g and "EMPTY INDEX" not in g, g[:160])
-        g2 = text_of(call(4, "semantic_search", {"query": "jgreet"}))
-        check("fresh240: js boot semantic_search serves, not guidance",
-              "main.js" in g2 and "EMPTY INDEX" not in g2, g2[:160])
-
-        r = call(5, "rescan", {})
-        check("fresh240: js boot rescan succeeds (structural, #277)",
+        check("fresh240: js boot serves the #422 opt-in guidance (issue #277 "
+              "shape survives: the registry covers .js)",
+              "issue #422" in g and "call rescan" in g, g[:160])
+        check("fresh240: js boot wrote no state dir (issue #422)",
+              not (jsrepo / ".neuronav").exists(),
+              str(sorted(p.name for p in jsrepo.iterdir())))
+        r = call(4, "rescan", {})
+        check("fresh240: js explicit rescan succeeds (structural, #277)",
               not bool(r.get("isError")) and "files" in text_of(r),
               text_of(r)[:200])
+        g = text_of(call(5, "repo_map", {"budget_tokens": 256}))
+        check("fresh240: js serves the structural map after the explicit build",
+              g.startswith(f"you are here: {jsrepo.resolve().as_posix()}")
+              and "main.js" in g and "EMPTY INDEX" not in g, g[:160])
+        g2 = text_of(call(6, "semantic_search", {"query": "jgreet"}))
+        check("fresh240: js semantic_search serves after the build",
+              "main.js" in g2 and "EMPTY INDEX" not in g2, g2[:160])
+        check("fresh240: js state exists only after the explicit rescan (issue #422)",
+              (jsrepo / ".neuronav").is_dir(), "")
     finally:
         srv.kill()
         if FAILS:
@@ -1535,18 +1546,25 @@ def _fresh_folder_scenario() -> None:
               "repo_map" in names and "rescan" in names, "")
 
         g = text_of(call(3, "repo_map", {"budget_tokens": 256}))
-        check("fresh240: rust boot serves the structural map, not guidance "
-              "(issue #284)",
-              g.startswith(f"you are here: {rsrepo.resolve().as_posix()}")
-              and "lib.rs" in g and "EMPTY INDEX" not in g, g[:160])
-        g2 = text_of(call(4, "semantic_search", {"query": "rgreet"}))
-        check("fresh240: rust boot semantic_search serves, not guidance",
-              "lib.rs" in g2 and "EMPTY INDEX" not in g2, g2[:160])
-
-        r = call(5, "rescan", {})
-        check("fresh240: rust boot rescan succeeds (structural, #284)",
+        check("fresh240: rust boot serves the #422 opt-in guidance "
+              "(issue #284 shape survives: the registry covers .rs)",
+              "issue #422" in g and "call rescan" in g, g[:160])
+        check("fresh240: rust boot wrote no state dir (issue #422)",
+              not (rsrepo / ".neuronav").exists(),
+              str(sorted(p.name for p in rsrepo.iterdir())))
+        r = call(4, "rescan", {})
+        check("fresh240: rust explicit rescan succeeds (structural, #284)",
               not bool(r.get("isError")) and "files" in text_of(r),
               text_of(r)[:200])
+        g = text_of(call(5, "repo_map", {"budget_tokens": 256}))
+        check("fresh240: rust serves the structural map after the explicit build",
+              g.startswith(f"you are here: {rsrepo.resolve().as_posix()}")
+              and "lib.rs" in g and "EMPTY INDEX" not in g, g[:160])
+        g2 = text_of(call(6, "semantic_search", {"query": "rgreet"}))
+        check("fresh240: rust semantic_search serves after the build",
+              "lib.rs" in g2 and "EMPTY INDEX" not in g2, g2[:160])
+        check("fresh240: rust state exists only after the explicit rescan (issue #422)",
+              (rsrepo / ".neuronav").is_dir(), "")
     finally:
         srv.kill()
         if FAILS:

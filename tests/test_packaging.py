@@ -9,7 +9,9 @@
 # the checkout), and drive real JSON-RPC over stdio:
 #   - initialize handshake answers
 #   - tools/list advertises the tool surface
-#   - repo_map serves the fixture's own files
+#   - the #422 opt-in contract: the config-less boot answers guidance
+#     and writes nothing; an explicit rescan builds; repo_map then
+#     serves the fixture's own files
 #   - the #203 pre-rescan banner names `pure defaults, root=<cwd>` on
 #     stderr BEFORE any rescan output
 # plus wheel-content contracts: the flat py-modules, the extractors/bake
@@ -272,7 +274,26 @@ def main() -> None:
         srv.send({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
                   "params": {"name": "repo_map",
                              "arguments": {"budget_tokens": 800}}})
-        rm = srv.recv(3)
+        rm0 = srv.recv(3)
+        text0 = json.dumps(rm0.get("result", {}))
+        # issue #422: the config-less boot writes NOTHING — the first
+        # read answers the opt-in guidance, and no .neuronav exists yet
+        check("repo_map answers the #422 opt-in guidance pre-build",
+              "issue #422" in text0 and "call rescan" in text0, text0[:200])
+        check("no .neuronav materialized at boot (issue #422)",
+              not (fx / ".neuronav").exists(),
+              str(sorted(p.name for p in fx.iterdir())))
+        srv.send({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                  "params": {"name": "rescan", "arguments": {}}})
+        rs = srv.recv(4)
+        check("explicit rescan builds the fixture index",
+              "files" in json.dumps(rs.get("result", {}))
+              and not rs.get("result", {}).get("isError"),
+              json.dumps(rs)[:200])
+        srv.send({"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                  "params": {"name": "repo_map",
+                             "arguments": {"budget_tokens": 800}}})
+        rm = srv.recv(5)
         text = json.dumps(rm.get("result", {}))
         check("repo_map serves the fixture repo (app.py + util.py)",
               "app.py" in text and "util.py" in text, text[:200])
