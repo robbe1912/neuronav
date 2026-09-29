@@ -944,6 +944,7 @@ async def rescan(dir: str = "", ctx: Context = None) -> str:
     call to that checkout (a fresh dir onboards on first contact).
     """
     def _body() -> str:
+        global _BOOT_DEGRADED
         with _route(dir) as prelude:
             # issue #41 law: the explicit rescan TOOL stays loud on a 0-file
             # walk — so the degraded-boot guidance (yielded by identity) is
@@ -962,6 +963,12 @@ async def rescan(dir: str = "", ctx: Context = None) -> str:
             g, fns, note = _sync_chain(stats)
             _progress_set("done", note="rescan complete")
             navindex.stat_mark_synced()
+            if not dir and _BOOT_DEGRADED is not None:
+                # issue #422: the explicit rescan just built the
+                # never-built zero-config store — leave guidance mode
+                # so subsequent reads serve the index (a 0-file walk
+                # never reaches here: _bounded_rescan raised above)
+                _BOOT_DEGRADED = None
             dt = time.perf_counter() - t0
             return (
                 f"rescan: files {stats['added']}/{stats['updated']}/"
@@ -983,6 +990,7 @@ def _boot_sequence(t0: float) -> None:
     the _boot_thread wrapper decides per context: os._exit(1) when the
     stdio session owns the process (#240's fix-in-the-message exit),
     _BOOT_FATAL when server was imported in-process (#273 lazy boot)."""
+    global _BOOT_DEGRADED  # issue #422: the unbuilt branch appends to it
     stats = {"added": 0, "updated": 0, "unchanged": 0, "deleted": 0}
     fns_up = 0
     watch_note = ""
@@ -992,8 +1000,31 @@ def _boot_sequence(t0: float) -> None:
         # off — the 0-file verdict, the degraded-boot guidance and
         # the raw-text banner all read this one census
         census = navindex.suffix_census()
-        probe_fail = _probe_embedder()
-        if not any(s in navconfig.EXTS for s in census):
+        # issue #422: an unconfigured, never-indexed directory is not
+        # consent — the boot creates no store, runs no rescan, starts
+        # no watcher and probes no embedder. Pure defaults + no state
+        # dir on disk = guidance mode; the first explicit rescan
+        # (issue #41's loud tool) builds the state and rescan._body
+        # clears the flag below; a routed dir= call indexes its
+        # project through #354's first contact. A state dir that
+        # already exists is a project the user indexed before — boot
+        # normally.
+        unbuilt = (navconfig.CONFIG_PATH is None
+                   and not navconfig.STATE_DIR.exists())
+        probe_fail = None if unbuilt else _probe_embedder()
+        if unbuilt:
+            _enter_degraded(
+                census, None,
+                "no config and no state — waiting for an explicit index "
+                "request (issue #422)",
+            )
+            _BOOT_DEGRADED += (
+                "\nneuronav: no state was created for this directory "
+                "(issue #422) — call rescan to index it now (or pass "
+                "dir=<project> to any tool to index that project); "
+                "nothing was written."
+            )
+        elif not any(s in navconfig.EXTS for s in census):
             _enter_degraded(census, probe_fail, "boot walk matched 0 files")
         elif probe_fail is not None:
             if navstore.count() == 0:
@@ -1101,7 +1132,6 @@ def _start_boot(t0: float) -> threading.Thread:
                 name="neuronav-boot", daemon=True,
             )
             _BOOT_THREAD.start()
-        return _BOOT_THREAD
 
 
 # registration completes here in one ordered sequence — the historical
