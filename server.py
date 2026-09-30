@@ -244,17 +244,17 @@ def _boot_guidance(census: dict[str, int], probe_fail: str | None) -> str:
 
 def _unbuilt_guidance(census: dict[str, int]) -> str:
     """First-call guidance for the unbuilt zero-config boot (issues
-    #422/#424): truthful about what happened — no index build ran and
-    nothing was written — and what unblocks it. The fix depends on the
-    census: registered suffixes on disk need only `rescan`; anything
-    else needs the config block first (a bare rescan would die on the
-    0-file #41 raise). Deterministic: a pure function of the census +
-    pure defaults."""
+    #422/#424): truthful about what exists — no completed index,
+    whatever a failed earlier attempt left on disk — and what unblocks
+    it. The fix depends on the census: registered suffixes on disk
+    need only `rescan`; anything else needs the config block first (a
+    bare rescan would die on the 0-file #41 raise). Deterministic: a
+    pure function of the census + pure defaults."""
     lines = [
         "neuronav: NO INDEX YET — this directory has no config and no "
-        "index store, so this server serves guidance instead of "
-        "results (issue #422): no index build ran and nothing was "
-        "written. Every tool answers with this text until an explicit "
+        "completed index (issue #422): no index build has run to "
+        "completion here, so this server serves guidance instead of "
+        "results. Every tool answers with this text until an explicit "
         "index request.",
         f"  root: {navconfig.ROOT.as_posix()}",
     ]
@@ -276,10 +276,11 @@ def _unbuilt_guidance(census: dict[str, int]) -> str:
         lines.extend(_config_fix_lines(suggestions))
     else:
         lines.append(
-            "neuronav: no state was created for this directory "
+            "neuronav: no completed index for this directory "
             "(issue #422) — call rescan to index it now (or pass "
-            "dir=<project> to any tool to index that project); "
-            "nothing was written."
+            "dir=<project> to any tool to index that project); a "
+            "failed earlier attempt left nothing that counts as "
+            "consent."
         )
     return "\n".join(lines)
 

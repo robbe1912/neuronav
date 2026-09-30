@@ -382,12 +382,17 @@ def rescan(timeout: float | None = None) -> dict[str, int]:
             # issue #424: write the completed-build marker at the only
             # point every failure is behind us — a walk that raised, a
             # lock that timed out or an embed leg that died never lands
-            # here, so the marker stays the consent signal
-            (navconfig.STATE_DIR / BUILT_MARKER).write_text(
+            # here, so the marker stays the consent signal; temp +
+            # os.replace (CR1) — a crash mid-write never leaves a
+            # half marker behind
+            marker = navconfig.STATE_DIR / BUILT_MARKER
+            tmp = marker.with_name(BUILT_MARKER + ".tmp")
+            tmp.write_text(
                 f"rescan completed "
                 f"{datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}\n",
                 encoding="utf-8",
             )
+            os.replace(tmp, marker)
             return stats
     except Timeout:
         raise SystemExit(

@@ -172,7 +172,15 @@ async def visualize(dir: str = "", ctx: Context = None) -> str:
                 resolved = Path(dir).expanduser().resolve()
                 target = resolved / navconfig.STATE_DIR_NAME / "config.json"
         else:
-            prelude = _unbuilt_text()
+            # CR4 re-gate (#424): evaluate the unbuilt test under
+            # _SCOPE_LOCK — it reads live navconfig.CONFIG_PATH, which a
+            # routed call rebinds inside config_scope under this same
+            # lock; a bare read can land mid-first-contact (the foreign
+            # config bound, boot not yet restored), read "not unbuilt",
+            # and queue a boot-store bake the boot never consented to.
+            # RLock, brief: released before the queue append.
+            with _SCOPE_LOCK:
+                prelude = _unbuilt_text()
             if prelude is not None:
                 # issue #424: the unbuilt boot has no store to bake —
                 # answer with the same #422 guidance every read tool

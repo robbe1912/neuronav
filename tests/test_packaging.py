@@ -292,7 +292,7 @@ def main() -> None:
               json.dumps(rs)[:200])
         # issue #424: the consent rescan names where the store landed
         # — the zero-config user consented blind; the path is the receipt
-        rs_text = json.dumps(rs.get("result", {}))
+        rs_text = json.dumps(rs.get("result", {}), ensure_ascii=False)
         check("consent rescan ack names the fixture store path (issue #424)",
               "state store:" in rs_text
               and f"{fx.as_posix()}/.neuronav" in rs_text, rs_text[-200:])

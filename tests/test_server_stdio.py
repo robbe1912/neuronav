@@ -138,6 +138,25 @@ def text_of(result: dict) -> str:
     )
 
 
+def _reply(lines: list[str], want_id: int, timeout: float = 120.0) -> dict:
+    """Arrival-order-safe reply scan for interleaved legs (issue #424
+    CR4): recv() drains the stdout queue in arrival order and discards
+    non-matching ids, so a leg that fires two calls and awaits the
+    second one first would eat the first reply. The drain thread's
+    accumulated stdout_lines keeps every line."""
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        for line in list(lines):
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            if msg.get("id") == want_id:
+                return msg
+        time.sleep(0.2)
+    raise TimeoutError(f"no response for id={want_id} within {timeout:.0f}s")
+
+
 def _spawn(env: dict[str, str], cwd: Path | None = None) -> SimpleNamespace:
     """Start one stdio server + daemon drain threads; returns
     .proc/.send/.recv/.kill/.stderr_lines.
@@ -1458,6 +1477,42 @@ def _fresh_folder_scenario() -> None:
               "call rescan" in v and "bake accepted" not in v
               and "no bake was queued" in v, v[:200])
         check("fresh240: unbuilt visualize wrote no state dir (issue #424)",
+              not (repo / ".neuronav").exists(),
+              str(sorted(p.name for p in repo.iterdir())))
+        # CR4 re-gate (#424): the unbuilt test must be evaluated under
+        # the scope lock — a routed first-contact rebinds
+        # navconfig.CONFIG_PATH mid-call, and a bare visualize({}) read
+        # landing inside the swap reads "not unbuilt" and queues a
+        # boot-store bake (empty store -> #64). Fire the routed call,
+        # visualize 0.3s into the build, and demand the refusal either
+        # way — under the lock the gate only ever sees the boot's own
+        # unbuilt state.
+        fx424 = scratch / "foreign424"
+        fx424.mkdir(parents=True, exist_ok=True)
+        (fx424 / "fx_helper.py").write_text(
+            "def fx_helper():\n    return 42\n", encoding="utf-8",
+            newline="\n")
+        send({"jsonrpc": "2.0", "id": 8, "method": "tools/call",
+              "params": {"name": "repo_map",
+                         "arguments": {"dir": str(fx424),
+                                       "budget_tokens": 256}}})
+        time.sleep(0.3)
+        send({"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+              "params": {"name": "visualize", "arguments": {}}})
+        # the replies may arrive in either order (visualize waits on
+        # the scope lock while the routed build runs) — recv would eat
+        # the first arrival awaiting the other id, so scan the drain
+        # thread's accumulated lines
+        vi = text_of(_reply(srv.stdout_lines, 9)["result"])
+        check("fresh240: visualize({}) refuses mid-routed-first-contact "
+              "(#424 CR4)",
+              "no bake was queued" in vi and "bake accepted" not in vi,
+              vi[:200])
+        routed = _reply(srv.stdout_lines, 8)["result"]
+        # first contact answers with the onboard summary, not the map
+        check("fresh240: the routed first-contact built the foreign repo",
+              "index built" in json.dumps(routed), json.dumps(routed)[:120])
+        check("fresh240: the interleaving wrote no boot state dir (#424)",
               not (repo / ".neuronav").exists(),
               str(sorted(p.name for p in repo.iterdir())))
         r = call(5, "rescan", {})
