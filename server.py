@@ -161,6 +161,52 @@ def _preset_hint(suggestions: list[str]) -> str | None:
     return None
 
 
+def _census_ranked(census: dict[str, int]) -> list[tuple[str, int]]:
+    """Census suffixes worth suggesting, ranked by count then name —
+    deterministic; shared by both guidance builders (#240/#424)."""
+    return sorted(
+        ((s, c) for s, c in census.items()
+         if s.startswith(".") and s not in _CENSUS_DENY),
+        key=lambda kv: (-kv[1], kv[0]),
+    )
+
+
+def _config_fix_lines(suggestions: list[str]) -> list[str]:
+    """The paste-ready config fix for suffixes the default walk does
+    not cover, with preset hint and raw-text notes (issue #240) —
+    shared by the 0-file degraded guidance and the unbuilt boot's
+    (issue #424)."""
+    lines: list[str] = []
+    block = {
+        # "root": ".." — a project-local config resolves root against
+        # .neuronav itself (the #240 trap); its parent IS the project
+        "root": "..",
+        "collection": "main",
+        "state_dir": "default",
+        "include_dirs": list(navconfig.WALK_DEFAULTS["include_dirs"]),
+        "extensions": suggestions,
+        "exclude_dirs": list(navconfig.WALK_DEFAULTS["exclude_dirs"]),
+    }
+    lines.append("  fix: write .neuronav/config.json under the root with")
+    lines.extend("    " + ln for ln in json.dumps(block, indent=2).splitlines())
+    hint = _preset_hint(suggestions)
+    if hint is not None:
+        lines.append(f"  (or run: onboard.py init --preset {hint})")
+    unreg = [s for s in suggestions if registry_for(s) is None]
+    if unreg:
+        lines.append(
+            f"  note: {', '.join(unreg)} have no structural extractor — "
+            "they index as raw text (semantic_search/search_text work), "
+            "but find_functions/symbol_graph/dead_code return nothing "
+            "for these files until extractors land for them"
+        )
+    lines.append(
+        "  then call rescan (this session picks the new config up) "
+        "or restart the session"
+    )
+    return lines
+
+
 def _boot_guidance(census: dict[str, int], probe_fail: str | None) -> str:
     """First-call guidance for a 0-file boot (issue #240): what was
     scanned, what the root actually holds, the paste-ready fix. A pure
@@ -173,11 +219,7 @@ def _boot_guidance(census: dict[str, int], probe_fail: str | None) -> str:
         f"  include_dirs: {list(navconfig.INCLUDE_DIRS)}",
         f"  extensions scanned: [{', '.join(sorted(navconfig.EXTS))}]",
     ]
-    ranked = sorted(
-        ((s, c) for s, c in census.items()
-         if s.startswith(".") and s not in _CENSUS_DENY),
-        key=lambda kv: (-kv[1], kv[0]),
-    )
+    ranked = _census_ranked(census)
     if ranked:
         head = _capped(
             [f"{s} x{c}" for s, c in ranked], _GUIDANCE_SUGGEST_CAP
@@ -192,36 +234,77 @@ def _boot_guidance(census: dict[str, int], probe_fail: str | None) -> str:
     suggestions = [s for s, _ in ranked[:_GUIDANCE_SUGGEST_CAP]
                    if s not in navconfig.EXTS]
     if suggestions:
-        block = {
-            # "root": ".." — a project-local config resolves root against
-            # .neuronav itself (the #240 trap); its parent IS the project
-            "root": "..",
-            "collection": "main",
-            "state_dir": "default",
-            "include_dirs": list(navconfig.WALK_DEFAULTS["include_dirs"]),
-            "extensions": suggestions,
-            "exclude_dirs": list(navconfig.WALK_DEFAULTS["exclude_dirs"]),
-        }
-        lines.append("  fix: write .neuronav/config.json under the root with")
-        lines.extend("    " + ln for ln in json.dumps(block, indent=2).splitlines())
-        hint = _preset_hint(suggestions)
-        if hint is not None:
-            lines.append(f"  (or run: onboard.py init --preset {hint})")
-        unreg = [s for s in suggestions if registry_for(s) is None]
-        if unreg:
-            lines.append(
-                f"  note: {', '.join(unreg)} have no structural extractor — "
-                "they index as raw text (semantic_search/search_text work), "
-                "but find_functions/symbol_graph/dead_code return nothing "
-                "for these files until extractors land for them"
-            )
-        lines.append(
-            "  then call rescan (this session picks the new config up) "
-            "or restart the session"
-        )
+        # issue #424: the paste-ready block lives in its own helper so
+        # the unbuilt boot's guidance composes the same fix verbatim
+        lines.extend(_config_fix_lines(suggestions))
     if probe_fail is not None:
         lines.append(f"  embed backend: {probe_fail}")
     return "\n".join(lines)
+
+
+def _unbuilt_guidance(census: dict[str, int]) -> str:
+    """First-call guidance for the unbuilt zero-config boot (issues
+    #422/#424): truthful about what happened — no index build ran and
+    nothing was written — and what unblocks it. The fix depends on the
+    census: registered suffixes on disk need only `rescan`; anything
+    else needs the config block first (a bare rescan would die on the
+    0-file #41 raise). Deterministic: a pure function of the census +
+    pure defaults."""
+    lines = [
+        "neuronav: NO INDEX YET — this directory has no config and no "
+        "index store, so this server serves guidance instead of "
+        "results (issue #422): no index build ran and nothing was "
+        "written. Every tool answers with this text until an explicit "
+        "index request.",
+        f"  root: {navconfig.ROOT.as_posix()}",
+    ]
+    ranked = _census_ranked(census)
+    if ranked:
+        head = _capped(
+            [f"{s} x{c}" for s, c in ranked], _GUIDANCE_SUGGEST_CAP
+        )
+        lines.append(f"  file types on disk: {head}")
+    else:
+        lines.append(
+            "  file types on disk: NONE under the root — check the "
+            "directory (onboard.py init --project <path> scaffolds a "
+            "walk-all config)"
+        )
+    suggestions = [s for s, _ in ranked[:_GUIDANCE_SUGGEST_CAP]
+                   if s not in navconfig.EXTS]
+    if suggestions:
+        lines.extend(_config_fix_lines(suggestions))
+    else:
+        lines.append(
+            "neuronav: no state was created for this directory "
+            "(issue #422) — call rescan to index it now (or pass "
+            "dir=<project> to any tool to index that project); "
+            "nothing was written."
+        )
+    return "\n".join(lines)
+
+
+def _store_unbuilt() -> bool:
+    """Consent test for tools that would materialize the boot store
+    (issues #422/#424): True when the pure-defaults boot has no
+    completed build. Filesystem-only — same gate as the boot, so a
+    failed first rescan's leftovers do not read as consent."""
+    return navconfig.CONFIG_PATH is None and not navindex.store_built()
+
+
+def _unbuilt_text() -> str | None:
+    """The reply for store-materializing tools on an unbuilt boot
+    (issues #422/#424): the boot's live guidance when already
+    composed, else the same builder on demand (visualize's dir=''
+    arm can run before the boot thread sets the flag — the
+    filesystem gate itself is race-free, the marker only ever
+    appears under a successful rescan). None once built: the caller
+    proceeds."""
+    if not _store_unbuilt():
+        return None
+    if _BOOT_DEGRADED is not None:
+        return _BOOT_DEGRADED
+    return _unbuilt_guidance(navindex.suffix_census())
 
 
 def _probe_embedder() -> str | None:
@@ -275,15 +358,17 @@ def _raw_text_banner(census: dict[str, int]) -> None:
 
 
 def _enter_degraded(census: dict[str, int], probe_fail: str | None,
-                    why: str) -> None:
+                    why: str, text: str | None = None) -> None:
     """Flip the boot into guidance mode (issue #240): set the flag every
-    tool answers with, plus the stderr banner."""
+    tool answers with, plus the stderr banner. ``text`` overrides the
+    #240 guidance when the degraded cause is not a 0-file walk (issue
+    #424's unbuilt boot composes its own truthful text)."""
     global _BOOT_DEGRADED
-    _BOOT_DEGRADED = _boot_guidance(census, probe_fail)
+    _BOOT_DEGRADED = text if text is not None else _boot_guidance(census, probe_fail)
     # no build is running in guidance mode; keep the status resource clean
     _progress_set("done", note="degraded boot — guidance mode")
     print(
-        f"neuronav: DEGRADED — {why}; serving an empty index, every tool "
+        f"neuronav: DEGRADED — {why}; serving guidance, every tool "
         "answers with first-call guidance",
         file=sys.stderr,
     )
@@ -945,6 +1030,7 @@ async def rescan(dir: str = "", ctx: Context = None) -> str:
     """
     def _body() -> str:
         global _BOOT_DEGRADED
+        boot_store = ""  # issue #424: named in the ack when this call built it
         with _route(dir) as prelude:
             # issue #41 law: the explicit rescan TOOL stays loud on a 0-file
             # walk — so the degraded-boot guidance (yielded by identity) is
@@ -968,15 +1054,22 @@ async def rescan(dir: str = "", ctx: Context = None) -> str:
                 # never-built zero-config store — leave guidance mode
                 # so subsequent reads serve the index (a 0-file walk
                 # never reaches here: _bounded_rescan raised above)
+                boot_store = navconfig.STATE_DIR.as_posix()
                 _BOOT_DEGRADED = None
             dt = time.perf_counter() - t0
-            return (
+            ack = (
                 f"rescan: files {stats['added']}/{stats['updated']}/"
                 f"{stats['unchanged']}/{stats['deleted']} (a/u/u/d), "
                 f"fns {fns['fns_upserted']} upserted, graph {len(g.files)} files, "
                 f"in {dt:.1f}s{note}"
                 + _rescan_paths(stats)
             )
+            # issue #424: when this rescan just built the boot store,
+            # name where it landed — the zero-config user consented
+            # blind, and the store path is the receipt
+            if boot_store:
+                ack += f"\nstate store: {boot_store}"
+            return ack
 
     return await _serve(_body, ctx)
 
@@ -990,7 +1083,6 @@ def _boot_sequence(t0: float) -> None:
     the _boot_thread wrapper decides per context: os._exit(1) when the
     stdio session owns the process (#240's fix-in-the-message exit),
     _BOOT_FATAL when server was imported in-process (#273 lazy boot)."""
-    global _BOOT_DEGRADED  # issue #422: the unbuilt branch appends to it
     stats = {"added": 0, "updated": 0, "unchanged": 0, "deleted": 0}
     fns_up = 0
     watch_note = ""
@@ -1002,27 +1094,25 @@ def _boot_sequence(t0: float) -> None:
         census = navindex.suffix_census()
         # issue #422: an unconfigured, never-indexed directory is not
         # consent — the boot creates no store, runs no rescan, starts
-        # no watcher and probes no embedder. Pure defaults + no state
-        # dir on disk = guidance mode; the first explicit rescan
-        # (issue #41's loud tool) builds the state and rescan._body
-        # clears the flag below; a routed dir= call indexes its
-        # project through #354's first contact. A state dir that
-        # already exists is a project the user indexed before — boot
-        # normally.
-        unbuilt = (navconfig.CONFIG_PATH is None
-                   and not navconfig.STATE_DIR.exists())
+        # no watcher and probes no embedder. The gate is the
+        # completed-build marker (issue #424): only a successful rescan
+        # writes it, so the leftovers of a FAILED first rescan (the
+        # store lock mkdirs the state dir before the walk/embed legs
+        # can fail) still read unbuilt — the next boot serves guidance
+        # again instead of auto-indexing a failed build's rubble. The
+        # first explicit rescan (issue #41's loud tool) builds the
+        # state and rescan._body clears the flag below; a routed dir=
+        # call indexes its project through #354's first contact. A
+        # state dir that already carries the marker is a project the
+        # user indexed before — boot normally.
+        unbuilt = _store_unbuilt()
         probe_fail = None if unbuilt else _probe_embedder()
         if unbuilt:
             _enter_degraded(
                 census, None,
-                "no config and no state — waiting for an explicit index "
-                "request (issue #422)",
-            )
-            _BOOT_DEGRADED += (
-                "\nneuronav: no state was created for this directory "
-                "(issue #422) — call rescan to index it now (or pass "
-                "dir=<project> to any tool to index that project); "
-                "nothing was written."
+                "no config and no completed build — waiting for an "
+                "explicit index request (issue #422)",
+                text=_unbuilt_guidance(census),
             )
         elif not any(s in navconfig.EXTS for s in census):
             _enter_degraded(census, probe_fail, "boot walk matched 0 files")
@@ -1119,7 +1209,7 @@ def _boot_thread(t0: float) -> None:
         _BOOT_READY.set()
 
 
-def _start_boot(t0: float) -> threading.Thread:
+def _start_boot(t0: float) -> None:
     """Exactly-once boot thread start (idempotent under the start lock);
     only main() starts it — in-process imports close the gate without
     boot work instead (_await_boot)."""

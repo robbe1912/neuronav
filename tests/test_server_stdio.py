@@ -1380,20 +1380,22 @@ def _sweep300_scenario() -> None:
 
 
 def _fresh_folder_scenario() -> None:
-    """issue #240 acceptance, post-#245 shape: the owner's live repro
+    """issue #240 acceptance, post-#422 shape: the owner's live repro
     (opencode-mobile — TS-only, no .neuronav, pure defaults, v0.1.5 died
-    pre-handshake). A TS-only repo now boots STRUCTURAL (the ts
-    extractor landed, #245), so that half pins the structural boot:
-    initialize answers, tools/list works, repo_map serves the real map.
-    The degraded-boot guidance UX lives on for raw-text-only repos
-    (.md — JS left that club in #277, Rust in #284): an md-only sibling pins the
-    contract verbatim — read tools answer first-call guidance naming
-    the scanned extensions + the paste-ready config for the suffixes
-    actually on disk, the explicit rescan TOOL stays loud (#41 law),
-    and the guidance's exact fix (onboard.py init --preset ts)
-    recovers the session in place. Then the embedder-probe contract
-    (no FAKE): dead endpoint + empty store aborts pre-handshake naming
-    the ollama pull fix; a warm store serves degraded from the index."""
+    pre-handshake). A config-less repo now boots UNBUILT (issue #422):
+    nothing is written and every read tool answers the opt-in guidance
+    until an explicit rescan. The ts leg pins that handshake plus the
+    #424 seams — unbuilt visualize refuses pre-queue without touching
+    the store, the consent rescan's ack names the store path, and a
+    FAILED first rescan leaves the next boot in guidance (the js/rust
+    siblings repeat the base shape for their presets). The md-only leg
+    pins the unbuilt guidance for a repo whose files need a config
+    first (truthful header, paste-ready fix, raw-text note — #424),
+    the explicit rescan TOOL staying loud (#41 law), and the guidance's
+    exact fix (onboard.py init --preset ts) recovering the session in
+    place. Then the embedder-probe contract (no FAKE): dead endpoint +
+    empty store aborts pre-handshake naming the ollama pull fix; a
+    warm store serves degraded from the index."""
     import shutil
     import socket
 
@@ -1442,22 +1444,40 @@ def _fresh_folder_scenario() -> None:
         g = text_of(call(3, "repo_map", {"budget_tokens": 256}))
         check("fresh240: ts boot serves the #422 opt-in guidance, not a build",
               "issue #422" in g and "call rescan" in g, g[:160])
+        check("fresh240: unbuilt guidance header is truthful (issue #424)",
+              "NO INDEX YET" in g and "EMPTY INDEX" not in g, g[:160])
         check("fresh240: ts boot wrote no state dir (issue #422)",
               not (repo / ".neuronav").exists(),
               str(sorted(p.name for p in repo.iterdir())))
-        r = call(4, "rescan", {})
+        # issue #424: visualize on the unbuilt boot must refuse BEFORE
+        # queueing — the baker's store work would materialize an empty
+        # store that dies on viz's #64 guard, leaving failed-consent
+        # rubble behind
+        v = text_of(call(4, "visualize", {}))
+        check("fresh240: unbuilt visualize refuses pre-queue (issue #424)",
+              "call rescan" in v and "bake accepted" not in v
+              and "no bake was queued" in v, v[:200])
+        check("fresh240: unbuilt visualize wrote no state dir (issue #424)",
+              not (repo / ".neuronav").exists(),
+              str(sorted(p.name for p in repo.iterdir())))
+        r = call(5, "rescan", {})
         check("fresh240: ts explicit rescan succeeds (structural, #245)",
               not bool(r.get("isError")) and "files" in text_of(r),
               text_of(r)[:200])
-        g = text_of(call(5, "repo_map", {"budget_tokens": 256}))
+        check("fresh240: the consent rescan's ack names the store path "
+              "(issue #424)",
+              f"state store: {repo.resolve().as_posix()}/.neuronav"
+              in text_of(r), text_of(r)[-160:])
+        g = text_of(call(6, "repo_map", {"budget_tokens": 256}))
         check("fresh240: ts serves the structural map after the explicit build",
               g.startswith(f"you are here: {repo.resolve().as_posix()}")
               and "main.ts" in g and "EMPTY INDEX" not in g, g[:160])
-        g2 = text_of(call(6, "semantic_search", {"query": "greet"}))
+        g2 = text_of(call(7, "semantic_search", {"query": "greet"}))
         check("fresh240: ts semantic_search serves after the build",
               "main.ts" in g2 and "EMPTY INDEX" not in g2, g2[:160])
         check("fresh240: ts state exists only after the explicit rescan (issue #422)",
-              (repo / ".neuronav").is_dir(), "")
+              (repo / ".neuronav").is_dir()
+              and (repo / ".neuronav" / ".built").is_file(), "")
     finally:
         srv.kill()
         if FAILS:
@@ -1600,21 +1620,24 @@ def _fresh_folder_scenario() -> None:
               "repo_map" in names and "rescan" in names, "")
 
         g = text_of(call(3, "repo_map", {"budget_tokens": 256}))
-        check("fresh240: repo_map answers guidance naming .md",
-              "EMPTY INDEX" in g and ".md" in g, g[:160])
-        check("fresh240: guidance carries the paste-ready config "
+        check("fresh240: md-only boot answers the unbuilt guidance "
+              "naming .md (issue #424)",
+              "NO INDEX YET" in g and ".md" in g, g[:160])
+        check("fresh240: unbuilt guidance carries the paste-ready config "
               "(state_dir opt-in, issue #91)",
               '"state_dir": "default"' in g and "config.json" in g, g)
-        check("fresh240: guidance names the preset one-liner "
+        check("fresh240: unbuilt guidance names the preset one-liner "
               "(the ts preset covers .md — ts hints first)",
               "--preset ts" in g, g)
-        check("fresh240: guidance names the raw-text degradation",
+        check("fresh240: unbuilt guidance names the raw-text degradation",
               "raw text" in g and "find_functions" in g, g)
-        check("fresh240: guidance names extensions actually scanned",
-              "extensions scanned:" in g, g[:300])
+        check("fresh240: unbuilt guidance is truthful — no #240 walk "
+              "claim, the #422 consent line retained (issue #424)",
+              "EMPTY INDEX" not in g and "extensions scanned:" not in g
+              and "issue #422" in g and "call rescan" in g, g[:300])
         g2 = text_of(call(4, "semantic_search", {"query": "yo"}))
         check("fresh240: semantic_search answers the same guidance",
-              "EMPTY INDEX" in g2 and ".md" in g2, g2[:120])
+              "NO INDEX YET" in g2 and ".md" in g2, g2[:120])
 
         # issue #41 law: degraded boot must not neuter the explicit
         # rescan tool — it errors loudly (names the 0-file walk), never
@@ -1657,6 +1680,70 @@ def _fresh_folder_scenario() -> None:
         srv.kill()
         if FAILS:
             print("--- fresh240 md server stderr (tail) ---")
+            print("\n".join(srv.stderr_lines[-15:]))
+
+    # ---- issue #424: a FAILED first rescan must not read as consent.
+    # The store lock's acquire mkdirs the state dir before the build
+    # legs can fail, so a failed first rescan leaves a dir behind — the
+    # next zero-config boot must serve guidance again, not auto-index
+    # the rubble (the reviewer's held-lock/dead-backend probes).
+    crepo = scratch / "consent424"
+    crepo.mkdir(parents=True)
+    (crepo / "README.md").write_text("# notes\n", encoding="utf-8",
+                                     newline="\n")
+    cenv = dict(base)
+    cenv["NEURONAV_EMBED_FAKE"] = "1"
+    srv = _spawn(cenv, cwd=crepo)
+    send, recv = srv.send, srv.recv
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "fresh", "version": "0"}}})
+        recv(1)
+        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        r = call(2, "rescan", {})
+        check("fresh240/424: 0-file first rescan fails loudly (#41)",
+              bool(r.get("isError")) and "0 files" in text_of(r),
+              text_of(r)[:160])
+        check("fresh240/424: the failed first rescan left a state dir "
+              "but no completed-build marker",
+              (crepo / ".neuronav" / "chroma").exists()
+              and not (crepo / ".neuronav" / ".built").exists(),
+              str(sorted(p.name for p in (crepo / ".neuronav").iterdir())))
+    finally:
+        srv.kill()
+        if FAILS:
+            print("--- fresh240 consent424 server stderr (tail) ---")
+            print("\n".join(srv.stderr_lines[-15:]))
+
+    # a registered file arriving between sessions is natural drift —
+    # with the leftover dir present this is exactly the pre-#424
+    # auto-index trap (a bare dir used to read as consent)
+    (crepo / "app.py").write_text("def a():\n    return 1\n",
+                                  encoding="utf-8", newline="\n")
+    srv = _spawn(cenv, cwd=crepo)
+    send, recv = srv.send, srv.recv
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "fresh", "version": "0"}}})
+        recv(1)
+        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        g = text_of(call(2, "repo_map", {"budget_tokens": 256}))
+        check("fresh240/424: respawn after a failed first rescan serves "
+              "guidance, no auto-index (issue #424)",
+              "issue #422" in g and "call rescan" in g
+              and "NO INDEX YET" in g and "you are here" not in g, g[:160])
+        rec = text_of(call(3, "rescan", {}))
+        check("fresh240/424: the guidance's rescan builds and names the "
+              "store path (issue #424)",
+              "rescan: files" in rec
+              and f"state store: {crepo.resolve().as_posix()}/.neuronav"
+              in rec, rec[-160:])
+    finally:
+        srv.kill()
+        if FAILS:
+            print("--- fresh240 consent424 respawn stderr (tail) ---")
             print("\n".join(srv.stderr_lines[-15:]))
 
     # ---- embedder probe (issue #240 pin 4): no FAKE in these legs ----

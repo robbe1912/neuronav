@@ -349,6 +349,23 @@ def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+# issue #424: the completed-build marker under the state dir. The store
+# lock's acquire mkdirs the state dir BEFORE the walk/embed legs can
+# fail, so bare dir existence cannot mean consent — a failed first
+# rescan (0-file walk, lock timeout, dead embed backend) would otherwise
+# flip the next zero-config boot from opt-in guidance to auto-index.
+# Only rescan()'s successful return writes it; every failure path leaves
+# it absent, whatever else it left behind.
+BUILT_MARKER = ".built"
+
+
+def store_built() -> bool:
+    """Filesystem-only completed-build test (issue #424): True when the
+    active state dir carries the marker only a successful rescan writes.
+    Never opens chroma — the unbuilt boot must materialize nothing."""
+    return (navconfig.STATE_DIR / BUILT_MARKER).is_file()
+
+
 def rescan(timeout: float | None = None) -> dict[str, int]:
     """Incremental index: add/update changed files, purge deleted ones.
     Warm passes skip read+hash via the stat fingerprint (issue #42); the
@@ -361,7 +378,17 @@ def rescan(timeout: float | None = None) -> dict[str, int]:
     lock = navstore._db_lock(timeout)
     try:
         with lock:
-            return _rescan_locked()
+            stats = _rescan_locked()
+            # issue #424: write the completed-build marker at the only
+            # point every failure is behind us — a walk that raised, a
+            # lock that timed out or an embed leg that died never lands
+            # here, so the marker stays the consent signal
+            (navconfig.STATE_DIR / BUILT_MARKER).write_text(
+                f"rescan completed "
+                f"{datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}\n",
+                encoding="utf-8",
+            )
+            return stats
     except Timeout:
         raise SystemExit(
             f"neuronav: gave up after {timeout:g}s waiting for the store "

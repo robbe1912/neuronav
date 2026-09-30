@@ -290,6 +290,12 @@ def main() -> None:
               "files" in json.dumps(rs.get("result", {}))
               and not rs.get("result", {}).get("isError"),
               json.dumps(rs)[:200])
+        # issue #424: the consent rescan names where the store landed
+        # — the zero-config user consented blind; the path is the receipt
+        rs_text = json.dumps(rs.get("result", {}))
+        check("consent rescan ack names the fixture store path (issue #424)",
+              "state store:" in rs_text
+              and f"{fx.as_posix()}/.neuronav" in rs_text, rs_text[-200:])
         srv.send({"jsonrpc": "2.0", "id": 5, "method": "tools/call",
                   "params": {"name": "repo_map",
                              "arguments": {"budget_tokens": 800}}})
