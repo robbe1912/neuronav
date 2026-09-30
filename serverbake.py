@@ -172,6 +172,27 @@ async def visualize(dir: str = "", ctx: Context = None) -> str:
                 resolved = Path(dir).expanduser().resolve()
                 target = resolved / navconfig.STATE_DIR_NAME / "config.json"
         else:
+            # CR4 re-gate (#424): evaluate the unbuilt test under
+            # _SCOPE_LOCK — it reads live navconfig.CONFIG_PATH, which a
+            # routed call rebinds inside config_scope under this same
+            # lock; a bare read can land mid-first-contact (the foreign
+            # config bound, boot not yet restored), read "not unbuilt",
+            # and queue a boot-store bake the boot never consented to.
+            # RLock, brief: released before the queue append.
+            with _SCOPE_LOCK:
+                prelude = _unbuilt_text()
+            if prelude is not None:
+                # issue #424: the unbuilt boot has no store to bake —
+                # answer with the same #422 guidance every read tool
+                # serves instead of queueing: the baker's store work
+                # would materialize an empty store that then dies on
+                # viz's #64 empty-store refusal, leaving failed-consent
+                # rubble behind (the F2 shape)
+                return (
+                    f"{prelude}\n"
+                    "neuronav: no bake was queued — visualize needs a "
+                    "built store; nothing was written."
+                )
             prelude = None
             target = None  # the boot config's store
         with _BAKE_LOCK:
@@ -239,8 +260,8 @@ def _onboarding_status() -> str:
 # bodies — moved code reads its own module globals. register() therefore
 # writes live bindings into this module's dict, per shape:
 #
-#   * call rails (_route/_serve/_progress_set/_progress_line) bind as
-#     late proxies that resolve the CURRENT owner attribute at call time
+#   * call rails (_route/_serve/_progress_set/_progress_line/
+#     _unbuilt_text) bind as
 #     — the servercore._Rail law, so test rebinds on server's namespace
 #     reach the bake path exactly as they reach the query families;
 #   * object/value rails (_SCOPE_LOCK, _BOOT_FATAL, _BOOT_THREAD,
@@ -260,7 +281,7 @@ def _onboarding_status() -> str:
 # wrapper that fresh-binds first. Those wrappers are the only non-
 # verbatim code below, and they do nothing but re-read names.
 _OWNER = None
-_CALL_RAILS = ("_route", "_serve", "_progress_set", "_progress_line")
+_CALL_RAILS = ("_route", "_serve", "_progress_set", "_progress_line", "_unbuilt_text")
 _VALUE_RAILS = (
     "_SCOPE_LOCK", "_BOOT_FATAL", "_BOOT_THREAD", "_BOOT_READY",
     "_BOOT_WAIT_S", "LOCK_WAIT_S",
